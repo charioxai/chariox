@@ -10,28 +10,19 @@ import { promisify } from "node:util"
 import WebSocket, { WebSocketServer } from "ws"
 
 import {
-  normalizeRuntimeSession,
-  type AgentInstance,
   type PromptAttachmentPart,
-  type RuntimeAttachment,
   type RuntimeProviderRun,
   type RuntimeSession,
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
-  aliasAgentRequest,
-  attachToSessionRequest,
-  createSessionRequest,
   getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
-  moveAgentToRemoteRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   respondToInteractionRequest,
-  resolveSessionRequest,
-  spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
 import {
@@ -41,6 +32,13 @@ import {
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
+import {
+  attachNativeSession,
+  createNativeSession,
+  prepareCreatedNativeAgent,
+  resolveNativeSession,
+  spawnNativeAgent,
+} from "./session-control.js"
 
 const execFileAsync = promisify(execFile)
 const reservedKernelPortLocks: string[] = []
@@ -113,14 +111,20 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions, options.sliceRef)
-    const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
-    const attachment = await attachToSession(client, session.id, options.clientId)
+      : await createNativeSession(client, workspace, worktree, options.alias, {
+        provider: "codex",
+        model: options.model,
+        effort: options.effort,
+        execution_mode: options.mode,
+        permission_level: options.permissions,
+      }, options.sliceRef)
+    const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
+    const attachment = await attachNativeSession(client, session.id, options.clientId)
     cleanupSessionId = session.id
     cleanupAttachmentId = attachment.id
     const agent = created?.agent
-      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnCodexAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const bindState: {
       promise: Promise<RuntimeProviderRun> | null
@@ -420,104 +424,6 @@ function parseKernelPort(value: string, arg: string): string {
     throw new Error(`${arg} must be between 1 and 65535`)
   }
   return String(port)
-}
-
-async function createSession(
-  client: LocalIpcClient,
-  workspace: string,
-  worktree: string,
-  alias?: string,
-  model = "gpt-5.4-mini",
-  effort = "high",
-  mode: "build" | "plan" = "build",
-  permissions: "required" | "yolo" = "yolo",
-  sliceRef?: string,
-): Promise<{ session: RuntimeSession; agent: AgentInstance | null }> {
-  const response = await client.send<Record<string, unknown>>(
-    createSessionRequest(workspace, worktree, alias, {
-      provider: "codex",
-      model,
-      effort,
-      execution_mode: mode,
-      permission_level: permissions,
-    }, sliceRef ?? null),
-  )
-  const payload = expectVariant<{ session: RuntimeSession; agent?: AgentInstance | null }>(response, "SessionCreated")
-  return {
-    session: normalizeRuntimeSession(payload.session),
-    agent: payload.agent ?? null,
-  }
-}
-
-async function resolveSession(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
-  return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionResolved").session)
-}
-
-async function attachToSession(
-  client: LocalIpcClient,
-  sessionId: string,
-  clientId: string,
-): Promise<RuntimeAttachment> {
-  const response = await client.send<Record<string, unknown>>(attachToSessionRequest(sessionId, clientId))
-  return expectVariant<{ attachment: RuntimeAttachment }>(response, "SessionAttached").attachment
-}
-
-async function spawnCodexAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  alias: string | undefined,
-  model: string,
-  effort: string,
-  worktree: string,
-  mode: "build" | "plan",
-  permissions: "required" | "yolo",
-  machineRef?: string,
-  sliceRef?: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "codex", alias, model, worktree, effort, mode, permissions, undefined, undefined, sliceRef),
-  )
-  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
-  return machineRef
-    ? moveAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
-}
-
-async function prepareCreatedAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  agent: AgentInstance,
-  alias: string | undefined,
-  machineRef: string | undefined,
-): Promise<AgentInstance> {
-  const placed = machineRef
-    ? await moveAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
-  return maybeAliasAgent(client, sessionId, placed, alias)
-}
-
-async function moveAgentToRemote(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  machineRef: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
-  )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
-}
-
-async function maybeAliasAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  agent: AgentInstance,
-  alias: string | undefined,
-): Promise<AgentInstance> {
-  if (!alias || agent.alias === alias) return agent
-  const response = await client.send<Record<string, unknown>>(aliasAgentRequest(sessionId, agent.id, alias))
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentAliased").agent
 }
 
 async function launchNativeProviderRun(options: {

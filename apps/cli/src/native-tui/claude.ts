@@ -12,37 +12,36 @@ import { promisify } from "node:util"
 
 import {
   normalizeRuntimeSession,
-  type AgentInstance,
   type PromptAttachmentPart,
   type PromptQueueItem,
-  type RuntimeAttachment,
   type RuntimeProviderRun,
   type RuntimeSession,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
-  aliasAgentRequest,
   appendNativeProviderOutputRequest,
-  attachToSessionRequest,
   completePromptRequest,
-  createSessionRequest,
   getSkillRequest,
   getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
-  moveAgentToRemoteRequest,
   pumpTerminalOutputRequest,
   requestNativeProviderInteractionRequest,
-  resolveSessionRequest,
   resizeTerminalRequest,
   sendTerminalInputRequest,
-  spawnAgentRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { localAttachmentPath, preparePromptAttachmentsForSubmit, promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { classifyPromptAttachment } from "../prompt-attachments.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
+import {
+  attachNativeSession,
+  createNativeSession,
+  prepareCreatedNativeAgent,
+  resolveNativeSession,
+  spawnNativeAgent,
+} from "./session-control.js"
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES = 200_000
 
@@ -141,12 +140,18 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
 
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions)
-    const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
-    const attachment = await attachToSession(client, session.id, options.clientId)
+      : await createNativeSession(client, workspace, worktree, options.alias, {
+        provider: "claude",
+        model: options.model,
+        effort: options.effort,
+        execution_mode: options.mode,
+        permission_level: options.permissions,
+      })
+    const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
+    const attachment = await attachNativeSession(client, session.id, options.clientId)
     const agent = created?.agent
-      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeNativeRun(client, session.id, agent.id, options.model, options.effort)
     const run = launched.session_id === session.id
@@ -378,12 +383,18 @@ async function runClaudeRemoteRendered(
   try {
     const created = options.sessionRef
       ? null
-      : await createSession(client, workspace, worktree, options.alias, options.model, options.effort, options.mode, options.permissions, options.sliceRef)
-    const session = created?.session ?? await resolveSession(client, options.sessionRef!, workspace)
-    const attachment = await attachToSession(client, session.id, options.clientId)
+      : await createNativeSession(client, workspace, worktree, options.alias, {
+        provider: "claude",
+        model: options.model,
+        effort: options.effort,
+        execution_mode: options.mode,
+        permission_level: options.permissions,
+      }, options.sliceRef)
+    const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
+    const attachment = await attachNativeSession(client, session.id, options.clientId)
     const agent = created?.agent
-      ? await prepareCreatedAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnClaudeAgent(client, session.id, options.agentAlias, options.model, options.effort, worktree, options.mode, options.permissions, options.machineRef, options.sliceRef)
+      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
+      : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForProviderRunReady(client, launched.id)
@@ -1488,99 +1499,6 @@ function extractSubmittedPromptId(response: Record<string, unknown>, agentId: st
 async function sessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionState").session)
-}
-
-async function createSession(
-  client: LocalIpcClient,
-  workspace: string,
-  worktree: string,
-  alias: string | undefined,
-  model: string,
-  effort: string,
-  mode: "build" | "plan",
-  permissions: "required" | "yolo",
-  sliceRef?: string,
-): Promise<{ session: RuntimeSession; agent: AgentInstance }> {
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias, {
-    provider: "claude",
-    model,
-    effort,
-    execution_mode: mode,
-    permission_level: permissions,
-  }, sliceRef ?? null))
-  const payload = expectVariant<{ session: RuntimeSession; agent: AgentInstance }>(response, "SessionCreated")
-  return { session: normalizeRuntimeSession(payload.session), agent: payload.agent }
-}
-
-async function resolveSession(
-  client: LocalIpcClient,
-  sessionRef: string,
-  workspace: string,
-): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
-  return normalizeRuntimeSession(expectVariant<{ session: RuntimeSession }>(response, "SessionResolved").session)
-}
-
-async function attachToSession(client: LocalIpcClient, sessionId: string, clientId: string): Promise<RuntimeAttachment> {
-  const response = await client.send<Record<string, unknown>>(attachToSessionRequest(sessionId, clientId))
-  return expectVariant<{ attachment: RuntimeAttachment }>(response, "SessionAttached").attachment
-}
-
-async function spawnClaudeAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  alias: string | undefined,
-  model: string,
-  effort: string,
-  worktree: string,
-  mode: "build" | "plan",
-  permissions: "required" | "yolo",
-  machineRef?: string,
-  sliceRef?: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    spawnAgentRequest(sessionId, "claude", alias, model, worktree, effort, mode, permissions, undefined, undefined, sliceRef),
-  )
-  const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
-  return machineRef
-    ? moveAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
-}
-
-async function prepareCreatedAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  agent: AgentInstance,
-  alias: string | undefined,
-  machineRef: string | undefined,
-): Promise<AgentInstance> {
-  const placed = machineRef
-    ? await moveAgentToRemote(client, sessionId, agent.id, machineRef)
-    : agent
-  return maybeAliasAgent(client, sessionId, placed, alias)
-}
-
-async function moveAgentToRemote(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  machineRef: string,
-): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(
-    moveAgentToRemoteRequest(sessionId, agentId, machineRef),
-  )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentMovedToRemote").agent
-}
-
-async function maybeAliasAgent(
-  client: LocalIpcClient,
-  sessionId: string,
-  agent: AgentInstance,
-  alias: string | undefined,
-): Promise<AgentInstance> {
-  if (!alias || agent.alias === alias) return agent
-  const response = await client.send<Record<string, unknown>>(aliasAgentRequest(sessionId, agent.id, alias))
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentAliased").agent
 }
 
 async function launchClaudeNativeRun(
