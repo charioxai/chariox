@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createMemo, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -20,11 +20,11 @@ import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
+import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
-import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
@@ -37,7 +37,6 @@ import {
   STREAM_BATCH_WINDOW_MS,
   TURN_COMPLETION_QUIET_MS,
 } from "./cli-runtime-tuning.js"
-import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
@@ -54,7 +53,6 @@ import { createFooterFlashController } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
-import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
 import {
@@ -84,8 +82,6 @@ import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
-import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
-import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
 import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
 import {
   createTurnCompletionController,
@@ -96,9 +92,6 @@ import {
 import {
   cancelActivePrompt,
 } from "./prompt-runtime-api.js"
-import {
-  getSessionHistory,
-} from "./session-history-api.js"
 import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
@@ -144,9 +137,7 @@ import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
-import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
-import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
@@ -220,9 +211,7 @@ import {
   computeNextTurnId,
 } from "./transcript-preview.js"
 import {
-  buildTranscriptEntryRenderable,
   resolveTranscriptSurfaceTone,
-  transcriptRenderMode,
   transcriptSurfacePalette,
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
@@ -236,9 +225,6 @@ import { createTranscriptTurnStateController } from "./transcript-turn-state-con
 import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import {
   buildEmptyTranscriptRenderable,
-  buildLoadingTranscriptRenderable,
-  buildNoSessionRenderable,
-  buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
@@ -1515,66 +1501,83 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout,
   })
 
-  const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
-    getScrollbox: transcriptScrollboxRefController.current,
-    getEmptyRenderable: primaryTranscriptRuntimeStore.getEmptyRenderable,
-    setEmptyRenderable: primaryTranscriptRuntimeStore.setEmptyRenderable,
-    renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
-    visibleEntries: visibleTranscriptEntries,
+  const {
+    mountTranscriptEntry,
+    reconcileMountedTranscript,
+    updateTranscriptEntry,
+    rebuildTranscript,
+    replaceTranscriptEntries,
+    primeAttachedSessionBinding,
+    bumpHistoryLoadGeneration,
+    transcriptHistoryAutoloadController,
+  } = createCliPrimaryTranscriptComposition({
+    client,
+    bootstrap: props.bootstrap,
+    renderer,
+    appLogger,
+    formatError,
+    scheduleTimer: startTimeout,
+    isAttached,
+    sessionHydrating,
+    loadingHistory,
+    nextHistoryCursor,
+    setNextHistoryCursor,
+    entryCounter,
+    setEntryCounter,
+    setHistoryLoadingState,
+    setEntries: (nextEntries) => {
+      setEntries(reconcile(nextEntries))
+    },
+    setPromptHistoryEntries,
+    setPromptHistoryIndex,
+    setPromptHistoryDraft,
+    setProviderCatalogState,
+    setProviderCommandCatalogState,
+    updateSessionChrome,
+    flashFooter,
+    attachmentState,
+    sessionState,
+    selectedWorkflowId,
+    selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId,
     workflowScreenActive: () => workflowScreenActive(),
-    showWorkflowOutline: () => isAttached() && workflowScreenActive(),
-    buildWorkflowRenderable: () => buildWorkflowOutlineRenderable(renderer, {
-      workflows: sessionState().workflows ?? [],
-      agents: sessionState().agents,
-      workflowRuns: sessionState().workflow_runs ?? [],
-      selectedWorkflowId: selectedWorkflowId(),
-      selectedNodeId: selectedWorkflowNodeId(),
-      onSelectNode: (nodeId) => {
-        setSelectedWorkflowNodeId(nodeId)
-        rebuildTranscript()
-      },
-      inspector: workflowInspector(),
-      shellPane: {
-        entries: workspaceShellEntries(),
-        sessionId: workspaceShellContext().sessionId ?? null,
-        agentId: workspaceShellContext().agentId ?? null,
-      },
-    }),
-    buildEmptyRenderable: () => isAttached()
-      ? (sessionHydrating()
-          ? buildLoadingTranscriptRenderable(renderer)
-          : buildEmptyTranscriptRenderable(renderer))
-      : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
-        cloudNotice: waitingRoomCloudNotice(),
-        inventoryStatus: waitingRoomInventoryStatus(),
-        loadingFrame: waitingRoomState().introStep,
-        relay: relayStatusState(),
-        machines: remoteMachinesState(),
-        kernels: remoteKernelsState(),
-        terminals: terminalsState(),
-      }, waitingRoomTargets(), themeRegistryState()),
-    buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
-      renderer,
-      entry,
-      transcriptSyntaxStyleController.current(),
-      toggleTurn,
-      toggleBlob,
-      primaryTranscriptSurfaceTone(),
-    ),
-    renderMode: transcriptRenderMode,
+    workflowInspector,
+    workspaceShellEntries,
+    workspaceShellContext,
+    waitingRoomState,
+    availableSessions,
+    providerCatalogState,
+    waitingRoomCloudNotice,
+    waitingRoomInventoryStatus,
+    relayStatusState,
+    remoteMachinesState,
+    remoteKernelsState,
+    terminalsState,
+    waitingRoomTargets,
+    themeRegistryState,
+    transcriptScrollboxRefController,
+    primaryTranscriptRuntimeStore,
+    transcriptEntryProjectionController,
+    visibleTranscriptAgentId,
+    transcriptSyntaxStyleController,
+    historyScrollRestoreController,
+    transcriptTurnStateController,
+    expandedTurnIdsForAgent,
+    syncVisibleTranscriptPreview,
+    toggleTurn,
+    toggleBlob,
+    primaryTranscriptSurfaceTone,
     requestTranscriptRender,
-    requestRendererRender: () => {
+    requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
-    shouldResetEmptyScrollTop: isAttached,
-    clampScrollTop,
-    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
     logViewDebug,
+    promptHistoryHydrationController,
+    splitAgentResponseMode,
+    maxAgentsPerScreen,
+    setAgentPaneEntries,
+    setAgentPanePreview,
   })
-  const mountTranscriptEntry = primaryTranscriptRenderController.mountEntry
-  const reconcileMountedTranscript = primaryTranscriptRenderController.reconcileMountedTranscript
-  const updateTranscriptEntry = primaryTranscriptRenderController.updateEntry
-  const rebuildTranscript = primaryTranscriptRenderController.rebuildTranscript
 
   const workflowNodeInstructionsEditorController = createWorkflowNodeInstructionsEditorController({
     getEditor: workflowNodeInstructionsEditor,
@@ -1601,116 +1604,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript,
   }).open
 
-  const primaryTranscriptEntryController = createPrimaryTranscriptEntryController({
-    getScrollbox: transcriptScrollboxRefController.current,
-    getEntries: transcriptEntryProjectionController.renderableEntries,
-    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-    expandedTurnIdsForAgent,
-    clearToolState: primaryTranscriptRuntimeStore.clearTools,
-    setEntries: (nextEntries) => {
-      setEntries(reconcile(nextEntries))
-    },
-    setEntryCounter,
-    setCurrentTurnId: transcriptTurnStateController.setCurrentTurnId,
-    setNextTurnId: transcriptTurnStateController.setNextTurnId,
-    setMountedTranscriptAgentId: primaryTranscriptRuntimeStore.setMountedTranscriptAgentId,
-    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
-    rebuildTranscript,
-    syncVisibleTranscriptPreview,
-    restorePrependedHistory: (request) => historyScrollRestoreController.restorePrependedHistory(request),
-  })
-  const replaceTranscriptEntries = primaryTranscriptEntryController.replaceEntries
-  const prependTranscriptEntries = primaryTranscriptEntryController.prependEntries
-
   const agentPaneRuntimeResetController = createAgentPaneRuntimeResetController({
     clearRenderedPanes: clearAllAuxiliaryAgentPanes,
     clearCurrentAuxiliaryAgentIds: agentPaneRuntimeStore.clearCurrentAuxiliaryAgentIds,
   })
   const clearAgentPaneRuntime = agentPaneRuntimeResetController.reset
-
-  const attachedSessionPrimeController = createAttachedSessionPrimeController({
-    promptHistoryHydrationController,
-    splitAgentResponseMode,
-    maxAgentsPerScreen,
-    loadVisibleAgentHistory: (sessionId, agentId) => getSessionHistory(client, sessionId, null, agentId),
-    setAgentPaneEntries: (agentId, nextEntries) => {
-      setAgentPaneEntries((current) => ({
-        ...current,
-        [agentId]: nextEntries,
-      }))
-    },
-    setAgentPanePreview,
-    replaceTranscriptEntries,
-    setNextHistoryCursor,
-  })
-  const primeAttachedSessionBinding = attachedSessionPrimeController.prime
-
-  const deferredBootstrapController = createDeferredBootstrapController({
-    getDeferred: () => props.bootstrap.deferred,
-    currentAttachmentSessionId: () => attachmentState()?.session_id ?? null,
-    currentTranscriptEntryCount: () => transcriptEntryProjectionController.renderableEntries().length,
-    entryCounter,
-    setProviderCatalog: setProviderCatalogState,
-    setProviderCommandCatalogs: setProviderCommandCatalogState,
-    updateSessionChrome,
-    setPromptHistoryEntries,
-    resetPromptHistoryNavigation: () => {
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-    },
-    setNextHistoryCursor,
-    setAgentPaneEntries: (agentId, nextEntries) => {
-      setAgentPaneEntries((current) => ({
-        ...current,
-        [agentId]: nextEntries,
-      }))
-    },
-    setAgentPanePreview,
-    replaceTranscriptEntries,
-    prependTranscriptEntries,
-    logWarning: (message, fields) => {
-      appLogger?.warn(message, fields)
-    },
-    formatError,
-  })
-  const applyDeferredBootstrap = deferredBootstrapController.apply
-
-  onMount(() => {
-    applyDeferredBootstrap()
-  })
-
-  const transcriptHistoryLoadController = createTranscriptHistoryLoadController({
-    isAttached,
-    isLoading: loadingHistory,
-    getCursor: nextHistoryCursor,
-    getSessionId: () => sessionState().id,
-    getVisibleAgentId: visibleTranscriptAgentId,
-    getEntryCounter: entryCounter,
-    setLoading: setHistoryLoadingState,
-    setNextCursor: setNextHistoryCursor,
-    loadPage: (sessionId, cursor, agentId) => getSessionHistory(client, sessionId, cursor, agentId),
-    prependEntries: prependTranscriptEntries,
-    flashError: (message) => {
-      flashFooter(message, "error")
-    },
-    logWarning: (message, fields) => {
-      appLogger?.warn(message, fields)
-    },
-    formatError,
-  })
-  const transcriptHistoryAutoloadController = createTranscriptHistoryAutoloadController({
-    scheduleTimer: (callback, delayMs) => {
-      startTimeout(callback, delayMs)
-    },
-    getScrollbox: transcriptScrollboxRefController.current,
-    isScrollRestoring: () => historyScrollRestoreController.isRestoring(),
-    isAttached,
-    isLoadingHistory: loadingHistory,
-    hasMoreHistory: () => nextHistoryCursor() !== null,
-    getLastScrollTop: primaryTranscriptRuntimeStore.getLastScrollTop,
-    setLastScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
-    loadOlderHistory: () => transcriptHistoryLoadController.loadOlderPage(),
-  })
 
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
@@ -1769,9 +1667,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     resetPromptStop: () => {
       promptStopController.reset()
     },
-    bumpHistoryLoadGeneration: () => {
-      transcriptHistoryLoadController.bumpGeneration()
-    },
+    bumpHistoryLoadGeneration,
     reconcileWaitingRoom,
     refreshWaitingRoomData,
     requestRootRender: () => {

@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is relay-client test ownership. The inline relay-client integration tests moved from `apps/kernel/src/transport/relay_client.rs` into responsibility-owned test modules under `apps/kernel/src/transport/relay_client/tests/`; `relay_client.rs` is 79 lines and every new relay test module is under 700 lines. Targeted relay-client kernel tests pass 19 tests. Files around 1,000 lines are acceptable when they own a coherent responsibility; prioritize the largest ownership violations next.
+2026-05-18: Latest verified stage is CLI primary transcript ownership. Primary transcript rendering, entry replace/prepend, attached-session priming, deferred bootstrap hydration, and transcript history autoload moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-primary-transcript-composition.ts`; `index.tsx` is 2,343 lines and the new module is 280 lines. CLI test passes 1,046 tests. Files around 1,000 lines are acceptable when they own a coherent responsibility; prioritize the largest ownership violations next.
 
 ## Responsibility Rule
 
