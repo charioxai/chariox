@@ -20,6 +20,7 @@ use super::resolve_codex_executable;
 mod approval_bodies;
 mod auth;
 mod catalog;
+mod health;
 mod json_rpc;
 mod notifications;
 mod permission;
@@ -42,6 +43,7 @@ use permission::{
 use runtime_mcp::call_runtime_mcp_tool;
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
+pub use health::codex_endpoint_is_healthy;
 
 pub type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -1061,35 +1063,6 @@ impl CodexClient {
             operation,
             message,
         }
-    }
-}
-
-pub fn codex_endpoint_is_healthy(endpoint: &str) -> bool {
-    codex_readyz_is_healthy(endpoint)
-        || CodexClient::new("catalog", endpoint)
-            .and_then(|client| client.connect_initialized())
-            .is_ok()
-}
-
-fn codex_readyz_is_healthy(endpoint: &str) -> bool {
-    let Ok(mut url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    match url.scheme() {
-        "ws" => {
-            let _ = url.set_scheme("http");
-        }
-        "wss" => {
-            let _ = url.set_scheme("https");
-        }
-        "http" | "https" => {}
-        _ => return false,
-    }
-    url.set_path("/readyz");
-    url.set_query(None);
-    match ureq::get(url.as_str()).call() {
-        Ok(response) => response.status() == 200,
-        Err(_) => false,
     }
 }
 
