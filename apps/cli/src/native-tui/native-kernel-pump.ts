@@ -13,6 +13,8 @@ export function startNativeKernelPumpLoop(
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
+    intervalMs?: number | undefined
+    pollRuntimeNotices?: boolean | undefined
   } = {},
 ): { stop: () => void } {
   let stopped = false
@@ -28,7 +30,9 @@ export function startNativeKernelPumpLoop(
           options.onTerminalRecords(records as TerminalOutputRecord[])
         }
       }
-      await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
+      if (options.pollRuntimeNotices !== false) {
+        await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
+      }
     } catch (error) {
       options.debug?.("pump_error", {
         error: options.formatError ? options.formatError(error) : error instanceof Error ? error.message : String(error),
@@ -39,7 +43,7 @@ export function startNativeKernelPumpLoop(
   }
   const interval = setInterval(() => {
     void tick()
-  }, 250)
+  }, options.intervalMs ?? 250)
   void tick()
   return {
     stop: () => {

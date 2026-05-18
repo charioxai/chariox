@@ -16,7 +16,6 @@ import {
   appendNativeProviderOutputRequest,
   completePromptRequest,
   getSessionStateRequest,
-  pumpTerminalOutputRequest,
   sendTerminalInputRequest,
   submitPromptRequest,
 } from "../ipc-requests.js"
@@ -55,6 +54,7 @@ import {
   startClaudeRemoteRenderedPumpLoop,
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
+import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
 import {
   defaultKernelEndpoint,
@@ -213,7 +213,10 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       promptOrigin,
       submitPrompt: tui.submitPrompt,
     })
-    pump = startKernelPumpLoop(client, session.id, attachment.id)
+    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
+      intervalMs: 500,
+      pollRuntimeNotices: false,
+    })
     if (options.initialPrompt) {
       await sleep(1_000)
       await tui.submitPrompt(options.initialPrompt)
@@ -703,22 +706,6 @@ function isProviderRunNotFound(error: unknown): boolean {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function startKernelPumpLoop(client: LocalIpcClient, sessionId: string, attachmentId: string): { stop: () => void } {
-  let stopped = false
-  const loop = async () => {
-    while (!stopped) {
-      await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => ({}))
-      await sleep(500)
-    }
-  }
-  void loop()
-  return {
-    stop: () => {
-      stopped = true
-    },
-  }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
