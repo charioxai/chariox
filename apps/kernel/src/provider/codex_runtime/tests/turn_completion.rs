@@ -1,0 +1,840 @@
+use super::*;
+
+#[test]
+fn only_turn_completed_marks_the_prompt_as_complete() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "ls",
+                "status": "completed",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+}
+
+#[test]
+fn turn_completion_waits_for_socket_quiet_before_prompt_completion() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+}
+
+#[test]
+fn terminal_completion_waits_for_late_tool_output_before_prompt_completion() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+
+    apply_notification(
+        CodexNotification::ItemStarted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "echo still running",
+                "status": "inProgress",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "echo still running",
+                "status": "completed",
+                "aggregatedOutput": "ok",
+                "exitCode": 0,
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+}
+
+#[test]
+fn turn_completion_waits_for_running_command_execution() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ItemStarted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "pnpm test",
+                "status": "inProgress",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "pnpm test",
+                "status": "completed",
+                "aggregatedOutput": "ok",
+                "exitCode": 0,
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+
+    apply_notification(
+        CodexNotification::AgentMessageDelta {
+            item_id: "msg-1".to_string(),
+            delta: "done".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+}
+
+#[test]
+fn stale_turn_completion_before_tool_finish_does_not_settle_after_tool_finishes() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ExecCommandStarted {
+            call_id: "cmd-1".to_string(),
+            command: json!("pnpm test"),
+            cwd: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "stale-turn".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::ExecCommandCompleted {
+            call_id: "cmd-1".to_string(),
+            command: json!("pnpm test"),
+            cwd: None,
+            output: Some("ok\n".to_string()),
+            exit_code: Some(0),
+            success: Some(true),
+            stderr: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+}
+
+#[test]
+fn completed_assistant_item_after_tools_does_not_infer_prompt_completion() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ExecCommandStarted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::ExecCommandCompleted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+            output: Some("ok\n".to_string()),
+            exit_code: Some(0),
+            success: Some(true),
+            stderr: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "msg-1",
+                "text": "done",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+}
+
+#[test]
+fn streamed_assistant_content_after_tools_does_not_infer_prompt_completion() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ExecCommandStarted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::ExecCommandCompleted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+            output: Some("ok\n".to_string()),
+            exit_code: Some(0),
+            success: Some(true),
+            stderr: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::AgentMessageDelta {
+            item_id: "msg-1".to_string(),
+            delta: "done".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+}
+
+#[test]
+fn tool_start_after_assistant_content_still_requires_terminal_completion() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "msg-1",
+                "text": "I will inspect that.",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::ItemStarted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "ls",
+                "status": "inProgress",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+    assert!(completions.is_empty());
+}
+
+#[test]
+fn stale_turn_completion_does_not_complete_prompt() {
+    let mut active_turn_id = Some("current-turn".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "stale-turn".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+    assert_eq!(active_turn_id.as_deref(), Some("current-turn"));
+}
+
+#[test]
+fn interrupted_turn_is_treated_as_terminal_cancellation() {
+    let mut active_turn_id = Some("turn-2".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-2".to_string(),
+            status: "interrupted".to_string(),
+            error_message: Some("Aborted".to_string()),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:turn-2");
+    assert_eq!(notices, vec!["Aborted".to_string()]);
+}
+
+#[test]
+fn failed_turn_records_terminal_failure() {
+    let mut active_turn_id = Some("turn-3".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-3".to_string(),
+            status: "failed".to_string(),
+            error_message: Some("model rejected".to_string()),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(terminal_failure.as_deref(), Some("model rejected"));
+    assert_eq!(notices, vec!["model rejected".to_string()]);
+}
+
+#[test]
+fn error_notification_without_active_turn_records_terminal_failure() {
+    let mut active_turn_id = None;
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::Error {
+            message: "unsupported model gpt-5.2-codex".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(
+        terminal_failure.as_deref(),
+        Some("unsupported model gpt-5.2-codex")
+    );
+    assert_eq!(notices, vec!["unsupported model gpt-5.2-codex".to_string()]);
+}

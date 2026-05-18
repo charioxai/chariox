@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is runtime MCP adapter/test split. `apps/kernel/src/transport/mcp_server.rs` now owns only HTTP/MCP JSON-RPC handling at 377 lines, with runtime tool scenario coverage moved to `transport/mcp_server/tests.rs`. `cargo test --manifest-path apps/kernel/Cargo.toml transport::mcp_server --lib -- --test-threads=1` passes 8 tests.
+2026-05-18: Latest verified stage is Codex runtime provider boundary split. `apps/kernel/src/provider/codex_runtime.rs` is now a 22-line provider runtime barrel, with transcript projection and turn-completion tests split under `provider/codex_runtime/tests/`. `cargo test --manifest-path apps/kernel/Cargo.toml provider::codex_runtime --lib -- --test-threads=1` passes 22 tests.
 
 ## Responsibility Rule
 
