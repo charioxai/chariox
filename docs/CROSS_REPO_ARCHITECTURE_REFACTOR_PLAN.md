@@ -72,6 +72,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: Tool-display patch/managed-I/O parsing and shared string/status/tool-name helpers are responsibility-owned; tool-display tests and CLI tests pass.
 - Latest verified batch: Tool-display read/grep rendering and shared code-block projection are responsibility-owned; tool-display tests and CLI tests pass.
 - Latest verified batch: OSS workflow gateway contracts and kernel publication IPC are responsibility-owned; server tests pass.
+- Latest verified batch: OSS workflow gateway auth and connector verification are responsibility-owned; server tests pass.
 - Latest verified batch: CLI command-center selection/submission policy is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI dialog overlay focus capture/restore policy is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI prompt content-change/drop policy is responsibility-owned; CLI tests pass.
