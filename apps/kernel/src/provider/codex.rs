@@ -1,26 +1,23 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
 use self::mcp_config::runtime_mcp_config;
-use super::codex_client::codex_endpoint_is_healthy;
+use self::ports::resolve_codex_launch_port;
 
+mod catalog_endpoint;
 mod mcp_config;
+mod ports;
+
+pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
-const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
-const CODEX_PORT_RANGE_OVERRIDE: &str = "ARROBA_CODEX_PORT_RANGE";
 const CODEX_BIND_HOST_OVERRIDE: &str = "ARROBA_CODEX_BIND_HOST";
 pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
-static CODEX_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 const CODEX_SESSION_ENV_VARS: &[&str] = &[
     "CODEX_THREAD_ID",
     "CODEX_TURN_METADATA_HEADER",
@@ -77,12 +74,7 @@ fn plan_codex_launch_unlocked(
         });
     }
 
-    let port = if request.is_some() {
-        reserve_unused_port_from_range(CODEX_PORT_RANGE_OVERRIDE, "codex_reserve_port_range")?
-            .unwrap_or(reserve_unused_port()?)
-    } else {
-        resolve_codex_port()?
-    };
+    let port = resolve_codex_launch_port(request.is_some())?;
     let endpoint = format!("ws://127.0.0.1:{port}");
     let listen_endpoint = format!("ws://{}:{port}", resolve_codex_bind_host());
 
@@ -123,91 +115,6 @@ fn codex_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<Str
     names
 }
 
-pub fn codex_catalog_endpoint() -> Result<String, DaemonError> {
-    let _guard = crate::env_lock::lock();
-    codex_catalog_endpoint_unlocked()
-}
-
-fn codex_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
-    let port = resolve_codex_port()?;
-    Ok(format!("ws://127.0.0.1:{port}"))
-}
-
-pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
-    let launch = plan_codex_launch(None)?;
-    let endpoint =
-        launch
-            .structured_endpoint
-            .clone()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "ensure_codex_catalog_endpoint",
-                message: "codex launch did not expose a structured endpoint".to_string(),
-            })?;
-    if codex_endpoint_is_healthy(&endpoint) {
-        return Ok(endpoint);
-    }
-    if launch.endpoint_mode == AgentEndpointMode::External {
-        return Err(DaemonError::LocalTransport {
-            operation: "ensure_codex_catalog_endpoint",
-            message: format!("configured Codex endpoint `{endpoint}` is not reachable"),
-        });
-    }
-
-    let program = launch
-        .pty_program
-        .clone()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "ensure_codex_catalog_endpoint",
-            message: "codex launch did not provide an executable".to_string(),
-        })?;
-    let mut command = Command::new(program);
-    command
-        .args(&launch.pty_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(working_directory) = launch.working_directory.as_ref() {
-        command.current_dir(working_directory);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        clear_codex_managed_catalog_port_if_unset();
-        DaemonError::LocalTransport {
-            operation: "ensure_codex_catalog_endpoint",
-            message: format!("failed to start Codex app-server: {error}"),
-        }
-    })?;
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if codex_endpoint_is_healthy(&endpoint) {
-            return Ok(endpoint);
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "ensure_codex_catalog_endpoint",
-                message: format!("failed to poll Codex app-server startup: {error}"),
-            })?
-        {
-            clear_codex_managed_catalog_port_if_unset();
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure_codex_catalog_endpoint",
-                message: format!("Codex app-server exited before becoming healthy: {status}"),
-            });
-        }
-        if Instant::now() >= deadline {
-            clear_codex_managed_catalog_port_if_unset();
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure_codex_catalog_endpoint",
-                message: format!(
-                    "timed out waiting for Codex app-server to become healthy at `{endpoint}`"
-                ),
-            });
-        }
-        sleep(Duration::from_millis(100));
-    }
-}
-
 pub fn logout_codex() -> Result<(), DaemonError> {
     let executable = resolve_codex_executable()?;
     let status = Command::new(executable)
@@ -227,96 +134,6 @@ pub fn logout_codex() -> Result<(), DaemonError> {
         });
     }
     Ok(())
-}
-
-fn resolve_codex_port() -> Result<u16, DaemonError> {
-    if let Some(value) = env::var_os(CODEX_PORT_OVERRIDE) {
-        let value = value.to_string_lossy().into_owned();
-        return value
-            .parse::<u16>()
-            .map_err(|_| DaemonError::InvalidConfig {
-                field: "ARROBA_CODEX_PORT",
-                message: "must be a valid TCP port",
-            });
-    }
-
-    let port = CODEX_MANAGED_CATALOG_PORT.get_or_init(|| Mutex::new(None));
-    let mut guard = port.lock().map_err(|error| DaemonError::LocalTransport {
-        operation: "codex_managed_catalog_port",
-        message: error.to_string(),
-    })?;
-    if let Some(port) = *guard {
-        return Ok(port);
-    }
-    let reserved = reserve_unused_port()?;
-    *guard = Some(reserved);
-    Ok(reserved)
-}
-
-fn clear_codex_managed_catalog_port_if_unset() {
-    if env::var_os(CODEX_PORT_OVERRIDE).is_some() {
-        return;
-    }
-    if let Some(port) = CODEX_MANAGED_CATALOG_PORT.get() {
-        if let Ok(mut guard) = port.lock() {
-            *guard = None;
-        }
-    }
-}
-
-fn reserve_unused_port() -> Result<u16, DaemonError> {
-    TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "codex_reserve_port",
-            message: error.to_string(),
-        })?
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "codex_reserve_port",
-            message: error.to_string(),
-        })
-}
-
-fn reserve_unused_port_from_range(
-    env_name: &'static str,
-    operation: &'static str,
-) -> Result<Option<u16>, DaemonError> {
-    let Some(value) = env::var_os(env_name) else {
-        return Ok(None);
-    };
-    let value = value.to_string_lossy();
-    let Some((start, end)) = value.split_once('-') else {
-        return Err(DaemonError::InvalidConfig {
-            field: env_name,
-            message: "must use START-END TCP port range syntax",
-        });
-    };
-    let start = start
-        .parse::<u16>()
-        .map_err(|_| DaemonError::InvalidConfig {
-            field: env_name,
-            message: "range start must be a valid TCP port",
-        })?;
-    let end = end.parse::<u16>().map_err(|_| DaemonError::InvalidConfig {
-        field: env_name,
-        message: "range end must be a valid TCP port",
-    })?;
-    if start > end {
-        return Err(DaemonError::InvalidConfig {
-            field: env_name,
-            message: "range start must be less than or equal to range end",
-        });
-    }
-    for port in start..=end {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(Some(port));
-        }
-    }
-    Err(DaemonError::LocalTransport {
-        operation,
-        message: format!("no available port in {env_name}={value}"),
-    })
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
