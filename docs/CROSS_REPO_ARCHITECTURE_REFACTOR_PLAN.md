@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Waiting-room option/workspace DOM routing and terminal app-shell routing/resizing now live in focused controllers alongside the earlier terminal, waiting-room, workspace, history, capabilities, runtime interaction, sidebar agent config, and freeform dialog/chrome extractions. `client.ts` is 6,496 lines; next highest-impact slice is the waiting-room render/sidebar coordinator.
+2026-05-18: Latest verified stage is Cloud web. Waiting-room option/workspace DOM, app-shell routing/resizing, and waiting-room render/sidebar coordination now live in focused controllers alongside the earlier terminal, workspace, history, capabilities, runtime interaction, sidebar agent config, and freeform dialog/chrome extractions. `client.ts` is 6,272 lines; next highest-impact slice is live freeform pane/layout orchestration.
 
 ## Responsibility Rule
 
