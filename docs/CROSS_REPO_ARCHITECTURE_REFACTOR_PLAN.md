@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web waiting-room runtime UI composition. `WaitingRoomRuntimeUiComposition` owns background render routing, waiting-room kernel event side effects, refresh scheduling/polling, sidebar rendering, and shared terminal-client adoption. `client.ts` is 1,835 lines; web suite passes 1,044 tests; repo lint and diff checks pass. Next highest-responsibility slice is remaining terminal app/container wiring.
+2026-05-18: Latest verified stage is Cloud web terminal runtime app composition. `TerminalRuntimeAppComposition` owns runtime projection, session refresh bridge, provider profile application, agent layout bridge, badge traces, kernel target rendering, prompt/status delegates, and waiting-room transition wiring. `client.ts` is 1,521 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is the remaining `client.ts` bootstrap/coordinator wiring.
 
 ## Responsibility Rule
 
