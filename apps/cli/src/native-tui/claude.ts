@@ -54,7 +54,13 @@ import {
   waitForAssistantText,
 } from "./claude-transcript.js"
 import { hiddenInstructionsEnd, hiddenInstructionsStart, redactHiddenInstructions } from "./hidden-instructions.js"
-import { inferWorkspaceTargetsFromLaunchDirectory } from "./launch-environment.js"
+import {
+  defaultKernelEndpoint,
+  inferWorkspaceTargetsFromLaunchDirectory,
+  parseKernelPort,
+  parseNativeMode as parseMode,
+  parseNativePermissions as parsePermissions,
+} from "./launch-environment.js"
 import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
@@ -915,28 +921,6 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`expected ${variant} response, received ${JSON.stringify(response)}`)
   }
   return response[variant] as T
-}
-
-function parseMode(value: string): "build" | "plan" {
-  if (value === "build" || value === "plan") return value
-  throw new Error(`invalid mode ${value}; expected build or plan`)
-}
-
-function parsePermissions(value: string): "required" | "yolo" {
-  if (value === "required" || value === "yolo") return value
-  throw new Error(`invalid permissions ${value}; expected required or yolo`)
-}
-
-function parseKernelPort(value: string, flag: string): string {
-  const port = Number(value)
-  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-    throw new Error(`invalid ${flag} value ${value}`)
-  }
-  return String(port)
-}
-
-function defaultKernelEndpoint(port?: string): string {
-  return `ws://127.0.0.1:${port ?? "43119"}/kernel`
 }
 
 function debugNativeClaude(label: string, payload: unknown) {
