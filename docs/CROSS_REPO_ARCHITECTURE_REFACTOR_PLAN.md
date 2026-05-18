@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `FreeformAgentDialogSurfaceController` now owns spawn/substitute dialog kernel, catalog, worktree, and overlay-view projection; `client.ts` is 3,479 lines and the web suite passes with 988 tests. Next highest-responsibility slice is terminal app/container wiring for prompt layout and remaining route state.
+2026-05-18: Latest verified stage is Cloud web. `FreeformPromptLayoutController` now owns prompt textarea sizing, resize-frame coalescing, sticky-output tail repair, and footer turn-clock compression; `client.ts` is 3,419 lines and the web suite passes with 991 tests. Next highest-responsibility slice is terminal route state wiring.
 
 ## Responsibility Rule
 
