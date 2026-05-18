@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal slash commands and freeform shortcuts now live in focused controllers, alongside the earlier runtime-view, live pane, route render, kernel client, session refresh, waiting-room, app-shell, terminal, workspace, history, capabilities, runtime interaction, sidebar agent config, and freeform dialog/chrome extractions. `client.ts` is 5,754 lines; next highest-responsibility slice is live agent alias/config persistence.
+2026-05-18: Latest verified stage is Cloud web. Live agent alias persistence and sidebar agent alias/workspace/config mutations now live in focused controllers with regression coverage; `client.ts` is 5,656 lines and the web suite passes with 914 tests. Next highest-responsibility slice is waiting-room floating overlay DOM ownership, followed by workflow sidebar hydration and freeform clock/effect controllers.
 
 ## Responsibility Rule
 
