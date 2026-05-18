@@ -23,19 +23,14 @@ import { createCliOverlayInteractionComposition } from "./cli-overlay-interactio
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
+import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
-import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
-import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   CHROME_UPDATE_THROTTLE_MS,
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
-  LIVE_TRANSCRIPT_LIMIT,
-  LIVE_TRANSCRIPT_MAX_CHARS,
   PROMPT_KEYBINDINGS,
-  STREAM_BATCH_WINDOW_MS,
-  TURN_COMPLETION_QUIET_MS,
 } from "./cli-runtime-tuning.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
@@ -84,9 +79,6 @@ import {
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
 import {
-  createTurnCompletionController,
-} from "./turn-completion-controller.js"
-import {
   promptAttachmentTokenStyle,
 } from "./prompt-attachment-tokens.js"
 import {
@@ -98,7 +90,6 @@ import {
   type BackendProviderId,
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
-import { createProviderActivityController } from "./provider-activity-controller.js"
 import {
   getProviderCatalog,
   getProviderRun,
@@ -116,7 +107,6 @@ import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
   getSessionStatusLabel,
-  getTurnCompletionDelayMs,
 } from "./runtime.js"
 import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import {
@@ -133,21 +123,14 @@ import {
 import {
   agentHasPromptWork,
   focusedAgentIdForSession,
-  sessionHasPromptWork,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
-import {
-  createTerminalOutputRecordQueue,
-} from "./terminal-output-record-queue.js"
-import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
-import { createTranscriptViewportController } from "./transcript-viewport-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
-import { createVisibleActivityLabelController } from "./visible-activity-label-controller.js"
 import {
   type ToolTranscriptUpdate,
 } from "./transcript.js"
@@ -216,13 +199,8 @@ import {
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
-import { createTranscriptRetentionController } from "./transcript-retention-controller.js"
-import { createTranscriptEventController } from "./transcript-event-controller.js"
-import { createTranscriptStateController } from "./transcript-state-controller.js"
-import { createTranscriptStreamController } from "./transcript-stream-controller.js"
 import { createTranscriptSyntaxStyleController } from "./transcript-syntax-style-controller.js"
 import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
-import { createTranscriptTurnExpansionController } from "./transcript-turn-expansion-controller.js"
 import {
   buildEmptyTranscriptRenderable,
 } from "./workspace-renderables.js"
@@ -807,42 +785,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleCommandCenterKey = commandCenterController.handleKey
   const selectCommandCenterFromSubmit = commandCenterController.selectFromSubmit
   const renderCommandCenter = commandCenterController.render
-  const turnCompletionController = createTurnCompletionController({
-    now: Date.now,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    hasActivePrompt: () => Boolean(activePrompt()),
-    getDelayMs: (lastTurnActivityAt) => getTurnCompletionDelayMs({
-      sessionHasPromptWork: sessionHasPromptWork(sessionState()),
-      pendingTerminalRecordCount: terminalOutputRecordQueue.pendingCount(),
-      pendingTerminalRecordFlush: terminalOutputRecordQueue.hasPendingFlush(),
-      lastTurnActivityAt,
-      now: Date.now(),
-      quietWindowMs: TURN_COMPLETION_QUIET_MS,
-    }),
-    completeTurn: () => {
-      batch(() => {
-        primaryTranscriptRuntimeStore.clearActiveToolLabels()
-        setAgentActivityLabels({})
-        setStreamingAgentId(null)
-        setSubmitting(false)
-        promptSubmissionAgentStateController.clearSubmittingAgentId()
-        setAgentBusyLatches({})
-        setProviderActivityLabel(null)
-        setActiveStatusLabel(null)
-        if (!activePrompt() && statusLine() === "Cancellation requested.") {
-          setStatusLine(DEFAULT_CONNECTED_STATUS)
-        }
-        setWorking(false)
-      })
-      renderSessionChromeBoundary()
-    },
-  })
-  const cancelPendingTurnCompletion = turnCompletionController.cancelPending
-  const recordTurnActivity = (_activityType: string) => {
-    turnCompletionController.recordActivity()
-  }
-  const maybeScheduleConfirmedTurnCompletion = turnCompletionController.maybeScheduleConfirmed
   const {
     addPendingPromptAttachments,
     appendPromptEchoToSharedHistory,
@@ -959,31 +901,67 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyWaitingRoomSessionLifecycleAction,
     retainPromptFocus,
   })
-  const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
-  const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
+  const {
+    turnCompletionController,
+    cancelPendingTurnCompletion,
+    recordTurnActivity,
     expandedTurnIdsForAgent,
-    updateExpandedTurnIdsByAgent: (updater) => {
-      setExpandedTurnIdsByAgent((current) => updater(current))
-    },
-  })
-  const setExpandedTurnState = transcriptTurnExpansionController.setExpandedTurnState
-  const replaceExpandedTurnsForAgent = transcriptTurnExpansionController.replaceExpandedTurnsForAgent
-  const collapseLatestTurnForAgent = transcriptTurnExpansionController.collapseLatestTurnForAgent
-  const applyExpandedTurns = transcriptTurnExpansionController.applyExpandedTurns
-
-  const transcriptStateController = createTranscriptStateController({
-    entries: transcriptEntryProjectionController.renderableEntries,
+    setExpandedTurnState,
+    applyExpandedTurns,
+    toggleTurn,
+    toggleBlob,
+    appendEntry,
+    appendUserPrompt,
+    appendNotice,
+    appendCloudNotice,
+    appendProviderError,
+    clearLocalBusyStateForAuthoritativeIdle,
+    applyProviderActivity,
+    markAssistantMessageCompleted,
+    syncVisibleActivityLabel,
+    appendProviderChunk,
+    appendToolUpdate,
+    queueTerminalOutputRecords,
+    clearTerminalOutputRecordTimer,
+    setKernelTerminalOutputRecordProcessor,
+  } = createCliTranscriptRuntimeComposition({
+    batchUpdate: batch,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    runUiBatch: (callback) => runUiBatch(callback),
+    entries: () => entries,
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
     entryCounter,
     setEntryCounter,
-    currentTurnId: transcriptTurnStateController.getCurrentTurnId,
+    sessionState,
+    activePrompt,
+    statusLine,
+    setStatusLine,
+    setWorking,
+    setSubmitting,
+    setStreamingAgentId,
+    setAgentActivityLabels,
+    setAgentBusyLatches,
+    setProviderActivityLabel,
+    setActiveStatusLabel,
+    promptSubmissionAgentStateController,
+    promptStopController,
+    appendPromptEchoToSharedHistory,
+    focusedAgentId,
     visibleTranscriptAgentId,
-    expandedTurnIdsForAgent,
-    setExpandedTurnState: (agentId, turnId, expanded) => {
-      setExpandedTurnState(agentId, turnId, expanded)
+    responsePrimaryAgent,
+    splitAgentResponseMode,
+    isAttached,
+    currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
+    appendTranscriptEntryToAgentPane: (agentId, entry, turnIds) => {
+      appendTranscriptEntryToAgentPane(agentId, entry, turnIds)
     },
+    transcriptEntryProjectionController,
+    transcriptTurnStateController,
+    expandedTurnIdsByAgent,
+    setExpandedTurnIdsByAgent,
     persistVisibleTranscriptEntries: (nextEntries) => {
       persistVisibleTranscriptEntries(nextEntries)
     },
@@ -991,79 +969,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       reconcileMountedTranscript(currentEntries, nextEntries)
     },
     retainPromptFocus,
-    enforceTranscriptRetention: () => enforceTranscriptRetention(),
+    transcriptScrollboxRefController,
+    historyScrollRestoreController,
+    primaryTranscriptRuntimeStore,
+    clearAgentBusy,
+    markAgentBusy,
+    setWaitingRoomCloudNotice,
+    renderSessionChromeBoundary: () => renderSessionChromeBoundary(),
+    syncVisibleTranscriptPreview: () => syncVisibleTranscriptPreview(),
+    updateSessionChrome: () => updateSessionChrome(),
+    rebuildTranscript: () => rebuildTranscript(),
+    focusedActivityLabel,
+    logVisibleTranscriptOutput,
+    updateTranscriptEntry: (entryId, text, sourceText) => {
+      updateTranscriptEntry(entryId, text, sourceText)
+    },
+    setAgentTranscriptEntries: (agentId, nextEntries) => {
+      setAgentTranscriptEntries(agentId, nextEntries)
+    },
+    DEFAULT_CONNECTED_STATUS,
   })
-  const applyVisibleTranscriptState = transcriptStateController.applyVisibleState
-  const toggleTurn = transcriptStateController.toggleTurn
-  const toggleBlob = transcriptStateController.toggleBlob
-  const appendEntry = transcriptStateController.appendEntry
-
-  const transcriptViewportController = createTranscriptViewportController({
-    getScrollbox: transcriptScrollboxRefController.current,
-    cancelHistoryScrollRestore: () => historyScrollRestoreController.cancel(),
-    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
-  })
-  const scrollTranscriptToBottom = transcriptViewportController.scrollToBottom
 
   const trackAgentFocusTransition = <T,>(operation: () => Promise<T>): Promise<T> =>
     agentFocusTransitionController.track(operation)
 
   const waitForPendingAgentFocusTransition = (): Promise<void> =>
     agentFocusTransitionController.wait()
-
-  const transcriptEventController = createTranscriptEventController({
-    recordTurnActivity,
-    resetTurnCompletion: () => turnCompletionController.reset(),
-    cancelPendingTurnCompletion,
-    focusedAgentId,
-    visibleTranscriptAgentId,
-    responsePrimaryAgent,
-    splitAgentResponseMode,
-    isAttached,
-    entries: () => entries,
-    nextTurnId: transcriptTurnStateController.getNextTurnId,
-    setNextTurnId: transcriptTurnStateController.setNextTurnId,
-    setCurrentTurnId: transcriptTurnStateController.setCurrentTurnId,
-    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
-    setStreamingAgentId,
-    markAgentBusy,
-    clearAgentBusy,
-    currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
-    collapseLatestTurnForAgent: (agentId, paneEntries) => collapseLatestTurnForAgent(agentId, paneEntries),
-    appendTranscriptEntryToAgentPane: (agentId, entry, turnIds) => {
-      appendTranscriptEntryToAgentPane(agentId, entry, turnIds ? [...turnIds] : undefined)
-    },
-    appendEntry,
-    setSubmitting,
-    setWorking,
-    renderSessionChromeBoundary: () => renderSessionChromeBoundary(),
-    syncVisibleTranscriptPreview: () => syncVisibleTranscriptPreview(),
-    scrollTranscriptToBottom,
-    updateSessionChrome: () => updateSessionChrome(),
-    setWaitingRoomCloudNotice,
-    rebuildTranscript: () => rebuildTranscript(),
-  })
-  const appendUserPrompt = transcriptEventController.appendUserPrompt
-  const appendNotice = transcriptEventController.appendNotice
-  const appendCloudNotice = transcriptEventController.appendCloudNotice
-  const appendProviderError = transcriptEventController.appendProviderError
-
-  const transcriptRetentionController = createTranscriptRetentionController({
-    entries: () => entries.slice(),
-    setEntries: (nextEntries) => {
-      setEntries(reconcile(nextEntries))
-    },
-    renderables: primaryTranscriptRuntimeStore.transcriptRenderables,
-    removeFromScrollbox: (renderableId) => {
-      return transcriptScrollboxRefController.remove(renderableId)
-    },
-    requestScrollboxRender: transcriptScrollboxRefController.requestRender,
-    deleteTool: primaryTranscriptRuntimeStore.deleteTool,
-    maxEntries: LIVE_TRANSCRIPT_LIMIT,
-    maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-  })
-  const removeTranscriptRenderable = transcriptRetentionController.removeRenderable
-  const enforceTranscriptRetention = transcriptRetentionController.enforce
 
   const footerFlashController = createFooterFlashController({
     delayMs: 10_000,
@@ -1120,126 +1051,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
   })
   const applySessionState = sessionStateApplyController.apply
-
-  const authoritativeIdleController = createAuthoritativeIdleController({
-    batchUpdate: batch,
-    resetTurnCompletion: turnCompletionController.reset,
-    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
-    setAgentActivityLabels,
-    setStreamingAgentId,
-    setSubmitting,
-    clearSubmittingAgentId: promptSubmissionAgentStateController.clearSubmittingAgentId,
-    resetPromptStop: promptStopController.reset,
-    setAgentBusyLatches,
-    setProviderActivityLabel,
-    setActiveStatusLabel,
-    setWorking,
-    getStatusLine: statusLine,
-    setStatusLine,
-    renderSessionChromeBoundary: () => {
-      renderSessionChromeBoundary()
-    },
-  })
-  const clearLocalBusyStateForAuthoritativeIdle = authoritativeIdleController.clear
-
-  const providerActivityController = createProviderActivityController({
-    setWorking,
-    handleProviderActivity: turnCompletionController.handleProviderActivity,
-    updateSessionChrome: () => updateSessionChrome(),
-  })
-  const applyProviderActivity = providerActivityController.apply
-
-  const assistantMessageCompletionController = createAssistantMessageCompletionController({
-    entries: transcriptEntryProjectionController.renderableEntries,
-    visibleTranscriptAgentId,
-    splitAgentResponseMode,
-    currentAgentPaneEntries: (agentId) => currentAgentPaneEntries(agentId),
-    expandedTurnIdsForAgent,
-    setExpandedTurnIdsForAgent: (agentId, turnIds) => {
-      setExpandedTurnIdsByAgent((current) => ({
-        ...current,
-        [agentId]: turnIds,
-      }))
-    },
-    setEntries: (nextEntries) => {
-      setEntries(reconcile(nextEntries))
-    },
-    setEntryCounter,
-    persistVisibleTranscriptEntries: (nextEntries) => {
-      persistVisibleTranscriptEntries(nextEntries)
-    },
-    reconcileMountedTranscript: (currentEntries, nextEntries) => {
-      reconcileMountedTranscript(currentEntries, nextEntries)
-    },
-    setAgentTranscriptEntries: (agentId, nextEntries) => {
-      setAgentTranscriptEntries(agentId, nextEntries)
-    },
-    clearAgentBusy,
-    confirmTurnCompletion: turnCompletionController.confirm,
-    maybeScheduleConfirmedTurnCompletion,
-  })
-  const markAssistantMessageCompleted = assistantMessageCompletionController.markCompleted
-
-  const visibleActivityLabelController = createVisibleActivityLabelController({
-    focusedActivityLabel,
-    setActiveStatusLabel,
-  })
-  const syncVisibleActivityLabel = visibleActivityLabelController.sync
-
-  const transcriptStreamController = createTranscriptStreamController({
-    entries: () => entries,
-    setEntries: (nextEntries) => {
-      setEntries(reconcile(nextEntries))
-    },
-    entryCounter,
-    currentTurnId: transcriptTurnStateController.getCurrentTurnId,
-    tools: primaryTranscriptRuntimeStore.tools,
-    activeToolLabels: primaryTranscriptRuntimeStore.activeToolLabels,
-    cancelPendingTurnCompletion,
-    setWorking,
-    setSubmitting,
-    updateSessionChrome: () => updateSessionChrome(),
-    syncVisibleActivityLabel,
-    applyVisibleTranscriptState,
-    persistVisibleTranscriptEntries: (nextEntries) => {
-      persistVisibleTranscriptEntries(nextEntries)
-    },
-    reconcileMountedTranscript: (currentEntries, nextEntries) => {
-      reconcileMountedTranscript(currentEntries, nextEntries)
-    },
-    updateTranscriptEntry: (entryId, text, sourceText) => {
-      updateTranscriptEntry(entryId, text, sourceText)
-    },
-    logVisibleTranscriptOutput,
-    enforceTranscriptRetention,
-    maybeScheduleConfirmedTurnCompletion,
-  })
-  const appendProviderChunk = transcriptStreamController.appendProviderChunk
-  const appendToolUpdate = transcriptStreamController.appendToolUpdate
-
-  let processKernelTerminalOutputRecord: (record: TerminalOutputRecord) => void = () => {}
-  const terminalOutputRecordProcessor = createTerminalOutputRecordProcessor({
-    appendPromptEchoToSharedHistory,
-    processKernelTerminalOutputRecord: (record) => {
-      processKernelTerminalOutputRecord(record)
-    },
-  })
-  const processTerminalOutputRecord = terminalOutputRecordProcessor.process
-
-  const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof startTimeout>, TerminalOutputRecord>({
-    delayMs: STREAM_BATCH_WINDOW_MS,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    processRecords(records) {
-      runUiBatch(() => {
-        for (const record of records) {
-          processTerminalOutputRecord(record)
-        }
-      })
-    },
-  })
-  const flushPendingTerminalRecords = terminalOutputRecordQueue.flush
-  const queueTerminalOutputRecords = terminalOutputRecordQueue.queue
 
   const splitPaneFooterRenderController = createSplitPaneFooterRenderController({
     renderer,
@@ -2024,7 +1835,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     offSigint: (handler) => process.off("SIGINT", handler),
     onStdinData: (handler) => process.stdin.on("data", handler),
     offStdinData: (handler) => process.stdin.off("data", handler),
-    clearTerminalOutputRecordTimer: () => terminalOutputRecordQueue.clearTimer(),
+    clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive,
     daemonDisconnected,
@@ -2174,7 +1985,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     hydrateCurrentAttachedSession,
   })
   recordDaemonActivity = runtimeRecordDaemonActivity
-  processKernelTerminalOutputRecord = runtimeProcessKernelTerminalOutputRecord
+  setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 
   return (
     <WorkspaceLayout
