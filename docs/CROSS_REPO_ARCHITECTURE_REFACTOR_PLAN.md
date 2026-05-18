@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal runtime app composition. `TerminalRuntimeAppComposition` owns runtime projection, session refresh bridge, provider profile application, agent layout bridge, badge traces, kernel target rendering, prompt/status delegates, and waiting-room transition wiring. `client.ts` is 1,521 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is the remaining `client.ts` bootstrap/coordinator wiring.
+2026-05-18: Latest verified stage is Cloud web freeform surface composition. `FreeformSurfaceComposition` owns live pane, desk, footer, dialog, shortcut, and pane-chrome controller wiring. `client.ts` is 1,248 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is the remaining route/session/waiting-room coordinator wiring in `client.ts`.
 
 ## Responsibility Rule
 
