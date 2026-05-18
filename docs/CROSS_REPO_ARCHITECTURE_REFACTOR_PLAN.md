@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is kernel websocket command-cache ownership. Duplicate command fingerprinting, result reservation, waiter fanout, pending cleanup, and cache eviction moved from `apps/kernel/src/runtime_transport.rs` into `apps/kernel/src/runtime_transport/command_cache.rs`; `runtime_transport.rs` is 1,491 lines. Kernel lib and websocket integration targets compile.
+2026-05-18: Latest verified stage is kernel crate-root cleanup. Inline crate-root integration tests moved from `apps/kernel/src/lib.rs` into `apps/kernel/src/lib_tests.rs`; `lib.rs` is 39 lines and only owns module exports/re-exports. Kernel lib test target compiles.
 
 ## Responsibility Rule
 
