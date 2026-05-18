@@ -18,7 +18,7 @@ The refactor is past the initial boundary split. Cloud API is in a responsibilit
 
 OSS CLI/kernel work has moved most TUI command handling, waiting-room, prompt, transcript, workflow, relay/cloud, provider-native, workflow gateway, session-contract, and provider adapter/client responsibilities into named modules with compatibility barrels where needed.
 
-Latest verified OSS provider stage: Codex, OpenCode, and Claude provider launch support, catalog endpoint/port policy, runtime state, input projection, process/event transport, event draining, Codex notifications/thread contracts, and Codex tool transcript projection are responsibility-owned. Focused provider tests pass.
+Latest verified OSS provider stage: Codex, OpenCode, and Claude provider launch support, catalog endpoint/port policy, runtime state, input projection, process/event transport, event draining, Codex notifications/thread contracts, and Codex transcript projection are responsibility-owned. Codex transcript projection now separates item classification, text streaming/snapshot projection, tool-state updates, and tool-update rendering.
 
 Cloud web remains in progress in another workstream. Do not modify `apps/web` here unless ownership changes. Remaining work should target discrete responsibilities, replace this checkpoint when progress moves, and keep protocol shape unchanged unless the protocol rule is followed.
 

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{non_empty, CodexToolTranscriptState};
+use super::tool_state::{non_empty, CodexToolTranscriptState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CodexToolTranscriptUpdate {
