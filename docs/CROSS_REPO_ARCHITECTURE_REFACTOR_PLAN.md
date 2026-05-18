@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Freeform spawn/substitute dialog open, focus, cycle, alias, state creation, and kernel mutation flows now live in `FreeformAgentDialogController`, with source guards keeping dialog state helpers and kernel requests out of `client.ts`. `client.ts` is 9,044 lines; next highest-impact slice is still terminal/freeform orchestration in that file.
+2026-05-18: Latest verified stage is Cloud web. Freeform dialog orchestration lives in `FreeformAgentDialogController`, and waiting-room key handling now lives in `WaitingRoomKeyController`; source guards keep those responsibilities out of `client.ts`. `client.ts` is 8,881 lines; next highest-impact slice is terminal session snapshot/event routing.
 
 ## Responsibility Rule
 
