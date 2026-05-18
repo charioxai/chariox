@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal record snapshot/apply ownership now lives in a focused active-state controller; `client.ts` is 4,855 lines and the web suite passes with 941 tests. Next highest-responsibility slice is terminal runtime reset/activation ownership.
+2026-05-18: Latest verified stage is Cloud web. Terminal runtime reset/activation ownership now lives in a focused transition controller; `client.ts` is 4,838 lines and the web suite passes with 943 tests. Next highest-responsibility slice is waiting-room/sidebar alias and workspace edit ownership.
 
 ## Responsibility Rule
 
