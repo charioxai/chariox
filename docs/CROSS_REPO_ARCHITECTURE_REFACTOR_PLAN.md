@@ -397,6 +397,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: OpenCode runtime streamed part rendering is responsibility-owned; focused OpenCode runtime tests pass.
 - Latest verified batch: Claude provider catalog/model projection is responsibility-owned; focused Claude provider tests pass.
 - Latest verified batch: Claude native TUI hook-file bootstrap and args are responsibility-owned; focused Claude provider tests pass.
+- Latest verified batch: Codex launch MCP/env/model-catalog config is responsibility-owned; focused Codex provider tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
