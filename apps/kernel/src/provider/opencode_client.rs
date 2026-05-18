@@ -1,18 +1,20 @@
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
-
-use serde::{Deserialize, Serialize};
-
 use crate::error::DaemonError;
 
+mod catalog;
 mod defaults;
 mod event_subscription;
 mod events;
+mod health;
 mod http;
+mod mcp;
 mod message;
 mod prompt_request;
 mod session;
 
+pub use catalog::{
+    OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel,
+    OpenCodeProviderModelLimit,
+};
 pub use defaults::OpenCodeConfiguredDefaults;
 pub use event_subscription::OpenCodeEventSubscription;
 pub use message::{
@@ -62,49 +64,6 @@ pub struct OpenCodePermissionRequest {
     pub patterns: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenCodeHealth {
-    healthy: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenCodeProviderCatalog {
-    pub all: Vec<OpenCodeProviderInfo>,
-    pub default: BTreeMap<String, String>,
-    pub connected: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenCodeProviderInfo {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub remote_machine_aliases: Vec<String>,
-    #[serde(default)]
-    pub models: BTreeMap<String, OpenCodeProviderModel>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenCodeProviderModel {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub limit: Option<OpenCodeProviderModelLimit>,
-    #[serde(default)]
-    pub variants: BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenCodeProviderModelLimit {
-    pub context: u64,
-    #[serde(default)]
-    pub input: Option<u64>,
-    #[serde(default)]
-    pub output: Option<u64>,
-}
-
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
     provider_run_id: String,
@@ -122,53 +81,8 @@ impl OpenCodeClient {
         })
     }
 
-    pub fn wait_until_healthy(&self, timeout: Duration) -> Result<(), DaemonError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.health() {
-                Ok(()) => return Ok(()),
-                Err(error) if Instant::now() < deadline => {
-                    let _ = error;
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    pub fn check_health(&self) -> Result<(), DaemonError> {
-        self.health()
-    }
-
-    pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
-        self.send_json_request("GET", "/provider", None)
-    }
-
     pub fn base_url(&self) -> &str {
         &self.base_url
-    }
-
-    pub fn add_mcp_server(&self, name: &str, config: serde_json::Value) -> Result<(), DaemonError> {
-        let _: serde_json::Value = self.send_json_request(
-            "POST",
-            "/mcp",
-            Some(&serde_json::json!({ "name": name, "config": config })),
-        )?;
-        Ok(())
-    }
-
-    pub fn connect_mcp_server(&self, name: &str) -> Result<(), DaemonError> {
-        let _: bool = self.send_json_request("POST", &format!("/mcp/{name}/connect"), None)?;
-        Ok(())
-    }
-
-    fn health(&self) -> Result<(), DaemonError> {
-        let health: OpenCodeHealth = self.send_json_request("GET", "/global/health", None)?;
-        if health.healthy {
-            Ok(())
-        } else {
-            Err(self.protocol_error("health", "provider reported unhealthy".to_string()))
-        }
     }
 
     fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {

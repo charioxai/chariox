@@ -53,7 +53,8 @@ pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,
     OpenCodePart, OpenCodePartTime, OpenCodeProviderCatalog, OpenCodeProviderInfo,
-    OpenCodeProviderModel, OpenCodeSelectedModel, OpenCodeSessionSnapshot, OpenCodeToolState,
+    OpenCodeProviderModel, OpenCodeProviderModelLimit, OpenCodeSelectedModel,
+    OpenCodeSessionSnapshot, OpenCodeToolState,
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
