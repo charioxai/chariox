@@ -1,12 +1,9 @@
 import { LocalIpcClient } from "../ipc.js"
+import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import { resolveActiveNativePermissionInteraction } from "./native-permission-interaction.js"
 
-type CodexPermissionResponseMessage = {
-  result?: Record<string, unknown>
-}
-
 export async function resolveCodexNativePermissionResponse(
-  message: CodexPermissionResponseMessage,
+  message: CodexJsonRpcMessage,
   options: {
     client: LocalIpcClient
     sessionId: string
@@ -18,7 +15,7 @@ export async function resolveCodexNativePermissionResponse(
   return resolveActiveNativePermissionInteraction(options.client, options.sessionId, options.agentId, choiceId)
 }
 
-export function codexNativePermissionChoice(message: CodexPermissionResponseMessage): string | null {
+export function codexNativePermissionChoice(message: CodexJsonRpcMessage): string | null {
   const result = message.result && typeof message.result === "object" ? message.result : null
   const decision = typeof result?.decision === "string" ? result.decision.toLowerCase() : ""
   const action = typeof result?.action === "string" ? result.action.toLowerCase() : ""

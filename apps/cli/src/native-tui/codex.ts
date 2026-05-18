@@ -40,6 +40,12 @@ import {
   stopCodexAppServerInKernel,
 } from "./codex-app-server.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
+import {
+  type CodexJsonRpcMessage,
+  extractCodexThreadId,
+  isCodexKernelInitialize,
+  parseCodexJsonRpcMessage,
+} from "./codex-json-rpc.js"
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
 import {
@@ -79,14 +85,6 @@ type NativeCodexOptions = {
   serverInKernel: boolean
   grantMcps: string[]
   grantSkills: string[]
-}
-
-type JsonRpcMessage = {
-  id?: unknown
-  method?: string
-  params?: Record<string, unknown>
-  result?: Record<string, unknown>
-  error?: unknown
 }
 
 type CodexDownstream = {
@@ -506,19 +504,19 @@ async function startCodexProxy(options: {
     const payload = JSON.stringify(message)
     if (payload.includes(hiddenInstructionsStart)) {
       debugNativeCodex("hidden_instructions_forwarded", {
-        method: typeof message === "object" && message && "method" in message ? (message as JsonRpcMessage).method : null,
+        method: typeof message === "object" && message && "method" in message ? (message as CodexJsonRpcMessage).method : null,
       })
     }
     if (payload.includes("\"localImage\"") || payload.includes("\"image\"")) {
       debugNativeCodex("attachments_forwarded", {
-        method: typeof message === "object" && message && "method" in message ? (message as JsonRpcMessage).method : null,
+        method: typeof message === "object" && message && "method" in message ? (message as CodexJsonRpcMessage).method : null,
       })
     }
     if (socket.readyState === WebSocket.OPEN) socket.send(payload)
     else socket.once("open", () => socket.send(payload))
   }
 
-  const forwardRequest = (downstream: CodexDownstream, message: JsonRpcMessage) => {
+  const forwardRequest = (downstream: CodexDownstream, message: CodexJsonRpcMessage) => {
     if (message.id === undefined) {
       sendUpstream(message)
       return
@@ -558,7 +556,7 @@ async function startCodexProxy(options: {
   })
 
   const handleUpstreamMessage = (raw: WebSocket.RawData) => {
-    const message = parseJsonRpcMessage(raw)
+    const message = parseCodexJsonRpcMessage(raw)
     if (!message) {
       for (const downstream of downstreams) sendRaw(downstream.socket, raw)
       return
@@ -592,7 +590,7 @@ async function startCodexProxy(options: {
     broadcast(message)
   }
 
-  const sendKernelInitializeResponse = (downstream: CodexDownstream, message: JsonRpcMessage) => {
+  const sendKernelInitializeResponse = (downstream: CodexDownstream, message: CodexJsonRpcMessage) => {
     sendDownstream(downstream, {
       id: message.id,
       result: {
@@ -606,12 +604,12 @@ async function startCodexProxy(options: {
     const downstream: CodexDownstream = { socket: clientSocket, kind: "unknown" }
     downstreams.add(downstream)
     clientSocket.on("message", (raw) => {
-      const message = parseJsonRpcMessage(raw)
+      const message = parseCodexJsonRpcMessage(raw)
       if (!message) {
         sendUpstreamRaw(raw)
         return
       }
-      if (message.method === "initialize" && isKernelInitialize(message)) {
+      if (message.method === "initialize" && isCodexKernelInitialize(message)) {
         downstream.kind = "kernel"
         debugNativeCodex("kernel_connected", { agentId: options.agentId })
         sendKernelInitializeResponse(downstream, message)
@@ -714,36 +712,12 @@ function bindObservedThread(
   })
 }
 
-function isKernelInitialize(message: JsonRpcMessage): boolean {
-  const clientInfo = message.params?.clientInfo
-  if (!clientInfo || typeof clientInfo !== "object") return false
-  const name = (clientInfo as Record<string, unknown>).name
-  return typeof name === "string" && name.includes("arroba")
-}
-
-function parseJsonRpcMessage(raw: WebSocket.RawData): JsonRpcMessage | null {
-  try {
-    return JSON.parse(raw.toString()) as JsonRpcMessage
-  } catch {
-    return null
-  }
-}
-
 function sendRaw(socket: WebSocket, raw: WebSocket.RawData) {
   if (socket.readyState === WebSocket.OPEN) socket.send(raw)
 }
 
-function extractCodexThreadId(message: JsonRpcMessage): string | null {
-  const thread = message.result?.thread
-  if (thread && typeof thread === "object" && "id" in thread && typeof thread.id === "string") {
-    return thread.id
-  }
-  const id = message.result?.id
-  return typeof id === "string" ? id : null
-}
-
 async function handleNativeTurnStart(
-  message: JsonRpcMessage,
+  message: CodexJsonRpcMessage,
   options: {
     client: LocalIpcClient
     sessionId: string

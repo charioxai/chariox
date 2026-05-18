@@ -348,6 +348,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: CLI Codex native prompt and attachment extraction is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI native permission interaction resolution is shared and Codex choice parsing is responsibility-owned; CLI tests pass.
 - Latest verified batch: CLI Codex kernel-output projection to native TUI JSON-RPC is responsibility-owned; CLI tests pass.
+- Latest verified batch: CLI Codex JSON-RPC parsing and message classification are responsibility-owned; CLI tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
