@@ -378,6 +378,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: OSS session lifecycle, config, and worktree-assignment contracts are responsibility-owned; focused session tests pass.
 - Latest verified batch: OSS runtime-session aggregate is responsibility-owned and `types.rs` is a compatibility barrel; focused session tests pass.
 - Latest verified batch: Codex provider auth/account and login control are responsibility-owned; focused Codex client tests pass.
+- Latest verified batch: Codex approval prompt projection is responsibility-owned; focused Codex client tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule

@@ -17,6 +17,7 @@ use crate::provider::{
 use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
 
+mod approval_bodies;
 mod auth;
 mod catalog;
 mod notifications;
@@ -25,6 +26,10 @@ mod runtime_mcp;
 
 mod mcp_config;
 
+use approval_bodies::{
+    apply_patch_review_body, command_execution_approval_body, exec_command_review_body,
+    file_change_approval_body,
+};
 use catalog::{codex_catalog_from_models, CodexModelListResponse};
 use mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
 use notifications::{parse_notification, rpc_error_message};
@@ -748,29 +753,7 @@ impl CodexClient {
                 "params": params,
             }),
         );
-        let command = params
-            .get("command")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("<unknown command>");
-        let cwd = params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let reason = params
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let mut body = format!("Approve command execution?\n\n{command}");
-        if let Some(cwd) = cwd {
-            body.push_str(&format!("\n\ncwd: {cwd}"));
-        }
-        if let Some(reason) = reason {
-            body.push_str(&format!("\n\nreason: {reason}"));
-        }
+        let body = command_execution_approval_body(&params);
         self.request_native_permission_interaction(
             "codex-command-approval",
             Some("Command approval required".to_string()),
@@ -796,22 +779,7 @@ impl CodexClient {
                 "params": params,
             }),
         );
-        let reason = params
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let changes = params
-            .get("changes")
-            .map(render_pretty_json)
-            .filter(|value| !value.trim().is_empty());
-        let mut body = "Approve file changes?".to_string();
-        if let Some(reason) = reason {
-            body.push_str(&format!("\n\nreason: {reason}"));
-        }
-        if let Some(changes) = changes {
-            body.push_str(&format!("\n\nchanges:\n{changes}"));
-        }
+        let body = file_change_approval_body(&params);
         self.request_native_permission_interaction(
             "codex-file-change-approval",
             Some("File change approval required".to_string()),
@@ -837,42 +805,7 @@ impl CodexClient {
                 "params": params,
             }),
         );
-        let command = params
-            .get("command")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "<unknown command>".to_string());
-        let cwd = params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let reason = params
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let parsed = params
-            .get("parsedCmd")
-            .map(render_pretty_json)
-            .filter(|value| !value.trim().is_empty());
-        let mut body = format!("Approve command execution?\n\n{command}");
-        if let Some(cwd) = cwd {
-            body.push_str(&format!("\n\ncwd: {cwd}"));
-        }
-        if let Some(reason) = reason {
-            body.push_str(&format!("\n\nreason: {reason}"));
-        }
-        if let Some(parsed) = parsed {
-            body.push_str(&format!("\n\nparsed:\n{parsed}"));
-        }
+        let body = exec_command_review_body(&params);
         self.request_native_review_interaction(
             "codex-exec-command-approval",
             Some("Command approval required".to_string()),
@@ -898,30 +831,7 @@ impl CodexClient {
                 "params": params,
             }),
         );
-        let reason = params
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let grant_root = params
-            .get("grantRoot")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let changes = params
-            .get("fileChanges")
-            .map(render_pretty_json)
-            .filter(|value| !value.trim().is_empty());
-        let mut body = "Approve file changes?".to_string();
-        if let Some(reason) = reason {
-            body.push_str(&format!("\n\nreason: {reason}"));
-        }
-        if let Some(grant_root) = grant_root {
-            body.push_str(&format!("\n\ngrant_root: {grant_root}"));
-        }
-        if let Some(changes) = changes {
-            body.push_str(&format!("\n\nchanges:\n{changes}"));
-        }
+        let body = apply_patch_review_body(&params);
         self.request_native_review_interaction(
             "codex-apply-patch-approval",
             Some("File change approval required".to_string()),
@@ -1170,10 +1080,6 @@ impl CodexClient {
             message,
         }
     }
-}
-
-fn render_pretty_json(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 pub fn codex_endpoint_is_healthy(endpoint: &str) -> bool {
