@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `WaitingRoomSessionActivityController` now owns terminal/kernel active-work fallback, session row meter projection, and agent row working flags; `client.ts` is 3,832 lines and the web suite passes with 969 tests. Next highest-responsibility slice is waiting-room runtime refresh and kernel-view coordination.
+2026-05-18: Latest verified stage is Cloud web. `WaitingRoomRuntimeRefreshCoordinator` now owns waiting-room refresh scheduling, dashboard target refresh, kernel runtime view selection/adoption, and kernel-event refresh scheduling; `client.ts` is 3,752 lines and the web suite passes with 972 tests. Next highest-responsibility slice is terminal record lifecycle and startup coordination.
 
 ## Responsibility Rule
 
