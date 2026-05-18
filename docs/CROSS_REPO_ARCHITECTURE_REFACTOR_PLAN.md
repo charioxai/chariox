@@ -12,17 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18:
-
-Cloud API is responsibility-owned: server/service/repository aggregates are composition-only, route and HTTP adapter guardrails are in place, and domain facades/focused repository facets own relay bootstrap, browser session, pairing, invites, managed history, admin, billing, and runtime-token policy.
-
-Cloud web remains the highest-impact area. Latest verified web stage: app-sidebar input focus, terminal session record ownership/background refresh, waiting-room new-session launch, existing-session join/restore, and archive/delete lifecycle orchestration moved out of `client.ts` into focused terminal modules with tests. `client.ts` is still very large at 9,502 lines, so subsequent web slices should keep targeting it before lower-impact work.
-
-OSS CLI/kernel work has moved most TUI command handling, waiting-room, prompt, transcript, workflow, relay/cloud, provider-native, workflow gateway, session-contract, and provider adapter/client responsibilities into named modules with compatibility barrels where needed. Latest verified provider stage includes Codex transcript item/text/tool-state projection split.
-
-Remaining work: keep shrinking very large files by responsibility, especially Cloud `apps/web/src/client.ts`, then reassess OSS large files such as scheduler/runtime and local API types. Keep protocol shape unchanged unless the protocol rule is followed.
-
-Latest gates: `pnpm --filter @arroba-cloud/web test` passes for the web slice; focused OSS provider tests passed in the previous provider slices. Full-kernel, Cloud API, lint, and smoke/drill gates remain pending for final completion.
+2026-05-18: Latest verified stage is Cloud web. Production terminal kernel handshake ownership moved from `apps/web/src/client.ts` into `apps/web/src/terminal/terminal-session-kernel-connection.ts`: session create, attach, event subscribe, state hydrate, and provider launch request/response parsing. `client.ts` is 9,474 lines, so the highest-impact remaining work is still extracting terminal/session/freeform orchestration from that file before lower-impact cleanup.
 
 ## Responsibility Rule
 
