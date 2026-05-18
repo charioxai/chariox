@@ -1,9 +1,118 @@
 //! Minimal HTTP response parsing for the OpenCode local app-server client.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
-pub(super) fn method_to_operation(method: &str, path: &str) -> &'static str {
+use serde::Deserialize;
+
+use crate::error::DaemonError;
+
+use super::OpenCodeClient;
+
+impl OpenCodeClient {
+    pub(super) fn send_json_request<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+
+        serde_json::from_slice(&response_body).map_err(|error| {
+            self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "{}; response body: {}",
+                    error,
+                    preview_response_body(&response_body)
+                ),
+            )
+        })
+    }
+
+    pub(super) fn send_no_content_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+        if !response_body.is_empty() {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "expected empty response body; got {}",
+                    preview_response_body(&response_body)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn send_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(u16, Vec<u8>), DaemonError> {
+        let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
+            self.protocol_error(
+                "base_url_parse",
+                format!("unsupported OpenCode base URL `{}`", self.base_url),
+            )
+        })?;
+        let mut stream = TcpStream::connect(address).map_err(|error| {
+            self.protocol_error(method_to_operation(method, path), error.to_string())
+        })?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| {
+                self.protocol_error(method_to_operation(method, path), error.to_string())
+            })?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| {
+                self.protocol_error(method_to_operation(method, path), error.to_string())
+            })?;
+
+        let body_bytes = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|error| {
+                self.protocol_error(method_to_operation(method, path), error.to_string())
+            })?
+            .unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Arroba-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body_bytes.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .and_then(|_| stream.write_all(&body_bytes))
+            .and_then(|_| stream.flush())
+            .map_err(|error| {
+                self.protocol_error(method_to_operation(method, path), error.to_string())
+            })?;
+
+        read_http_response(&mut stream)
+            .map_err(|error| self.protocol_error(method_to_operation(method, path), error))
+    }
+}
+
+fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
         ("GET", "/global/health") => "health",
         ("GET", "/event") => "event_subscribe",
