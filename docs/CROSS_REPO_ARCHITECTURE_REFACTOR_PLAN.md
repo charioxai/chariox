@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `FreeformPaneInteractionController` now owns pane focus, command-center context, agent list/focus slash commands, focused config persistence, and snapshot alias restore; `client.ts` is 4,189 lines and the web suite passes with 951 tests. Next highest-responsibility slice is freeform session alias ownership.
+2026-05-18: Latest verified stage is Cloud web. `FreeformSessionAliasController` now owns active terminal session label sync, edit state, alias persistence, rollback, and inventory alias sync; `client.ts` is 4,050 lines and the web suite passes with 955 tests. Next highest-responsibility slice is waiting-room session alias persistence and create-alias editing ownership.
 
 ## Responsibility Rule
 
