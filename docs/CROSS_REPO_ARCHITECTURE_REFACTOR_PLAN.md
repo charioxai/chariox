@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web global event composition. `TerminalGlobalEventComposition` owns browser event route ordering for shell, waiting room, freeform, history, workspace, capabilities, prompt, and auth submit flows. `client.ts` is 1,923 lines; web suite passes 1,040 tests; repo lint and diff checks pass. Next highest-responsibility slice is waiting-room background refresh/render orchestration or the remaining terminal app/container wiring.
+2026-05-18: Latest verified stage is Cloud web waiting-room runtime UI composition. `WaitingRoomRuntimeUiComposition` owns background render routing, waiting-room kernel event side effects, refresh scheduling/polling, sidebar rendering, and shared terminal-client adoption. `client.ts` is 1,835 lines; web suite passes 1,044 tests; repo lint and diff checks pass. Next highest-responsibility slice is remaining terminal app/container wiring.
 
 ## Responsibility Rule
 
