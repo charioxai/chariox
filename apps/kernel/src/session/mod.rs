@@ -4,6 +4,7 @@ mod prompt_runtime;
 mod service;
 mod store;
 mod types;
+mod workspace_links;
 
 pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_mode,
