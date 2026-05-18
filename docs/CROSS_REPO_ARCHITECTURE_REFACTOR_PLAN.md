@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI overlay interaction ownership. Session browser projection/actions, dialog overlay wiring, terminal pairing overlay, hotkey toggle/debug handling, clipboard copy, and prompt-surface mouse selection moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-overlay-interaction-composition.ts`; `index.tsx` is 2,996 lines and the new module is 185 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI waiting-room ownership. Waiting-room reconcile, inventory refresh, detached-kernel connect, activation, lifecycle actions, and provider/model selection projection moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-waiting-room-composition.ts`; `index.tsx` is 2,847 lines and the new module is 321 lines. CLI test passes 1,046 tests. Files around 1,000 lines are acceptable when they own a coherent responsibility; prioritize the largest ownership violations next.
 
 ## Responsibility Rule
 

@@ -21,6 +21,7 @@ import { createCliCommandActionComposition } from "./cli-command-action-composit
 import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
+import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
@@ -36,7 +37,6 @@ import {
   TURN_COMPLETION_QUIET_MS,
 } from "./cli-runtime-tuning.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
-import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
@@ -57,7 +57,6 @@ import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcri
 import { createAgentPaneTranscriptRetentionController } from "./agent-pane-transcript-retention-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
-import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
@@ -72,7 +71,6 @@ import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
-import { updateAgentProfile } from "./agent-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
 import {
@@ -90,11 +88,6 @@ import {
   createCliUiBatchController,
 } from "./cli-ui-batch-controller.js"
 import { createCliExitController } from "./cli-exit-controller.js"
-import {
-  mergeUiPreferences,
-  saveProviderPreferences,
-  saveUiPreferences,
-} from "./preferences.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
 import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
 import {
@@ -124,14 +117,11 @@ import {
 } from "./provider-catalog.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import {
-  getProviderAuthStatus,
   getProviderCatalog,
-  getProviderCommandCatalogs,
   getProviderRun,
   launchProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
-import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
@@ -205,7 +195,6 @@ import {
   aliasSession,
   archiveSessionById,
   attachToSession,
-  createSession,
   deleteSessionByRef,
   detachSessionAttachment,
   getSessionState,
@@ -232,16 +221,8 @@ import { createRenderScheduler } from "./render-scheduler.js"
 import {
   createResponsePaneRepaintController,
 } from "./response-pane-repaint-controller.js"
-import { applyTheme, createTranscriptSyntaxStyle, theme } from "./theme.js"
-import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
-import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
-import {
-  getWaitingRoomInventory,
-} from "./waiting-room-inventory-api.js"
-import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import { createTranscriptSyntaxStyle, theme } from "./theme.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
-import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
-import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
@@ -260,7 +241,6 @@ import {
 } from "./workflow-node-instructions-editor-controller.js"
 import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
-import { forgetRemoteMachine } from "./remote-machine-api.js"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
@@ -750,215 +730,86 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const rendererFocusController = createCliRendererFocusController(renderer)
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
-  const waitingRoomReconcileController = createWaitingRoomReconcileController({
-    getCurrentState: waitingRoomState,
+  const {
+    activateWaitingRoom,
+    applyModelSelection,
+    applyProviderSelection,
+    applyVariantSelection,
+    applyWaitingRoomSessionLifecycleAction,
+    connectDetachedKernelFromWaitingRoom,
+    currentModelId,
+    currentProviderSelection,
+    currentVariantId,
+    promptMetaParts,
+    promptUsageMeta,
+    reconcileWaitingRoom,
+    refreshWaitingRoomData,
+    refreshWaitingRoomDataNow,
+    waitingRoomTargets,
+  } = createCliWaitingRoomComposition({
+    client,
+    options,
+    appLogger,
+    formatError,
+    isAttached,
+    kernelConnected,
+    waitingRoomState,
     setWaitingRoomState,
-    getSessions: availableSessions,
-    getProviderCatalog: providerCatalogState,
-    getRemoteState: () => ({
-      cloudNotice: waitingRoomCloudNotice(),
-      inventoryStatus: waitingRoomInventoryStatus(),
-      loadingFrame: waitingRoomState().introStep,
-      relay: relayStatusState(),
-      machines: remoteMachinesState(),
-      kernels: remoteKernelsState(),
-      terminals: terminalsState(),
-      slices: slicesState(),
-    }),
-    getThemeRegistry: themeRegistryState,
-    getCurrentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
-    getCurrentModel: () => options.model,
-    setProviderDefaults: (defaults) => {
-      options.provider = defaults.provider
-      options.model = defaults.model
-      options.effort = defaults.effort
-    },
-    applyTheme,
+    availableSessions,
+    setAvailableSessions,
+    providerCatalogState,
+    setProviderCatalogState,
+    providerCommandCatalogState,
+    setProviderCommandCatalogState,
+    themeRegistryState,
+    waitingRoomCloudNotice,
+    waitingRoomInventoryStatus,
+    setWaitingRoomInventoryStatus,
+    waitingRoomHiddenKernelController,
+    relayStatusState,
+    setRelayStatusState,
+    remoteMachinesState,
+    setRemoteMachinesState,
+    remoteKernelsState,
+    setRemoteKernelsState,
+    terminalsState,
+    setTerminalsState,
+    slicesState,
+    setSlicesState,
+    pendingWorkspaceTarget,
+    pendingWorktreeTarget,
+    preferencesState,
+    setPreferencesState,
+    setThemeRevision,
     resetTranscriptSyntax: () => {
       transcriptSyntaxStyleController.reset()
     },
-    bumpThemeRevision: () => {
-      setThemeRevision((revision) => revision + 1)
-    },
-    saveUiThemePreference: (themeId) => {
-      void saveUiPreferences({ theme: themeId })
-    },
-    mergeUiThemePreference: (themeId) => {
-      setPreferencesState((current) => mergeUiPreferences(current, { theme: themeId }))
-    },
     applyResponseLayout: () => applyResponseLayout(),
     renderCommandCenter: () => renderCommandCenter(),
-    saveProviderPreferences: (provider, preferences) => {
-      void saveProviderPreferences(provider, preferences)
-    },
-    isAttached,
     rebuildTranscript: () => rebuildTranscript(),
     updateSessionChrome: () => updateSessionChrome(),
-    syncCommandCenter: () => syncCommandCenter(),
-  })
-  const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
-  const waitingRoomActivationController = createWaitingRoomActivationController({
-    isKernelConnected: kernelConnected,
-    connectKernel: () => connectDetachedKernelFromWaitingRoom(),
-    getWaitingRoomState: waitingRoomState,
-    getRemoteState: () => ({
-      relay: relayStatusState(),
-      machines: remoteMachinesState(),
-      kernels: remoteKernelsState(),
-      terminals: terminalsState(),
-      slices: slicesState(),
-    }),
-    getWorkspaceTarget: pendingWorkspaceTarget,
-    getWorktreeTarget: pendingWorktreeTarget,
-    getAvailableSessions: availableSessions,
-    getProviderCatalog: providerCatalogState,
-    getCurrentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
-    getCurrentModel: () => options.model,
-    getAccountProfile: () => options.accountProfile,
-    handleCloudCommand: () => handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] }),
+    syncCommandCenter: (text?: string) => syncCommandCenter(text),
+    handleCloudCommand: (command) => handleCloudCommand(command),
     setPromptText: (text) => setPromptText(text),
     focusPrompt: () => {
       promptInputRefController.focus()
     },
-    syncCommandCenter: (text) => syncCommandCenter(text),
     openTerminalPairingDialog: () => openTerminalPairingDialog(),
     openSessionBrowserDialog: () => openSessionBrowserDialog(),
-    createSession: (workspacePath, worktreePath, launch) => createSession(client, workspacePath, worktreePath, undefined, {
-      provider: launch.provider,
-      model: launch.model,
-      effort: launch.effort,
-      account_profile: launch.account_profile,
-      execution_mode: launch.execution_mode,
-      permission_level: launch.permission_level,
-    }, launch.sliceRef),
+    closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
     attachBinding: (session, createdSession, launch) => attachBinding(session, createdSession, launch),
     flashFooter: (message, tone) => flashFooter(message, tone),
-    warn: (message, fields) => appLogger?.warn(message, fields),
-    formatError,
-  })
-  const activateWaitingRoom = waitingRoomActivationController.activate
-  const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
-  const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
-    isKernelConnected: kernelConnected,
-    getInventoryStatus: waitingRoomInventoryStatus,
-    setInventoryStatus: setWaitingRoomInventoryStatus,
-    getWaitingRoomState: waitingRoomState,
-    getInventory: () => getWaitingRoomInventory(client),
-    isKernelHidden: waitingRoomHiddenKernelController.isKernelHidden,
-    setAvailableSessions,
-    setRelayStatus: setRelayStatusState,
-    setRemoteMachines: setRemoteMachinesState,
-    setRemoteKernels: setRemoteKernelsState,
-    setTerminals: setTerminalsState,
-    setSlices: setSlicesState,
-    reconcileWaitingRoom,
-    warn: (message, fields) => appLogger?.warn(message, fields),
-    formatError,
-  })
-  const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
-  const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
-  const detachedKernelConnectController = createDetachedKernelConnectController({
-    logInfo: (message, fields) => appLogger?.info(message, fields),
-    flashFooter: (message, tone) => flashFooter(message, tone),
-    getProviderCatalog: () => getProviderCatalog(client, appLogger),
-    getProviderCommandCatalogs: () => getProviderCommandCatalogs(client, appLogger),
-    invalidateWaitingRoomInventory: waitingRoomInventoryRefreshController.invalidate,
-    setProviderCatalog: setProviderCatalogState,
-    setProviderCommandCatalogs: setProviderCommandCatalogState,
     setKernelConnected,
     setDaemonDisconnected,
-    refreshWaitingRoomData,
-  })
-  const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
-  const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
-    isKernelConnected: kernelConnected,
-    connectDetachedKernel: () => connectDetachedKernelFromWaitingRoom(),
-    getWaitingRoomState: waitingRoomState,
-    getRemoteState: () => ({
-      cloudNotice: waitingRoomCloudNotice(),
-      inventoryStatus: waitingRoomInventoryStatus(),
-      loadingFrame: waitingRoomState().introStep,
-      relay: relayStatusState(),
-      machines: remoteMachinesState(),
-      kernels: remoteKernelsState(),
-      terminals: terminalsState(),
-    }),
-    getAvailableSessions: availableSessions,
-    setAvailableSessions,
-    getProviderCatalog: providerCatalogState,
-    getWorkspaceTarget: pendingWorkspaceTarget,
-    confirmationController: waitingRoomLifecycleConfirmationController,
-    archiveSessionById: (sessionId) => archiveSessionById(client, sessionId),
-    deleteSessionByRef: (sessionRef, workspace) => deleteSessionByRef(client, sessionRef, workspace),
-    forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
-    getRemoteMachines: remoteMachinesState,
-    setRemoteMachines: setRemoteMachinesState,
-    getRemoteKernels: remoteKernelsState,
-    setRemoteKernels: setRemoteKernelsState,
-    hideRemoteKernel: waitingRoomHiddenKernelController.hideKernel,
-    invalidateInventory: waitingRoomInventoryRefreshController.invalidate,
-    reconcileWaitingRoom,
-    refreshWaitingRoomData: () => refreshWaitingRoomData(),
     sessionBrowserOpen,
-    closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
-    flashFooter: (message, tone) => flashFooter(message, tone),
-    warn: (message, fields) => appLogger?.warn(message, fields),
-    formatError,
-  })
-  const applyWaitingRoomSessionLifecycleAction = waitingRoomLifecycleActionController.applyAction
-  const providerPromptProjectionController = createProviderPromptProjectionController({
-    getProviderRun: focusedProviderRun,
-    getFocusedAgent: focusedAgent,
-    getWaitingRoomState: waitingRoomState,
-    getDefaults: () => ({
-      provider: options.provider ?? "opencode",
-      model: options.model,
-      effort: options.effort,
-    }),
-    getProviderCatalog: providerCatalogState,
-  })
-  const currentProviderSelection = providerPromptProjectionController.currentProviderSelection
-  const providerSelectionController = createProviderSelectionController({
-    currentProviderSelection,
-    waitingRoomState,
-    availableSessions,
-    providerCatalog: providerCatalogState,
-    themeRegistry: themeRegistryState,
-    preferences: preferencesState,
-    defaults: () => ({
-      provider: (options.provider ?? "opencode") as BackendProviderId,
-      model: options.model,
-      effort: options.effort,
-    }),
-    setDefaults: (selection) => {
-      options.provider = selection.provider
-      options.model = selection.model
-      options.effort = selection.effort
-    },
-    reconcileWaitingRoom,
-    isAttached,
+    focusedProviderRun,
+    focusedAgent,
     focusedAgentId,
     providerRunState,
     sessionState,
-    updateAgentProfile: (sessionId, agentId, profile) => updateAgentProfile(client, sessionId, agentId, profile),
     applySessionState: (session) => applySessionState(session),
-    clearProviderRunState: () => setProviderRunState(null),
-    getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
+    setProviderRunState,
     appendNotice: (text) => appendNotice(text),
-    flashFooter: (message, tone) => flashFooter(message, tone),
-    warn: (message, fields) => appLogger?.warn(message, fields),
-    formatError,
-  })
-  const applyProviderSelection = providerSelectionController.applyProviderSelection
-  const applyModelSelection = providerSelectionController.applyModelSelection
-  const applyVariantSelection = providerSelectionController.applyVariantSelection
-  const promptMetaParts = providerPromptProjectionController.promptMetaParts
-  const promptUsageMeta = providerPromptProjectionController.promptUsageMeta
-  const currentModelId = providerPromptProjectionController.currentModelId
-  const currentVariantId = providerPromptProjectionController.currentVariantId
-  const waitingRoomTargets = () => ({
-    workspacePath: pendingWorkspaceTarget(),
-    worktreePath: pendingWorktreeTarget(),
   })
   const commandCenterLayoutController = createCommandCenterLayoutController({
     terminalHeight: () => dimensions().height,
