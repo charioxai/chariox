@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal record lifecycle now routes directly through `TerminalSessionRecordController` instead of `client.ts` wrappers; `client.ts` is 3,717 lines and the web suite passes with 972 tests. Next highest-responsibility slice is terminal startup/view restoration ownership.
+2026-05-18: Latest verified stage is Cloud web. `TerminalSessionViewRestoreController` now owns active terminal view restoration, launch input replay, prompt draft restore, pane flush, clocks, and ready/working status projection; `client.ts` is 3,717 lines and the web suite passes with 975 tests. Next highest-responsibility slice is terminal startup state ownership.
 
 ## Responsibility Rule
 
