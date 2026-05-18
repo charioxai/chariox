@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest stage is kernel runtime integration test ownership. Core runtime tests now stay in `apps/kernel/tests/runtime_integration.rs` (709 lines), OpenCode runtime tests live in `apps/kernel/tests/opencode_runtime_integration.rs` (2,100 lines), and shared harness code lives in `apps/kernel/tests/support/runtime_integration.rs` (1,141 lines). Both integration binaries compile with `cargo test --no-run`; the full runtime suite remains blocked by pre-existing `workflow_runs_progress_without_terminal_pumps` failure on current `main`.
+2026-05-18: Latest verified stage is kernel-client shell executor test ownership. The old 2,369-line `packages/kernel-client/src/shell-executor.test.ts` is split into core/session, agents/remote, config/capabilities, workflow, provider/history, and shared fixture files; every new test file is under 700 lines. `pnpm --filter @arroba/kernel-client run test` passes 72 tests.
 
 ## Responsibility Rule
 
