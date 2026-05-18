@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. `HistoryRouteCoordinator` now owns history route state, projection, refresh, sidebar sync, and search DOM routing; `client.ts` is 3,226 lines and the web suite passes with 1002 tests. Next highest-responsibility slice is terminal session start/connect/reattach wiring.
+2026-05-18: Latest verified stage is Cloud web. `TerminalSessionLifecycleCoordinator` now owns remote start, production start/join, close, connected-state, and reattach entrypoints; `client.ts` is 3,186 lines and the web suite passes with 1005 tests. Next highest-responsibility slice is terminal kernel event routing.
 
 ## Responsibility Rule
 
