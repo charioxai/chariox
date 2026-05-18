@@ -6,20 +6,19 @@ use std::sync::mpsc::TryRecvError;
 
 use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription};
 
+mod parts;
 mod permission;
 mod snapshot;
 mod transcript;
 
+use parts::{handle_message_part_delta, handle_message_part_updated};
 use permission::handle_permission_request;
 use snapshot::{
     collect_new_completed_assistant_messages, latest_assistant_usage_tokens,
     opencode_message_completes_active_prompt, opencode_messages_complete_active_prompt,
-    record_snapshot_message_metadata, refresh_opencode_message_metadata,
-    render_snapshot_output_chunks,
+    record_snapshot_message_metadata, render_snapshot_output_chunks,
 };
-use transcript::{
-    format_session_status, render_session_error_transcript_update, render_tool_transcript_update,
-};
+use transcript::{format_session_status, render_session_error_transcript_update};
 
 #[cfg(test)]
 use transcript::ToolTranscriptUpdate;
@@ -182,162 +181,19 @@ pub(super) fn drain_opencode_events(
                 delta,
                 ..
             }) => {
-                if session_id != state.session_id || field != "text" || delta.is_empty() {
-                    continue;
-                }
-                state
-                    .part_message_ids
-                    .insert(part_id.clone(), message_id.clone());
-                if !state.message_roles.contains_key(&message_id) {
-                    refresh_opencode_message_metadata(state, provider_run_id)?;
-                }
-                let Some(role) = state.message_roles.get(&message_id).map(String::as_str) else {
-                    state
-                        .buffered_text_deltas
-                        .entry(part_id)
-                        .or_default()
-                        .push(delta);
-                    continue;
-                };
-                if role != "assistant" {
-                    continue;
-                }
-                match state.part_kinds.get(&part_id).map(String::as_str) {
-                    Some("reasoning") => {
-                        let emitted = state
-                            .emitted_text_offsets
-                            .entry(part_id.clone())
-                            .or_insert(0);
-                        *emitted += delta.len();
-                        chunks.push(OpenCodeOutputChunk {
-                            kind: TerminalOutputKind::ProviderReasoning,
-                            merge_key: Some(part_id.clone()),
-                            bytes: delta.into_bytes(),
-                        });
-                    }
-                    Some("text") => {
-                        let emitted = state
-                            .emitted_text_offsets
-                            .entry(part_id.clone())
-                            .or_insert(0);
-                        *emitted += delta.len();
-                        chunks.push(OpenCodeOutputChunk {
-                            kind: TerminalOutputKind::ProviderOutput,
-                            merge_key: Some(part_id.clone()),
-                            bytes: delta.into_bytes(),
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        state
-                            .buffered_text_deltas
-                            .entry(part_id)
-                            .or_default()
-                            .push(delta);
-                    }
-                }
+                handle_message_part_delta(
+                    state,
+                    provider_run_id,
+                    session_id,
+                    message_id,
+                    part_id,
+                    field,
+                    delta,
+                    &mut chunks,
+                )?;
             }
             Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
-                let part = *part;
-                if part.session_id != state.session_id {
-                    continue;
-                }
-                state
-                    .part_message_ids
-                    .insert(part.id.clone(), part.message_id.clone());
-                state.part_kinds.insert(part.id.clone(), part.kind.clone());
-                if !state.message_roles.contains_key(&part.message_id) {
-                    refresh_opencode_message_metadata(state, provider_run_id)?;
-                }
-                let role = state
-                    .message_roles
-                    .get(&part.message_id)
-                    .map(String::as_str);
-                if let Some(buffered_deltas) = state.buffered_text_deltas.remove(&part.id) {
-                    for delta in buffered_deltas {
-                        if role != Some("assistant") {
-                            continue;
-                        }
-                        let emitted = state
-                            .emitted_text_offsets
-                            .entry(part.id.clone())
-                            .or_insert(0);
-                        *emitted += delta.len();
-                        match part.kind.as_str() {
-                            "reasoning" => chunks.push(OpenCodeOutputChunk {
-                                kind: TerminalOutputKind::ProviderReasoning,
-                                merge_key: Some(part.id.clone()),
-                                bytes: delta.into_bytes(),
-                            }),
-                            "text" => {
-                                chunks.push(OpenCodeOutputChunk {
-                                    kind: TerminalOutputKind::ProviderOutput,
-                                    merge_key: Some(part.id.clone()),
-                                    bytes: delta.into_bytes(),
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                match part.kind.as_str() {
-                    "text" => {
-                        if role != Some("assistant") || part.text.is_empty() {
-                            continue;
-                        }
-                        let emitted = state
-                            .emitted_text_offsets
-                            .entry(part.id.clone())
-                            .or_insert(0);
-                        let start = (*emitted).min(part.text.len());
-                        if start == part.text.len() {
-                            continue;
-                        }
-                        chunks.push(OpenCodeOutputChunk {
-                            kind: TerminalOutputKind::ProviderOutput,
-                            merge_key: Some(part.id.clone()),
-                            bytes: part.text.as_bytes()[start..].to_vec(),
-                        });
-                        *emitted = part.text.len();
-                    }
-                    "reasoning" => {
-                        if role != Some("assistant") || part.text.is_empty() {
-                            continue;
-                        }
-                        let emitted = state
-                            .emitted_text_offsets
-                            .entry(part.id.clone())
-                            .or_insert(0);
-                        let start = (*emitted).min(part.text.len());
-                        if start == part.text.len() {
-                            continue;
-                        }
-                        chunks.push(OpenCodeOutputChunk {
-                            kind: TerminalOutputKind::ProviderReasoning,
-                            merge_key: Some(part.id.clone()),
-                            bytes: part.text.as_bytes()[start..].to_vec(),
-                        });
-                        *emitted = part.text.len();
-                    }
-                    "tool" => {
-                        if role != Some("assistant") {
-                            continue;
-                        }
-                        let summary = render_tool_transcript_update(&part);
-                        let previous = state.emitted_tool_summaries.get(&part.id);
-                        if previous.map(String::as_str) != Some(summary.as_str()) {
-                            state
-                                .emitted_tool_summaries
-                                .insert(part.id.clone(), summary.clone());
-                            chunks.push(OpenCodeOutputChunk {
-                                kind: TerminalOutputKind::ProviderTool,
-                                merge_key: Some(part.id.clone()),
-                                bytes: summary.into_bytes(),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
+                handle_message_part_updated(state, provider_run_id, *part, &mut chunks)?;
             }
             Ok(OpenCodeEvent::SessionError {
                 session_id,
@@ -524,8 +380,8 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        drain_opencode_events, render_tool_transcript_update,
-        snapshot::latest_assistant_usage_tokens, snapshot::render_snapshot_output_chunks,
+        drain_opencode_events, snapshot::latest_assistant_usage_tokens,
+        snapshot::render_snapshot_output_chunks, transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
 
