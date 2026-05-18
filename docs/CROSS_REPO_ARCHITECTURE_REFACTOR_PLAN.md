@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is local workflow-run API test split. `apps/kernel/src/local/api/tests/workflow_run_control.rs` now only hosts module wiring, with lifecycle, dispatch/scheduling, turn completion/validation, and resume/authorization scenarios split under `workflow_run_control/`; the largest file is 698 lines. `cargo test --manifest-path apps/kernel/Cargo.toml local::api::tests::workflow_run_control --lib -- --test-threads=1` passes 8 tests.
+2026-05-18: Latest verified stage is runtime transport responsibility split. `apps/kernel/src/runtime_transport.rs` now owns server, connection, and request admission wiring at 759 lines; subscription polling/replay moved to `runtime_transport/subscriptions.rs`, and outbound backpressure send policy moved to `runtime_transport/outgoing.rs`. Both kernel websocket integration targets pass 7 + 8 tests.
 
 ## Responsibility Rule
 
