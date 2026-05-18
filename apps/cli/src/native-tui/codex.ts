@@ -15,12 +15,8 @@ import { LocalIpcClient } from "../ipc.js"
 import {
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
-  submitPromptRequest,
 } from "../ipc-requests.js"
-import {
-  preparePromptAttachmentsForSubmit,
-  promptAttachmentTransferIsForced,
-} from "../prompt-attachment-transfer.js"
+import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import {
@@ -47,7 +43,7 @@ import {
   parseCodexJsonRpcMessage,
 } from "./codex-json-rpc.js"
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
-import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+import { handleCodexNativeTurnStart } from "./codex-turn-submission.js"
 import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
@@ -638,7 +634,11 @@ async function startCodexProxy(options: {
         return
       }
       if (message.method === "turn/start" && downstream.kind !== "kernel") {
-        void handleNativeTurnStart(message, options, (response) => sendDownstream(downstream, response))
+        void handleCodexNativeTurnStart(
+          message,
+          { ...options, debug: debugNativeCodex },
+          (response) => sendDownstream(downstream, response),
+        )
         return
       }
       forwardRequest(downstream, message)
@@ -714,74 +714,6 @@ function bindObservedThread(
 
 function sendRaw(socket: WebSocket, raw: WebSocket.RawData) {
   if (socket.readyState === WebSocket.OPEN) socket.send(raw)
-}
-
-async function handleNativeTurnStart(
-  message: CodexJsonRpcMessage,
-  options: {
-    client: LocalIpcClient
-    sessionId: string
-    attachmentId: string
-    agentId: string
-    bindState: {
-      promise: Promise<RuntimeProviderRun> | null
-      run: RuntimeProviderRun | null
-      structuredEndpoint?: string | null
-    }
-    inlineLocalAttachments: boolean
-  },
-  sendClient: (message: unknown) => void,
-) {
-  try {
-    const bindPromise = await waitForNativeBinding(options.bindState)
-    if (!bindPromise) {
-      throw new Error("Codex thread is not bound to Arroba yet")
-    }
-    await bindPromise
-    const prompt = extractCodexPrompt(message.params)
-    const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
-      inlineLocalFiles: options.inlineLocalAttachments,
-    })
-    await options.client.send<Record<string, unknown>>(
-      submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
-    )
-    const turnId = `arroba-native-${Date.now()}`
-    sendClient({
-      id: message.id,
-      result: {
-        turn: {
-          id: turnId,
-          items: [],
-          itemsView: "notLoaded",
-          status: "inProgress",
-          error: null,
-          startedAt: null,
-          completedAt: null,
-          durationMs: null,
-        },
-      },
-    })
-    debugNativeCodex("native_prompt_submitted", { agentId: options.agentId, prompt, attachmentCount: attachments.length })
-  } catch (error) {
-    sendClient({
-      id: message.id,
-      error: {
-        code: -32000,
-        message: error instanceof Error ? error.message : String(error),
-      },
-    })
-  }
-}
-
-async function waitForNativeBinding(bindState: {
-  promise: Promise<RuntimeProviderRun> | null
-}): Promise<RuntimeProviderRun | null> {
-  const deadline = Date.now() + 15_000
-  while (Date.now() < deadline) {
-    if (bindState.promise) return bindState.promise
-    await sleep(100)
-  }
-  return bindState.promise
 }
 
 function startKernelPumpLoop(
