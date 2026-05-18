@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is OSS local API contract test ownership. `apps/kernel/src/local/api/tests.rs` is now a 64-line coordinator over protocol, session, terminal output, waiting-room, workflow, provider prompt, remote inventory, and workspace capability test modules. The focused local API suite passes 63 tests and `git diff --check` passes. Full kernel lib currently fails two unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI command-action test ownership. `apps/cli/src/command-actions.test.ts` is now a 101-line utility-contract file, with cloud, workflow, provider/config, agent, and session command tests split by domain plus shared fixtures. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 
