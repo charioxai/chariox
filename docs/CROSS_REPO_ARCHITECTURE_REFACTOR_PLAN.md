@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI command-action composition ownership. Command-domain API/dependency binding moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-command-action-composition.ts`; `index.tsx` is 3,897 lines and the new composition module is 580 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI app-state ownership. Boot-derived Solid signals, stores, initial theme/session state, waiting-room hidden-kernel preferences, and agent location projection moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-app-state.ts`; `index.tsx` is 3,873 lines and the state module is 314 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 

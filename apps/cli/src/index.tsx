@@ -6,23 +6,15 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
-import { createStore, reconcile } from "solid-js/store"
+import { batch, createEffect, createMemo, onCleanup, onMount, untrack } from "solid-js"
+import { reconcile } from "solid-js/store"
 
 import type {
-  AgentInstance,
   BootstrapState,
-  PromptQueueItem,
-  RuntimeAttachment,
-  RuntimeProviderRun,
   RuntimeSession,
-  SessionHistoryCursor,
-  SessionHistoryEntry,
-  SliceRecord,
   TerminalOutputRecord,
-  TranscriptEntry,
-  WorkflowDefinition,
 } from "./cli-types.js"
+import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 import {
   startCliAutomationServer,
@@ -49,7 +41,6 @@ import {
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
-import { formatAgentLocationLabel } from "./agent-label.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
   type CliDialogFocusTarget,
@@ -83,10 +74,7 @@ import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming
 import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
-import {
-  createFooterFlashController,
-  type FooterFlash,
-} from "./footer-flash-controller.js"
+import { createFooterFlashController } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHotkeyDebugReporter } from "./hotkey-debug-reporter.js"
 import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
@@ -94,7 +82,6 @@ import { createHistoryLoadingRenderController } from "./history-loading-render-c
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
-import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
@@ -140,23 +127,15 @@ import {
 import { createCliExitController } from "./cli-exit-controller.js"
 import {
   mergeUiPreferences,
-  resolveMaxAgentsPerScreen,
   saveProviderPreferences,
   saveSessionPromptState,
-  sessionPromptDraftEntry,
   saveUiPreferences,
-  sessionPromptHistoryEntries,
-  type ArrobaPreferences,
-  type MultiAgentResponseLayout,
 } from "./preferences.js"
 import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import {
   createPromptAttachmentHighlightController,
 } from "./prompt-attachment-highlight-controller.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
-import {
-  type PendingPromptAttachment,
-} from "./prompt-attachment-state.js"
 import {
   createPromptDraftPersistController,
 } from "./prompt-draft-persist-controller.js"
@@ -220,11 +199,7 @@ import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,
-  type ProviderCatalog,
 } from "./provider-catalog.js"
-import {
-  type ProviderCommandCatalogs,
-} from "./provider-command-catalog.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import {
   getProviderAuthStatus,
@@ -283,10 +258,8 @@ import {
   agentHasPromptWork,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
-  buildDetachedSessionState,
   focusedAgentIdForSession,
   sessionHasPromptWork,
-  sessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
@@ -355,31 +328,19 @@ import { createRenderScheduler } from "./render-scheduler.js"
 import {
   createResponsePaneRepaintController,
 } from "./response-pane-repaint-controller.js"
-import { applyTheme, createTranscriptSyntaxStyle, setThemeRegistry, theme } from "./theme.js"
-import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
+import { applyTheme, createTranscriptSyntaxStyle, theme } from "./theme.js"
 import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
 import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
 import {
   getWaitingRoomInventory,
-  type RemoteKernelView,
-  type RemoteMachineView,
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
-import { createWaitingRoomState } from "./waiting-room-state.js"
-import type { WaitingRoomFocus, WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
-import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
-import {
-  type WorkspaceScreenMode,
-} from "./workspace-screen.js"
-import {
-  type WorkspaceShellEntry,
-} from "./workspace-shell.js"
 import {
   createWorkspaceShellSubmitController,
   deriveWorkspaceShellContextForSession,
@@ -389,9 +350,6 @@ import {
   createWorkflowSelectionSyncController,
 } from "./workflow-controller.js"
 import {
-  type WorkflowInspectorMode,
-} from "./workflow-inspector-projection.js"
-import {
   createWorkflowInspectorController,
 } from "./workflow-inspector-controller.js"
 import {
@@ -399,7 +357,6 @@ import {
 } from "./workflow-prompt-state.js"
 import {
   createWorkflowNodeInstructionsEditorController,
-  type WorkflowNodeInstructionsEditor,
 } from "./workflow-node-instructions-editor-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
@@ -408,10 +365,6 @@ import { forgetRemoteMachine } from "./remote-machine-api.js"
 import {
   createTerminalPairingLink,
   renderTerminalPairingQr,
-  type RelayStatusView,
-  type TerminalPairingLinkView,
-  type TerminalTypeView,
-  type TerminalView,
 } from "./relay-api.js"
 import {
   computeCurrentTurnId,
@@ -503,11 +456,142 @@ async function main() {
 }
 
 function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
-  const { client, options } = props.bootstrap
-  const supportsKernelEventStream = client.supportsKernelEvents()
-  const launchedDetached = Boolean(options.detached && !props.bootstrap.binding)
-  const initialBinding = props.bootstrap.binding
-  const initialSession = initialBinding?.session ?? buildDetachedSessionState(options)
+  const {
+    client,
+    options,
+    supportsKernelEventStream,
+    initialBinding,
+    initialSession,
+    initialEntries,
+    initialPromptDraft,
+    initialWorkspaceTarget,
+    initialWorktreeTarget,
+    preferencesState,
+    setPreferencesState,
+    themeRevision,
+    setThemeRevision,
+    maxAgentsPerScreen,
+    sessionState,
+    setSessionState,
+    attachmentState,
+    setAttachmentState,
+    providerRunState,
+    setProviderRunState,
+    createdSessionState,
+    setCreatedSessionState,
+    availableSessions,
+    setAvailableSessions,
+    providerCatalogState,
+    setProviderCatalogState,
+    providerCommandCatalogState,
+    setProviderCommandCatalogState,
+    themeRegistryState,
+    relayStatusState,
+    setRelayStatusState,
+    remoteMachinesState,
+    setRemoteMachinesState,
+    remoteKernelsState,
+    setRemoteKernelsState,
+    slicesState,
+    setSlicesState,
+    terminalsState,
+    setTerminalsState,
+    waitingRoomInventoryStatus,
+    setWaitingRoomInventoryStatus,
+    waitingRoomHiddenKernelController,
+    waitingRoomCloudNotice,
+    setWaitingRoomCloudNotice,
+    terminalPairingOpen,
+    setTerminalPairingOpen,
+    terminalPairingState,
+    setTerminalPairingState,
+    terminalPairingQrLines,
+    setTerminalPairingQrLines,
+    sessionBrowserOpen,
+    setSessionBrowserOpen,
+    agentLocationLabel,
+    sessionBrowserIndex,
+    setSessionBrowserIndex,
+    waitingRoomState,
+    setWaitingRoomState,
+    pendingWorkspaceTarget,
+    setPendingWorkspaceTarget,
+    pendingWorktreeTarget,
+    setPendingWorktreeTarget,
+    multiAgentResponseLayout,
+    setMultiAgentResponseLayout,
+    entries,
+    setEntries,
+    activeStatusLabel,
+    setActiveStatusLabel,
+    providerActivityLabel,
+    setProviderActivityLabel,
+    agentActivityLabels,
+    setAgentActivityLabels,
+    streamingAgentId,
+    setStreamingAgentId,
+    statusLine,
+    setStatusLine,
+    fatalError,
+    setFatalError,
+    submitting,
+    setSubmitting,
+    entryCounter,
+    setEntryCounter,
+    daemonDisconnected,
+    setDaemonDisconnected,
+    kernelConnected,
+    setKernelConnected,
+    nextHistoryCursor,
+    setNextHistoryCursor,
+    agentPanePreviews,
+    setAgentPanePreviews,
+    agentPaneEntries,
+    setAgentPaneEntries,
+    agentBusyLatches,
+    setAgentBusyLatches,
+    sessionHydrating,
+    setSessionHydrating,
+    loadingHistory,
+    setLoadingHistory,
+    workingAnimationFrame,
+    setWorkingAnimationFrame,
+    working,
+    setWorking,
+    footerFlash,
+    setFooterFlash,
+    pendingAttachments,
+    setPendingAttachments,
+    promptHistoryEntries,
+    setPromptHistoryEntries,
+    promptHistoryIndex,
+    setPromptHistoryIndex,
+    promptHistoryDraft,
+    setPromptHistoryDraft,
+    hotkeysOpen,
+    setHotkeysOpen,
+    expandedTurnIdsByAgent,
+    setExpandedTurnIdsByAgent,
+    workspaceScreenMode,
+    setWorkspaceScreenMode,
+    workspaceShellContext,
+    setWorkspaceShellContext,
+    workspaceShellEntries,
+    setWorkspaceShellEntries,
+    workspaceShellEntryCounter,
+    setWorkspaceShellEntryCounter,
+    selectedWorkflowId,
+    setSelectedWorkflowId,
+    selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId,
+    workflowInspectorMode,
+    setWorkflowInspectorMode,
+    workflowNodeInstructionsEditor,
+    setWorkflowNodeInstructionsEditor,
+  } = createCliAppState({
+    bootstrap: props.bootstrap,
+    cwd: process.cwd(),
+  })
   const appLogger = getLogger("cli.app", {
     session_id: initialBinding?.session.id ?? null,
     attachment_id: initialBinding?.attachment.id ?? null,
@@ -515,114 +599,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
-  const initialEntries = initialBinding?.historyEntries ?? []
-  const initialSessions = props.bootstrap.sessions
-  const initialProviderCatalog = props.bootstrap.providerCatalog
-  const initialProviderCommandCatalogs = props.bootstrap.providerCommandCatalogs
-  const initialPreferences = props.bootstrap.preferences
-  const initialThemeRegistry = props.bootstrap.themeRegistry ?? DEFAULT_THEME_REGISTRY
-  setThemeRegistry(initialThemeRegistry)
-  const initialThemeId = applyTheme(initialPreferences.ui?.theme, initialThemeRegistry)
-  const initialPromptHistory = initialBinding?.promptHistoryEntries
-    ?? (initialBinding?.session
-      ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
-      : [])
-  const initialPromptDraft = initialBinding?.session
-    ? sessionPromptDraftEntry(initialPreferences, initialBinding.session.id)
-    : ""
-  const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
-  const [themeRevision, setThemeRevision] = createSignal(0)
-  const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
-  const [sessionState, setSessionState] = createSignal(initialSession)
-  const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
-  const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
-  const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
-  const [availableSessions, setAvailableSessions] = createSignal<SessionListEntry[]>(initialSessions)
-  const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
-  const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
-  const [themeRegistryState] = createSignal(initialThemeRegistry)
-  const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
-  const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
-  const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
-  const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
-  const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
-  const [waitingRoomInventoryStatus, setWaitingRoomInventoryStatus] = createSignal<"loading" | "ready" | "error">("loading")
-  const waitingRoomHiddenKernelController = createWaitingRoomHiddenKernelController({
-    initialHiddenKernelIds: initialPreferences.ui?.hiddenRemoteKernelIds ?? [],
-    persistHiddenKernelIds: (hiddenKernelIds) => {
-      void saveUiPreferences({ hiddenRemoteKernelIds: hiddenKernelIds })
-      setPreferencesState((current) => mergeUiPreferences(current, { hiddenRemoteKernelIds: hiddenKernelIds }))
-    },
-  })
-  const [waitingRoomCloudNotice, setWaitingRoomCloudNotice] = createSignal<string | null>(null)
-  const [terminalPairingOpen, setTerminalPairingOpen] = createSignal(false)
-  const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
-  const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
-  const [sessionBrowserOpen, setSessionBrowserOpen] = createSignal(false)
-
-  const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
-    formatAgentLocationLabel(agent, slicesState())
-  const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
-  const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
-    createWaitingRoomState(
-      initialSessions,
-      initialProviderCatalog,
-      (options.provider ?? "opencode") as BackendProviderId,
-      options.model,
-      options.effort,
-      initialThemeId,
-      initialThemeRegistry,
-    ),
-  )
-  const initialWorkspaceTarget = initialSession.workspace_id || options.workspace || process.cwd()
-  const initialWorktreeTarget = initialSession.worktree_id || options.worktree || initialWorkspaceTarget
-  const [pendingWorkspaceTarget, setPendingWorkspaceTarget] = createSignal(initialWorkspaceTarget)
-  const [pendingWorktreeTarget, setPendingWorktreeTarget] = createSignal(initialWorktreeTarget)
-  const [multiAgentResponseLayout, setMultiAgentResponseLayout] = createSignal<MultiAgentResponseLayout>(
-    sessionResponseLayout(initialSession, preferencesState().ui?.multiAgentResponseLayout),
-  )
-  const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
-  const [activeStatusLabel, setActiveStatusLabel] = createSignal<string | null>(null)
-  const [providerActivityLabel, setProviderActivityLabel] = createSignal<string | null>(null)
-  const [agentActivityLabels, setAgentActivityLabels] = createSignal<Record<string, string | null>>({})
-  const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(initialSession.active_prompt?.target_agent_id ?? null)
-  const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
-  const [fatalError, setFatalError] = createSignal<string | null>(null)
-  const [submitting, setSubmitting] = createSignal(false)
-  const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
-  const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
-  const [kernelConnected, setKernelConnected] = createSignal(!launchedDetached)
-  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(null)
-  const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
-  const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
-  const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
-  const [sessionHydrating, setSessionHydrating] = createSignal(false)
-  const [loadingHistory, setLoadingHistory] = createSignal(false)
-  const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
-  const [working, setWorking] = createSignal(sessionHasPromptWork(initialSession))
-  const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
-  const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
-  const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>(initialPromptHistory)
-  const [promptHistoryIndex, setPromptHistoryIndex] = createSignal<number | null>(null)
-  const [promptHistoryDraft, setPromptHistoryDraft] = createSignal<string | null>(null)
-  const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
-  const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
-  const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
-  const [workspaceShellContext, setWorkspaceShellContext] = createSignal<ShellContext>(createDefaultShellContext({
-    workspace: initialWorkspaceTarget,
-    worktree: initialWorktreeTarget,
-    sessionId: initialBinding ? initialSession.id : undefined,
-    agentId: initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id : undefined,
-    provider: options.provider ?? "opencode",
-    model: options.model ?? "default",
-    effort: options.effort || "medium",
-  }))
-  const [workspaceShellEntries, setWorkspaceShellEntries] = createSignal<WorkspaceShellEntry[]>([])
-  const [workspaceShellEntryCounter, setWorkspaceShellEntryCounter] = createSignal(0)
-  const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
-  const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
-  const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<WorkflowInspectorMode>("runtime")
-  const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   const promptInputRefController = createPromptInputRefController<TextareaRenderable>()
