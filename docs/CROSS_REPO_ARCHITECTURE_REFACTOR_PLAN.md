@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal browser app ownership. `client.ts` is a 3-line bundle entry; `terminal/app/terminal-browser-app.ts` owns the browser terminal app container and startup guard tests enforce that boundary. Web suite passes 1,048 tests; repo lint and diff checks pass. Next highest-responsibility slice is splitting the app container by subsystem wiring.
+2026-05-18: Latest verified stage is Cloud web terminal browser app subsystem ownership. `client.ts` remains a 3-line entry; route/history workflow wiring now lives in `terminal-browser-route-surfaces.ts`, browser Cloud-session/platform helpers live in `terminal-browser-platform.ts`, and `terminal-browser-app.ts` is 680 lines. Web suite passes 1,048 tests; repo lint and diff checks pass. Next slice is splitting runtime/prompt/output wiring out of the app container.
 
 ## Responsibility Rule
 
