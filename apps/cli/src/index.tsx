@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
@@ -22,13 +22,12 @@ import { createCliInputRoutingComposition } from "./cli-input-routing-compositio
 import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
+import { createCliResponseShellComposition } from "./cli-response-shell-composition.js"
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
-import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
-  CHROME_UPDATE_THROTTLE_MS,
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
   PROMPT_KEYBINDINGS,
 } from "./cli-runtime-tuning.js"
@@ -37,7 +36,6 @@ import { createAgentRuntimeProjectionController } from "./agent-runtime-projecti
 import {
   createCliRendererFocusController,
 } from "./cli-renderer-focus-controller.js"
-import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
@@ -45,7 +43,6 @@ import { renderCommandCenterOverlay } from "./command-center-renderer.js"
 import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-reset-controller.js"
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
-import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -53,7 +50,6 @@ import { createInteractionChoiceStoreController } from "./interaction-choice-sto
 import {
   createInteractionProjectionController,
 } from "./interaction-projection-controller.js"
-import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
@@ -84,8 +80,6 @@ import {
 import {
   cancelActivePrompt,
 } from "./prompt-runtime-api.js"
-import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
-import { renderPromptMeta } from "./prompt-meta-renderer.js"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,
@@ -96,7 +90,6 @@ import {
   tryGetProviderRun,
 } from "./provider-api.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
-import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
@@ -104,24 +97,14 @@ import {
   extractPromptHistoryEntries,
 } from "./prompt-history.js"
 import {
-  STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
   getSessionStatusLabel,
 } from "./runtime.js"
 import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import {
-  createSessionChromeRenderController,
-} from "./session-chrome-render-controller.js"
-import {
-  createSessionChromeSummaryRenderState,
-  renderSessionChromeSummary,
-} from "./session-chrome-summary-renderer.js"
-import {
-  createSessionChromeUpdateController,
   type SessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
 import {
-  agentHasPromptWork,
   focusedAgentIdForSession,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
@@ -158,19 +141,12 @@ import {
 } from "./session-runtime-api.js"
 import {
   createSplitPaneFooterRenderState,
-  renderSplitPaneFooters as renderSplitPaneFootersView,
 } from "./split-pane-footer-renderer.js"
-import { createSplitPaneFooterRenderController } from "./split-pane-footer-render-controller.js"
 import {
   createStatusIndicatorRenderState,
-  renderStatusIndicator as renderStatusIndicatorView,
 } from "./status-indicator-renderer.js"
-import { createStatusIndicatorController } from "./status-indicator-controller.js"
 import { createRenderScheduler } from "./render-scheduler.js"
-import {
-  createResponsePaneRepaintController,
-} from "./response-pane-repaint-controller.js"
-import { createTranscriptSyntaxStyle, theme } from "./theme.js"
+import { createTranscriptSyntaxStyle } from "./theme.js"
 import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
@@ -194,16 +170,11 @@ import {
   computeNextTurnId,
 } from "./transcript-preview.js"
 import {
-  resolveTranscriptSurfaceTone,
-  transcriptSurfacePalette,
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
 import { createTranscriptSyntaxStyleController } from "./transcript-syntax-style-controller.js"
 import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
-import {
-  buildEmptyTranscriptRenderable,
-} from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
@@ -1052,219 +1023,95 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const applySessionState = sessionStateApplyController.apply
 
-  const splitPaneFooterRenderController = createSplitPaneFooterRenderController({
+  const runUiBatch = uiBatchController.run
+
+  const {
+    renderSplitPaneFooters,
+    renderAgentInteractions,
+    assignPromptMetaRef,
+    requestTranscriptRender,
+    setHistoryLoadingState,
+    setSessionHydratingState,
+    applyResponseLayout,
+    refreshSplitPaneFocusRepaint,
+    renderSessionChromeBoundary,
+    updateSessionChrome,
+    sessionChromeUpdateController: responseShellSessionChromeUpdateController,
+    assignStatusIndicatorBox,
+    assignFooterSummaryBox,
+  } = createCliResponseShellComposition({
     renderer,
-    state: splitPaneFooterRenderState,
-    primaryBox: responsePaneRenderRefStore.getPrimaryFooterBox,
-    auxiliaryBoxes: responsePaneRenderRefStore.getAuxiliaryFooterBoxes,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
+    uiBatchController,
+    splitPaneFooterRenderState,
+    statusIndicatorRenderState,
+    responsePaneRenderRefStore,
+    transcriptScrollboxRefController,
+    historyLoadingRenderController,
+    scheduleResponsePaneRepaint,
+    renderHistoryLoadingIndicator,
+    transcriptEntryProjectionController,
+    transcriptRenderDeferralController,
     isAttached,
     workflowScreenActive: () => workflowScreenActive(),
     maxAgentsPerScreen,
-    visibleAgents: responseVisibleAgents,
+    responseVisibleAgents,
     focusedAgentId,
-    providerRun: providerRunState,
+    providerRunState,
     currentProviderSelection,
     agentActivityLabels,
     hasPromptWorkByAgent,
     streamingAgentId,
     agentBusyLatch,
-    sessionConfigValues: () => sessionState().config_state?.values,
+    agentBusyLatches,
+    sessionState,
     agentLocationLabel,
-    badgeWidth: STATUS_BADGE_WIDTH,
-    animationFrame: workingAnimationFrame,
-    renderFooters: renderSplitPaneFootersView,
-  })
-  const renderSplitPaneFooters = splitPaneFooterRenderController.render
-
-  const agentInteractionStripController = createAgentInteractionStripController({
-    renderer,
-    primaryBox: responsePaneRenderRefStore.getPrimaryInteractionBox,
-    auxiliaryBoxes: responsePaneRenderRefStore.getAuxiliaryInteractionBoxes,
-    visibleAgents: responseVisibleAgents,
-    maxAgentsPerScreen,
-    focusedAgentId,
+    workingAnimationFrame,
     activeInteractionForAgent,
-    selectedChoiceIndex: interactionChoiceStore.selectedChoiceIndex,
-    setSelectedChoiceIndex: interactionChoiceStore.setSelectedIndex,
-    customReply: interactionChoiceStore.customReply,
-    customEditing: interactionChoiceStore.isCustomEditing,
-    renderStrips: renderAgentInteractionStrips,
-  })
-  const renderAgentInteractions = agentInteractionStripController.render
-
-  const promptMetaRenderController = createPromptMetaRenderController({
-    getUsage: promptUsageMeta,
-    onRefAssigned: () => {
-      updateSessionChrome()
-    },
-    renderMeta: renderPromptMeta,
-  })
-  const setPromptMetaRenderables = promptMetaRenderController.setRenderables
-  const assignPromptMetaRef = promptMetaRenderController.assignRefCallback
-
-  const requestTranscriptRender = () => {
-    transcriptRenderDeferralController.request()
-  }
-
-  const loadingStateController = createCliLoadingStateController({
-    getSessionHydrating: sessionHydrating,
+    interactionChoiceStore,
+    promptUsageMeta,
+    sessionHydrating,
     setSessionHydrating,
     setLoadingHistory,
-    renderHistoryLoadingIndicator,
-    isAttached,
-    visibleTranscriptEntryCount: transcriptEntryProjectionController.visibleEntryCount,
-    workflowScreenActive: () => workflowScreenActive(),
     rebuildTranscript: () => rebuildTranscript(),
-    requestTranscriptRender,
-  })
-  const setHistoryLoadingState = loadingStateController.setHistoryLoadingState
-  const setSessionHydratingState = loadingStateController.setSessionHydratingState
-
-  const runUiBatch = uiBatchController.run
-
-  const statusIndicatorController = createStatusIndicatorController<BoxRenderable>({
-    isAttached,
-    getBadge: focusedStatusBadge,
-    getAnimationFrame: workingAnimationFrame,
-    resetFocusedBadgeChange: runtimeDebugLogger.resetFocusedBadgeChange,
+    focusedStatusBadge,
+    runtimeDebugLogger,
     logFocusedBadgeChange,
-    renderIndicator: ({ box, attached, badge, animationFrame }) => {
-      renderStatusIndicatorView({
-        renderer,
-        box,
-        state: statusIndicatorRenderState,
-        attached,
-        badge,
-        badgeWidth: STATUS_BADGE_WIDTH,
-        animationFrame,
-      })
-    },
-  })
-  const renderStatusIndicator = statusIndicatorController.render
-
-  const responseLayoutController = createResponseLayoutController({
-    getRefs: () => responsePaneRenderRefStore.snapshot({
-      primaryScrollbox: transcriptScrollboxRefController.current(),
-      historyLoadingBox: historyLoadingRenderController.getBox(),
-    }),
-    getSplit: splitAgentResponseMode,
-    getVisibleAgents: responseVisibleAgents,
-    getPaneRows: responsePaneRows,
-    getFocusedAgentId: focusedAgentId,
-    getShowWorkflowScreen: () => workflowScreenActive(),
-    getMaxAgentsPerScreen: maxAgentsPerScreen,
-    getResponsePaneSelection: responsePaneSelection,
-    getTheme: () => theme,
-    emptyTextAttributes: TextAttributes.NONE,
-    panelBackgroundForFocus: (focused) => transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel,
-    renderSplitPaneFooters,
-    renderAgentInteractions,
-    clearAuxiliaryAgentPane: (agentId) => {
-      clearAuxiliaryAgentPane(agentId)
-    },
+    splitAgentResponseMode,
+    responsePaneRows,
+    responsePaneSelection,
+    workspaceScreenMode,
+    multiAgentResponseLayout,
+    terminalWidth: () => dimensions().width,
+    responsePaneAgentSignature,
+    clearAuxiliaryAgentPane: (agentId) => clearAuxiliaryAgentPane(agentId),
     unregisterAgentScrollbox: agentPaneRuntimeStore.unregisterScrollbox,
     getCurrentAuxiliaryAgentId: agentPaneRuntimeStore.getCurrentAuxiliaryAgentId,
     setCurrentAuxiliaryAgentId: agentPaneRuntimeStore.setCurrentAuxiliaryAgentId,
     registerAgentScrollbox: agentPaneRuntimeStore.registerScrollbox,
-    rebuildAuxiliaryAgentPane: (agentId) => {
-      rebuildAuxiliaryAgentPane(agentId)
-    },
-    buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
-    getMountedTranscriptAgentId: primaryTranscriptRuntimeStore.getMountedTranscriptAgentId,
-    getAgentPaneEntries: (agentId) => agentPaneEntries()[agentId] ?? [],
-    replaceTranscriptEntries: (nextEntries, agentId) => {
-      replaceTranscriptEntries(nextEntries, agentId)
-    },
-    scheduleResponsePaneRepaint,
+    rebuildAuxiliaryAgentPane: (agentId) => rebuildAuxiliaryAgentPane(agentId),
+    primaryTranscriptRuntimeStore,
+    agentPaneEntries,
+    replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
     logViewDebug,
-  })
-  const applyResponseLayout = responseLayoutController.apply
-
-  createEffect(() => {
-    splitAgentResponseMode()
-    workspaceScreenMode()
-    multiAgentResponseLayout()
-    maxAgentsPerScreen()
-    dimensions().width
-    responsePaneAgentSignature()
-    focusedAgentId()
-    applyResponseLayout()
-  })
-
-  createEffect(() => {
-    if (isAttached()) {
-      return
-    }
-    promptSubmissionAgentStateController.clearSubmittingAgentId()
-    setAgentBusyLatches({})
-  })
-
-  createEffect(() => {
-    providerRunState()?.model
-    providerRunState()?.variant
-    working()
-    activeStatusLabel()
-    providerActivityLabel()
-    streamingAgentId()
-    agentBusyLatches()
-    for (const agent of sessionState().agents) {
-      agent.is_processing
-      agent.state
-    }
-    agentActivityLabels()
-    updateSessionChrome()
-  })
-
-  const responsePaneRepaintController = createResponsePaneRepaintController({
-    scheduleTimer: startTimeout,
-    repaint: () => {
-      applyResponseLayout()
-      scheduleResponsePaneRepaint()
-    },
-  })
-  const refreshSplitPaneFocusRepaint = responsePaneRepaintController.refreshFocus
-
-  const sessionChromeRenderController = createSessionChromeRenderController({
-    renderer,
-    createSummaryRenderState: createSessionChromeSummaryRenderState,
-    renderSummary: (options) => {
-      renderSessionChromeSummary(options as unknown as Parameters<typeof renderSessionChromeSummary>[0])
-    },
+    promptSubmissionAgentStateController,
+    setAgentBusyLatches,
+    providerRunStateSignal: providerRunState,
+    working,
+    activeStatusLabel,
+    providerActivityLabel,
     syncPromptPlaceholder,
-    getFatalError: fatalError,
-    getSubmitting: submitting,
-    getFooterHint: footerHint,
-    isAttached,
-    getSession: sessionState,
-    getConnectedClientCount: connectedClientCount,
-    getMultiAgentMode: multiAgentMode,
-    getResponseLayout: multiAgentResponseLayout,
-    getSessionStatusMode: sessionStatusMode,
-    getFocusedHasPromptWork: () => agentHasPromptWork(sessionState(), focusedAgentId()),
-    getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
-    getFooterFlash: footerFlash,
-    getPromptMetaParts: promptMetaParts,
-    setPromptMetaRenderables,
-    renderStatusIndicator,
-    renderSplitPaneFooters,
-    renderAgentInteractions,
-    getWorking: working,
-    getActiveStatusLabel: activeStatusLabel,
-    getProviderActivityLabel: providerActivityLabel,
-    getStreamingAgentId: streamingAgentId,
+    fatalError,
+    submitting,
+    footerHint,
+    connectedClientCount,
+    multiAgentMode,
+    sessionStatusMode,
+    footerFlash,
+    promptMetaParts,
   })
-
-  sessionChromeUpdateController = createSessionChromeUpdateController({
-    delayMs: CHROME_UPDATE_THROTTLE_MS,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    isBatched: uiBatchController.isBatched,
-    applyUpdate: sessionChromeRenderController.apply,
-  })
-  const renderSessionChromeBoundary = sessionChromeUpdateController.flush
-  const updateSessionChrome = () => {
-    sessionChromeUpdateController.request(sessionChromeRenderController.shouldThrottle())
-  }
+  sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
   const {
     clearAllAuxiliaryAgentPanes,
@@ -2130,11 +1977,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onPromptMetaUsageBarCloseTextRef={assignPromptMetaRef("usageBarCloseText")}
       onPromptMetaUsagePercentTextRef={assignPromptMetaRef("usagePercentText")}
       onStatusIndicatorBoxRef={(value) => {
-        statusIndicatorController.assignBox(value)
+        assignStatusIndicatorBox(value)
         updateSessionChrome()
       }}
       onFooterSummaryBoxRef={(value) => {
-        sessionChromeRenderController.assignFooterSummaryBox(value)
+        assignFooterSummaryBox(value)
         updateSessionChrome()
       }}
       onHotkeysOverlayBoxRef={(value) => {

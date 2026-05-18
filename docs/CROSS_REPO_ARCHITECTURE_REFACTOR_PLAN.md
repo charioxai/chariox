@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is kernel-client shell executor test ownership. The old 2,369-line `packages/kernel-client/src/shell-executor.test.ts` is split into core/session, agents/remote, config/capabilities, workflow, provider/history, and shared fixture files; every new test file is under 700 lines. `pnpm --filter @arroba/kernel-client run test` passes 72 tests.
+2026-05-18: Latest verified stage is CLI response shell ownership. Response pane layout, split-pane footers, agent interaction strips, prompt meta refs, history loading, status indicator, and session chrome scheduling moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-response-shell-composition.ts`; `index.tsx` is 2,001 lines. CLI test passes 1,046 tests.
 
 ## Responsibility Rule
 
