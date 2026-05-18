@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal session-record composition. `TerminalSessionRecordComposition` owns browser terminal record storage, active snapshot capture/restore, record switching, cleanup, and fresh-start state. `client.ts` is 2,008 lines; web suite passes 1,035 tests; repo lint and diff checks pass. Next highest-responsibility slice is session connection and hydration orchestration.
+2026-05-18: Latest verified stage is Cloud web terminal session orchestration composition. `TerminalSessionOrchestrationComposition` owns session connection lifecycle, runtime/background hydration, joined history hydration, provider catalog hydration, and reconnect history recovery. `client.ts` is 1,985 lines; web suite passes 1,037 tests; repo lint and diff checks pass. Next highest-responsibility slice is remaining Cloud web route/global event wiring or waiting-room background refresh orchestration.
 
 ## Responsibility Rule
 
