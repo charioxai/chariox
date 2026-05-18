@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal runtime surface ownership. `client.ts` remains 3 lines and terminal app wiring is split by route/platform/runtime surfaces. Web suite passes 1,048 tests; repo lint and diff checks pass. Files around 1,000 lines are acceptable when ownership is coherent. Next work should target real boundary gaps: OSS router/composition ownership, stale compatibility barrels/helpers, and Cloud modules only when they still mix unrelated responsibilities.
+2026-05-18: Latest verified stage is OSS local API contract test ownership. `apps/kernel/src/local/api/tests.rs` is now a 64-line coordinator over protocol, session, terminal output, waiting-room, workflow, provider prompt, remote inventory, and workspace capability test modules. The focused local API suite passes 63 tests and `git diff --check` passes. Full kernel lib currently fails two unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 

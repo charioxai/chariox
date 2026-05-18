@@ -1,0 +1,623 @@
+use super::*;
+
+#[test]
+fn local_request_api_supports_session_attach_and_end() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let detached = match harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
+            DetachFromSessionRequest {
+                attachment_id: attachment.id().to_string(),
+            },
+        ))
+        .expect("detach should succeed")
+    {
+        LocalDaemonResponse::SessionDetached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let ended = match harness
+        .dispatch(LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("end session should succeed")
+    {
+        LocalDaemonResponse::SessionEnded { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(detached.id(), attachment.id());
+    assert_eq!(ended.id(), session.id());
+    harness.with_app(|app| {
+        assert!(app.attachments().get_attachment(detached.id()).is_err());
+    });
+}
+
+#[test]
+fn local_request_api_resolves_and_deletes_sessions_by_ref() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, _agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    let resolved = match harness
+        .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: "mai".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+        }))
+        .expect("resolve should succeed")
+    {
+        LocalDaemonResponse::SessionResolved { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let deleted = match harness
+        .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: session.id()[..8].to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+        }))
+        .expect("delete should succeed")
+    {
+        LocalDaemonResponse::SessionDeleted { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(resolved.id(), session.id());
+    assert_eq!(deleted.id(), session.id());
+    assert_eq!(deleted.alias(), Some("main"));
+    assert_eq!(deleted.status(), crate::session::SessionStatus::Ended);
+    assert!(matches!(
+        harness.dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: "main".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+        })),
+        Err(DaemonError::SessionNotFound { .. })
+    ));
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListSessions(ListSessionsRequest))
+        .expect("list should succeed")
+    {
+        LocalDaemonResponse::SessionsListed { sessions } => sessions,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(listed.is_empty());
+}
+
+#[test]
+fn local_request_api_manages_session_invites_and_members() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let session_id = session.id().to_string();
+    let invite_record = match harness
+        .dispatch(LocalDaemonRequest::CreateSessionInvite(
+            CreateSessionInviteRequest {
+                session_id: session_id.clone(),
+                expires_in_ms: None,
+                max_uses: Some(1),
+            },
+        ))
+        .expect("session invite create should succeed")
+    {
+        LocalDaemonResponse::SessionInviteCreated { invite, session } => {
+            assert_eq!(session.id(), session_id);
+            invite
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    let joined = match harness
+        .dispatch(LocalDaemonRequest::JoinSessionInvite(
+            JoinSessionInviteRequest {
+                invite_token: invite_record.invite_token.clone(),
+                user_id: "user-2".to_string(),
+            },
+        ))
+        .expect("session invite join should succeed")
+    {
+        LocalDaemonResponse::SessionInviteJoined { member, session } => {
+            assert!(session.has_member("user-2"));
+            member
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(joined.user_id(), "user-2");
+
+    let (members, invites) = match harness
+        .dispatch(LocalDaemonRequest::ListSessionMembers(
+            ListSessionMembersRequest {
+                session_id: session_id.clone(),
+            },
+        ))
+        .expect("session members should list")
+    {
+        LocalDaemonResponse::SessionMembersListed { members, invites } => (members, invites),
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(members.len(), 2);
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].used_count(), 1);
+
+    let revoked = match harness
+        .dispatch(LocalDaemonRequest::RevokeSessionInvite(
+            RevokeSessionInviteRequest {
+                session_id,
+                invite_ref: invite_record.invite.invite_id().to_string(),
+            },
+        ))
+        .expect("session invite revoke should succeed")
+    {
+        LocalDaemonResponse::SessionInviteRevoked { invite, .. } => invite,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(revoked.is_revoked());
+}
+
+#[test]
+fn local_request_api_aliases_sessions() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let aliased = match harness
+        .dispatch(LocalDaemonRequest::AliasSession(AliasSessionRequest {
+            session_id: session.id().to_string(),
+            alias: "alpha".to_string(),
+        }))
+        .expect("alias should succeed")
+    {
+        LocalDaemonResponse::SessionAliased { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(aliased.alias(), Some("alpha"));
+
+    let resolved = match harness
+        .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: "alpha".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+        }))
+        .expect("alias resolve should succeed")
+    {
+        LocalDaemonResponse::SessionResolved { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(resolved.id(), session.id());
+}
+
+#[test]
+fn local_request_api_spawns_and_focuses_agents() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("reviewer".to_string()),
+            provider: Some("opencode".to_string()),
+            model: Some("openai/gpt-5.4".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+        }))
+        .expect("spawn should succeed")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+
+    let (session_state, agent_activity) = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState {
+            session,
+            agent_activity,
+        } => (session, agent_activity),
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(session_state.agents().len(), 2);
+    assert_eq!(
+        agent_activity
+            .get(default_agent.id())
+            .expect("default agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert_eq!(
+        agent_activity
+            .get(spawned.id())
+            .expect("spawned agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+    assert_eq!(
+        session_state
+            .agents()
+            .iter()
+            .map(|agent| agent.id())
+            .collect::<Vec<_>>(),
+        vec![default_agent.id(), spawned.id()]
+    );
+    assert_eq!(
+        session_state
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == default_agent.id())
+            .expect("default agent should still exist")
+            .state(),
+        crate::agent::AgentState::Idle
+    );
+    assert_eq!(
+        session_state
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == spawned.id())
+            .expect("spawned agent should exist")
+            .state(),
+        crate::agent::AgentState::Focused
+    );
+
+    let renamed = match harness
+        .dispatch(LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: spawned.id().to_string(),
+            alias: "web-reviewer".to_string(),
+        }))
+        .expect("agent alias update should succeed")
+    {
+        LocalDaemonResponse::AgentAliased { agent, session } => {
+            assert_eq!(
+                session
+                    .agents()
+                    .iter()
+                    .find(|entry| entry.id() == spawned.id())
+                    .and_then(|entry| entry.alias()),
+                Some("web-reviewer")
+            );
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(renamed.alias(), Some("web-reviewer"));
+
+    let profiled = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5.4".to_string()),
+                effort: Some("low".to_string()),
+                clear_effort: false,
+            },
+        ))
+        .expect("agent profile update should succeed")
+    {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.provider(), "codex");
+            assert_eq!(entry.model(), Some("gpt-5.4"));
+            assert_eq!(entry.effort(), Some("low"));
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(profiled.provider(), "codex");
+    assert_eq!(profiled.model(), Some("gpt-5.4"));
+    assert_eq!(profiled.effort(), Some("low"));
+
+    let cleared = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                provider: None,
+                model: None,
+                effort: None,
+                clear_effort: true,
+            },
+        ))
+        .expect("agent profile clear should succeed")
+    {
+        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.effort(), None);
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(cleared.provider(), "codex");
+    assert_eq!(cleared.model(), Some("gpt-5.4"));
+    assert_eq!(cleared.effort(), None);
+
+    let relocated = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: Some("/repo/feature".to_string()),
+                clear_workspace_id: false,
+                worktree_id: Some("/repo/feature-wt".to_string()),
+                clear_worktree_id: false,
+            },
+        ))
+        .expect("agent workspace update should succeed")
+    {
+        LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
+            let entry = session
+                .agents()
+                .iter()
+                .find(|entry| entry.id() == spawned.id())
+                .expect("updated agent should remain in session snapshot");
+            assert_eq!(entry.workspace_id(), Some("/repo/feature"));
+            assert_eq!(entry.worktree_id(), Some("/repo/feature-wt"));
+            agent
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(relocated.workspace_id(), Some("/repo/feature"));
+    assert_eq!(relocated.worktree_id(), Some("/repo/feature-wt"));
+
+    let focused_default = match harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+        }))
+        .expect("focus should succeed")
+    {
+        LocalDaemonResponse::AgentFocused { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(focused_default.id(), default_agent.id());
+
+    let cycled = match harness
+        .dispatch(LocalDaemonRequest::CycleAgentFocus(
+            CycleAgentFocusRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("cycle should succeed")
+    {
+        LocalDaemonResponse::AgentFocusCycled { agent } => {
+            agent.expect("cycle should return a focused agent")
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(cycled.id(), spawned.id());
+
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("list should succeed")
+    {
+        LocalDaemonResponse::AgentsListed { agents } => agents,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(listed.len(), 2);
+    assert_eq!(
+        listed.iter().map(|agent| agent.id()).collect::<Vec<_>>(),
+        vec![default_agent.id(), spawned.id()]
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .find(|agent| agent.id() == spawned.id())
+            .expect("spawned agent should be listed")
+            .state(),
+        crate::agent::AgentState::Focused
+    );
+}
+
+#[test]
+fn detaching_one_attachment_keeps_the_session_open_for_others() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    let first = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("first attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let second = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-2".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("second attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let detached = match harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
+            DetachFromSessionRequest {
+                attachment_id: first.id().to_string(),
+            },
+        ))
+        .expect("detach should succeed")
+    {
+        LocalDaemonResponse::SessionDetached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("state request should succeed")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(detached.id(), first.id());
+    assert_eq!(state.status().to_string(), "created");
+    assert_eq!(state.attachment_ids().len(), 1);
+    assert!(state.has_attachment(second.id()));
+    assert!(harness.with_app(|app| app.attachments().get_attachment(second.id()).is_ok()));
+}
+
+#[test]
+fn attaching_the_same_client_replaces_its_stale_attachment() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+
+    let first = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("first attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let second = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("second attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("state request should succeed")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_ne!(first.id(), second.id());
+    assert_eq!(state.attachment_ids().len(), 1);
+    assert!(state.has_attachment(second.id()));
+    assert!(harness.with_app(|app| app.attachments().get_attachment(first.id()).is_err()));
+}
