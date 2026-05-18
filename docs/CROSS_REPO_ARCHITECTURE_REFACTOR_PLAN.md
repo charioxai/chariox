@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Workflow sidebar hydration now lives in a focused controller, after waiting-room floating overlays, live agent alias persistence, and sidebar agent mutation controllers; `client.ts` is 5,553 lines and the web suite passes with 920 tests. Next highest-responsibility slice is the freeform clock/effect/event-controller cluster.
+2026-05-18: Latest verified stage is Cloud web. Freeform turn clock state/timer ownership now lives in a focused controller, after workflow sidebar hydration, waiting-room floating overlays, live agent alias persistence, and sidebar agent mutation controllers; `client.ts` is 5,505 lines and the web suite passes with 923 tests. Next highest-responsibility slice is freeform footer/pane DOM routing.
 
 ## Responsibility Rule
 
