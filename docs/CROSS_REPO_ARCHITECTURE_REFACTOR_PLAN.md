@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web terminal session runtime composition. `TerminalSessionRuntimeComposition` owns session record switching/persistence, active session state transfer, connection/rejoin/close orchestration, background hydration, prompt draft cleanup, and reconnect/replay hooks. `client.ts` is 755 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is Cloud web stylesheet ownership, starting with feature-named modules from `terminal-panel-surfaces.ts`.
+2026-05-18: Latest verified stage is Cloud web terminal panel stylesheet ownership. `terminal-panel-surfaces.ts` is now a composition barrel over feature-owned workflow, sidebar session, settings, workspace/git, rail, and waiting-room surface modules with byte-preserved CSS. `client.ts` is 755 lines; web suite passes 1,047 tests; repo lint and diff checks pass. Next highest-responsibility slice is `client.ts` coordinator ownership.
 
 ## Responsibility Rule
 
