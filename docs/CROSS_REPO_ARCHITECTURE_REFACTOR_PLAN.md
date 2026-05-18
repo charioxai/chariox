@@ -367,6 +367,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 - Latest verified batch: OSS workflow graph endpoint/node/edge contracts and edge validation policy are responsibility-owned; focused session tests pass.
 - Latest verified batch: OSS workflow definition topology mutation and canvas reconciliation are responsibility-owned; focused session tests pass.
 - Latest verified batch: OSS workflow scheduling defaults, queued launches, and watchdog definitions are responsibility-owned; focused session tests pass.
+- Latest verified batch: OSS workflow failure/console diagnostics are responsibility-owned; focused session tests pass.
 - Latest gates for owned files: kernel-client tests, Cloud API build/API tests, focused router test, file-level rustfmt, and scoped diff checks pass. Cloud web and full-kernel gates remain pending where they touch dirty unrelated slices.
 
 ## Responsibility Rule
