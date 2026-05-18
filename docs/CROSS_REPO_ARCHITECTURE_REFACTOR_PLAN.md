@@ -14,15 +14,15 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 2026-05-18:
 
-The refactor is past the initial boundary split. Cloud API is in a responsibility-owned shape: server/service/repository aggregates are composition-only, route and HTTP adapter guardrails are in place, and domain facades/focused repository facets own relay bootstrap, browser session, pairing, invites, managed history, admin, billing, and runtime-token policy.
+Cloud API is responsibility-owned: server/service/repository aggregates are composition-only, route and HTTP adapter guardrails are in place, and domain facades/focused repository facets own relay bootstrap, browser session, pairing, invites, managed history, admin, billing, and runtime-token policy.
 
-OSS CLI/kernel work has moved most TUI command handling, waiting-room, prompt, transcript, workflow, relay/cloud, provider-native, workflow gateway, session-contract, and provider adapter/client responsibilities into named modules with compatibility barrels where needed.
+Cloud web remains the highest-impact area. Latest verified web stage: app-sidebar input focus capture/restore and terminal session record persistence/activation/disposal moved out of `client.ts` into focused terminal modules with tests. `client.ts` is still very large at 9,864 lines, so subsequent web slices should keep targeting it before lower-impact work.
 
-Latest verified OSS provider stage: Codex, OpenCode, and Claude provider launch support, catalog endpoint/port policy, runtime state, input projection, process/event transport, event draining, Codex notifications/thread contracts, and Codex transcript projection are responsibility-owned. Codex transcript projection now separates item classification, text streaming/snapshot projection, tool-state updates, and tool-update rendering.
+OSS CLI/kernel work has moved most TUI command handling, waiting-room, prompt, transcript, workflow, relay/cloud, provider-native, workflow gateway, session-contract, and provider adapter/client responsibilities into named modules with compatibility barrels where needed. Latest verified provider stage includes Codex transcript item/text/tool-state projection split.
 
-Cloud web remains in progress in another workstream. Do not modify `apps/web` here unless ownership changes. Remaining work should target discrete responsibilities, replace this checkpoint when progress moves, and keep protocol shape unchanged unless the protocol rule is followed.
+Remaining work: keep shrinking very large files by responsibility, especially Cloud `apps/web/src/client.ts`, then reassess OSS large files such as scheduler/runtime and local API types. Keep protocol shape unchanged unless the protocol rule is followed.
 
-Latest gates: focused provider tests for `provider::codex`, `provider::opencode`, `provider::claude`, `provider::opencode_runtime`, `provider::claude_runtime`, `provider::codex_runtime`, and `provider::codex_client`; Cloud API build/tests were last verified in previous Cloud API slices. Full-kernel and Cloud-web gates remain pending.
+Latest gates: `pnpm --filter @arroba-cloud/web test` passes for the web slice; focused OSS provider tests passed in the previous provider slices. Full-kernel, Cloud API, lint, and smoke/drill gates remain pending for final completion.
 
 ## Responsibility Rule
 
