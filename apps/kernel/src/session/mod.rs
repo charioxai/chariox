@@ -10,6 +10,7 @@ mod workflow_diagnostics;
 mod workflow_graph;
 mod workflow_outputs;
 mod workflow_publication;
+mod workflow_run_records;
 mod workflow_scheduling;
 mod workflow_turns;
 mod workspace_links;
