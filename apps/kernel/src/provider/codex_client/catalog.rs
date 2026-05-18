@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::error::DaemonError;
 use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel};
+
+use super::CodexClient;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct CodexModelListResponse {
@@ -77,5 +80,19 @@ pub(super) fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProv
         }],
         default,
         connected: vec!["codex".to_string()],
+    }
+}
+
+impl CodexClient {
+    pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
+        let mut socket = self.connect_initialized()?;
+        let mut next_request_id = 1;
+        let response: CodexModelListResponse = self.send_request(
+            &mut socket,
+            &mut next_request_id,
+            "model/list",
+            serde_json::json!({}),
+        )?;
+        Ok(codex_catalog_from_models(response.data))
     }
 }

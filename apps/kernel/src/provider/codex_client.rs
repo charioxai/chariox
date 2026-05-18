@@ -1,11 +1,10 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{
-    OpenCodeProviderCatalog, ProviderNativeInteractionBridge, ProviderRunTokenUsage,
-    ProviderWriteAccessMode,
+    ProviderNativeInteractionBridge, ProviderRunTokenUsage, ProviderWriteAccessMode,
 };
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
@@ -26,7 +25,6 @@ mod thread_runtime;
 
 mod mcp_config;
 
-use catalog::{codex_catalog_from_models, CodexModelListResponse};
 use json_rpc::JsonRpcMessage;
 use notifications::parse_notification;
 use permission::{
@@ -195,14 +193,6 @@ impl CodexClient {
     pub fn with_write_access_mode(mut self, write_access_mode: ProviderWriteAccessMode) -> Self {
         self.write_access_mode = write_access_mode;
         self
-    }
-
-    pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
-        let mut socket = self.connect_initialized()?;
-        let mut next_request_id = 1;
-        let response: CodexModelListResponse =
-            self.send_request(&mut socket, &mut next_request_id, "model/list", json!({}))?;
-        Ok(codex_catalog_from_models(response.data))
     }
 
     pub(super) fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {
