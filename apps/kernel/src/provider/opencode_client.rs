@@ -1,10 +1,6 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Cursor, Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -14,11 +10,14 @@ use crate::error::DaemonError;
 use crate::provider::AgentExecutionMode;
 use crate::session::PromptAttachment;
 
+mod defaults;
+mod event_subscription;
 mod events;
 mod http;
 
-use events::parse_sse_event;
-use http::{method_to_operation, preview_response_body, read_http_headers, read_http_response};
+pub use defaults::OpenCodeConfiguredDefaults;
+pub use event_subscription::OpenCodeEventSubscription;
+use http::{method_to_operation, preview_response_body, read_http_response};
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
@@ -30,26 +29,6 @@ pub struct OpenCodeClient {
 pub struct OpenCodeSessionSnapshot {
     pub status: String,
     pub messages: Vec<OpenCodeMessage>,
-}
-
-#[derive(Debug)]
-pub struct OpenCodeEventSubscription {
-    pub receiver: Receiver<OpenCodeEvent>,
-    stop: Arc<AtomicBool>,
-}
-
-impl OpenCodeEventSubscription {
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_tests(receiver: Receiver<OpenCodeEvent>) -> Self {
-        Self {
-            receiver,
-            stop: Arc::new(AtomicBool::new(false)),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,36 +233,6 @@ struct OpenCodeHealth {
     healthy: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenCodeConfig {
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(rename = "default_agent", default)]
-    default_agent: Option<String>,
-    #[serde(default)]
-    agent: BTreeMap<String, OpenCodeConfigAgent>,
-    #[serde(default)]
-    mode: BTreeMap<String, OpenCodeConfigAgent>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct OpenCodeConfigAgent {
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    variant: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OpenCodeConfiguredDefaults {
-    pub model: Option<String>,
-    pub variant: Option<String>,
-    pub selected_agent: Option<String>,
-    pub agent_model: Option<String>,
-    pub agent_variant: Option<String>,
-    pub top_level_model: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenCodeProviderCatalog {
     pub all: Vec<OpenCodeProviderInfo>,
@@ -320,15 +269,6 @@ pub struct OpenCodeProviderModelLimit {
     pub input: Option<u64>,
     #[serde(default)]
     pub output: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenCodeAgentInfo {
-    name: String,
-    mode: String,
-    hidden: Option<bool>,
-    model: Option<OpenCodeSelectedModel>,
-    variant: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,30 +340,6 @@ impl OpenCodeClient {
                 Err(error) => return Err(last_error.unwrap_or(error)),
             }
         }
-    }
-
-    pub fn configured_defaults(&self) -> Result<OpenCodeConfiguredDefaults, DaemonError> {
-        let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
-            Ok(config) => config,
-            Err(DaemonError::ProviderProtocol {
-                operation: "opencode_http",
-                message,
-                ..
-            }) if message == "OpenCode returned HTTP 404" => {
-                return Ok(OpenCodeConfiguredDefaults::default())
-            }
-            Err(error) => return Err(error),
-        };
-        let agents = match self.send_json_request("GET", "/agent", None) {
-            Ok::<serde_json::Value, _>(value) => parse_agent_infos(value),
-            Err(DaemonError::ProviderProtocol {
-                operation: "opencode_http",
-                message,
-                ..
-            }) if message == "OpenCode returned HTTP 404" => Vec::new(),
-            Err(error) => return Err(error),
-        };
-        Ok(resolve_configured_defaults(&config, &agents))
     }
 
     pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
@@ -532,109 +448,6 @@ impl OpenCodeClient {
 
     pub fn messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {
         self.send_json_request("GET", &format!("/session/{session_id}/message"), None)
-    }
-
-    pub fn subscribe_events(&self) -> Result<OpenCodeEventSubscription, DaemonError> {
-        let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
-            self.protocol_error(
-                "base_url_parse",
-                format!("unsupported OpenCode base URL `{}`", self.base_url),
-            )
-        })?;
-        let mut stream = TcpStream::connect(address)
-            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
-        stream
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
-
-        let request = format!(
-            "GET /event HTTP/1.1\r\nHost: {address}\r\nAccept: text/event-stream\r\nX-Arroba-Provider-Client: kernel\r\nConnection: close\r\n\r\n"
-        );
-        stream
-            .write_all(request.as_bytes())
-            .and_then(|_| stream.flush())
-            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
-        let (status_code, buffered_body) = read_http_headers(&mut stream)
-            .map_err(|error| self.protocol_error("event_subscribe", error))?;
-        if status_code >= 400 {
-            return Err(self.protocol_error(
-                "event_subscribe",
-                format!("OpenCode returned HTTP {status_code}"),
-            ));
-        }
-
-        let (tx, rx) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_for_thread = stop.clone();
-        let provider_run_id = self.provider_run_id.clone();
-
-        thread::spawn(move || {
-            let mut reader = BufReader::new(Cursor::new(buffered_body).chain(stream));
-            let mut data_lines = Vec::new();
-
-            loop {
-                if stop_for_thread.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let line = line.trim_end_matches(['\r', '\n']);
-                        if line.is_empty() {
-                            if data_lines.is_empty() {
-                                continue;
-                            }
-
-                            let payload = data_lines.join("\n");
-                            data_lines.clear();
-                            if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
-                                if tx.send(event).is_err() {
-                                    break;
-                                }
-                            }
-                            continue;
-                        }
-
-                        if let Some(data) = line.strip_prefix("data:") {
-                            data_lines.push(data.trim_start().to_string());
-                        }
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-
-        Ok(OpenCodeEventSubscription { receiver: rx, stop })
-    }
-
-    pub fn subscribe_events_with_retry(
-        &self,
-        timeout: Duration,
-        retry_interval: Duration,
-    ) -> Result<OpenCodeEventSubscription, DaemonError> {
-        let deadline = Instant::now() + timeout;
-        let mut last_error = None;
-
-        loop {
-            match self.subscribe_events() {
-                Ok(subscription) => return Ok(subscription),
-                Err(error) if Instant::now() < deadline => {
-                    last_error = Some(error);
-                    std::thread::sleep(retry_interval);
-                }
-                Err(error) => return Err(last_error.unwrap_or(error)),
-            }
-        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -780,135 +593,6 @@ fn opencode_agent_for_execution_mode(execution_mode: AgentExecutionMode) -> &'st
     }
 }
 
-fn resolve_configured_defaults(
-    config: &OpenCodeConfig,
-    agents: &[OpenCodeAgentInfo],
-) -> OpenCodeConfiguredDefaults {
-    let selected_agent = config
-        .default_agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "build".to_string());
-    let config_agent = config
-        .agent
-        .get(&selected_agent)
-        .or_else(|| config.mode.get(&selected_agent));
-    let listed_agent = agents.iter().find(|agent| {
-        agent.name == selected_agent && agent.mode != "subagent" && agent.hidden != Some(true)
-    });
-    let top_level_model = config
-        .model
-        .as_ref()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let config_agent_model = config_agent
-        .and_then(|agent| agent.model.as_ref())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let listed_agent_model = listed_agent
-        .and_then(|agent| agent.model.as_ref())
-        .map(|model| format!("{}/{}", model.provider_id, model.model_id));
-    let agent_model = config_agent_model.clone().or(listed_agent_model.clone());
-    let config_agent_variant = config_agent
-        .and_then(|agent| agent.variant.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let listed_agent_variant = listed_agent
-        .and_then(|agent| agent.variant.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let agent_variant = config_agent_variant
-        .clone()
-        .or(listed_agent_variant.clone());
-
-    OpenCodeConfiguredDefaults {
-        model: agent_model.clone().or(top_level_model.clone()),
-        variant: agent_variant.clone(),
-        selected_agent: Some(selected_agent),
-        agent_model,
-        agent_variant,
-        top_level_model,
-    }
-}
-
-fn parse_agent_infos(value: serde_json::Value) -> Vec<OpenCodeAgentInfo> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(parse_agent_info)
-        .collect()
-}
-
-fn parse_agent_info(value: &serde_json::Value) -> Option<OpenCodeAgentInfo> {
-    let object = value.as_object()?;
-    let name = object.get("name")?.as_str()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    let mode = object
-        .get("mode")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("primary")
-        .to_string();
-    let hidden = object.get("hidden").and_then(|value| value.as_bool());
-    let model = parse_agent_model(object.get("model"));
-    let variant = object
-        .get("variant")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    Some(OpenCodeAgentInfo {
-        name: name.to_string(),
-        mode,
-        hidden,
-        model,
-        variant,
-    })
-}
-
-fn parse_agent_model(value: Option<&serde_json::Value>) -> Option<OpenCodeSelectedModel> {
-    let value = value?;
-    if let Some(model) = value.as_object() {
-        let provider_id = model
-            .get("providerID")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        let model_id = model
-            .get("modelID")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        return Some(OpenCodeSelectedModel {
-            provider_id: provider_id.to_string(),
-            model_id: model_id.to_string(),
-        });
-    }
-
-    let raw = value.as_str()?.trim();
-    let (provider_id, model_id) = raw.split_once('/')?;
-    let provider_id = provider_id.trim();
-    let model_id = model_id.trim();
-    if provider_id.is_empty() || model_id.is_empty() {
-        return None;
-    }
-
-    Some(OpenCodeSelectedModel {
-        provider_id: provider_id.to_string(),
-        model_id: model_id.to_string(),
-    })
-}
-
 fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
     let value = model?.trim();
     if value.is_empty() || value == "default" {
@@ -928,9 +612,12 @@ mod tests {
     use crate::provider::AgentExecutionMode;
 
     use super::{
-        parse_agent_infos, parse_model, resolve_configured_defaults, OpenCodeAgentInfo,
-        OpenCodeClient, OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
-        OpenCodeSelectedModel,
+        defaults::{
+            parse_agent_infos, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeConfig,
+            OpenCodeConfigAgent,
+        },
+        events::parse_sse_event,
+        parse_model, OpenCodeClient, OpenCodeEvent, OpenCodeMessageInfo, OpenCodeSelectedModel,
     };
 
     #[test]
@@ -1339,8 +1026,8 @@ mod tests {
         })
         .to_string();
 
-        let event = super::parse_sse_event(&payload, "provider-run-1")
-            .expect("wrapped payload should parse");
+        let event =
+            parse_sse_event(&payload, "provider-run-1").expect("wrapped payload should parse");
 
         match event {
             OpenCodeEvent::MessagePartDelta {
