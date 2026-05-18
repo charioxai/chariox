@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is scheduler workflow prompt dispatch ownership. Workflow prompt submission, local/remote dispatch, retryable provider dispatch, and workflow provider-run relaunch moved from `apps/kernel/src/scheduler/runtime.rs` into `apps/kernel/src/scheduler/runtime/prompt_dispatch.rs`; `runtime.rs` is 1,332 lines. Kernel lib target compiles and scheduler runtime tests pass.
+2026-05-18: Latest verified stage is kernel websocket integration harness ownership. Listener reservation, websocket frame helpers, response/event waiters, provider-run polling, and response variant assertions moved from `apps/kernel/tests/kernel_websocket_integration.rs` into `apps/kernel/tests/support/kernel_websocket.rs`; the scenario test file is 1,821 lines. Websocket integration tests pass 15 tests.
 
 ## Responsibility Rule
 
