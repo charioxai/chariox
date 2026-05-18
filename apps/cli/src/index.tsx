@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createMemo, onCleanup, onMount, untrack } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -19,13 +19,13 @@ import { createCliAutomationProcessComposition } from "./cli-automation-process-
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
+import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
-  ATTACHED_PROMPT_PLACEHOLDER,
   CHROME_UPDATE_THROTTLE_MS,
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
   LIVE_TRANSCRIPT_LIMIT,
@@ -107,38 +107,11 @@ import { createCliExitController } from "./cli-exit-controller.js"
 import {
   mergeUiPreferences,
   saveProviderPreferences,
-  saveSessionPromptState,
   saveUiPreferences,
 } from "./preferences.js"
-import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
-import {
-  createPromptAttachmentHighlightController,
-} from "./prompt-attachment-highlight-controller.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
-import {
-  createPromptDraftPersistController,
-} from "./prompt-draft-persist-controller.js"
-import { createPromptFocusRetentionController } from "./prompt-focus-retention-controller.js"
-import { createPromptHistoryAttachmentController } from "./prompt-history-attachment-controller.js"
 import { createPromptSurfaceMouseController } from "./prompt-surface-mouse-controller.js"
-import {
-  createPromptHistoryNavigationController,
-} from "./prompt-history-navigation-controller.js"
-import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
-import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
-import { createPromptSessionHistoryController } from "./prompt-session-history-controller.js"
 import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
-import {
-  createPromptPlaceholderSyncController,
-  derivePromptInputMaxHeight,
-} from "./prompt-surface-state.js"
-import {
-  createPromptInputHistoryRefreshController,
-} from "./prompt-input-history-refresh-controller.js"
-import { createPromptInputHistoryController } from "./prompt-input-history-controller.js"
-import {
-  createPromptSubmissionUiController,
-} from "./prompt-submission-ui-controller.js"
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
@@ -150,17 +123,13 @@ import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
 import {
-  promptAttachmentTokenKind,
   promptAttachmentTokenStyle,
-  promptAttachmentTokenStyleIds,
 } from "./prompt-attachment-tokens.js"
 import {
   cancelActivePrompt,
 } from "./prompt-runtime-api.js"
 import {
-  getPromptInputHistory,
   getSessionHistory,
-  recordPromptInputHistory,
 } from "./session-history-api.js"
 import { createPromptMetaRenderController } from "./prompt-meta-render-controller.js"
 import { renderPromptMeta } from "./prompt-meta-renderer.js"
@@ -179,12 +148,7 @@ import {
 } from "./provider-api.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { createProviderRecoveryController } from "./provider-recovery-controller.js"
-import {
-  createPromptContentChangeController,
-} from "./prompt-content-change-controller.js"
-import { createPromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
-import { createPromptSessionStatePersistenceController } from "./prompt-session-state-persistence-controller.js"
 import { createResponseLayoutController } from "./response-layout-controller.js"
 import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
@@ -248,7 +212,6 @@ import {
 } from "./transcript.js"
 import {
   decideBootstrapAction,
-  SESSION_NEW_PLACEHOLDER,
   formatSessionList,
   selectAttachableSession,
   type SessionListEntry,
@@ -1089,237 +1052,73 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     turnCompletionController.recordActivity()
   }
   const maybeScheduleConfirmedTurnCompletion = turnCompletionController.maybeScheduleConfirmed
-  const promptChromeProjectionController = createPromptChromeProjectionController({
+  const {
+    addPendingPromptAttachments,
+    appendPromptEchoToSharedHistory,
+    beginSubmittedPromptUi,
+    clearPendingPromptAttachments,
+    clearPendingPromptDraftPersist,
+    flushPendingPromptDraftPersist,
+    footerHint,
+    handlePromptContentChange,
+    navigatePromptHistoryInput,
+    persistablePromptDraft,
+    persistSessionPromptState,
+    promptAreaBackground,
+    promptHistoryHydrationController,
+    promptInputHistoryRefreshController,
+    promptInputMaxHeight,
+    promptPlaceholder,
+    recordPromptAreaHistoryEntry,
+    refreshPromptAttachmentHighlights,
+    removeLastPendingPromptAttachment,
+    removePromptAttachmentsForEdit,
+    restoreFailedPromptUi,
+    retainPromptFocus,
+    scheduleSharedPromptInputHistoryRefresh,
+    sessionStatusMode,
+    setPromptText,
+    syncPromptPlaceholder,
+    syncPromptTextSnapshot,
+  } = createCliPromptSurfaceComposition({
+    client,
+    appLogger,
+    formatError,
+    scheduleTimer: startTimeout,
+    clearTimer: clearTimeout,
     daemonDisconnected,
     working,
-    hasActivePrompt: anyPromptWork,
+    anyPromptWork,
     submitting,
-    queueDepth: focusedQueueDepth,
+    focusedQueueDepth,
     fatalError,
-    activePromptId: () => focusedActivePrompt()?.id ?? null,
+    focusedActivePrompt,
     statusLine,
     isAttached,
-    workflowScreenActive: workflowScreenShowing,
+    workflowScreenShowing,
     workflowPromptState,
-    attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
-    detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
-    trackThemeRevision: () => themeRevision(),
-    attachedBackground: () => theme.backgroundPanel,
-    detachedBackground: () => theme.backgroundElement,
-    workflowBackground: () => theme.backgroundElement,
-  })
-  const sessionStatusMode = promptChromeProjectionController.sessionStatusMode
-  const footerHint = promptChromeProjectionController.footerHint
-  const promptPlaceholder = promptChromeProjectionController.promptPlaceholder
-  const promptAreaBackground = promptChromeProjectionController.promptAreaBackground
-  const promptHistoryRestoreController = createPromptHistoryRestoreController({
-    getPreferences: () => untrack(preferencesState),
+    themeRevision,
+    preferencesState,
+    setPreferencesState,
     setPromptHistoryEntries,
-    resetPromptHistoryNavigation: () => {
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-    },
-    setPromptText: (text) => {
-      setPromptText(text)
-    },
-  })
-  const restorePromptHistory = promptHistoryRestoreController.restore
-  const promptSessionStatePersistenceController = createPromptSessionStatePersistenceController({
-    updatePreferences: (updater) => {
-      setPreferencesState((current) => updater(current))
-    },
-    savePromptState: saveSessionPromptState,
-  })
-  const persistSessionPromptState = promptSessionStatePersistenceController.persist
-  const promptDraftPersistController = createPromptDraftPersistController({
-    delayMs: 300,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    persistPromptDraft: ({ sessionId, promptDraft }) =>
-      persistSessionPromptState(sessionId, { promptDraft }),
-    onPersistError: (error, request) => {
-      appLogger?.warn("failed to persist prompt draft", {
-        session_id: request.sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  const clearPendingPromptDraftPersist = promptDraftPersistController.clearTimer
-  const flushPendingPromptDraftPersist = promptDraftPersistController.flush
-  const schedulePromptDraftPersist = promptDraftPersistController.schedule
-  const clearPromptDraftPersistQueue = promptDraftPersistController.clearPending
-  const promptInputHistoryController = createPromptInputHistoryController({
-    getCurrentSessionId: () => attachmentState()?.session_id ?? null,
-    getAttachmentId: () => attachmentState()?.id ?? null,
-    getEntries: promptHistoryEntries,
-    setEntries: setPromptHistoryEntries,
-    resetNavigation: () => {
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-    },
-    clearDraftPersistQueue: clearPromptDraftPersistQueue,
-    persistPromptState: persistSessionPromptState,
-    recordPromptInputHistory: (sessionId, attachmentId, kind, text) =>
-      recordPromptInputHistory(client, sessionId, attachmentId, kind, text),
-    onSharedHistoryPersistFailed: (sessionId, error) => {
-      appLogger?.warn("failed to persist shared prompt input history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    onPromptEchoPersistFailed: (sessionId, error) => {
-      appLogger?.warn("failed to persist prompt echo history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    onPromptStatePersistFailed: (sessionId, error) => {
-      appLogger?.warn("failed to persist session prompt state", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-    onRecordSharedHistoryFailed: (sessionId, error) => {
-      appLogger?.warn("failed to record shared prompt input history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  const promptHistoryHydrationController = createPromptHistoryHydrationController({
-    loadHistory: (sessionId) => getPromptInputHistory(client, sessionId),
-    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
-    applyHistory: async (sessionId, nextEntries, latestSequence) => {
-      await promptInputHistoryController.replaceFromHydration(sessionId, nextEntries, latestSequence)
-    },
-  })
-  const hydratePromptHistoryFromSession = (sessionId: string): Promise<void> =>
-    promptHistoryHydrationController.hydrate(sessionId)
-  const appendSharedPromptInputHistory = promptInputHistoryController.appendShared
-  const appendPromptEchoToSharedHistory = promptInputHistoryController.appendEcho
-  const promptInputHistoryRefreshController = createPromptInputHistoryRefreshController({
-    delayMs: 1500,
-    scheduleTimer: startTimeout,
-    clearTimer: clearTimeout,
-    refreshHistory: async (sessionId) => {
-      const history = await getPromptInputHistory(client, sessionId, promptInputHistoryController.latestSequence(), 500)
-      appendSharedPromptInputHistory(sessionId, history.entries)
-    },
-    onRefreshError: (error, sessionId) => {
-      appLogger?.warn("failed to refresh shared prompt input history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  const promptSessionHistoryController = createPromptSessionHistoryController({
-    currentSessionId: () => attachmentState()?.session_id ?? null,
-    navigationDraft: promptHistoryDraft,
-    currentPromptText: promptTextController.currentText,
-    scheduleHistoryRefresh: promptInputHistoryRefreshController.schedule,
-  })
-  const scheduleSharedPromptInputHistoryRefresh = promptSessionHistoryController.scheduleSharedRefresh
-  const persistablePromptDraft = promptSessionHistoryController.persistableDraft
-  const recordPromptAreaHistoryEntry = promptInputHistoryController.recordPromptAreaEntry
-  const syncPromptTextSnapshot = promptTextController.syncSnapshot
-  const promptAttachmentHighlightController = createPromptAttachmentHighlightController({
-    getPromptInput: promptInputRefController.currentOrNull,
-    getPendingAttachments: pendingAttachments,
-    styleIdForKind: (kind) => promptAttachmentTokenStyleIds[promptAttachmentTokenKind(kind)],
-  })
-  const refreshPromptAttachmentHighlights = promptAttachmentHighlightController.refresh
-  const setPromptText = promptTextController.setText
-  const promptInputMaxHeight = () => derivePromptInputMaxHeight({
-    attached: isAttached(),
-    terminalHeight: dimensions().height,
-  })
-  const promptFocusRetentionController = createPromptFocusRetentionController({
-    delayMs: 0,
-    scheduleTimer: startTimeout,
-    isAttached,
-    focusPromptInput: () => {
-      promptInputRefController.focus()
-    },
-  })
-  const retainPromptFocus = promptFocusRetentionController.retainFocus
-  const promptHistoryNavigationController = createPromptHistoryNavigationController({
-    getPromptText: promptTextController.currentText,
-    getEntries: promptHistoryEntries,
-    getNavigationIndex: promptHistoryIndex,
-    getNavigationDraft: promptHistoryDraft,
-    setNavigationIndex: setPromptHistoryIndex,
-    setNavigationDraft: setPromptHistoryDraft,
-    setPromptText,
-    getSessionId: () => attachmentState()?.session_id ?? null,
-    schedulePromptDraftPersist,
-    retainPromptFocus,
-  })
-  const navigatePromptHistoryInput = promptHistoryNavigationController.navigate
-  const promptPlaceholderSyncController = createPromptPlaceholderSyncController({
-    getPromptInput: promptInputRefController.currentOrNull,
-    getPlaceholder: promptPlaceholder,
-  })
-  const syncPromptPlaceholder = promptPlaceholderSyncController.sync
-  createEffect(() => {
-    promptPlaceholder()
-    syncPromptPlaceholder()
-  })
-  const promptAttachmentController = createPromptAttachmentController({
-    getPromptInput: promptInputRefController.currentOrNull,
-    getPromptText: promptTextController.currentText,
-    setPromptText,
+    setPromptHistoryIndex,
+    setPromptHistoryDraft,
+    promptTextController,
+    attachmentState,
+    promptHistoryEntries,
+    promptHistoryIndex,
+    promptHistoryDraft,
+    promptInputRefController,
     pendingAttachments,
-    setPendingAttachments: (attachments) => setPendingAttachments(attachments),
-    updatePendingAttachments: (updater) => setPendingAttachments((current) => updater(current)),
-    refreshHighlights: refreshPromptAttachmentHighlights,
-    updateSessionChrome: () => updateSessionChrome(),
+    setPendingAttachments,
+    terminalHeight: () => dimensions().height,
     requestRender: () => (renderer as { requestRender?: () => void }).requestRender?.(),
-  })
-  const clearPendingPromptAttachments = promptAttachmentController.clear
-  const syncPendingPromptAttachmentsFromText = promptAttachmentController.syncFromText
-  const removeLastPendingPromptAttachment = promptAttachmentController.removeLast
-  const addPendingPromptAttachments = promptAttachmentController.addStoredFiles
-  const removePromptAttachmentsForEdit = promptAttachmentController.removeForEdit
-
-  const promptSubmissionUiController = createPromptSubmissionUiController({
-    getSessionId: () => attachmentState()?.session_id ?? null,
-    getPendingAttachments: pendingAttachments,
-    resetPromptHistoryNavigation: () => {
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-    },
-    clearDraftPersistQueue: clearPromptDraftPersistQueue,
-    clearPromptText: () => {
-      promptTextController.clear()
-    },
-    setPromptText,
-    syncPromptTextSnapshot,
-    clearPendingAttachments: clearPendingPromptAttachments,
-    setPendingAttachments: (attachments) => setPendingAttachments(attachments),
-    refreshAttachmentHighlights: refreshPromptAttachmentHighlights,
-    syncCommandCenter,
-    retainPromptFocus,
-    clearCommandCenter,
-    schedulePromptDraftPersist,
     updateSessionChrome: () => updateSessionChrome(),
-  })
-  const beginSubmittedPromptUi = promptSubmissionUiController.begin
-  const restoreFailedPromptUi = promptSubmissionUiController.restore
-  const promptHistoryAttachmentController = createPromptHistoryAttachmentController({
-    getAttachedSessionId: () => attachmentState()?.session_id ?? null,
-    restorePromptHistory,
-    invalidateHydration: promptHistoryHydrationController.invalidate,
-    hydratePromptHistory: hydratePromptHistoryFromSession,
-    isCurrentSession: (sessionId) => attachmentState()?.session_id === sessionId,
-    warnHydrationError: (sessionId, error) => {
-      appLogger?.warn("failed to hydrate prompt history from session history", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  createEffect(() => {
-    void promptHistoryAttachmentController.sync()
+    syncCommandCenter,
+    clearCommandCenter,
+    attachPromptFiles: (files, insertAt) => attachPromptFiles(files, insertAt),
+    getCwd: () => process.cwd(),
+    flashFooter: (message, tone) => flashFooter(message, tone),
   })
   const sessionBrowserProjectionController = createSessionBrowserProjectionController({
     isAttached,
@@ -1382,33 +1181,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const openTerminalPairingDialog = dialogOverlayController.openTerminalPairing
   const openSessionBrowserDialog = dialogOverlayController.openSessionBrowser
   const toggleHotkeys = dialogOverlayController.toggleHotkeys
-  const promptContentChangeController = createPromptContentChangeController({
-    getPromptText: () => promptInputRefController.hasInput() ? promptTextController.currentText() : null,
-    isAttached,
-    getPreviousSnapshot: promptTextController.snapshot,
-    isProgrammaticMutation: promptTextController.isProgrammaticMutation,
-    isPromptHistoryActive: () => promptHistoryIndex() !== null || promptHistoryDraft() !== null,
-    getSessionId: () => attachmentState()?.session_id,
-    getCwd: () => process.cwd(),
-    setPromptTextSnapshot: promptTextController.setSnapshot,
-    resetPromptHistory: (draft) => {
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(draft)
-    },
-    syncPendingAttachmentsFromText: syncPendingPromptAttachmentsFromText,
-    setPromptText,
-    syncCommandCenter,
-    schedulePromptDraftPersist,
-    attachPromptFiles: (files, insertAt) => attachPromptFiles(files, insertAt),
-    onDropFailed: (error, files) => {
-      appLogger?.warn("prompt attachment drop failed", {
-        error: formatError(error),
-        paths: files.map((file) => file.path),
-      })
-      flashFooter(`failed to attach files: ${formatError(error)}`, "error")
-    },
-  })
-  const handlePromptContentChange = promptContentChangeController.handleChange
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
   const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
     expandedTurnIdsForAgent,

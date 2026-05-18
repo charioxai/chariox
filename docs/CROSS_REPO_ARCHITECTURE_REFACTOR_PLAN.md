@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI input/submit routing ownership. Slash commands, workspace shell submit, workflow/provider/normal prompt submit, focused interactions, global shortcuts, prompt keydown, waiting-room keys, and stdin dispatch moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-input-routing-composition.ts`; `index.tsx` is 3,310 lines and the new module is 498 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI prompt surface ownership. Prompt chrome, draft/history persistence, prompt input history hydration/refresh, prompt attachments, submission UI reset/restore, placeholder sync, focus retention, and prompt content-change handling moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-prompt-surface-composition.ts`; `index.tsx` is 3,082 lines and the new module is 408 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 
