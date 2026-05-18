@@ -8,6 +8,7 @@ mod workflow_canvas;
 mod workflow_definition;
 mod workflow_graph;
 mod workflow_publication;
+mod workflow_scheduling;
 mod workspace_links;
 
 pub use agent_config::{
