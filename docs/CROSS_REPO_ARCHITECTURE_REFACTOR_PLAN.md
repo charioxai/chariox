@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Codex runtime provider boundary split. `apps/kernel/src/provider/codex_runtime.rs` is now a 22-line provider runtime barrel, with transcript projection and turn-completion tests split under `provider/codex_runtime/tests/`. `cargo test --manifest-path apps/kernel/Cargo.toml provider::codex_runtime --lib -- --test-threads=1` passes 22 tests.
+2026-05-18: Latest verified stage is root kernel app test split. `apps/kernel/src/lib_tests.rs` now only hosts shared helpers and modules for app lifecycle, remote lease/projection, provider/session behavior, and capability boundaries; the largest split file is 685 lines. `cargo test --manifest-path apps/kernel/Cargo.toml lib_tests --lib -- --test-threads=1` passes 30 tests.
 
 ## Responsibility Rule
 
