@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web waiting-room runtime connection. `WaitingRoomRuntimeConnectionComposition` owns bootstrap clients, runtime views, cached inventory persistence, connection-failure display, and refresh scheduling. `client.ts` is 2,777 lines; web suite passes 1,022 tests; lint and diff checks pass. Next highest-responsibility slice is terminal prompt/output/freeform composition in `client.ts`.
+2026-05-18: Latest verified stage is Cloud web terminal prompt composition. `TerminalPromptComposition` owns prompt state snapshots, draft/history persistence, attachments, send/stop, prompt controls, slash/command-center behavior, and prompt DOM routing. `client.ts` is 2,567 lines; web suite passes 1,024 tests; repo lint and diff checks pass. Next highest-responsibility slice is terminal output/freeform turn composition in `client.ts`.
 
 ## Responsibility Rule
 
