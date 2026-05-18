@@ -4,8 +4,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    OpenCodeEvent, OpenCodeMessageInfo, OpenCodePart, OpenCodePermissionRequest,
-    OpenCodeSessionStatus,
+    session::OpenCodeSessionStatus, OpenCodeEvent, OpenCodeMessageInfo, OpenCodePart,
+    OpenCodePermissionRequest,
 };
 
 #[derive(Debug, Deserialize)]
