@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is Cloud web. Terminal prompt drafts and history-key DOM handling now stay in the prompt controllers; `client.ts` is 4,369 lines and the web suite passes with 948 tests. Next highest-responsibility slice is freeform session alias, focus, and pane-config helper ownership.
+2026-05-18: Latest verified stage is Cloud web. `FreeformPaneInteractionController` now owns pane focus, command-center context, agent list/focus slash commands, focused config persistence, and snapshot alias restore; `client.ts` is 4,189 lines and the web suite passes with 951 tests. Next highest-responsibility slice is freeform session alias ownership.
 
 ## Responsibility Rule
 
