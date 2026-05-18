@@ -4,8 +4,8 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type TextareaRenderable } from "@opentui/core"
-import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
+import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, onCleanup, onMount, untrack } from "solid-js"
 import { reconcile } from "solid-js/store"
 
@@ -18,6 +18,7 @@ import { createCliBackgroundRuntimeComposition } from "./cli-background-runtime-
 import { createCliAutomationProcessComposition } from "./cli-automation-process-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
+import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
@@ -48,7 +49,6 @@ import {
   createCliRendererFocusController,
 } from "./cli-renderer-focus-controller.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
-import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
 import { createCommandCenterLayoutController } from "./command-center-layout-controller.js"
 import { createCommandCenterController } from "./command-center-controller.js"
@@ -63,7 +63,6 @@ import { createAgentPaneTranscriptRenderController } from "./agent-pane-transcri
 import { createAgentPaneTranscriptRetentionController } from "./agent-pane-transcript-retention-controller.js"
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
-import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createClipboardController } from "./clipboard-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
@@ -74,8 +73,6 @@ import { createHistoryLoadingRenderController } from "./history-loading-render-c
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
-import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
-import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
 import {
   createInteractionProjectionController,
@@ -85,7 +82,6 @@ import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import { createSessionBrowserController } from "./session-browser-controller.js"
-import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import {
   clampSessionBrowserIndex,
 } from "./session-browser-key-policy.js"
@@ -129,7 +125,6 @@ import {
   createPromptHistoryNavigationController,
 } from "./prompt-history-navigation-controller.js"
 import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
-import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptChromeProjectionController } from "./prompt-chrome-projection-controller.js"
 import { createPromptSessionHistoryController } from "./prompt-session-history-controller.js"
 import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
@@ -144,12 +139,9 @@ import { createPromptInputHistoryController } from "./prompt-input-history-contr
 import {
   createPromptSubmissionUiController,
 } from "./prompt-submission-ui-controller.js"
-import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
-import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
 import {
   createPromptTextController,
 } from "./prompt-text-controller.js"
-import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
 import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
@@ -158,18 +150,12 @@ import {
   createTurnCompletionController,
 } from "./turn-completion-controller.js"
 import {
-  preparePromptAttachmentsForSubmit,
-  promptAttachmentTransferIsForced,
-} from "./prompt-attachment-transfer.js"
-import {
   promptAttachmentTokenKind,
   promptAttachmentTokenStyle,
   promptAttachmentTokenStyleIds,
 } from "./prompt-attachment-tokens.js"
 import {
   cancelActivePrompt,
-  respondToInteraction,
-  submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 import {
   getPromptInputHistory,
@@ -308,9 +294,7 @@ import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inve
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
-import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
 import {
-  createWorkspaceShellSubmitController,
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
 import {
@@ -326,7 +310,6 @@ import {
 import {
   createWorkflowNodeInstructionsEditorController,
 } from "./workflow-node-instructions-editor-controller.js"
-import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import { forgetRemoteMachine } from "./remote-machine-api.js"
@@ -341,7 +324,6 @@ import {
 } from "./transcript-preview.js"
 import {
   buildTranscriptEntryRenderable,
-  renderPromptTranscript,
   resolveTranscriptSurfaceTone,
   transcriptRenderMode,
   transcriptSurfacePalette,
@@ -2881,21 +2863,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const restoreTerminalAndExit = terminalExitController.restoreAndExit
 
-  const slashCommandSubmitController = createSlashCommandSubmitController({
+  const {
+    cycleFocusedInteractionChoice,
+    handlePromptKeyDown,
+    handleSigint,
+    handleStdinData,
+    requestPromptStop,
+    submitFocusedInteractionChoice,
+    submitPrompt,
+    submitWorkspaceShellCommand,
+  } = createCliInputRoutingComposition({
+    client,
+    options,
+    appLogger,
+    formatError,
     isAttached,
-    getSessionId: () => sessionState().id,
+    sessionState,
     recordPromptAreaHistoryEntry,
-    clearPromptText: () => promptTextController.clear(),
+    promptTextController,
     setPromptHistoryIndex,
     setPromptHistoryDraft,
     clearCommandCenter,
     flashFooter,
-    logError: (message, fields) => appLogger?.error(message, fields),
-    formatError,
-    onExit: requestExit,
-    onWaiting: requestWaitingRoom,
-    onStop: () => requestPromptStop(),
-    handleAttachmentCommand: handleAttachmentCommand,
+    requestExit,
+    requestWaitingRoom,
+    promptStopController,
+    handleAttachmentCommand,
     handleSessionCommand,
     handleProviderCommand,
     handleModelCommand,
@@ -2913,289 +2906,79 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,
-  })
-
-  const workspaceShellSubmitController = createWorkspaceShellSubmitController({
-    client,
     workspaceShellContext,
-    setWorkspaceShellContext: (context) => {
-      setWorkspaceShellContext(context)
-    },
-    nextEntryId: () => {
-      const id = workspaceShellEntryCounter() + 1
-      setWorkspaceShellEntryCounter((counter) => counter + 1)
-      return id
-    },
-    setWorkspaceShellEntries: (updater) => {
-      setWorkspaceShellEntries(updater)
-    },
-    sessionState,
-    refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+    setWorkspaceShellContext,
+    workspaceShellEntryCounter,
+    setWorkspaceShellEntryCounter,
+    setWorkspaceShellEntries,
     applySessionState,
     selectedWorkflowId,
     setSelectedWorkflowId,
     setSelectedWorkflowNodeId,
     rebuildTranscript,
-    flashFooter,
-    onSessionRefreshError: (sessionId, error) => {
-      appLogger?.warn("workspace shell session refresh failed", {
-        session_id: sessionId,
-        error: formatError(error),
-      })
-    },
-  })
-  const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
-
-  const workflowPromptSubmitController = createWorkflowPromptSubmitController({
-    getWorkflowPromptState: workflowPromptState,
-    getPendingAttachmentCount: () => pendingAttachments().length,
+    workflowPromptState,
+    pendingAttachments,
     beginSubmittedPromptUi,
     restoreFailedPromptUi,
     invokeWorkflowEndpoint,
-    getSessionId: () => sessionState().id,
-    recordPromptAreaHistoryEntry,
-    flashFooter,
-    formatError,
-  })
-
-  const providerNamespaceSubmitController = createProviderNamespaceSubmitController({
-    getFocusedProvider: focusedBackendProvider,
+    focusedBackendProvider,
     workflowScreenShowing,
-    getPendingAttachmentCount: () => pendingAttachments().length,
     waitForPendingAgentFocusTransition,
-    getFocusedAgentId: focusedAgentId,
-    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
+    focusedAgentId,
+    primaryTranscriptRuntimeStore,
     setProviderActivityLabel,
     setActiveStatusLabel,
-    getAttachment: attachmentState,
-    getSessionId: () => sessionState().id,
-    clearPromptText: () => promptTextController.clear(),
-    beginSubmittedPromptUi,
-    renderPromptTranscript,
+    attachmentState,
     appendUserPrompt,
-    submitProviderNamespacePrompt: (attachmentId, targetAgentId, forwardedPrompt) =>
-      submitPromptWithRecovery(
-        client,
-        sessionState().id,
-        attachmentId,
-        targetAgentId,
-        forwardedPrompt,
-        [],
-        options,
-        appLogger,
-      ),
-    applySessionState,
     setStreamingAgentId,
     setWorking,
     updateSessionChrome,
-    recordPromptAreaHistoryEntry,
-    clearCommandCenter,
-    restoreFailedPromptUi,
-    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
+    promptSubmissionAgentStateController,
     clearAgentBusy,
-    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
     setSubmitting,
     setFatalError,
-    flashFooter,
-    logError: (message, fields) => appLogger?.error(message, fields),
-    formatError,
-  })
-
-  const normalPromptSubmitController = createNormalPromptSubmitController({
-    getPendingAttachments: pendingAttachments,
-    waitForPendingAgentFocusTransition,
-    getFocusedAgentId: focusedAgentId,
-    clearActiveToolLabels: primaryTranscriptRuntimeStore.clearActiveToolLabels,
-    setProviderActivityLabel,
-    setActiveStatusLabel,
-    getAttachment: attachmentState,
-    getSessionId: () => sessionState().id,
-    clearPromptText: () => promptTextController.clear(),
-    shouldInlineLocalFiles: () => Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
-    preparePromptAttachmentsForSubmit,
-    beginSubmittedPromptUi,
-    renderPromptTranscript,
-    appendUserPrompt,
-    submitPrompt: (attachmentId, targetAgentId, prompt, attachments) =>
-      submitPromptWithRecovery(
-        client,
-        sessionState().id,
-        attachmentId,
-        targetAgentId,
-        prompt,
-        attachments,
-        options,
-        appLogger,
-      ),
-    applySessionState,
-    setStreamingAgentId,
-    setWorking,
-    updateSessionChrome,
     setStatusLine,
-    recordPromptAreaHistoryEntry,
-    restoreFailedPromptUi,
-    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
-    clearAgentBusy,
-    setSubmittingAgentId: promptSubmissionAgentStateController.setSubmittingAgentId,
-    setSubmitting,
-    setFatalError,
-    flashFooter,
-    logInfo: (message, fields) => appLogger?.info(message, fields),
-    logError: (message, fields) => appLogger?.error(message, fields),
-    formatError,
-  })
-
-  const promptSubmitCoordinator = createPromptSubmitCoordinator({
-    getPromptText: promptInputRefController.plainText,
+    promptInputRefController,
     ensureBackgroundPollersStarted: () => ensureBackgroundPollersStarted(),
-    getPendingAttachmentCount: () => pendingAttachments().length,
-    clearPromptText: () => promptTextController.clear(),
-    workflowScreenShowing,
-    submitWorkspaceShellCommand: async (rawPrompt) => {
-      await submitWorkspaceShellCommand(rawPrompt)
-    },
-    workflowNodeInstructionsEditorOpen: () => Boolean(workflowNodeInstructionsEditor()),
-    submitSlashCommand: async (rawPrompt, submitOptions) =>
-      Boolean(await slashCommandSubmitController.submit(rawPrompt, submitOptions)),
-    submitProviderNamespacePrompt: (rawPrompt) => providerNamespaceSubmitController.submit(rawPrompt),
-    isAttached,
-    submitWorkflowPrompt: (rawPrompt) => workflowPromptSubmitController.submit(rawPrompt),
-    submitNormalPrompt: (rawPrompt) => normalPromptSubmitController.submit(rawPrompt),
-    flashFooter,
-    formatError,
-  })
-  const submitPrompt = promptSubmitCoordinator.submit
-
-  const requestPromptStop = async () => {
-    await promptStopController.request()
-  }
-
-  const focusedInteractionChoiceController = createFocusedInteractionChoiceController({
-    getFocusedInteraction: focusedAgentInteraction,
-    isAttached,
-    getSessionId: () => sessionState().id,
-    getSelectedIndex: interactionChoiceStore.getSelectedIndex,
-    setSelectedIndex: interactionChoiceStore.setSelectedIndex,
-    getCustomReply: interactionChoiceStore.customReply,
-    setCustomReply: interactionChoiceStore.setCustomReply,
-    clearCustomReply: interactionChoiceStore.clearCustomReply,
-    isCustomEditing: interactionChoiceStore.isCustomEditing,
-    setCustomEditing: interactionChoiceStore.setCustomEditing,
+    workflowNodeInstructionsEditor,
+    focusedAgentInteraction,
+    interactionChoiceStore,
     renderAgentInteractions,
     applyResponseLayout,
-    respondToInteraction: (sessionId, interactionId, choiceId, customReply) =>
-      respondToInteraction(client, sessionId, interactionId, choiceId, customReply),
-    applySessionState,
-    flashFooter,
-    formatError,
-  })
-  const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
-  const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
-  const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
-
-  const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleHotkeysToggleShortcut,
     dialogOverlayOpen,
     closeActiveDialogOverlay,
-    requestExit: () => {
-      void requestExit()
-    },
-    requestPromptStop: () => {
-      void requestPromptStop()
-    },
     activePrompt,
-  })
-  useKeyboard(globalKeyboardShortcutController.handleKey)
-  const handleSigint = globalKeyboardShortcutController.handleSigint
-  const promptKeyDownController = createPromptKeyDownController({
-    handleFocusedInteractionKey,
     handleCommandCenterKey,
-    isAttached,
-    promptFocused: promptInputRefController.isFocused,
     commandCenterOpen,
-    currentPromptText: () => promptTextController.currentText(),
-    promptCursorOffset: () => promptTextController.cursorOffset(),
     promptHistoryIndex,
     promptHistoryDraft,
     navigatePromptHistoryInput,
-    handleHotkeysToggleShortcut,
-  })
-  const handlePromptKeyDown = promptKeyDownController.handleKeyDown
-  const promptTurnNavigationController = createPromptTurnNavigationController({
-    isAttached,
-    getPromptText: () => promptInputRefController.hasInput() ? promptTextController.currentText() : undefined,
-    getPromptOffsets: () => visibleTranscriptEntries()
-      .filter((entry) => entry.role === "user")
-      .map((entry) => primaryTranscriptRuntimeStore.entryWrapperY(entry.id))
-      .filter((offset): offset is number => offset !== null),
-    getScrollState: transcriptScrollboxRefController.scrollState,
-    scrollTo: transcriptScrollboxRefController.scrollTo,
-    requestRender: transcriptScrollboxRefController.requestRender,
-    setLastTranscriptScrollTop: primaryTranscriptRuntimeStore.setLastScrollTop,
-  })
-  const waitingRoomKeyController = createWaitingRoomKeyController({
-    isAttached,
-    hotkeysOpen: dialogOverlayOpen,
-    promptFocused: promptInputRefController.isFocused,
-    commandCenterOpen,
-    commandCenterQuery: () => commandCenterController.query(),
-    getWaitingRoomState: waitingRoomState,
-    getSessions: availableSessions,
-    getProviderCatalog: providerCatalogState,
-    getRemoteState: () => ({
-      relay: relayStatusState(),
-      machines: remoteMachinesState(),
-      kernels: remoteKernelsState(),
-      terminals: terminalsState(),
-      slices: slicesState(),
-    }),
-    getThemeRegistry: themeRegistryState,
+    visibleTranscriptEntries,
+    transcriptScrollboxRefController,
+    commandCenterController,
+    waitingRoomState,
+    availableSessions,
+    providerCatalogState,
+    relayStatusState,
+    remoteMachinesState,
+    remoteKernelsState,
+    terminalsState,
+    slicesState,
+    themeRegistryState,
     reconcileWaitingRoom,
     setWaitingRoomState,
-    rebuildTranscript,
-    applyLifecycleAction: (action) => {
-      void applyWaitingRoomSessionLifecycleAction(action)
-    },
-    activateWaitingRoom: () => {
-      void activateWaitingRoom()
-    },
-  })
-  const stdinKeyController = createCliStdinKeyController({
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
-    dialogOverlayOpen,
-    closeActiveDialogOverlay,
+    applyWaitingRoomSessionLifecycleAction,
+    activateWaitingRoom,
     handleSessionBrowserKey,
-    requestExit: () => {
-      void requestExit()
-    },
-    handleFocusedInteractionKey,
-    promptFocused: promptInputRefController.isFocused,
-    commandCenterOpen,
-    commandCenterQuery: () => commandCenterController.query(),
-    clearCommandCenter,
     toggleWorkspaceScreen,
-    isAttached,
     workflowScreenActive,
     cycleWorkflowCanvasNode,
-    cycleAgentFocus: () => {
-      void handleCycleAgentFocus()
-    },
+    handleCycleAgentFocus,
     copyPromptSelection,
-    activePrompt,
-    requestPromptStop: () => {
-      void requestPromptStop()
-    },
     removePromptAttachmentsForEdit,
-    currentPromptText: () => promptTextController.currentText(),
-    pendingAttachmentCount: () => pendingAttachments().length,
     removeLastPendingPromptAttachment,
-    handlePromptTurnNavigationKey: (event) => promptTurnNavigationController.handleKey({
-      ...event,
-      eventType: event.eventType ?? "",
-    }),
-    handleWaitingRoomKey: waitingRoomKeyController.handleKey,
   })
-  const handleStdinData = stdinKeyController.handleData
 
   const automationProcessComposition = createCliAutomationProcessComposition({
     client,

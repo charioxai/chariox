@@ -1,0 +1,498 @@
+import { parseKeypress } from "@opentui/core"
+import { useKeyboard } from "@opentui/solid"
+
+import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
+import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
+import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
+import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
+import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
+import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
+import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
+import { createProviderNamespaceSubmitController } from "./provider-namespace-submit-controller.js"
+import {
+  preparePromptAttachmentsForSubmit,
+  promptAttachmentTransferIsForced,
+} from "./prompt-attachment-transfer.js"
+import {
+  respondToInteraction,
+  submitPromptWithRecovery,
+} from "./prompt-runtime-api.js"
+import { getSessionState } from "./session-api.js"
+import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
+import { renderPromptTranscript } from "./transcript-render.js"
+import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
+import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
+import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
+
+type AnyFn = (...args: any[]) => any
+
+export type CliInputRoutingCompositionDeps = {
+  client: any
+  options: any
+  appLogger: any
+  formatError: AnyFn
+  isAttached: AnyFn
+  sessionState: AnyFn
+  recordPromptAreaHistoryEntry: AnyFn
+  promptTextController: {
+    clear: AnyFn
+    currentText: AnyFn
+    cursorOffset: AnyFn
+  }
+  setPromptHistoryIndex: AnyFn
+  setPromptHistoryDraft: AnyFn
+  clearCommandCenter: AnyFn
+  flashFooter: AnyFn
+  requestExit: AnyFn
+  requestWaitingRoom: AnyFn
+  promptStopController: {
+    request: AnyFn
+  }
+  handleAttachmentCommand: AnyFn
+  handleSessionCommand: AnyFn
+  handleProviderCommand: AnyFn
+  handleModelCommand: AnyFn
+  handleVariantCommand: AnyFn
+  handleViewCommand: AnyFn
+  handleAgentCommand: AnyFn
+  handleKernelCommand: AnyFn
+  handleMachineCommand: AnyFn
+  handleSliceCommand: AnyFn
+  handleRelayCommand: AnyFn
+  handleCloudCommand: AnyFn
+  handleConfigCommand: AnyFn
+  handleWorkspaceCommand: AnyFn
+  handleWorktreeCommand: AnyFn
+  handleWorkflowCommand: AnyFn
+  handleMcpCommand: AnyFn
+  handleSkillCommand: AnyFn
+  workspaceShellContext: AnyFn
+  setWorkspaceShellContext: AnyFn
+  workspaceShellEntryCounter: AnyFn
+  setWorkspaceShellEntryCounter: AnyFn
+  setWorkspaceShellEntries: AnyFn
+  applySessionState: AnyFn
+  selectedWorkflowId: AnyFn
+  setSelectedWorkflowId: AnyFn
+  setSelectedWorkflowNodeId: AnyFn
+  rebuildTranscript: AnyFn
+  workflowPromptState: AnyFn
+  pendingAttachments: AnyFn
+  beginSubmittedPromptUi: AnyFn
+  restoreFailedPromptUi: AnyFn
+  invokeWorkflowEndpoint: AnyFn
+  focusedBackendProvider: AnyFn
+  workflowScreenShowing: AnyFn
+  waitForPendingAgentFocusTransition: AnyFn
+  focusedAgentId: AnyFn
+  primaryTranscriptRuntimeStore: {
+    clearActiveToolLabels: AnyFn
+    entryWrapperY: AnyFn
+    setLastScrollTop: AnyFn
+  }
+  setProviderActivityLabel: AnyFn
+  setActiveStatusLabel: AnyFn
+  attachmentState: AnyFn
+  appendUserPrompt: AnyFn
+  setStreamingAgentId: AnyFn
+  setWorking: AnyFn
+  updateSessionChrome: AnyFn
+  promptSubmissionAgentStateController: {
+    getSubmittingAgentId: AnyFn
+    setSubmittingAgentId: AnyFn
+  }
+  clearAgentBusy: AnyFn
+  setSubmitting: AnyFn
+  setFatalError: AnyFn
+  setStatusLine: AnyFn
+  promptInputRefController: {
+    plainText: AnyFn
+    isFocused: AnyFn
+    hasInput: AnyFn
+  }
+  ensureBackgroundPollersStarted: AnyFn
+  workflowNodeInstructionsEditor: AnyFn
+  focusedAgentInteraction: AnyFn
+  interactionChoiceStore: {
+    getSelectedIndex: AnyFn
+    setSelectedIndex: AnyFn
+    customReply: AnyFn
+    setCustomReply: AnyFn
+    clearCustomReply: AnyFn
+    isCustomEditing: AnyFn
+    setCustomEditing: AnyFn
+  }
+  renderAgentInteractions: AnyFn
+  applyResponseLayout: AnyFn
+  handleHotkeysToggleShortcut: AnyFn
+  dialogOverlayOpen: AnyFn
+  closeActiveDialogOverlay: AnyFn
+  activePrompt: AnyFn
+  handleCommandCenterKey: AnyFn
+  commandCenterOpen: AnyFn
+  promptHistoryIndex: AnyFn
+  promptHistoryDraft: AnyFn
+  navigatePromptHistoryInput: AnyFn
+  visibleTranscriptEntries: AnyFn
+  transcriptScrollboxRefController: {
+    scrollState: AnyFn
+    scrollTo: AnyFn
+    requestRender: AnyFn
+  }
+  commandCenterController: {
+    query: AnyFn
+  }
+  waitingRoomState: AnyFn
+  availableSessions: AnyFn
+  providerCatalogState: AnyFn
+  relayStatusState: AnyFn
+  remoteMachinesState: AnyFn
+  remoteKernelsState: AnyFn
+  terminalsState: AnyFn
+  slicesState: AnyFn
+  themeRegistryState: AnyFn
+  reconcileWaitingRoom: AnyFn
+  setWaitingRoomState: AnyFn
+  applyWaitingRoomSessionLifecycleAction: AnyFn
+  activateWaitingRoom: AnyFn
+  handleSessionBrowserKey: AnyFn
+  toggleWorkspaceScreen: AnyFn
+  workflowScreenActive: AnyFn
+  cycleWorkflowCanvasNode: AnyFn
+  handleCycleAgentFocus: AnyFn
+  copyPromptSelection: AnyFn
+  removePromptAttachmentsForEdit: AnyFn
+  removeLastPendingPromptAttachment: AnyFn
+}
+
+export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
+  const slashCommandSubmitController = createSlashCommandSubmitController({
+    isAttached: deps.isAttached,
+    getSessionId: () => deps.sessionState().id,
+    recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
+    clearPromptText: () => deps.promptTextController.clear(),
+    setPromptHistoryIndex: deps.setPromptHistoryIndex,
+    setPromptHistoryDraft: deps.setPromptHistoryDraft,
+    clearCommandCenter: deps.clearCommandCenter,
+    flashFooter: deps.flashFooter,
+    logError: (message, fields) => deps.appLogger?.error(message, fields),
+    formatError: deps.formatError,
+    onExit: deps.requestExit,
+    onWaiting: deps.requestWaitingRoom,
+    onStop: () => requestPromptStop(),
+    handleAttachmentCommand: deps.handleAttachmentCommand,
+    handleSessionCommand: deps.handleSessionCommand,
+    handleProviderCommand: deps.handleProviderCommand,
+    handleModelCommand: deps.handleModelCommand,
+    handleVariantCommand: deps.handleVariantCommand,
+    handleViewCommand: deps.handleViewCommand,
+    handleAgentCommand: deps.handleAgentCommand,
+    handleKernelCommand: deps.handleKernelCommand,
+    handleMachineCommand: deps.handleMachineCommand,
+    handleSliceCommand: deps.handleSliceCommand,
+    handleRelayCommand: deps.handleRelayCommand,
+    handleCloudCommand: deps.handleCloudCommand,
+    handleConfigCommand: deps.handleConfigCommand,
+    handleWorkspaceCommand: deps.handleWorkspaceCommand,
+    handleWorktreeCommand: deps.handleWorktreeCommand,
+    handleWorkflowCommand: deps.handleWorkflowCommand,
+    handleMcpCommand: deps.handleMcpCommand,
+    handleSkillCommand: deps.handleSkillCommand,
+  })
+
+  const workspaceShellSubmitController = createWorkspaceShellSubmitController({
+    client: deps.client,
+    workspaceShellContext: deps.workspaceShellContext,
+    setWorkspaceShellContext: (context) => {
+      deps.setWorkspaceShellContext(context)
+    },
+    nextEntryId: () => {
+      const id = deps.workspaceShellEntryCounter() + 1
+      deps.setWorkspaceShellEntryCounter((counter: number) => counter + 1)
+      return id
+    },
+    setWorkspaceShellEntries: (updater) => {
+      deps.setWorkspaceShellEntries(updater)
+    },
+    sessionState: deps.sessionState,
+    refreshSessionState: (sessionId) => getSessionState(deps.client, sessionId),
+    applySessionState: deps.applySessionState,
+    selectedWorkflowId: deps.selectedWorkflowId,
+    setSelectedWorkflowId: deps.setSelectedWorkflowId,
+    setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,
+    rebuildTranscript: deps.rebuildTranscript,
+    flashFooter: deps.flashFooter,
+    onSessionRefreshError: (sessionId, error) => {
+      deps.appLogger?.warn("workspace shell session refresh failed", {
+        session_id: sessionId,
+        error: deps.formatError(error),
+      })
+    },
+  })
+  const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
+
+  const workflowPromptSubmitController = createWorkflowPromptSubmitController({
+    getWorkflowPromptState: deps.workflowPromptState,
+    getPendingAttachmentCount: () => deps.pendingAttachments().length,
+    beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
+    restoreFailedPromptUi: deps.restoreFailedPromptUi,
+    invokeWorkflowEndpoint: deps.invokeWorkflowEndpoint,
+    getSessionId: () => deps.sessionState().id,
+    recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
+    flashFooter: deps.flashFooter,
+    formatError: deps.formatError,
+  })
+
+  const providerNamespaceSubmitController = createProviderNamespaceSubmitController({
+    getFocusedProvider: deps.focusedBackendProvider,
+    workflowScreenShowing: deps.workflowScreenShowing,
+    getPendingAttachmentCount: () => deps.pendingAttachments().length,
+    waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,
+    getFocusedAgentId: deps.focusedAgentId,
+    clearActiveToolLabels: deps.primaryTranscriptRuntimeStore.clearActiveToolLabels,
+    setProviderActivityLabel: deps.setProviderActivityLabel,
+    setActiveStatusLabel: deps.setActiveStatusLabel,
+    getAttachment: deps.attachmentState,
+    getSessionId: () => deps.sessionState().id,
+    clearPromptText: () => deps.promptTextController.clear(),
+    beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
+    renderPromptTranscript,
+    appendUserPrompt: deps.appendUserPrompt,
+    submitProviderNamespacePrompt: (attachmentId, targetAgentId, forwardedPrompt) =>
+      submitPromptWithRecovery(
+        deps.client,
+        deps.sessionState().id,
+        attachmentId,
+        targetAgentId,
+        forwardedPrompt,
+        [],
+        deps.options,
+        deps.appLogger,
+      ),
+    applySessionState: deps.applySessionState,
+    setStreamingAgentId: deps.setStreamingAgentId,
+    setWorking: deps.setWorking,
+    updateSessionChrome: deps.updateSessionChrome,
+    recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
+    clearCommandCenter: deps.clearCommandCenter,
+    restoreFailedPromptUi: deps.restoreFailedPromptUi,
+    getSubmittingAgentId: deps.promptSubmissionAgentStateController.getSubmittingAgentId,
+    clearAgentBusy: deps.clearAgentBusy,
+    setSubmittingAgentId: deps.promptSubmissionAgentStateController.setSubmittingAgentId,
+    setSubmitting: deps.setSubmitting,
+    setFatalError: deps.setFatalError,
+    flashFooter: deps.flashFooter,
+    logError: (message, fields) => deps.appLogger?.error(message, fields),
+    formatError: deps.formatError,
+  })
+
+  const normalPromptSubmitController = createNormalPromptSubmitController({
+    getPendingAttachments: deps.pendingAttachments,
+    waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,
+    getFocusedAgentId: deps.focusedAgentId,
+    clearActiveToolLabels: deps.primaryTranscriptRuntimeStore.clearActiveToolLabels,
+    setProviderActivityLabel: deps.setProviderActivityLabel,
+    setActiveStatusLabel: deps.setActiveStatusLabel,
+    getAttachment: deps.attachmentState,
+    getSessionId: () => deps.sessionState().id,
+    clearPromptText: () => deps.promptTextController.clear(),
+    shouldInlineLocalFiles: () => Boolean(deps.options.relayUrl) || promptAttachmentTransferIsForced(),
+    preparePromptAttachmentsForSubmit,
+    beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
+    renderPromptTranscript,
+    appendUserPrompt: deps.appendUserPrompt,
+    submitPrompt: (attachmentId, targetAgentId, prompt, attachments) =>
+      submitPromptWithRecovery(
+        deps.client,
+        deps.sessionState().id,
+        attachmentId,
+        targetAgentId,
+        prompt,
+        attachments,
+        deps.options,
+        deps.appLogger,
+      ),
+    applySessionState: deps.applySessionState,
+    setStreamingAgentId: deps.setStreamingAgentId,
+    setWorking: deps.setWorking,
+    updateSessionChrome: deps.updateSessionChrome,
+    setStatusLine: deps.setStatusLine,
+    recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
+    restoreFailedPromptUi: deps.restoreFailedPromptUi,
+    getSubmittingAgentId: deps.promptSubmissionAgentStateController.getSubmittingAgentId,
+    clearAgentBusy: deps.clearAgentBusy,
+    setSubmittingAgentId: deps.promptSubmissionAgentStateController.setSubmittingAgentId,
+    setSubmitting: deps.setSubmitting,
+    setFatalError: deps.setFatalError,
+    flashFooter: deps.flashFooter,
+    logInfo: (message, fields) => deps.appLogger?.info(message, fields),
+    logError: (message, fields) => deps.appLogger?.error(message, fields),
+    formatError: deps.formatError,
+  })
+
+  const promptSubmitCoordinator = createPromptSubmitCoordinator({
+    getPromptText: deps.promptInputRefController.plainText,
+    ensureBackgroundPollersStarted: () => deps.ensureBackgroundPollersStarted(),
+    getPendingAttachmentCount: () => deps.pendingAttachments().length,
+    clearPromptText: () => deps.promptTextController.clear(),
+    workflowScreenShowing: deps.workflowScreenShowing,
+    submitWorkspaceShellCommand: async (rawPrompt) => {
+      await submitWorkspaceShellCommand(rawPrompt)
+    },
+    workflowNodeInstructionsEditorOpen: () => Boolean(deps.workflowNodeInstructionsEditor()),
+    submitSlashCommand: async (rawPrompt, submitOptions) =>
+      Boolean(await slashCommandSubmitController.submit(rawPrompt, submitOptions)),
+    submitProviderNamespacePrompt: (rawPrompt) => providerNamespaceSubmitController.submit(rawPrompt),
+    isAttached: deps.isAttached,
+    submitWorkflowPrompt: (rawPrompt) => workflowPromptSubmitController.submit(rawPrompt),
+    submitNormalPrompt: (rawPrompt) => normalPromptSubmitController.submit(rawPrompt),
+    flashFooter: deps.flashFooter,
+    formatError: deps.formatError,
+  })
+  const submitPrompt = promptSubmitCoordinator.submit
+
+  const requestPromptStop = async () => {
+    await deps.promptStopController.request()
+  }
+
+  const focusedInteractionChoiceController = createFocusedInteractionChoiceController({
+    getFocusedInteraction: deps.focusedAgentInteraction,
+    isAttached: deps.isAttached,
+    getSessionId: () => deps.sessionState().id,
+    getSelectedIndex: deps.interactionChoiceStore.getSelectedIndex,
+    setSelectedIndex: deps.interactionChoiceStore.setSelectedIndex,
+    getCustomReply: deps.interactionChoiceStore.customReply,
+    setCustomReply: deps.interactionChoiceStore.setCustomReply,
+    clearCustomReply: deps.interactionChoiceStore.clearCustomReply,
+    isCustomEditing: deps.interactionChoiceStore.isCustomEditing,
+    setCustomEditing: deps.interactionChoiceStore.setCustomEditing,
+    renderAgentInteractions: deps.renderAgentInteractions,
+    applyResponseLayout: deps.applyResponseLayout,
+    respondToInteraction: (sessionId, interactionId, choiceId, customReply) =>
+      respondToInteraction(deps.client, sessionId, interactionId, choiceId, customReply),
+    applySessionState: deps.applySessionState,
+    flashFooter: deps.flashFooter,
+    formatError: deps.formatError,
+  })
+  const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
+  const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
+  const handleFocusedInteractionKey = focusedInteractionChoiceController.handleKey
+
+  const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
+    handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
+    dialogOverlayOpen: deps.dialogOverlayOpen,
+    closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    requestExit: () => {
+      void deps.requestExit()
+    },
+    requestPromptStop: () => {
+      void requestPromptStop()
+    },
+    activePrompt: deps.activePrompt,
+  })
+  useKeyboard(globalKeyboardShortcutController.handleKey)
+  const handleSigint = globalKeyboardShortcutController.handleSigint
+
+  const promptKeyDownController = createPromptKeyDownController({
+    handleFocusedInteractionKey,
+    handleCommandCenterKey: deps.handleCommandCenterKey,
+    isAttached: deps.isAttached,
+    promptFocused: deps.promptInputRefController.isFocused,
+    commandCenterOpen: deps.commandCenterOpen,
+    currentPromptText: () => deps.promptTextController.currentText(),
+    promptCursorOffset: () => deps.promptTextController.cursorOffset(),
+    promptHistoryIndex: deps.promptHistoryIndex,
+    promptHistoryDraft: deps.promptHistoryDraft,
+    navigatePromptHistoryInput: deps.navigatePromptHistoryInput,
+    handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
+  })
+  const handlePromptKeyDown = promptKeyDownController.handleKeyDown
+
+  const promptTurnNavigationController = createPromptTurnNavigationController({
+    isAttached: deps.isAttached,
+    getPromptText: () => deps.promptInputRefController.hasInput() ? deps.promptTextController.currentText() : undefined,
+    getPromptOffsets: () => deps.visibleTranscriptEntries()
+      .filter((entry: { role: string }) => entry.role === "user")
+      .map((entry: { id: string }) => deps.primaryTranscriptRuntimeStore.entryWrapperY(entry.id))
+      .filter((offset: number | null): offset is number => offset !== null),
+    getScrollState: deps.transcriptScrollboxRefController.scrollState,
+    scrollTo: deps.transcriptScrollboxRefController.scrollTo,
+    requestRender: deps.transcriptScrollboxRefController.requestRender,
+    setLastTranscriptScrollTop: deps.primaryTranscriptRuntimeStore.setLastScrollTop,
+  })
+
+  const waitingRoomKeyController = createWaitingRoomKeyController({
+    isAttached: deps.isAttached,
+    hotkeysOpen: deps.dialogOverlayOpen,
+    promptFocused: deps.promptInputRefController.isFocused,
+    commandCenterOpen: deps.commandCenterOpen,
+    commandCenterQuery: () => deps.commandCenterController.query(),
+    getWaitingRoomState: deps.waitingRoomState,
+    getSessions: deps.availableSessions,
+    getProviderCatalog: deps.providerCatalogState,
+    getRemoteState: () => ({
+      relay: deps.relayStatusState(),
+      machines: deps.remoteMachinesState(),
+      kernels: deps.remoteKernelsState(),
+      terminals: deps.terminalsState(),
+      slices: deps.slicesState(),
+    }),
+    getThemeRegistry: deps.themeRegistryState,
+    reconcileWaitingRoom: deps.reconcileWaitingRoom,
+    setWaitingRoomState: deps.setWaitingRoomState,
+    rebuildTranscript: deps.rebuildTranscript,
+    applyLifecycleAction: (action) => {
+      void deps.applyWaitingRoomSessionLifecycleAction(action)
+    },
+    activateWaitingRoom: () => {
+      void deps.activateWaitingRoom()
+    },
+  })
+
+  const stdinKeyController = createCliStdinKeyController({
+    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    dialogOverlayOpen: deps.dialogOverlayOpen,
+    closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    handleSessionBrowserKey: deps.handleSessionBrowserKey,
+    requestExit: () => {
+      void deps.requestExit()
+    },
+    handleFocusedInteractionKey,
+    promptFocused: deps.promptInputRefController.isFocused,
+    commandCenterOpen: deps.commandCenterOpen,
+    commandCenterQuery: () => deps.commandCenterController.query(),
+    clearCommandCenter: deps.clearCommandCenter,
+    toggleWorkspaceScreen: deps.toggleWorkspaceScreen,
+    isAttached: deps.isAttached,
+    workflowScreenActive: deps.workflowScreenActive,
+    cycleWorkflowCanvasNode: deps.cycleWorkflowCanvasNode,
+    cycleAgentFocus: () => {
+      void deps.handleCycleAgentFocus()
+    },
+    copyPromptSelection: deps.copyPromptSelection,
+    activePrompt: deps.activePrompt,
+    requestPromptStop: () => {
+      void requestPromptStop()
+    },
+    removePromptAttachmentsForEdit: deps.removePromptAttachmentsForEdit,
+    currentPromptText: () => deps.promptTextController.currentText(),
+    pendingAttachmentCount: () => deps.pendingAttachments().length,
+    removeLastPendingPromptAttachment: deps.removeLastPendingPromptAttachment,
+    handlePromptTurnNavigationKey: (event) => promptTurnNavigationController.handleKey({
+      ...event,
+      eventType: event.eventType ?? "",
+    }),
+    handleWaitingRoomKey: waitingRoomKeyController.handleKey,
+  })
+
+  return {
+    cycleFocusedInteractionChoice,
+    handlePromptKeyDown,
+    handleSigint,
+    handleStdinData: stdinKeyController.handleData,
+    requestPromptStop,
+    submitFocusedInteractionChoice,
+    submitPrompt,
+    submitWorkspaceShellCommand,
+  }
+}
