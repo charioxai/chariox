@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI prompt surface ownership. Prompt chrome, draft/history persistence, prompt input history hydration/refresh, prompt attachments, submission UI reset/restore, placeholder sync, focus retention, and prompt content-change handling moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-prompt-surface-composition.ts`; `index.tsx` is 3,082 lines and the new module is 408 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI overlay interaction ownership. Session browser projection/actions, dialog overlay wiring, terminal pairing overlay, hotkey toggle/debug handling, clipboard copy, and prompt-surface mouse selection moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-overlay-interaction-composition.ts`; `index.tsx` is 2,996 lines and the new module is 185 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 

@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { reconcile } from "solid-js/store"
@@ -19,6 +19,7 @@ import { createCliAutomationProcessComposition } from "./cli-automation-process-
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 import { createCliInputRoutingComposition } from "./cli-input-routing-composition.js"
+import { createCliOverlayInteractionComposition } from "./cli-overlay-interaction-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
@@ -39,13 +40,6 @@ import { createDetachedKernelConnectController } from "./detached-kernel-connect
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
 import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
-  type CliDialogFocusTarget,
-} from "./cli-dialog-focus-controller.js"
-import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
-import {
-  renderCliDialogOverlay,
-} from "./cli-dialog-overlay.js"
-import {
   createCliRendererFocusController,
 } from "./cli-renderer-focus-controller.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
@@ -64,11 +58,8 @@ import { createAgentPaneTranscriptRetentionController } from "./agent-pane-trans
 import { createAgentPaneTranscriptStreamController } from "./agent-pane-transcript-stream-controller.js"
 import { createAgentPaneStreamingCommitController } from "./agent-pane-streaming-commit-controller.js"
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
-import { createClipboardController } from "./clipboard-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
-import { createHotkeyDebugReporter } from "./hotkey-debug-reporter.js"
-import { createHotkeysToggleController } from "./hotkeys-toggle-controller.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
@@ -81,11 +72,6 @@ import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
-import { createSessionBrowserController } from "./session-browser-controller.js"
-import {
-  clampSessionBrowserIndex,
-} from "./session-browser-key-policy.js"
-import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 import { updateAgentProfile } from "./agent-api.js"
 import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
 import { createKernelRestartRecoveryController } from "./kernel-restart-recovery-controller.js"
@@ -110,7 +96,6 @@ import {
   saveUiPreferences,
 } from "./preferences.js"
 import { createPromptAttachmentIntakeController } from "./prompt-attachment-intake-controller.js"
-import { createPromptSurfaceMouseController } from "./prompt-surface-mouse-controller.js"
 import { createPromptSubmissionAgentStateController } from "./prompt-submission-agent-state-controller.js"
 import {
   createPromptTextController,
@@ -276,10 +261,6 @@ import {
 import { createWorkflowTerminalPanelController } from "./workflow-terminal-panel-controller.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import { forgetRemoteMachine } from "./remote-machine-api.js"
-import {
-  createTerminalPairingLink,
-  renderTerminalPairingQr,
-} from "./relay-api.js"
 import {
   computeCurrentTurnId,
   computeNextTurnId,
@@ -1120,67 +1101,54 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getCwd: () => process.cwd(),
     flashFooter: (message, tone) => flashFooter(message, tone),
   })
-  const sessionBrowserProjectionController = createSessionBrowserProjectionController({
+  const {
+    assignDialogOverlayBox,
+    closeActiveDialogOverlay,
+    closeHotkeys,
+    closeSessionBrowserDialog,
+    closeTerminalPairingDialog,
+    copyPromptSelection,
+    dialogOverlayOpen,
+    handleHotkeysToggleShortcut,
+    handlePromptSelectionSurfaceMouseUp,
+    handleSessionBrowserKey,
+    openHotkeys,
+    openSessionBrowserDialog,
+    openTerminalPairingDialog,
+    renderHotkeysOverlay,
+  } = createCliOverlayInteractionComposition({
+    client,
+    renderer,
+    dimensions,
+    appLogger,
+    formatError,
+    debugLogsEnabled: DEBUG_LOGS_ENABLED,
     isAttached,
     availableSessions,
-    selectedIndex: sessionBrowserIndex,
-    setSelectedIndex: setSessionBrowserIndex,
-  })
-  const hotkeySections = sessionBrowserProjectionController.hotkeySections
-  const sessionBrowserSessions = sessionBrowserProjectionController.sessions
-  const normalizeSessionBrowserIndex = sessionBrowserProjectionController.normalizeIndex
-  const dialogOverlayController = createCliDialogOverlayController<CliDialogFocusTarget, BoxRenderable>({
-    getOpenState: () => ({
-      hotkeysOpen: hotkeysOpen(),
-      terminalPairingOpen: terminalPairingOpen(),
-      sessionBrowserOpen: sessionBrowserOpen(),
-    }),
-    getCurrentFocus: currentFocusedRenderable,
-    getPromptFocus: () => promptInputRefController.current() as CliDialogFocusTarget | null | undefined,
-    describeFocus: describeRenderableDebug,
-    scheduleFocusRestore: (callback) => {
-      startTimeout(callback, 1)
-    },
-    setHotkeysOpen,
-    setTerminalPairingOpen,
-    setSessionBrowserOpen,
-    setTerminalPairing: setTerminalPairingState,
-    setTerminalPairingQrLines,
-    getSessionCount: () => sessionBrowserSessions().length,
-    getWaitingRoomSessionIndex: () => waitingRoomState().sessionIndex,
+    sessionBrowserIndex,
     setSessionBrowserIndex,
-    clampSessionBrowserIndex,
-    renderOverlay: (mode, onDismiss, overlayBox) => {
-      renderCliDialogOverlay({
-        overlayBox,
-        renderer,
-        dimensions: dimensions(),
-        mode,
-        onDismiss,
-        sessions: sessionBrowserSessions(),
-        normalizeSessionBrowserIndex,
-        terminalPairing: terminalPairingState(),
-        terminalPairingQrLines: terminalPairingQrLines(),
-        hotkeySections: hotkeySections(),
-      })
-    },
-    createTerminalPairingLink: () => createTerminalPairingLink(client, "cli"),
-    renderTerminalPairingQr,
+    currentFocusedRenderable,
+    promptInputRefController,
+    describeRenderableDebug,
+    scheduleTimer: startTimeout,
+    hotkeysOpen,
+    setHotkeysOpen,
+    terminalPairingOpen,
+    setTerminalPairingOpen,
+    terminalPairingState,
+    setTerminalPairingState,
+    terminalPairingQrLines,
+    setTerminalPairingQrLines,
+    sessionBrowserOpen,
+    setSessionBrowserOpen,
+    waitingRoomState,
+    providerCatalogState,
+    options,
     flashFooter: (message, tone) => flashFooter(message, tone),
-    debugHotkey: (message) => hotkeyDebug(message),
-    logDebug: (message, fields) => appLogger?.debug(message, fields),
-    formatError,
+    attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),
+    applyWaitingRoomSessionLifecycleAction,
+    retainPromptFocus,
   })
-  const dialogOverlayOpen = dialogOverlayController.isOpen
-  const closeActiveDialogOverlay = dialogOverlayController.closeActive
-  const renderHotkeysOverlay = dialogOverlayController.render
-  const closeHotkeys = dialogOverlayController.closeHotkeys
-  const closeTerminalPairingDialog = dialogOverlayController.closeTerminalPairing
-  const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
-  const openHotkeys = dialogOverlayController.openHotkeys
-  const openTerminalPairingDialog = dialogOverlayController.openTerminalPairing
-  const openSessionBrowserDialog = dialogOverlayController.openSessionBrowser
-  const toggleHotkeys = dialogOverlayController.toggleHotkeys
   const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
   const transcriptTurnExpansionController = createTranscriptTurnExpansionController({
     expandedTurnIdsForAgent,
@@ -1308,60 +1276,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const attachPromptFiles = promptAttachmentIntakeController.attachFiles
   const handleAttachmentCommand = promptAttachmentIntakeController.handleCommand
-
-  const sessionBrowserController = createSessionBrowserController({
-    isOpen: sessionBrowserOpen,
-    visibleSessions: sessionBrowserSessions,
-    availableSessions,
-    normalizeSelectedIndex: normalizeSessionBrowserIndex,
-    setSelectedIndex: (updater) => setSessionBrowserIndex((index) => updater(index)),
-    waitingRoomState,
-    providerCatalog: providerCatalogState,
-    currentProvider: () => (options.provider ?? "opencode") as BackendProviderId,
-    currentModel: () => options.model,
-    closeDialog: closeSessionBrowserDialog,
-    renderOverlay: renderHotkeysOverlay,
-    flashFooter,
-    attachSession: (session, createNew, launch) => attachBinding(session, createNew, launch),
-    applyLifecycleAction: applyWaitingRoomSessionLifecycleAction,
-    formatError,
-  })
-  const handleSessionBrowserKey = sessionBrowserController.handleKey
-
-  const hotkeyDebugReporter = createHotkeyDebugReporter({
-    debugLogsEnabled: DEBUG_LOGS_ENABLED,
-    logDebug: (message, fields) => appLogger?.debug(message, fields),
-    flashFooter,
-  })
-  const hotkeyDebug = hotkeyDebugReporter.report
-  const hotkeysToggleController = createHotkeysToggleController({
-    hotkeysOpen,
-    toggleHotkeys,
-    debugHotkey: hotkeyDebug,
-    logDebug: (message, fields) => appLogger?.debug(message, fields),
-    currentFocus: currentFocusedRenderable,
-    describeFocus: describeRenderableDebug,
-    savedFocusDebug: () => dialogOverlayController.savedFocusDebug(),
-  })
-  const handleHotkeysToggleShortcut = hotkeysToggleController.handle
-
-  const clipboardController = createClipboardController({
-    renderer,
-    promptInput: promptInputRefController.currentOrNull,
-    flashFooter,
-    logWarning: (message, fields) => appLogger?.warn(message, fields),
-    formatError,
-  })
-  const copyPromptSelection = clipboardController.copyPromptSelection
-  const copySelection = clipboardController.copySelection
-  const promptSurfaceMouseController = createPromptSurfaceMouseController({
-    delayMs: 0,
-    scheduleTimer: startTimeout,
-    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
-    copySelection,
-    retainPromptFocus,
-  })
-  const handlePromptSelectionSurfaceMouseUp = promptSurfaceMouseController.handleMouseUp
 
   const sessionStateApplyController = createSessionStateApplyController({
     getSession: sessionState,
@@ -3066,7 +2980,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         updateSessionChrome()
       }}
       onHotkeysOverlayBoxRef={(value) => {
-        dialogOverlayController.assignOverlayBox(value)
+        assignDialogOverlayBox(value)
         renderHotkeysOverlay()
       }}
     />
