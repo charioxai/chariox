@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is CLI response shell ownership. Response pane layout, split-pane footers, agent interaction strips, prompt meta refs, history loading, status indicator, and session chrome scheduling moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-response-shell-composition.ts`; `index.tsx` is 2,001 lines. CLI test passes 1,046 tests.
+2026-05-18: Latest verified stage is CLI runtime projection ownership. Focused-agent, response-pane, interaction, workflow prompt, transcript-entry, status badge, and runtime debug projections moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-runtime-projection-composition.ts`; `index.tsx` is 1,947 lines. CLI lint and test pass 1,046 tests.
 
 ## Responsibility Rule
 

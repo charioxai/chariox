@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, addDefaultParsers, type TextareaRenderable } from "@opentui/core"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -23,6 +23,7 @@ import { createCliOverlayInteractionComposition } from "./cli-overlay-interactio
 import { createCliPrimaryTranscriptComposition } from "./cli-primary-transcript-composition.js"
 import { createCliPromptSurfaceComposition } from "./cli-prompt-surface-composition.js"
 import { createCliResponseShellComposition } from "./cli-response-shell-composition.js"
+import { createCliRuntimeProjectionComposition } from "./cli-runtime-projection-composition.js"
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
@@ -32,7 +33,6 @@ import {
   PROMPT_KEYBINDINGS,
 } from "./cli-runtime-tuning.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
-import { createAgentRuntimeProjectionController } from "./agent-runtime-projection-controller.js"
 import {
   createCliRendererFocusController,
 } from "./cli-renderer-focus-controller.js"
@@ -47,9 +47,6 @@ import { createHistoryLoadingRenderController } from "./history-loading-render-c
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
 import { createInteractionChoiceStoreController } from "./interaction-choice-store-controller.js"
-import {
-  createInteractionProjectionController,
-} from "./interaction-projection-controller.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
@@ -61,9 +58,6 @@ import { runLogViewer } from "./logs.js"
 import {
   bootstrapCliRuntime,
 } from "./cli-runtime-bootstrap.js"
-import {
-  createCliRuntimeDebugLogger,
-} from "./cli-runtime-debug-logger.js"
 import {
   createCliUiBatchController,
 } from "./cli-ui-batch-controller.js"
@@ -90,7 +84,6 @@ import {
   tryGetProviderRun,
 } from "./provider-api.js"
 import { createPromptInputRefController } from "./prompt-input-ref-controller.js"
-import { createResponsePaneProjectionController } from "./response-pane-projection-controller.js"
 import { createResponsePaneRenderRefStoreController } from "./response-pane-render-ref-store-controller.js"
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
 import {
@@ -100,18 +93,15 @@ import {
   DEFAULT_CONNECTED_STATUS,
   getSessionStatusLabel,
 } from "./runtime.js"
-import { createFocusedStatusBadgeController } from "./focused-status-badge-controller.js"
 import {
   type SessionChromeUpdateController,
 } from "./session-chrome-update-controller.js"
 import {
-  focusedAgentIdForSession,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
-import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import { createTranscriptRenderDeferralController } from "./transcript-render-deferral-controller.js"
 import { createTranscriptParserRegistration } from "./transcript-parser-registration.js"
 import {
@@ -157,9 +147,6 @@ import {
 import {
   createWorkflowInspectorController,
 } from "./workflow-inspector-controller.js"
-import {
-  deriveWorkflowPromptState,
-} from "./workflow-prompt-state.js"
 import {
   createWorkflowNodeInstructionsEditorController,
 } from "./workflow-node-instructions-editor-controller.js"
@@ -452,39 +439,75 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
 
-  const isAttached = () => attachmentState() !== null
-  const focusedAgentId = () => focusedAgentIdForSession(sessionState())
-  const responsePaneProjectionController = createResponsePaneProjectionController({
+  const {
     isAttached,
-    getSession: sessionState,
-    getFocusedAgentId: focusedAgentId,
-    getWorkspaceScreenMode: workspaceScreenMode,
-    getResponseLayout: multiAgentResponseLayout,
-    getMaxAgentsPerScreen: maxAgentsPerScreen,
+    focusedAgentId,
+    multiAgentMode,
+    workflowScreenShowing,
+    splitAgentResponseMode,
+    activeInteractionForAgent,
+    focusedAgentInteraction,
+    workflowPromptState,
+    responsePaneSelection,
+    responsePaneAgentSignature,
+    responsePrimaryAgent,
+    responseVisibleAgents,
+    visibleTranscriptAgentId,
+    responsePaneRows,
+    primaryTranscriptSurfaceTone,
+    auxiliaryTranscriptSurfaceTone,
+    agentActivityLabel,
+    focusedAgent,
+    focusedBackendProvider,
+    focusedProviderRun,
+    resolveSessionAgent,
+    agentBusyLatch,
+    anyPromptWork,
+    hasPromptWorkByAgent,
+    focusedQueueDepth,
+    focusedActivePrompt,
+    focusedActivityLabel,
+    markAgentBusy,
+    clearAgentBusy,
+    focusedAgentBusy,
+    allAgentsBusyState,
+    setAgentActivityLabel,
+    transcriptEntryProjectionController,
+    visibleTranscriptEntries,
+    connectedClientCount,
+    activePrompt,
+    focusedStatusBadge,
+    runtimeDebugLogger,
+    logProviderRunDebug,
+    logViewDebug,
+    logVisibleTranscriptOutput,
+    logFocusedBadgeChange,
+  } = createCliRuntimeProjectionComposition({
+    appLogger,
+    debugLogsEnabled: DEBUG_LOGS_ENABLED,
+    attachmentState,
+    sessionState,
+    workspaceScreenMode,
+    multiAgentResponseLayout,
+    maxAgentsPerScreen,
     workflowScreenActive: () => workflowScreenActive(),
+    selectedWorkflowId,
+    selectedWorkflowNodeId,
+    providerRunState,
+    primaryTranscriptRuntimeStore,
+    agentPaneRuntimeStore,
+    agentPanePreviews,
+    agentActivityLabels,
+    setAgentActivityLabels,
+    agentBusyLatches,
+    setAgentBusyLatches,
+    submitting,
+    promptSubmissionAgentStateController,
+    streamingAgentId,
+    entries: () => entries,
+    daemonDisconnected,
+    transcriptScrollboxRefController,
   })
-  const multiAgentMode = responsePaneProjectionController.multiAgentMode
-  const workflowScreenShowing = responsePaneProjectionController.workflowScreenShowing
-  const splitAgentResponseMode = responsePaneProjectionController.splitAgentResponseMode
-  const interactionProjectionController = createInteractionProjectionController({
-    getSession: sessionState,
-    getFocusedAgentId: focusedAgentId,
-  })
-  const activeInteractionForAgent = interactionProjectionController.activeInteractionForAgent
-  const focusedAgentInteraction = interactionProjectionController.focusedAgentInteraction
-  const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
-    workflowScreenActive: workflowScreenShowing(),
-    workflows: sessionState().workflows ?? [],
-    workflowRuns: sessionState().workflow_runs ?? [],
-    selectedWorkflowId: selectedWorkflowId(),
-    selectedWorkflowNodeId: selectedWorkflowNodeId(),
-  }))
-  const responsePaneSelection = responsePaneProjectionController.responsePaneSelection
-  const responsePaneAgentSignature = responsePaneProjectionController.responsePaneAgentSignature
-  const responsePrimaryAgent = responsePaneProjectionController.responsePrimaryAgent
-  const responseVisibleAgents = responsePaneProjectionController.responseVisibleAgents
-  const visibleTranscriptAgentId = responsePaneProjectionController.visibleTranscriptAgentId
-  const responsePaneRows = responsePaneProjectionController.responsePaneRows
   createEffect(() => {
     if (!isAttached()) {
       return
@@ -493,8 +516,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorkspaceShellContext((previous) =>
       deriveWorkspaceShellContextForSession(previous, session, attachmentState()?.id))
   })
-  const primaryTranscriptSurfaceTone = responsePaneProjectionController.primaryTranscriptSurfaceTone
-  const auxiliaryTranscriptSurfaceTone = responsePaneProjectionController.auxiliaryTranscriptSurfaceTone
   const historyLoadingRenderController = createHistoryLoadingRenderController({
     renderer,
     loading: loadingHistory,
@@ -518,32 +539,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   createEffect(() => {
     workflowSelectionSyncController.sync()
   })
-  const agentRuntimeProjectionController = createAgentRuntimeProjectionController({
-    getSession: sessionState,
-    getFocusedAgentId: focusedAgentId,
-    getProviderRun: providerRunState,
-    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-    getActiveToolLabels: primaryTranscriptRuntimeStore.activeToolLabelValues,
-    getAgentPaneToolUpdates: agentPaneRuntimeStore.toolUpdatesForAgent,
-    getAgentPanePreviews: agentPanePreviews,
-    getAgentActivityLabels: agentActivityLabels,
-    updateAgentActivityLabels: (updater) => {
-      setAgentActivityLabels((current) => updater(current))
-    },
-    getAgentBusyLatches: agentBusyLatches,
-    updateAgentBusyLatches: (updater) => {
-      setAgentBusyLatches((current) => updater(current))
-    },
-    getSubmitting: submitting,
-    getSubmittingAgentId: promptSubmissionAgentStateController.getSubmittingAgentId,
-    getStreamingAgentId: streamingAgentId,
-  })
-  const agentPanePreview = agentRuntimeProjectionController.agentPanePreview
-  const agentActivityLabel = agentRuntimeProjectionController.agentActivityLabel
-  const focusedAgent = agentRuntimeProjectionController.focusedAgent
-  const focusedBackendProvider = agentRuntimeProjectionController.focusedBackendProvider
-  const focusedProviderRun = agentRuntimeProjectionController.focusedProviderRun
-  const resolveSessionAgent = agentRuntimeProjectionController.resolveSessionAgent
   const workflowInspectorController = createWorkflowInspectorController({
     getSession: sessionState,
     getSelectedWorkflowId: selectedWorkflowId,
@@ -556,29 +551,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
   })
   const workflowInspector = workflowInspectorController.project
-  const promptStateForAgent = agentRuntimeProjectionController.promptStateForAgent
-  const agentQueuedDepth = agentRuntimeProjectionController.agentQueuedDepth
-  const agentActivePrompt = agentRuntimeProjectionController.agentActivePrompt
-  const agentBusyLatch = agentRuntimeProjectionController.agentBusyLatch
-  const anyPromptWork = agentRuntimeProjectionController.anyPromptWork
-  const hasPromptWorkByAgent = agentRuntimeProjectionController.hasPromptWorkByAgent
-  const focusedPromptState = agentRuntimeProjectionController.focusedPromptState
-  const focusedQueueDepth = agentRuntimeProjectionController.focusedQueueDepth
-  const focusedActivePrompt = agentRuntimeProjectionController.focusedActivePrompt
-  const activeToolLabelForAgent = agentRuntimeProjectionController.activeToolLabelForAgent
-  const focusedActivityLabel = agentRuntimeProjectionController.focusedActivityLabel
-  const markAgentBusy = agentRuntimeProjectionController.markAgentBusy
-  const clearAgentBusy = agentRuntimeProjectionController.clearAgentBusy
-  const focusedAgentBusy = agentRuntimeProjectionController.focusedAgentBusy
-  const allAgentsBusyState = agentRuntimeProjectionController.allAgentsBusyState
-  const setAgentActivityLabel = agentRuntimeProjectionController.setAgentActivityLabel
-  const transcriptEntryProjectionController = createTranscriptEntryProjectionController({
-    getEntries: () => entries,
-  })
-  const visibleTranscriptEntries = transcriptEntryProjectionController.visibleEntries
-  const queueDepth = () => focusedQueueDepth()
-  const connectedClientCount = () => sessionState().attachment_ids.length
-  const activePrompt = () => focusedActivePrompt()
   const promptStopController = createPromptStopController({
     getAttachment: attachmentState,
     getActivePrompt: activePrompt,
@@ -609,32 +581,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       focusedAgentId: focusedAgentId(),
     })
   }
-  const focusedStatusBadgeController = createFocusedStatusBadgeController({
-    isAttached,
-    daemonDisconnected,
-    activeStatusLabel: focusedActivityLabel,
-    focusedBusy: focusedAgentBusy,
-    agents: allAgentsBusyState,
-  })
-  const focusedStatusBadge = focusedStatusBadgeController.badge
-  const runtimeDebugLogger = createCliRuntimeDebugLogger({
-    logger: appLogger,
-    debugLogsEnabled: DEBUG_LOGS_ENABLED,
-    getResponseLayout: multiAgentResponseLayout,
-    splitAgentResponseMode,
-    isAttached,
-    getAgentCount: () => sessionState().agents.length,
-    getFocusedAgentId: focusedAgentId,
-    hasTranscriptScrollbox: transcriptScrollboxRefController.hasScrollbox,
-    getVisibleTranscriptAgentId: visibleTranscriptAgentId,
-  })
-  const logProviderRunDebug = runtimeDebugLogger.logProviderRun
-  const logViewDebug = runtimeDebugLogger.logView
-  const logVisibleTranscriptOutput = runtimeDebugLogger.logVisibleTranscriptOutput
-  const logFocusedBadgeChange = runtimeDebugLogger.logFocusedBadgeChange
-  createEffect(() => {
-    logViewDebug("state changed")
-  })
   const rendererFocusController = createCliRendererFocusController(renderer)
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
