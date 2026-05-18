@@ -1,0 +1,166 @@
+import {
+  startCliAutomationServer,
+  stopCliAutomationServer,
+} from "./cli-automation.js"
+import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
+import {
+  createCliAutomationServerController,
+  type CliAutomationServerLogger,
+} from "./cli-automation-server-controller.js"
+import { createCliAutomationSnapshotController } from "./cli-automation-snapshot-controller.js"
+import { createCliProcessLifecycleController } from "./cli-process-lifecycle-controller.js"
+import type { CliOptions } from "./cli-types.js"
+import type { LocalIpcClient } from "./ipc.js"
+import type { ArrobaLogger } from "./logging.js"
+
+type AnyFn = (...args: any[]) => any
+
+export type CliAutomationProcessCompositionDeps = {
+  client: LocalIpcClient
+  options: CliOptions
+  appLogger: (ArrobaLogger & CliAutomationServerLogger) | null
+  formatError: AnyFn
+  flashFooter: AnyFn
+  handleSigint: AnyFn
+  handleStdinData: AnyFn
+  onSigint: AnyFn
+  offSigint: AnyFn
+  onStdinData: AnyFn
+  offStdinData: AnyFn
+  clearTerminalOutputRecordTimer: AnyFn
+  workspaceScreenMode: AnyFn
+  workflowScreenActive: AnyFn
+  daemonDisconnected: AnyFn
+  statusLine: AnyFn
+  sessionState: AnyFn
+  focusedAgentId: AnyFn
+  agentActivityLabels: AnyFn
+  hasPromptWorkByAgent: AnyFn
+  streamingAgentId: AnyFn
+  agentBusyLatch: AnyFn
+  isAttached: AnyFn
+  waitingRoomState: AnyFn
+  availableSessions: AnyFn
+  providerCatalogState: AnyFn
+  waitingRoomCloudNotice: AnyFn
+  waitingRoomInventoryStatus: AnyFn
+  relayStatusState: AnyFn
+  remoteMachinesState: AnyFn
+  remoteKernelsState: AnyFn
+  terminalsState: AnyFn
+  slicesState: AnyFn
+  waitingRoomTargets: AnyFn
+  themeRegistryState: AnyFn
+  selectedWorkflowId: AnyFn
+  selectedWorkflowNodeId: AnyFn
+  workspaceShellContext: AnyFn
+  workspaceShellEntries: AnyFn
+  footerFlash: AnyFn
+  getInteractionChoiceSelection: AnyFn
+  getInteractionCustomReply: AnyFn
+  isInteractionCustomEditing: AnyFn
+  kernelConnected: AnyFn
+  setWorkspaceScreenMode: AnyFn
+  rebuildTranscript: AnyFn
+  applyResponseLayout: AnyFn
+  showWorkflowScreen: AnyFn
+  submitWorkspaceShellCommand: AnyFn
+  attachmentState: AnyFn
+  setPromptText: AnyFn
+  submitPrompt: AnyFn
+  activateWaitingRoom: AnyFn
+  connectDetachedKernelFromWaitingRoom: AnyFn
+  submitFocusedInteractionChoice: AnyFn
+  cycleFocusedInteractionChoice: AnyFn
+  restoreTerminalAndExit: AnyFn
+  sleep: AnyFn
+}
+
+export function createCliAutomationProcessComposition(deps: CliAutomationProcessCompositionDeps) {
+  const automationSnapshotController = createCliAutomationSnapshotController({
+    workspaceScreenMode: deps.workspaceScreenMode,
+    workflowScreenActive: deps.workflowScreenActive,
+    daemonDisconnected: deps.daemonDisconnected,
+    statusLine: deps.statusLine,
+    sessionState: deps.sessionState,
+    focusedAgentId: deps.focusedAgentId,
+    agentActivityLabels: deps.agentActivityLabels,
+    hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
+    streamingAgentId: deps.streamingAgentId,
+    agentBusyLatch: deps.agentBusyLatch,
+    isAttached: deps.isAttached,
+    waitingRoomState: deps.waitingRoomState,
+    availableSessions: deps.availableSessions,
+    providerCatalogState: deps.providerCatalogState,
+    waitingRoomCloudNotice: deps.waitingRoomCloudNotice,
+    waitingRoomInventoryStatus: deps.waitingRoomInventoryStatus,
+    relayStatusState: deps.relayStatusState,
+    remoteMachinesState: deps.remoteMachinesState,
+    remoteKernelsState: deps.remoteKernelsState,
+    terminalsState: deps.terminalsState,
+    slicesState: deps.slicesState,
+    waitingRoomTargets: deps.waitingRoomTargets,
+    themeRegistryState: deps.themeRegistryState,
+    selectedWorkflowId: deps.selectedWorkflowId,
+    selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
+    workspaceShellContext: deps.workspaceShellContext,
+    workspaceShellEntries: deps.workspaceShellEntries,
+    footerFlash: deps.footerFlash,
+    getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
+    getInteractionCustomReply: deps.getInteractionCustomReply,
+    isInteractionCustomEditing: deps.isInteractionCustomEditing,
+  })
+  const automationSnapshot = automationSnapshotController.snapshot
+
+  const handleAutomationRequest = createCliAutomationActionHandler({
+    client: deps.client,
+    options: deps.options,
+    appLogger: deps.appLogger,
+    snapshot: automationSnapshot,
+    isAttached: deps.isAttached,
+    kernelConnected: deps.kernelConnected,
+    workflowScreenActive: deps.workflowScreenActive,
+    setWorkspaceScreenMode: deps.setWorkspaceScreenMode,
+    rebuildTranscript: deps.rebuildTranscript,
+    applyResponseLayout: deps.applyResponseLayout,
+    showWorkflowScreen: deps.showWorkflowScreen,
+    submitWorkspaceShellCommand: deps.submitWorkspaceShellCommand,
+    attachmentState: deps.attachmentState,
+    sessionState: deps.sessionState,
+    focusedAgentId: deps.focusedAgentId,
+    setPromptText: deps.setPromptText,
+    submitPrompt: deps.submitPrompt,
+    activateWaitingRoom: deps.activateWaitingRoom,
+    connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
+    submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
+    cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
+    restoreTerminalAndExit: deps.restoreTerminalAndExit,
+    sleep: deps.sleep,
+  })
+
+  const automationServerController = createCliAutomationServerController({
+    socketPath: deps.options.automationSocket ?? undefined,
+    handleRequest: handleAutomationRequest,
+    startServer: startCliAutomationServer,
+    stopServer: stopCliAutomationServer,
+    formatError: deps.formatError,
+    logger: deps.appLogger,
+    flashFooter: deps.flashFooter,
+  })
+  const processLifecycleController = createCliProcessLifecycleController({
+    handleSigint: deps.handleSigint,
+    handleStdinData: deps.handleStdinData,
+    startAutomationServer: () => automationServerController.start(),
+    stopAutomationServer: () => automationServerController.stop(),
+    onSigint: deps.onSigint,
+    offSigint: deps.offSigint,
+    onStdinData: deps.onStdinData,
+    offStdinData: deps.offStdinData,
+    clearTerminalOutputRecordTimer: deps.clearTerminalOutputRecordTimer,
+  })
+
+  return {
+    start: processLifecycleController.start,
+    stop: processLifecycleController.stop,
+  }
+}

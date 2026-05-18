@@ -14,19 +14,13 @@ import type {
   RuntimeSession,
   TerminalOutputRecord,
 } from "./cli-types.js"
+import { createCliAutomationProcessComposition } from "./cli-automation-process-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
-import {
-  startCliAutomationServer,
-  stopCliAutomationServer,
-} from "./cli-automation.js"
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createAssistantMessageCompletionController } from "./assistant-message-completion-controller.js"
 import { createAuthoritativeIdleController } from "./authoritative-idle-controller.js"
-import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
-import { createCliAutomationServerController } from "./cli-automation-server-controller.js"
-import { createCliAutomationSnapshotController } from "./cli-automation-snapshot-controller.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   ATTACHED_PROMPT_PLACEHOLDER,
@@ -54,7 +48,6 @@ import {
 } from "./cli-renderer-focus-controller.js"
 import { createCliLoadingStateController } from "./cli-loading-state-controller.js"
 import { createCliPollingController } from "./cli-polling-controller.js"
-import { createCliProcessLifecycleController } from "./cli-process-lifecycle-controller.js"
 import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
 import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
@@ -3229,7 +3222,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const handleStdinData = stdinKeyController.handleData
 
-  const automationSnapshotController = createCliAutomationSnapshotController({
+  const automationProcessComposition = createCliAutomationProcessComposition({
+    client,
+    options,
+    appLogger: appLogger ?? null,
+    formatError,
+    flashFooter,
+    handleSigint,
+    handleStdinData,
+    onSigint: (handler) => process.on("SIGINT", handler),
+    offSigint: (handler) => process.off("SIGINT", handler),
+    onStdinData: (handler) => process.stdin.on("data", handler),
+    offStdinData: (handler) => process.stdin.off("data", handler),
+    clearTerminalOutputRecordTimer: () => terminalOutputRecordQueue.clearTimer(),
     workspaceScreenMode,
     workflowScreenActive,
     daemonDisconnected,
@@ -3261,25 +3266,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getInteractionChoiceSelection: interactionChoiceStore.getSelectedIndex,
     getInteractionCustomReply: interactionChoiceStore.getStoredCustomReply,
     isInteractionCustomEditing: interactionChoiceStore.isCustomEditing,
-  })
-  const automationSnapshot = automationSnapshotController.snapshot
-
-  const handleAutomationRequest = createCliAutomationActionHandler({
-    client,
-    options,
-    appLogger,
-    snapshot: automationSnapshot,
-    isAttached,
     kernelConnected,
-    workflowScreenActive,
     setWorkspaceScreenMode,
     rebuildTranscript,
     applyResponseLayout,
     showWorkflowScreen,
     submitWorkspaceShellCommand,
     attachmentState,
-    sessionState,
-    focusedAgentId,
     setPromptText,
     submitPrompt,
     activateWaitingRoom,
@@ -3289,29 +3282,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     restoreTerminalAndExit,
     sleep,
   })
-
-  const automationServerController = createCliAutomationServerController({
-    socketPath: options.automationSocket,
-    handleRequest: handleAutomationRequest,
-    startServer: startCliAutomationServer,
-    stopServer: stopCliAutomationServer,
-    formatError,
-    logger: appLogger,
-    flashFooter,
-  })
-  const processLifecycleController = createCliProcessLifecycleController({
-    handleSigint,
-    handleStdinData,
-    startAutomationServer: () => automationServerController.start(),
-    stopAutomationServer: () => automationServerController.stop(),
-    onSigint: (handler) => process.on("SIGINT", handler),
-    offSigint: (handler) => process.off("SIGINT", handler),
-    onStdinData: (handler) => process.stdin.on("data", handler),
-    offStdinData: (handler) => process.stdin.off("data", handler),
-    clearTerminalOutputRecordTimer: () => terminalOutputRecordQueue.clearTimer(),
-  })
-  processLifecycleController.start()
-  onCleanup(processLifecycleController.stop)
+  automationProcessComposition.start()
+  onCleanup(automationProcessComposition.stop)
 
   const terminalResizeController = createTerminalResizeController({
     isAttached,

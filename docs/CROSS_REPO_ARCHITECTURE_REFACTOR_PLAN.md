@@ -12,7 +12,7 @@ Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, ag
 
 ## Current Checkpoint
 
-2026-05-18: Latest verified stage is relay server connection ownership. The WebSocket connection lifecycle, relay envelope forwarding, auth checks, heartbeat timeouts, and disconnect cleanup moved from `apps/relay/src/server.rs` into `apps/relay/src/server/connection.rs`; `server.rs` is 1,389 lines and the connection module is 1,220 lines. Relay tests pass 23 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
+2026-05-18: Latest verified stage is CLI automation/process ownership. Automation snapshot/action wiring, automation server startup, SIGINT/stdin lifecycle hooks, and terminal-output timer cleanup moved from `apps/cli/src/index.tsx` into `apps/cli/src/cli-automation-process-composition.ts`; `index.tsx` is 3,845 lines and the new module is 166 lines. CLI test passes 1,046 tests and `git diff --check` passes. Kernel full-lib still has the prior unrelated slice private-relay port assertions (`43130` expected, `53130` actual).
 
 ## Responsibility Rule
 
