@@ -25,10 +25,9 @@ Register the Python environment:
 /env register py-default --python /usr/bin/python3
 ```
 
-Validate and register the script:
+Register the script. Registration validates the script first, so an invalid script is not saved:
 
 ```text
-/script validate /absolute/path/to/examples/vector_lookup.py --env py-default --name vector_lookup
 /script register /absolute/path/to/examples/vector_lookup.py --env py-default --name vector_lookup
 ```
 
@@ -130,10 +129,9 @@ Register Node with the package root that has `tsx`:
 /env register node-default --node /opt/homebrew/bin/node --package-root /absolute/path/to/.arroba-script-envs/ts-default
 ```
 
-Validate, register, and grant:
+Register and grant:
 
 ```text
-/script validate /absolute/path/to/examples/account_lookup.ts --env node-default --name account_lookup
 /script register /absolute/path/to/examples/account_lookup.ts --env node-default --name account_lookup
 /script grant agent-1 account_lookup --env node-default
 ```
@@ -215,6 +213,15 @@ The old MCP and skill commands remain available as aliases for those extension k
 ```text
 /mcp grants agent-1
 /skill grants agent-1
+```
+
+## Optional Validation
+
+`/script register` always validates before saving the script. Use `/script validate` only when you want to check or debug a script before registering it:
+
+```text
+/script validate /absolute/path/to/examples/vector_lookup.py --env py-default --name vector_lookup
+/script validate /absolute/path/to/examples/account_lookup.ts --env node-default --name account_lookup
 ```
 
 ## Cleanup
