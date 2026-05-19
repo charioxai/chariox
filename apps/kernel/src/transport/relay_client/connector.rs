@@ -7,14 +7,11 @@ pub async fn run_daemon_relay_connector(
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let (provider_runtime_lanes, relay_event_counter_path) = {
-        let app = app.lock().await;
-        (
-            app.provider_run_operation_lanes(),
-            app.config().kernel_relay_event_counter_path(),
-        )
-    };
-    let event_runtime = match RelayEventRuntime::new(relay_event_counter_path) {
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app,
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let event_runtime = match RelayEventRuntime::new(router.relay_event_counter_path()) {
         Ok(runtime) => Arc::new(runtime),
         Err(error) => {
             crate::logging::warn_with_fields(
@@ -27,11 +24,6 @@ pub async fn run_daemon_relay_connector(
             return;
         }
     };
-    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
-        Arc::clone(&app),
-        INTERACTIVE_COMMAND_QUEUE_LIMIT,
-        provider_runtime_lanes,
-    ));
     let command_sequence = Arc::new(AtomicU64::new(1));
 
     loop {
@@ -140,7 +132,7 @@ pub async fn run_daemon_relay_connector(
                 };
                 if outgoing_tx.send(register).is_err() {
                     writer_task.abort();
-                    clear_remote_inventory_projection(&app).await;
+                    clear_remote_inventory_projection(&router);
                     publish_offline_and_set_disconnected(
                         &router,
                         &state,
@@ -161,8 +153,7 @@ pub async fn run_daemon_relay_connector(
                 publish_cloud_presence(&router, true, "relay registration sent").await;
                 let mut last_cloud_presence_publish = Instant::now();
                 let mut inventory_refresh_task = Some(spawn_remote_inventory_projection_refresh(
-                    Arc::clone(&app),
-                    Arc::clone(&state),
+                    Arc::clone(&router),
                 ));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
                 heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -183,7 +174,7 @@ pub async fn run_daemon_relay_connector(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
-                                clear_remote_inventory_projection(&app).await;
+                                clear_remote_inventory_projection(&router);
                                 publish_offline_and_set_disconnected(&router, &state, "daemon shutting down").await;
                                 return;
                             }
@@ -193,7 +184,6 @@ pub async fn run_daemon_relay_connector(
                                 Some(Ok(Message::Text(payload))) => {
                                     if handle_incoming_envelope(
                                         &router,
-                                        &app,
                                         &command_sequence,
                                         &state,
                                         &outgoing_tx,
@@ -207,7 +197,7 @@ pub async fn run_daemon_relay_connector(
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
-                                        clear_remote_inventory_projection(&app).await;
+                                        clear_remote_inventory_projection(&router);
                                         publish_offline_and_set_disconnected(&router, &state, "relay payload handling failed").await;
                                         break;
                                     }
@@ -216,7 +206,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&app).await;
+                                    clear_remote_inventory_projection(&router);
                                     publish_offline_and_set_disconnected(&router, &state, "relay close frame received").await;
                                     break;
                                 }
@@ -225,7 +215,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&app).await;
+                                    clear_remote_inventory_projection(&router);
                                     publish_offline_and_set_disconnected(&router, &state, "relay read failed or ended").await;
                                     break;
                                 }
@@ -236,7 +226,7 @@ pub async fn run_daemon_relay_connector(
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&subscription_tasks).await;
                             writer_task.abort();
-                            clear_remote_inventory_projection(&app).await;
+                            clear_remote_inventory_projection(&router);
                             publish_offline_and_set_disconnected(&router, &state, "relay writer ended").await;
                             break;
                         }
@@ -285,7 +275,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&app).await;
+                                    clear_remote_inventory_projection(&router);
                                     publish_offline_and_set_disconnected(&router, &state, "relay configuration changed").await;
                                     break;
                                 }
@@ -325,7 +315,7 @@ pub async fn run_daemon_relay_connector(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    clear_remote_inventory_projection(&app).await;
+                                    clear_remote_inventory_projection(&router);
                                     publish_offline_and_set_disconnected(&router, &state, "relay configuration changed").await;
                                     break;
                                 }
@@ -337,8 +327,7 @@ pub async fn run_daemon_relay_connector(
                             {
                                 inventory_refresh_task = Some(
                                     spawn_remote_inventory_projection_refresh(
-                                        Arc::clone(&app),
-                                        Arc::clone(&state),
+                                        Arc::clone(&router),
                                     )
                                 );
                             }
@@ -350,7 +339,7 @@ pub async fn run_daemon_relay_connector(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
-                                clear_remote_inventory_projection(&app).await;
+                                clear_remote_inventory_projection(&router);
                                 publish_offline_and_set_disconnected(&router, &state, "relay heartbeat send failed").await;
                                 break;
                             }
@@ -378,7 +367,7 @@ pub async fn run_daemon_relay_connector(
                         "error": error.to_string(),
                     }),
                 );
-                clear_remote_inventory_projection(&app).await;
+                clear_remote_inventory_projection(&router);
                 publish_offline_and_set_disconnected(
                     &router,
                     &state,

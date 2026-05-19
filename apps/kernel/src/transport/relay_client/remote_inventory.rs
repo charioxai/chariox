@@ -1,5 +1,8 @@
 //! Remote relay inventory projection refresh and liveness probing.
 
+use crate::runtime::projection::{
+    DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
+};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
@@ -10,21 +13,15 @@ pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<()>>) {
     }
 }
 
-pub(super) async fn clear_remote_inventory_projection(app: &Arc<Mutex<DaemonApp>>) {
-    let projection = {
-        let app = app.lock().await;
-        app.remote_relay_inventory_projection_store()
-    };
-    projection.clear();
+pub(super) fn clear_remote_inventory_projection(router: &CommandRouter) {
+    router.clear_remote_relay_inventory_projection();
 }
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
-    app: Arc<Mutex<DaemonApp>>,
-    _state: Arc<RwLock<RelayClientState>>,
+    router: Arc<CommandRouter>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
-        {
+        if let Err(error) = router.refresh_remote_relay_inventory_projection().await {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "remote relay inventory refresh failed",
@@ -36,16 +33,11 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
     })
 }
 
-pub(crate) async fn refresh_remote_inventory_projection_for_app_with_relay_state(
-    app: &Arc<Mutex<DaemonApp>>,
+pub(crate) async fn refresh_remote_inventory_projection(
+    config_projection: DaemonConfigProjectionStore,
+    projection: RemoteRelayInventoryProjectionStore,
 ) -> Result<(), DaemonError> {
-    let (mut config, projection) = {
-        let app = app.lock().await;
-        (
-            app.config().clone(),
-            app.remote_relay_inventory_projection_store(),
-        )
-    };
+    let mut config = config_projection.snapshot();
     if config.relay_url.is_none() || config.relay_token.is_none() {
         projection.clear();
         return Ok(());

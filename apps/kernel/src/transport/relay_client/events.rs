@@ -62,7 +62,6 @@ pub(super) async fn emit_relay_event(
 pub(super) async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
     router: &Arc<CommandRouter>,
-    app: &Arc<Mutex<DaemonApp>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
     client_public_key: &str,
@@ -98,7 +97,6 @@ pub(super) async fn replay_recent_relay_events(
             )
             .await?;
             emit_relay_replay_gap_snapshot(
-                app,
                 router,
                 outgoing_tx,
                 subscription_id,
@@ -152,7 +150,6 @@ pub(super) async fn replay_recent_relay_events(
 }
 
 async fn emit_relay_replay_gap_snapshot(
-    app: &Arc<Mutex<DaemonApp>>,
     router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
@@ -162,10 +159,7 @@ async fn emit_relay_replay_gap_snapshot(
     attachment_id: &str,
 ) -> Result<(), DaemonError> {
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
-    let snapshot = {
-        let mut app = app.lock().await;
-        build_relay_session_snapshot(&mut app, session_id)
-    };
+    let snapshot = router.session_snapshot_projection(session_id, 0);
     match snapshot {
         Ok(projection) => {
             emit_relay_event(
@@ -195,13 +189,6 @@ async fn emit_relay_replay_gap_snapshot(
         }
     }
     Ok(())
-}
-
-fn build_relay_session_snapshot(
-    app: &mut DaemonApp,
-    session_id: &str,
-) -> Result<SessionSnapshotProjection, DaemonError> {
-    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
 }
 
 fn send_relay_event_frame(

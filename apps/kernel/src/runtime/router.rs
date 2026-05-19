@@ -33,6 +33,7 @@ mod refresh_dispatch;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod status_projection_bridge;
+mod transport_bridge;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 

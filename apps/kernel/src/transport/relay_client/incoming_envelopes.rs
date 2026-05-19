@@ -4,7 +4,6 @@ use super::*;
 
 pub(super) async fn handle_incoming_envelope(
     router: &Arc<CommandRouter>,
-    app: &Arc<Mutex<DaemonApp>>,
     command_sequence: &Arc<AtomicU64>,
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
@@ -109,7 +108,6 @@ pub(super) async fn handle_incoming_envelope(
         } => {
             handle_relay_subscribe(
                 router,
-                app,
                 outgoing_tx,
                 subscription_tasks,
                 event_runtime,

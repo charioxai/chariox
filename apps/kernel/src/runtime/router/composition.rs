@@ -69,6 +69,34 @@ impl CommandRouter {
         )
     }
 
+    pub(crate) fn with_interactive_capacity_from_app(
+        app: Arc<Mutex<DaemonApp>>,
+        interactive_capacity: usize,
+    ) -> Self {
+        let started = Instant::now();
+        let (provider_runtime_lanes, transport_health) = {
+            let app = loop {
+                if let Ok(app) = app.try_lock() {
+                    break app;
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("CommandRouter could not acquire the app lock during bootstrap");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            (
+                app.provider_run_operation_lanes(),
+                app.transport_health_store(),
+            )
+        };
+        Self::with_interactive_capacity_provider_lanes_and_transport_health(
+            app,
+            interactive_capacity,
+            provider_runtime_lanes,
+            transport_health,
+        )
+    }
+
     pub(crate) fn with_interactive_capacity_provider_lanes_and_transport_health(
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,

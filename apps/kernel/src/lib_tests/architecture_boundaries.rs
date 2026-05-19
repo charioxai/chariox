@@ -1,19 +1,37 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[test]
 fn runtime_command_paths_do_not_lock_daemon_app() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut paths = BTreeSet::new();
+    for root in [
+        src_root.join("runtime"),
+        src_root.join("runtime_transport"),
+        src_root.join("transport/relay_client"),
+    ] {
+        paths.extend(rust_files(&root));
+    }
+    for path in [
+        src_root.join("runtime_transport.rs"),
+        src_root.join("transport/relay_client.rs"),
+    ] {
+        if path.exists() {
+            paths.insert(path);
+        }
+    }
+
     let mut violations = Vec::new();
-    for path in rust_files(&src_root.join("runtime")) {
+    for path in paths {
         let relative = path
             .strip_prefix(&src_root)
-            .expect("runtime source should live under src")
+            .expect("kernel source should live under src")
             .to_path_buf();
         if !scan_runtime_command_path(&relative) {
             continue;
         }
         let source = std::fs::read_to_string(&path).expect("runtime source should be readable");
-        let production_source = strip_cfg_test_modules(&source);
+        let production_source = strip_cfg_test_items(&source);
         for pattern in ["app.lock().await", "app.lock().await;"] {
             for (line_index, line) in production_source.lines().enumerate() {
                 if line.contains(pattern) {
@@ -77,39 +95,60 @@ fn collect_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-fn strip_cfg_test_modules(source: &str) -> String {
+fn strip_cfg_test_items(source: &str) -> String {
     let mut stripped = String::with_capacity(source.len());
     let mut cursor = 0;
     while let Some(attribute_offset) = source[cursor..].find("#[cfg(test)]") {
         let attribute_start = cursor + attribute_offset;
         let after_attribute = attribute_start + "#[cfg(test)]".len();
-        let Some(module_offset) = source[after_attribute..].find("mod tests") else {
-            break;
-        };
-        let module_start = after_attribute + module_offset;
-        if source[after_attribute..module_start].contains("#[") {
-            cursor = after_attribute;
-            continue;
-        }
-        let Some(open_brace_offset) = source[module_start..].find('{') else {
-            break;
-        };
-        let open_brace = module_start + open_brace_offset;
-        let Some(close_brace) = matching_brace(source, open_brace) else {
+        let item_start = skip_attributes_and_whitespace(source, after_attribute);
+        let Some(item_end) = cfg_item_end(source, item_start) else {
             break;
         };
         stripped.push_str(&source[cursor..attribute_start]);
-        for _ in 0..source[attribute_start..=close_brace]
+        for _ in 0..source[attribute_start..=item_end]
             .bytes()
             .filter(|byte| *byte == b'\n')
             .count()
         {
             stripped.push('\n');
         }
-        cursor = close_brace + 1;
+        cursor = item_end + 1;
     }
     stripped.push_str(&source[cursor..]);
     stripped
+}
+
+fn skip_attributes_and_whitespace(source: &str, mut cursor: usize) -> usize {
+    loop {
+        cursor += source[cursor..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
+        if source[cursor..].starts_with("#[") {
+            let Some(close_attribute) = source[cursor..].find(']') else {
+                return cursor;
+            };
+            cursor += close_attribute + 1;
+            continue;
+        }
+        return cursor;
+    }
+}
+
+fn cfg_item_end(source: &str, item_start: usize) -> Option<usize> {
+    let next_brace = source[item_start..]
+        .find('{')
+        .map(|offset| item_start + offset);
+    let next_semicolon = source[item_start..]
+        .find(';')
+        .map(|offset| item_start + offset);
+    match (next_brace, next_semicolon) {
+        (Some(open_brace), Some(semicolon)) if semicolon < open_brace => Some(semicolon),
+        (Some(open_brace), _) => matching_brace(source, open_brace),
+        (None, Some(semicolon)) => Some(semicolon),
+        (None, None) => None,
+    }
 }
 
 fn matching_brace(source: &str, open_brace: usize) -> Option<usize> {

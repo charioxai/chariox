@@ -11,8 +11,9 @@ pub(super) use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 pub(super) use crate::config::DaemonConfig;
 pub(super) use crate::local::{
     AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest, GetSessionStateRequest,
-    ListSessionsRequest, LocalDaemonResponse, ResizeTerminalRequest, ResolveSessionRequest,
-    RespondToInteractionRequest, UpdateSessionConfigRequest, ValidateWorkflowOutputRequest,
+    ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, ResizeTerminalRequest,
+    ResolveSessionRequest, RespondToInteractionRequest, UpdateSessionConfigRequest,
+    ValidateWorkflowOutputRequest,
 };
 pub(super) use crate::runtime::command::KernelCommand;
 pub(super) use crate::session::CreateSessionRequest;
@@ -59,6 +60,19 @@ pub(super) fn attach_test_client(
         .expect("session should attach")
         .id()
         .to_string()
+}
+
+pub(super) async fn refresh_remote_inventory_projection_for_app_with_relay_state(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> Result<(), DaemonError> {
+    let (config_projection, remote_inventory_projection) = {
+        let app = app.lock().await;
+        (
+            app.config_projection_store(),
+            app.remote_relay_inventory_projection_store(),
+        )
+    };
+    refresh_remote_inventory_projection(config_projection, remote_inventory_projection).await
 }
 
 pub(super) async fn wait_for_daemon_registration(

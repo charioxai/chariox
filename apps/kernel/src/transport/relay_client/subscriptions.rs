@@ -2,6 +2,7 @@
 
 use super::request_errors::map_relay_error;
 use super::*;
+use crate::runtime::projection::SessionSnapshotProjection;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
 
@@ -40,7 +41,6 @@ pub(super) fn relay_subscription_task_key(
 
 pub(super) async fn handle_relay_subscribe(
     router: &Arc<CommandRouter>,
-    app: &Arc<Mutex<DaemonApp>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_tasks: &RelaySubscriptionTasks,
     event_runtime: &Arc<RelayEventRuntime>,
@@ -152,7 +152,6 @@ pub(super) async fn handle_relay_subscribe(
         if let Err(error) = replay_recent_relay_events(
             event_runtime,
             router,
-            app,
             outgoing_tx,
             &relay_subscription_id,
             &client_public_key,

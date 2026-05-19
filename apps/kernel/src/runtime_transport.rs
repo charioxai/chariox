@@ -126,22 +126,18 @@ pub async fn run_kernel_websocket_server<F>(
 where
     F: Future<Output = ()>,
 {
-    let (bind_host, bind_port, provider_runtime_lanes) = {
-        let app = app.lock().await;
-        (
-            app.config().kernel_websocket_host.clone(),
-            app.config().kernel_websocket_port,
-            app.provider_run_operation_lanes(),
-        )
-    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let (bind_host, bind_port) = router.kernel_websocket_bind_address();
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "bind kernel websocket",
             message: error.to_string(),
         })?;
-    run_kernel_websocket_server_with_bound_listener(app, listener, provider_runtime_lanes, shutdown)
-        .await
+    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
 }
 
 pub async fn run_kernel_websocket_server_on_listener<F>(
@@ -163,54 +159,35 @@ where
             operation: "adopt kernel websocket listener",
             message: error.to_string(),
         })?;
-    let provider_runtime_lanes = {
-        let app = app.lock().await;
-        app.provider_run_operation_lanes()
-    };
-    run_kernel_websocket_server_with_bound_listener(app, listener, provider_runtime_lanes, shutdown)
-        .await
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app,
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
 }
 
 async fn run_kernel_websocket_server_with_bound_listener<F>(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     listener: TcpListener,
-    provider_runtime_lanes: crate::provider::ProviderRunOperationLanes,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
     F: Future<Output = ()>,
 {
-    let pump_app = Arc::clone(&app);
-    let (transport_health, durable_snapshot_scheduler, event_counter_path) = {
-        let app = app.lock().await;
-        (
-            app.transport_health_store(),
-            app.durable_snapshot_scheduler(),
-            app.config().kernel_event_counter_path(),
-        )
-    };
+    let transport_health = router.transport_health_store();
+    let durable_snapshot_scheduler = router.durable_snapshot_scheduler();
+    let event_counter_path = router.kernel_event_counter_path();
     let runtime = Arc::new(KernelTransportRuntime::new_with_persistent_event_ids(
         transport_health.clone(),
         event_counter_path,
     )?);
-    let router = Arc::new(
-        CommandRouter::with_interactive_capacity_provider_lanes_and_transport_health(
-            Arc::clone(&app),
-            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
-            provider_runtime_lanes,
-            transport_health,
-        ),
-    );
 
     tokio::pin!(shutdown);
 
+    let pump_router = Arc::clone(&router);
     let pump_task = tokio::spawn(async move {
         loop {
-            {
-                let mut app = pump_app.lock().await;
-                crate::app::provider_output::pump_active_prompt_outputs(&mut app);
-                crate::app::workflow_runtime::pump_workflow_watchdogs(&mut app);
-            }
+            pump_router.pump_transport_runtime().await;
             sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
         }
     });
@@ -231,8 +208,7 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
-                let mut app = app.lock().await;
-                let _ = app.shutdown_cleanup();
+                let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
             accept_result = listener.accept() => {
@@ -240,11 +216,10 @@ where
                     operation: "accept kernel websocket",
                     message: error.to_string(),
                 })?;
-                let app = Arc::clone(&app);
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 tokio::spawn(async move {
-                    let _ = handle_kernel_connection(app, runtime, router, stream).await;
+                    let _ = handle_kernel_connection(runtime, router, stream).await;
                 });
             }
         }
@@ -252,7 +227,6 @@ where
 }
 
 async fn handle_kernel_connection(
-    app: Arc<Mutex<DaemonApp>>,
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
     stream: tokio::net::TcpStream,
@@ -267,13 +241,7 @@ async fn handle_kernel_connection(
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),
     };
-    let (queue_capacity, write_delay_ms) = {
-        let app = app.lock().await;
-        (
-            app.config().kernel_websocket_queue_capacity,
-            app.config().kernel_websocket_write_delay_ms,
-        )
-    };
+    let (queue_capacity, write_delay_ms) = router.kernel_websocket_connection_config();
 
     let (mut writer, mut reader) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
@@ -336,7 +304,6 @@ async fn handle_kernel_connection(
         match message {
             Message::Text(payload) => {
                 handle_incoming_payload(
-                    &app,
                     &runtime,
                     &router,
                     &connection_state,
@@ -350,7 +317,6 @@ async fn handle_kernel_connection(
             }
             Message::Binary(payload) => {
                 handle_incoming_payload(
-                    &app,
                     &runtime,
                     &router,
                     &connection_state,
@@ -387,7 +353,6 @@ async fn handle_kernel_connection(
 }
 
 async fn handle_incoming_payload(
-    app: &Arc<Mutex<DaemonApp>>,
     runtime: &Arc<KernelTransportRuntime>,
     router: &Arc<CommandRouter>,
     connection_state: &Arc<Mutex<ConnectionState>>,
@@ -652,7 +617,7 @@ async fn handle_incoming_payload(
                 match replay_result {
                     ReplaySubscriptionResult::Gap(gap) => {
                         emit_replay_gap_snapshot(
-                            app,
+                            router,
                             runtime,
                             outgoing_tx,
                             close_tx,
@@ -681,7 +646,6 @@ async fn handle_incoming_payload(
                     subscription_scope: scope.clone(),
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
-                    Arc::clone(app),
                     Arc::clone(router),
                     Arc::clone(runtime),
                     outgoing_tx.clone(),

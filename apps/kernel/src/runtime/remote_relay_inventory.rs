@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, LocalDaemonRequest,
@@ -11,20 +10,16 @@ use crate::local::{
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
-use crate::transport::relay_client::{
-    refresh_remote_inventory_projection_for_app_with_relay_state, RelayClientState,
-};
+use crate::transport::relay_client::{refresh_remote_inventory_projection, RelayClientState};
 
 const REMOTE_RELAY_INVENTORY_REFRESH_COOLDOWN_MS: u64 = 1_000;
 
 pub(crate) async fn projected_remote_machines_response(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     request_remote_relay_inventory_projection_refresh(
-        app,
         relay_state,
         config_projection,
         remote_relay_inventory_projection.clone(),
@@ -35,14 +30,12 @@ pub(crate) async fn projected_remote_machines_response(
 }
 
 pub(crate) async fn execute_list_remote_machines_request(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     _request: ListRemoteMachinesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     projected_remote_machines_response(
-        app,
         relay_state,
         config_projection,
         remote_relay_inventory_projection,
@@ -51,14 +44,12 @@ pub(crate) async fn execute_list_remote_machines_request(
 }
 
 pub(crate) async fn projected_remote_machine_kernels_response(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     machine_ref: String,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     request_remote_relay_inventory_projection_refresh(
-        app,
         relay_state,
         config_projection,
         remote_relay_inventory_projection.clone(),
@@ -83,14 +74,12 @@ pub(crate) async fn projected_remote_machine_kernels_response(
 }
 
 pub(crate) async fn execute_list_remote_machine_kernels_request(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     request: ListRemoteMachineKernelsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     projected_remote_machine_kernels_response(
-        app,
         relay_state,
         config_projection,
         remote_relay_inventory_projection,
@@ -100,7 +89,6 @@ pub(crate) async fn execute_list_remote_machine_kernels_request(
 }
 
 pub(crate) async fn execute_remote_relay_inventory_request(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
@@ -109,7 +97,6 @@ pub(crate) async fn execute_remote_relay_inventory_request(
     match request {
         LocalDaemonRequest::ListRemoteMachines(request) => {
             execute_list_remote_machines_request(
-                app,
                 relay_state,
                 config_projection,
                 remote_relay_inventory_projection,
@@ -119,7 +106,6 @@ pub(crate) async fn execute_remote_relay_inventory_request(
         }
         LocalDaemonRequest::ListRemoteMachineKernels(request) => {
             execute_list_remote_machine_kernels_request(
-                app,
                 relay_state,
                 config_projection,
                 remote_relay_inventory_projection,
@@ -152,7 +138,6 @@ pub(crate) async fn projected_relay_status(
 }
 
 async fn request_remote_relay_inventory_projection_refresh(
-    app: Arc<Mutex<DaemonApp>>,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
@@ -172,7 +157,11 @@ async fn request_remote_relay_inventory_projection_refresh(
         return;
     }
     tokio::spawn(async move {
-        if let Err(error) = refresh_remote_inventory_projection_for_app_with_relay_state(&app).await
+        if let Err(error) = refresh_remote_inventory_projection(
+            config_projection,
+            remote_relay_inventory_projection,
+        )
+        .await
         {
             crate::logging::warn_with_fields(
                 "daemon.router",

@@ -2,10 +2,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{RelayStatus, RemoteMachineRecord};
 use crate::runtime::event_log::{ReplayGap, ReplayOutcome};
@@ -28,7 +27,6 @@ use super::{
 };
 
 pub(super) async fn run_subscription_loop(
-    app: Arc<Mutex<DaemonApp>>,
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
     outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
@@ -57,17 +55,15 @@ pub(super) async fn run_subscription_loop(
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
     loop {
-        let watch_result = {
-            let mut app = app.lock().await;
-            watch_subscription_state(
-                &mut app,
+        let watch_result = router
+            .relay_watch_subscription_state(
                 &subscription.session_id,
                 &subscription.attachment_id,
                 tick,
                 previous_snapshot.clone(),
                 last_workflow_design_sequence,
             )
-        };
+            .await;
 
         match watch_result {
             WatchResult::Ok {
@@ -189,70 +185,42 @@ pub(super) async fn run_subscription_loop(
                     break;
                 }
                 if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS) {
-                    match relay_status_snapshot_for_events(&app).await {
-                        Ok(status) => {
-                            if previous_relay_status.as_ref() != Some(&status) {
-                                previous_relay_status = Some(status.clone());
-                                if !emit_kernel_event(
-                                    &runtime,
-                                    &outgoing_tx,
-                                    &close_tx,
-                                    &close_requested,
-                                    KernelEvent::RelayStatusChanged { status },
-                                    Some(&event_stream_id),
-                                    Some(&subscription.session_id),
-                                    Some(&subscription.attachment_id),
-                                )
-                                .await
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            crate::logging::warn_with_fields(
-                                "daemon.runtime_transport",
-                                "kernel event loop failed to build relay status snapshot",
-                                serde_json::json!({
-                                    "session_id": subscription.session_id,
-                                    "attachment_id": subscription.attachment_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
+                    let status = router.transport_relay_status_snapshot().await;
+                    if previous_relay_status.as_ref() != Some(&status) {
+                        previous_relay_status = Some(status.clone());
+                        if !emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelEvent::RelayStatusChanged { status },
+                            Some(&event_stream_id),
+                            Some(&subscription.session_id),
+                            Some(&subscription.attachment_id),
+                        )
+                        .await
+                        {
+                            break;
                         }
                     }
                 }
                 if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
-                    match remote_machines_snapshot_for_events(&app).await {
-                        Ok(machines) => {
-                            if previous_remote_machines.as_ref() != Some(&machines) {
-                                previous_remote_machines = Some(machines.clone());
-                                if !emit_kernel_event(
-                                    &runtime,
-                                    &outgoing_tx,
-                                    &close_tx,
-                                    &close_requested,
-                                    KernelEvent::RemoteMachinesChanged { machines },
-                                    Some(&event_stream_id),
-                                    Some(&subscription.session_id),
-                                    Some(&subscription.attachment_id),
-                                )
-                                .await
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            crate::logging::warn_with_fields(
-                                "daemon.runtime_transport",
-                                "kernel event loop failed to build remote machines snapshot",
-                                serde_json::json!({
-                                    "session_id": subscription.session_id,
-                                    "attachment_id": subscription.attachment_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
+                    let machines = router.transport_remote_machines_snapshot();
+                    if previous_remote_machines.as_ref() != Some(&machines) {
+                        previous_remote_machines = Some(machines.clone());
+                        if !emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelEvent::RemoteMachinesChanged { machines },
+                            Some(&event_stream_id),
+                            Some(&subscription.session_id),
+                            Some(&subscription.attachment_id),
+                        )
+                        .await
+                        {
+                            break;
                         }
                     }
                 }
@@ -315,34 +283,11 @@ pub(super) async fn run_subscription_loop(
     }
 }
 
-async fn relay_status_snapshot_for_events(
-    app: &Arc<Mutex<DaemonApp>>,
-) -> Result<RelayStatus, DaemonError> {
-    let (config, relay_state) = {
-        let app = app.lock().await;
-        (app.config().clone(), app.relay_client_state())
-    };
-    let connected = relay_state.read().await.connected();
-    Ok(RelayStatus {
-        configured: config.relay_url.is_some() && config.relay_token.is_some(),
-        connected,
-        relay_url: config.relay_url,
-        relay_token_configured: config.relay_token.is_some(),
-        daemon_id: config.daemon_id,
-        machine_id: config.host_machine_id,
-        machine_alias: config.host_machine_alias,
-    })
-}
-
-async fn remote_machines_snapshot_for_events(
-    app: &Arc<Mutex<DaemonApp>>,
-) -> Result<Vec<RemoteMachineRecord>, DaemonError> {
-    let remote_relay_inventory = {
-        let app = app.lock().await;
-        app.remote_relay_inventory_projection_store()
-    };
-    let (machines, _) = remote_relay_inventory.snapshot();
-    Ok(machines)
+fn build_session_snapshot(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+) -> Result<SessionSnapshotProjection, DaemonError> {
+    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
 }
 
 pub(crate) enum WatchResult {
@@ -357,7 +302,7 @@ pub(crate) enum WatchResult {
 }
 
 pub(crate) fn watch_subscription_state(
-    app: &mut DaemonApp,
+    app: &mut crate::app::DaemonApp,
     session_id: &str,
     attachment_id: &str,
     tick: u64,
@@ -631,7 +576,7 @@ pub(super) async fn replay_recent_events(
 }
 
 pub(super) async fn emit_replay_gap_snapshot(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     runtime: &Arc<KernelTransportRuntime>,
     outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
@@ -640,10 +585,7 @@ pub(super) async fn emit_replay_gap_snapshot(
     attachment_id: &str,
 ) {
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
-    let snapshot = {
-        let mut app = app.lock().await;
-        build_session_snapshot(&mut app, session_id)
-    };
+    let snapshot = router.session_snapshot_projection(session_id, 0);
     match snapshot {
         Ok(projection) => {
             let _ = emit_kernel_event(
@@ -718,11 +660,4 @@ async fn run_waiting_room_inventory_subscription_loop(
         ))
         .await;
     }
-}
-
-fn build_session_snapshot(
-    app: &mut DaemonApp,
-    session_id: &str,
-) -> Result<SessionSnapshotProjection, DaemonError> {
-    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
 }

@@ -13,9 +13,7 @@ use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope,
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::LocalDaemonRequest;
 use crate::runtime::event_log::{EventLog, ReplayOutcome};
-use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::{WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS};
 use crate::transport::kernel_protocol::{
@@ -53,7 +51,7 @@ pub use peer_client::send_peer_request_via_temporary_connection;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;
-pub(crate) use remote_inventory::refresh_remote_inventory_projection_for_app_with_relay_state;
+pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
     abort_inventory_refresh_task, clear_remote_inventory_projection,
     spawn_remote_inventory_projection_refresh,

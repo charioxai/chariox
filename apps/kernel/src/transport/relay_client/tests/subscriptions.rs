@@ -342,7 +342,6 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
     replay_recent_relay_events(
         &event_runtime,
         &router,
-        &app,
         &outgoing_tx,
         "subscription-1",
         &subscription_public_key,
