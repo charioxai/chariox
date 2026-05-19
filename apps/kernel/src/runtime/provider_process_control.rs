@@ -1,11 +1,7 @@
-use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     ListProviderProcessesRequest, LocalDaemonRequest, LocalDaemonResponse,
@@ -16,28 +12,30 @@ use crate::runtime::projection::{
     AgentRuntimeProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
     SessionStateProjectionStore,
 };
-use crate::session::RuntimeSession;
-
-pub(crate) struct ProviderProcessTeardown {
-    pub(crate) processes: Vec<ProviderProcessInfo>,
-    pub(crate) sessions: Vec<RuntimeSession>,
-}
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_provider_process_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
+    provider_process_projection: &ProviderProcessProjectionStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::ListProviderProcesses(request) => {
-            execute_list_provider_processes_request(app, request).await
+            execute_list_provider_processes_request(
+                runtime_state,
+                provider_process_projection,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::TeardownProviderProcesses(request) => {
             execute_teardown_provider_processes_request(
-                app,
+                runtime_state,
                 session_projection,
                 agent_runtime_projection,
+                provider_process_projection,
                 request,
             )
             .await
@@ -95,58 +93,42 @@ pub(crate) fn projected_provider_processes_response(
 }
 
 pub(crate) async fn execute_list_provider_processes_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
+    provider_process_projection: &ProviderProcessProjectionStore,
     request: ListProviderProcessesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (processes, delay_ms) = {
-        let app = app.lock().await;
-        (
-            app.list_provider_processes(request.provider.as_deref())?,
-            app.config().provider_process_list_delay_ms,
-        )
-    };
-    if delay_ms > 0 {
-        sleep(Duration::from_millis(delay_ms)).await;
+    let list = runtime_state.list_provider_processes(request.provider.as_deref());
+    provider_process_projection.update_list(list.canonical_processes);
+    if list.delay_ms > 0 {
+        sleep(Duration::from_millis(list.delay_ms)).await;
     }
-    Ok(LocalDaemonResponse::ProviderProcessesListed { processes })
-}
-
-pub(crate) async fn teardown_provider_processes(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: TeardownProviderProcessesRequest,
-) -> Result<ProviderProcessTeardown, DaemonError> {
-    let mut app = app.lock().await;
-    let processes = app.teardown_provider_processes(request.provider.as_deref(), request.force)?;
-    let session_ids = processes
-        .iter()
-        .flat_map(|process| process.owner_session_ids.iter())
-        .cloned()
-        .collect::<HashSet<_>>();
-    let sessions = session_ids
-        .into_iter()
-        .filter_map(|session_id| {
-            crate::app::KernelSessionReadService::new(&app)
-                .session_snapshot(&session_id)
-                .ok()
-        })
-        .collect::<Vec<_>>();
-    Ok(ProviderProcessTeardown {
-        processes,
-        sessions,
+    Ok(LocalDaemonResponse::ProviderProcessesListed {
+        processes: list.filtered_processes,
     })
 }
 
+pub(crate) async fn teardown_provider_processes(
+    runtime_state: &KernelRuntimeState,
+    request: TeardownProviderProcessesRequest,
+) -> Result<crate::runtime::state::ProviderProcessTeardown, DaemonError> {
+    runtime_state
+        .teardown_provider_processes(request.provider.as_deref(), request.force)
+        .await
+}
+
 pub(crate) async fn execute_teardown_provider_processes_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
+    provider_process_projection: &ProviderProcessProjectionStore,
     request: TeardownProviderProcessesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let teardown = teardown_provider_processes(app, request).await?;
+    let teardown = teardown_provider_processes(runtime_state, request).await?;
     for session in &teardown.sessions {
         agent_runtime_projection.update_session(session);
         session_projection.update(session.clone());
     }
+    provider_process_projection.update_list(teardown.canonical_processes);
     Ok(LocalDaemonResponse::ProviderProcessesTornDown {
         processes: teardown.processes,
     })

@@ -3,11 +3,7 @@ use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
-use crate::local::{
-    GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
-};
 use crate::provider::{AgentEndpointMode, ProviderRunState};
-use crate::runtime::projection::agent_activity_for_session_projection;
 use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
@@ -286,64 +282,6 @@ impl<'a> KernelSessionReadService<'a> {
             });
         }
         Ok(attachment)
-    }
-
-    pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        let sessions = SessionStateReader::new(self.app.session_state_store()).list_sessions();
-        let sessions_with_agents: Vec<_> = sessions
-            .into_iter()
-            .map(|mut session| {
-                let agents = self.app.agents().get_session_agents(session.id());
-                session.set_agents(agents);
-                session
-            })
-            .collect();
-        Ok(LocalDaemonResponse::SessionsListed {
-            sessions: sessions_with_agents,
-        })
-    }
-
-    pub(crate) fn resolve_session_response(
-        &self,
-        request: ResolveSessionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut session = SessionStateReader::new(self.app.session_state_store())
-            .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
-        let agents = self.app.agents().get_session_agents(session.id());
-        session.set_agents(agents);
-        Ok(LocalDaemonResponse::SessionResolved { session })
-    }
-
-    pub(crate) fn get_session_state_response(
-        &self,
-        request: GetSessionStateRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session = self.session_snapshot(&request.session_id)?;
-        let prompt_activity = self.app.prompt_activity_store();
-        let prompt_activity = prompt_activity.read();
-        let active_turns = self.app.active_turn_store().snapshot();
-        let agent_activity = agent_activity_for_session_projection(
-            &session,
-            |agent_id| {
-                self.app
-                    .providers()
-                    .get_run_for_agent(session.id(), agent_id)
-            },
-            &prompt_activity,
-            &active_turns,
-        );
-        Ok(LocalDaemonResponse::SessionState {
-            session,
-            agent_activity,
-        })
-    }
-
-    pub(crate) fn list_agents_response(
-        &self,
-        request: ListAgentsRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let agents = self.app.agents().get_session_agents(&request.session_id);
-        Ok(LocalDaemonResponse::AgentsListed { agents })
     }
 
     pub(crate) fn session_history(

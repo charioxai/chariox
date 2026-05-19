@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     AcceptCloudSessionInviteRequest, CreateCloudSessionInviteRequest,
@@ -18,9 +13,10 @@ use crate::runtime::cloud_relay_profile_store::{
     required_cloud_relay_profile_with_session,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_create_cloud_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: CreateCloudSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -28,7 +24,7 @@ pub(crate) async fn execute_create_cloud_session_invite_request(
     let invite = match create_cloud_session_invite(&profile, request).await {
         Ok(invite) => invite,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };
@@ -45,7 +41,7 @@ pub(crate) async fn execute_show_cloud_session_invite_request(
 }
 
 pub(crate) async fn execute_accept_cloud_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: AcceptCloudSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -53,7 +49,7 @@ pub(crate) async fn execute_accept_cloud_session_invite_request(
     let acceptance = match accept_cloud_session_invite(&profile, request).await {
         Ok(acceptance) => acceptance,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };
@@ -61,7 +57,7 @@ pub(crate) async fn execute_accept_cloud_session_invite_request(
 }
 
 pub(crate) async fn execute_revoke_cloud_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: RevokeCloudSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -69,7 +65,7 @@ pub(crate) async fn execute_revoke_cloud_session_invite_request(
     let revoked = match revoke_cloud_session_invite(&profile, request).await {
         Ok(revoked) => revoked,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };
@@ -80,7 +76,7 @@ pub(crate) async fn execute_revoke_cloud_session_invite_request(
 }
 
 pub(crate) async fn execute_list_cloud_session_members_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: ListCloudSessionMembersRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -88,7 +84,7 @@ pub(crate) async fn execute_list_cloud_session_members_request(
     let listed = match list_cloud_session_members(&profile, request).await {
         Ok(listed) => listed,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };
@@ -99,7 +95,7 @@ pub(crate) async fn execute_list_cloud_session_members_request(
 }
 
 pub(crate) async fn execute_list_cloud_collaborators_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     _request: ListCloudCollaboratorsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -107,7 +103,7 @@ pub(crate) async fn execute_list_cloud_collaborators_request(
     let collaborators = match list_cloud_collaborators(&profile).await {
         Ok(collaborators) => collaborators,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };

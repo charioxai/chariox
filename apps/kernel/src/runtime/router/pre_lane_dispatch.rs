@@ -29,7 +29,7 @@ impl CommandRouter {
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         if let Some(response) = projected_session_read_response(
-            &self.app,
+            &self.runtime_state,
             &self.session_projection,
             &self.provider_run_projection,
             &self.provider_launch_pending,
@@ -45,7 +45,7 @@ impl CommandRouter {
         match request {
             request @ LocalDaemonRequest::RelayStatus(_) => {
                 return execute_relay_config_request(
-                    &self.app,
+                    &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -79,7 +79,7 @@ impl CommandRouter {
             | LocalDaemonRequest::PushWorkspaceBranch(_)
             | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
                 return execute_workspace_command_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.session_projection,
                     request.clone(),
                 )
@@ -89,7 +89,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::RunAgentUtility(_)
             | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
                 return execute_agent_utility_request(
-                    Arc::clone(&self.app),
+                    &self.runtime_state,
                     &self.config_projection,
                     request.clone(),
                 )

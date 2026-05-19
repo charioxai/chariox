@@ -109,20 +109,6 @@ impl SessionStateReader {
     pub(crate) fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store.read().get_session(session_id)
     }
-
-    pub(crate) fn list_sessions(&self) -> Vec<RuntimeSession> {
-        self.store.read().list_sessions()
-    }
-
-    pub(crate) fn resolve_session_ref(
-        &self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<RuntimeSession, DaemonError> {
-        self.store
-            .read()
-            .resolve_session_ref(session_ref, workspace_id)
-    }
 }
 
 #[derive(Debug, Clone)]

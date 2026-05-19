@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::{HistoryEventQuery, OperationalHistoryStore, SessionHistoryStore};
 use crate::local::{
@@ -62,7 +57,6 @@ pub(crate) async fn projected_session_history_response(
 }
 
 pub(crate) async fn execute_history_request(
-    app: &Arc<Mutex<DaemonApp>>,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     history_projection: SessionHistoryProjectionStore,
@@ -73,7 +67,7 @@ pub(crate) async fn execute_history_request(
     match request {
         LocalDaemonRequest::GetSessionHistory(request) => {
             execute_session_history_request(
-                app,
+                runtime_state,
                 history_store,
                 operational_history_store,
                 history_projection,
@@ -104,8 +98,7 @@ pub(crate) async fn execute_history_request(
             .await
         }
         LocalDaemonRequest::SemanticSearchHistory(request) => {
-            execute_semantic_search_history_request(app, runtime_state, config_projection, request)
-                .await
+            execute_semantic_search_history_request(runtime_state, config_projection, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "history request",
@@ -115,16 +108,13 @@ pub(crate) async fn execute_history_request(
 }
 
 pub(crate) async fn execute_session_history_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     request: GetSessionHistoryRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let session = {
-        let app = app.lock().await;
-        app.sessions().get_session(&request.session_id)?
-    };
+    let session = runtime_state.session_snapshot(&request.session_id).await?;
     execute_session_history_request_from_session(
         history_store,
         operational_history_store,
@@ -159,7 +149,6 @@ pub(crate) async fn execute_query_history_request(
 }
 
 pub(crate) async fn execute_semantic_search_history_request(
-    app: &Arc<Mutex<DaemonApp>>,
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: SemanticSearchHistoryRequest,
@@ -169,13 +158,8 @@ pub(crate) async fn execute_semantic_search_history_request(
             execute_knn_semantic_search_history_request(config_projection, request).await
         }
         SemanticSearchHistoryMode::Agent => {
-            execute_agent_semantic_search_history_request(
-                app,
-                runtime_state,
-                config_projection,
-                request,
-            )
-            .await
+            execute_agent_semantic_search_history_request(runtime_state, config_projection, request)
+                .await
         }
     }
 }
@@ -196,7 +180,6 @@ async fn execute_knn_semantic_search_history_request(
 }
 
 async fn execute_agent_semantic_search_history_request(
-    app: &Arc<Mutex<DaemonApp>>,
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: SemanticSearchHistoryRequest,
@@ -222,7 +205,7 @@ async fn execute_agent_semantic_search_history_request(
         });
     };
     let result = run_agent_utility(
-        Arc::clone(app),
+        runtime_state,
         config_projection.snapshot().user_config.history.archive,
         RunAgentUtilityRequest {
             session_id,

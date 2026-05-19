@@ -1,9 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     AppendNativeProviderOutputRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
@@ -242,37 +238,12 @@ impl TerminalOutputStore {
 }
 
 pub(crate) async fn execute_append_native_provider_output_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
     request: AppendNativeProviderOutputRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (records, session) = {
-        let mut app = app.lock().await;
-        crate::app::KernelSessionReadService::new(&app)
-            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-        let provider_run = app.providers().get_run(&request.provider_run_id)?;
-        if provider_run.session_id() != request.session_id {
-            return Err(DaemonError::ProviderRunNotInSession {
-                session_id: request.session_id,
-                provider_run_id: request.provider_run_id,
-            });
-        }
-        let recipient_attachment_ids = app
-            .attachments()
-            .list_session_attachment_ids(&request.session_id);
-        let record = app.fan_out_output(
-            &request.session_id,
-            &request.provider_run_id,
-            request.kind,
-            request.merge_key,
-            recipient_attachment_ids,
-            request.text.as_bytes(),
-        );
-        let session = crate::app::KernelSessionReadService::new(&app)
-            .session_snapshot(&request.session_id)?;
-        (vec![record], session)
-    };
+    let (records, session) = runtime_state.append_native_provider_output(request)?;
     agent_runtime_projection.update_session(&session);
     session_projection.update(session);
     Ok(LocalDaemonResponse::TerminalOutput { records })

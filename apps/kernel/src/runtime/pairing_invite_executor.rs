@@ -1,10 +1,7 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use tokio::sync::Mutex;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CreatePairingInviteRequest, CreateTerminalPairingLinkRequest, JoinPairingInviteRequest,
@@ -12,14 +9,15 @@ use crate::local::{
     PairingInviteRecord, PairingJoinRecord, TerminalPairingLinkRecord, TerminalType,
 };
 use crate::runtime::cloud_api_client::{
-    is_stale_cloud_link_error, issue_cloud_runtime_token, post_cloud_json,
-    CloudPairingTokenResponse,
+    issue_cloud_runtime_token, post_cloud_json, CloudPairingTokenResponse,
 };
+use crate::runtime::cloud_relay_profile_store::clear_cloud_profile_if_stale;
 use crate::runtime::invite_tokens::{
     decode_pairing_invite_token, encode_pairing_invite_token, encode_terminal_pairing_link,
     PairingInviteToken,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_pairings::{
     execute_list_paired_clients_request, execute_list_terminals_request,
     execute_record_paired_client_request, execute_revoke_paired_client_request,
@@ -28,7 +26,7 @@ use crate::runtime::terminal_pairings::{
 use crate::session::unix_epoch_ms;
 
 pub(crate) async fn execute_pairing_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     request: LocalDaemonRequest,
@@ -39,7 +37,7 @@ pub(crate) async fn execute_pairing_request(
         }
         LocalDaemonRequest::JoinPairingInvite(request) => {
             execute_join_pairing_invite_request(
-                app,
+                runtime_state,
                 config_projection,
                 provider_catalog_projection,
                 request,
@@ -47,7 +45,8 @@ pub(crate) async fn execute_pairing_request(
             .await
         }
         LocalDaemonRequest::CreateTerminalPairingLink(request) => {
-            execute_create_terminal_pairing_link_request(app, config_projection, request).await
+            execute_create_terminal_pairing_link_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::JoinTerminalPairingLink(request) => {
             execute_join_terminal_pairing_link_request(config_projection, request).await
@@ -123,7 +122,7 @@ pub(crate) async fn execute_create_pairing_invite_request(
 }
 
 pub(crate) async fn execute_create_terminal_pairing_link_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: CreateTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -162,7 +161,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         {
             Ok(pairing) => pairing,
             Err(error) => {
-                clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+                clear_cloud_profile_if_stale(runtime_state, &error).await?;
                 return Err(error);
             }
         };
@@ -179,7 +178,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         )
         .await
         {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
         let mut allowed_targets = vec![target_daemon_id.clone()];
@@ -204,7 +203,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         {
             Ok(issued) => issued.token,
             Err(error) => {
-                clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+                clear_cloud_profile_if_stale(runtime_state, &error).await?;
                 return Err(error);
             }
         }
@@ -258,7 +257,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
 }
 
 pub(crate) async fn execute_join_pairing_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     request: JoinPairingInviteRequest,
@@ -298,12 +297,9 @@ pub(crate) async fn execute_join_pairing_invite_request(
                 public_key_thumbprint.clone(),
                 now_ms,
             )?;
-            {
-                let mut app = app.lock().await;
-                app.configure_relay(Some(token.relay_url.clone()), Some(token.relay_token))?;
-                app.invalidate_provider_catalog_cache();
-                config_projection.update(app.config().clone());
-            }
+            runtime_state
+                .configure_relay(Some(token.relay_url.clone()), Some(token.relay_token), true)
+                .await?;
             provider_catalog_projection.invalidate();
         }
     }
@@ -368,25 +364,6 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
             paired_at_ms: now_ms,
         },
     })
-}
-
-async fn clear_cloud_profile_if_stale(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
-    error: &DaemonError,
-) -> Result<(), DaemonError> {
-    if !is_stale_cloud_link_error(error) {
-        return Ok(());
-    }
-    {
-        let mut app = app.lock().await;
-        app.persist_cloud_relay_profile(None)?;
-    }
-    config_projection.update({
-        let app = app.lock().await;
-        app.config().clone()
-    });
-    Ok(())
 }
 
 fn random_hex_id() -> String {

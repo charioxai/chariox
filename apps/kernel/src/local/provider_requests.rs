@@ -8,9 +8,9 @@ use arroba_relay::protocol::ClientTarget;
 
 use super::api::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
-    ListRemoteMachineKernelsRequest, LocalDaemonResponse, LogoutProviderRequest, RelayStatus,
-    RenameRemoteMachineRequest, StartProviderLoginRequest, UpdateProviderRunSelectionRequest,
+    GetProviderAuthStatusRequest, LaunchProviderRunRequest, ListRemoteMachineKernelsRequest,
+    LocalDaemonResponse, LogoutProviderRequest, RelayStatus, RenameRemoteMachineRequest,
+    StartProviderLoginRequest,
 };
 
 mod blocking;
@@ -27,40 +27,6 @@ pub(crate) use remote_machines::{
     resolve_machine_for_registry, resolve_machine_id_for_registry,
     resolve_registered_or_raw_machine_ref,
 };
-
-pub(crate) fn get_provider_run_response(
-    app: &mut DaemonApp,
-    request: GetProviderRunRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    app.providers_mut()
-        .apply_finished_provider_run_selection_sync_jobs();
-    app.providers_mut()
-        .enqueue_run_selection_sync(&request.provider_run_id)?;
-    let provider_run = app.providers().get_run(&request.provider_run_id)?;
-    app.update_provider_run_projection(provider_run.clone());
-    Ok(LocalDaemonResponse::ProviderRun { provider_run })
-}
-
-pub(crate) fn update_provider_run_selection_response(
-    app: &mut DaemonApp,
-    request: UpdateProviderRunSelectionRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let run = app.providers().get_run(&request.provider_run_id)?;
-    if run.session_id() != request.session_id {
-        return Err(DaemonError::ProviderRunNotInSession {
-            session_id: request.session_id,
-            provider_run_id: request.provider_run_id,
-        });
-    }
-    let provider_run = app.providers_mut().update_run_selection(
-        &request.provider_run_id,
-        request.model,
-        request.variant,
-        request.clear_variant,
-    )?;
-    app.update_provider_run_projection(provider_run.clone());
-    Ok(LocalDaemonResponse::ProviderRunSelectionUpdated { provider_run })
-}
 
 #[allow(dead_code)]
 impl DaemonApp {

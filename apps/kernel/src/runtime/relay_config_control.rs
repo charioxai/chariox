@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{ConfigureRelayRequest, LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::remote_relay_inventory::projected_relay_status;
+use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
 
 async fn projected_relay_status_response(
@@ -26,18 +26,15 @@ pub(crate) async fn projected_relay_status_view(
 }
 
 pub(crate) async fn execute_configure_relay_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     request: ConfigureRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    {
-        let mut app = app.lock().await;
-        app.configure_relay(request.relay_url, request.relay_token)?;
-        app.invalidate_provider_catalog_cache();
-        config_projection.update(app.config().clone());
-    }
+    runtime_state
+        .configure_relay(request.relay_url, request.relay_token, true)
+        .await?;
     provider_catalog_projection.invalidate();
     Ok(LocalDaemonResponse::RelayConfigured {
         status: projected_relay_status_view(relay_state, config_projection.clone()).await,
@@ -45,7 +42,7 @@ pub(crate) async fn execute_configure_relay_request(
 }
 
 pub(crate) async fn execute_relay_config_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
@@ -57,7 +54,7 @@ pub(crate) async fn execute_relay_config_request(
         }
         LocalDaemonRequest::ConfigureRelay(request) => {
             execute_configure_relay_request(
-                app,
+                runtime_state,
                 relay_state,
                 config_projection,
                 provider_catalog_projection,

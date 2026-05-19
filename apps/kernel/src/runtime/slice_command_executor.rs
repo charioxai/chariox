@@ -1,39 +1,43 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonRequest,
     LocalDaemonResponse, SliceRefRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
-        LocalDaemonRequest::ListSlices(request) => execute_list_slices_request(app, request).await,
+        LocalDaemonRequest::ListSlices(request) => {
+            execute_list_slices_request(runtime_state, request).await
+        }
         LocalDaemonRequest::CreateSlice(request) => {
-            execute_create_slice_request(app, request).await
+            execute_create_slice_request(runtime_state, request).await
         }
-        LocalDaemonRequest::GetSlice(request) => execute_get_slice_request(app, request).await,
+        LocalDaemonRequest::GetSlice(request) => {
+            execute_get_slice_request(runtime_state, request).await
+        }
         LocalDaemonRequest::StartSlice(request) => {
-            execute_start_slice_request(app, config_projection, request).await
+            execute_start_slice_request(runtime_state, config_projection, request).await
         }
-        LocalDaemonRequest::StopSlice(request) => execute_stop_slice_request(app, request).await,
+        LocalDaemonRequest::StopSlice(request) => {
+            execute_stop_slice_request(runtime_state, config_projection, request).await
+        }
         LocalDaemonRequest::DeleteSlice(request) => {
-            execute_delete_slice_request(app, request).await
+            execute_delete_slice_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
-            execute_import_slice_provider_auth_request(app, request).await
+            execute_import_slice_provider_auth_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
-            execute_get_slice_display_endpoint_request(app, request).await
+            execute_get_slice_display_endpoint_request(runtime_state, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "slice request",
@@ -43,95 +47,47 @@ pub(crate) async fn execute_slice_request(
 }
 
 pub(crate) async fn execute_list_slices_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     _request: ListSlicesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let slices = {
-        let app = app.lock().await;
-        app.slices().list()
-    };
+    let slices = runtime_state.list_slices();
     Ok(LocalDaemonResponse::SlicesListed { slices })
 }
 
 pub(crate) async fn execute_create_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: CreateSliceRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let slice = {
-        let app = app.lock().await;
-        let slice = app.slices().create(
-            &app.config().daemon_id,
-            &app.config().host_machine_id,
-            crate::slice::CreateSliceInput {
-                name: request.name,
-                backend: request.backend,
-                os: request.os,
-                workspace_mount: request.workspace_mount,
-                worker_kernel_ref: request.worker_kernel_ref,
-                display_url: request.display_url,
-                now_ms: crate::session::unix_epoch_ms(),
-            },
-        )?;
-        app.durable_state_store().append_event(
-            "slice.created",
-            Some(slice.id.clone()),
-            serde_json::json!({ "slice": &slice }),
-        )?;
-        slice
-    };
+    let slice = runtime_state.create_slice(request).await?;
     Ok(LocalDaemonResponse::SliceCreated { slice })
 }
 
 pub(crate) async fn execute_get_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let slice = {
-        let app = app.lock().await;
-        app.slices().resolve(&request.slice_ref)?
-    };
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     Ok(LocalDaemonResponse::Slice { slice })
 }
 
 pub(crate) async fn execute_start_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let initial_record = {
-        let app = app.lock().await;
-        app.slices().resolve(&request.slice_ref)?
-    };
+    let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     let relay = local_docker_slice_relay(config_projection, &initial_record);
-    let initial_slice = {
-        let app = app.lock().await;
-        let relay_endpoint = crate::slice::SliceRelayEndpoint {
+    let initial_slice = runtime_state.mark_slice_starting(
+        &request.slice_ref,
+        crate::slice::SliceRelayEndpoint {
             url: relay.relay_url.clone(),
             private: relay.container_relay_url.is_none(),
-        };
-        app.slices().set_relay_endpoint(
-            &request.slice_ref,
-            Some(relay_endpoint),
-            crate::session::unix_epoch_ms(),
-        )?;
-        let slice = app.slices().set_status(
-            &request.slice_ref,
-            crate::slice::SliceStatus::Starting,
-            crate::session::unix_epoch_ms(),
-        )?;
-        app.durable_state_store().append_event(
-            "slice.updated",
-            Some(slice.id.clone()),
-            serde_json::json!({ "slice": &slice }),
-        )?;
-        slice
-    };
+        },
+    )?;
     let supervisor_slice = initial_slice.clone();
     let supervisor_relay = Some(relay.clone());
-    let docker_options = {
-        let app = app.lock().await;
-        crate::slice::LocalDockerSliceOptions::from_config(app.config())
-    };
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let supervisor_result = tokio::task::spawn_blocking(move || {
         crate::slice::run_local_docker_slice_action(
             &supervisor_slice,
@@ -146,64 +102,25 @@ pub(crate) async fn execute_start_slice_request(
         message: format!("slice supervisor task failed: {error}"),
     })?;
     if let Err(error) = supervisor_result {
-        let app = app.lock().await;
-        let _ = app.slices().set_status(
-            &request.slice_ref,
-            crate::slice::SliceStatus::Unhealthy,
-            crate::session::unix_epoch_ms(),
-        );
-        if let Ok(slice) = app.slices().resolve(&request.slice_ref) {
-            let _ = app.durable_state_store().append_event(
-                "slice.updated",
-                Some(slice.id.clone()),
-                serde_json::json!({ "slice": &slice }),
-            );
-        }
+        let _ = runtime_state
+            .set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Unhealthy);
         return Err(error);
     }
     let discovered = discover_started_slice_worker(config_projection, &initial_slice, &relay)
         .await
         .ok();
-    let slice = {
-        let app = app.lock().await;
-        let slice = app.slices().set_status(
-            &request.slice_ref,
-            crate::slice::SliceStatus::Running,
-            crate::session::unix_epoch_ms(),
-        )?;
-        let slice = if let Some(worker) = discovered {
-            app.slices().set_worker_presence(
-                &request.slice_ref,
-                Some(worker.kernel_id),
-                Some(worker.machine_id),
-                worker.available_providers,
-                crate::session::unix_epoch_ms(),
-            )?
-        } else {
-            slice
-        };
-        app.durable_state_store().append_event(
-            "slice.updated",
-            Some(slice.id.clone()),
-            serde_json::json!({ "slice": &slice }),
-        )?;
-        slice
-    };
+    let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
 }
 
 pub(crate) async fn execute_stop_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let resolved_slice = {
-        let app = app.lock().await;
-        app.slices().resolve(&request.slice_ref)?
-    };
-    let docker_options = {
-        let app = app.lock().await;
-        crate::slice::LocalDockerSliceOptions::from_config(app.config())
-    };
+    let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let supervisor_result = tokio::task::spawn_blocking(move || {
         crate::slice::run_local_docker_slice_action(
             &resolved_slice,
@@ -218,36 +135,20 @@ pub(crate) async fn execute_stop_slice_request(
         message: format!("slice supervisor task failed: {error}"),
     })?;
     supervisor_result?;
-    let slice = {
-        let app = app.lock().await;
-        let slice = app.slices().set_status(
-            &request.slice_ref,
-            crate::slice::SliceStatus::Stopped,
-            crate::session::unix_epoch_ms(),
-        )?;
-        app.durable_state_store().append_event(
-            "slice.updated",
-            Some(slice.id.clone()),
-            serde_json::json!({ "slice": &slice }),
-        )?;
-        slice
-    };
+    let slice =
+        runtime_state.set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Stopped)?;
     Ok(LocalDaemonResponse::SliceStopped { slice })
 }
 
 pub(crate) async fn execute_delete_slice_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let resolved_slice = {
-        let app = app.lock().await;
-        app.slices().resolve(&request.slice_ref)?
-    };
+    let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
     if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
-        let docker_options = {
-            let app = app.lock().await;
-            crate::slice::LocalDockerSliceOptions::from_config(app.config())
-        };
+        let docker_options =
+            crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
@@ -263,32 +164,19 @@ pub(crate) async fn execute_delete_slice_request(
         })?;
         supervisor_result?;
     }
-    let slice = {
-        let app = app.lock().await;
-        let slice = app.slices().delete(&request.slice_ref)?;
-        app.durable_state_store().append_event(
-            "slice.deleted",
-            Some(slice.id.clone()),
-            serde_json::json!({ "slice": &slice }),
-        )?;
-        slice
-    };
+    let slice = runtime_state.delete_slice(&request.slice_ref)?;
     Ok(LocalDaemonResponse::SliceDeleted { slice })
 }
 
 pub(crate) async fn execute_import_slice_provider_auth_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
     request: ImportSliceProviderAuthRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let slice = {
-        let app = app.lock().await;
-        app.slices().resolve(&request.slice_ref)?
-    };
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
-        let docker_options = {
-            let app = app.lock().await;
-            crate::slice::LocalDockerSliceOptions::from_config(app.config())
-        };
+        let docker_options =
+            crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
         let resolved_slice = slice.clone();
         tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
@@ -317,13 +205,10 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
 }
 
 pub(crate) async fn execute_get_slice_display_endpoint_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let endpoint = {
-        let app = app.lock().await;
-        app.slices().display_endpoint(&request.slice_ref)?
-    };
+    let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
     Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
 }
 

@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
@@ -13,6 +8,7 @@ use crate::local::{
     SearchWorkspaceDirectoriesRequest,
 };
 use crate::runtime::projection::SessionStateProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::waiting_room_public_projection::infer_waiting_room_launch_target;
 use crate::runtime::workspace_git_actions::{
     commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
@@ -26,7 +22,7 @@ use crate::runtime::workspace_worktrees::{
 };
 
 pub(crate) async fn execute_workspace_command_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -44,7 +40,8 @@ pub(crate) async fn execute_workspace_command_request(
             execute_create_workspace_worktree_request(request)
         }
         LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
-            execute_delete_workspace_worktree_request(request, session_projection, app).await
+            execute_delete_workspace_worktree_request(request, session_projection, runtime_state)
+                .await
         }
         LocalDaemonRequest::CreateWorkspacePullRequest(request) => {
             execute_create_workspace_pull_request_request(request)
@@ -131,13 +128,12 @@ pub(crate) fn execute_create_workspace_worktree_request(
 pub(crate) async fn execute_delete_workspace_worktree_request(
     request: DeleteWorkspaceWorktreeRequest,
     session_projection: &SessionStateProjectionStore,
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let sessions = if let Some(sessions) = session_projection.list() {
         sessions
     } else {
-        let app = app.lock().await;
-        app.sessions().list_sessions()
+        runtime_state.list_session_snapshots()
     };
     let path = delete_workspace_worktree(
         &request.workspace_id,

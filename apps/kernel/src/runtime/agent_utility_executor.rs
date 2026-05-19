@@ -1,12 +1,8 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Instant as TokioInstant};
 
-use crate::agent::AgentInstance;
-use crate::app::DaemonApp;
 use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
 use crate::local::{
@@ -24,27 +20,29 @@ use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::semantic_history_utility::{
     parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
 };
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
 
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
-    app: Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: RunAgentUtilityRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let result = run_agent_utility(app, archive_config(config_projection), request).await?;
+    let result =
+        run_agent_utility(runtime_state, archive_config(config_projection), request).await?;
     Ok(LocalDaemonResponse::AgentUtilityCompleted { result })
 }
 
 pub(crate) async fn execute_generate_workspace_commit_message_request(
-    app: Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: GenerateWorkspaceCommitMessageRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let result = run_agent_utility(
-        app,
+        runtime_state,
         archive_config(config_projection),
         RunAgentUtilityRequest {
             session_id: request.session_id,
@@ -68,16 +66,21 @@ pub(crate) async fn execute_generate_workspace_commit_message_request(
 }
 
 pub(crate) async fn execute_agent_utility_request(
-    app: Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::RunAgentUtility(request) => {
-            execute_run_agent_utility_request(app, config_projection, request).await
+            execute_run_agent_utility_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
-            execute_generate_workspace_commit_message_request(app, config_projection, request).await
+            execute_generate_workspace_commit_message_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "agent utility request",
@@ -91,13 +94,17 @@ fn archive_config(config_projection: &DaemonConfigProjectionStore) -> UserArchiv
 }
 
 pub(crate) async fn run_agent_utility(
-    app: Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     archive_config: UserArchiveHistoryConfig,
     request: RunAgentUtilityRequest,
 ) -> Result<AgentUtilityResult, DaemonError> {
-    let (_agent, provider_run) =
-        assert_agent_utility_can_run(&app, &request.session_id, &request.agent_id, &request.kind)
-            .await?;
+    let (_agent, provider_run) = assert_agent_utility_can_run(
+        runtime_state,
+        &request.session_id,
+        &request.agent_id,
+        &request.kind,
+    )
+    .await?;
     let output = match (&request.kind, request.input) {
         (
             AgentUtilityKind::WorkspaceCommitMessage,
@@ -127,52 +134,20 @@ pub(crate) async fn run_agent_utility(
 }
 
 async fn assert_agent_utility_can_run(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_id: &str,
     agent_id: &str,
     kind: &AgentUtilityKind,
-) -> Result<(AgentInstance, RuntimeProviderRun), DaemonError> {
+) -> Result<(crate::agent::AgentInstance, RuntimeProviderRun), DaemonError> {
     let started_at = TokioInstant::now();
     loop {
-        let mut app = app.lock().await;
-        let session = app.sessions().get_session(session_id)?;
-        let agent = app
-            .agents()
-            .get_session_agents(session_id)
-            .iter()
-            .find(|agent| agent.id() == agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!("agent `{agent_id}` does not belong to session `{session_id}`"),
-            })?;
-        if agent.remote_execution().is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!(
-                    "agent `{agent_id}` is remote-backed; hidden utilities must run on its worker kernel"
-                ),
-            });
-        }
-        if session.active_prompt_for_agent(agent_id).is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: agent_utility_operation(kind),
-                message: format!("agent `{agent_id}` is busy"),
-            });
-        }
-        let provider_run = if let Some(provider_run) =
-            app.providers().get_run_for_agent(session_id, agent_id)
-        {
-            provider_run
-        } else {
-            let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
-            app.providers().get_run(&provider_run_id)?
-        };
+        let (agent, provider_run) = runtime_state
+            .agent_utility_provider_run(session_id, agent_id, agent_utility_operation(kind))
+            .await?;
         if provider_run.state() == ProviderRunState::Running {
             return Ok((agent, provider_run));
         }
         let state = provider_run.state();
-        drop(app);
         if state != ProviderRunState::Starting
             || started_at.elapsed() >= AGENT_UTILITY_PROVIDER_READY_TIMEOUT
         {

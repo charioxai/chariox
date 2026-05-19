@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     CloudRelayRuntimeToken, ConnectCloudRelayRequest, IssueCloudRelayClientTokenRequest,
@@ -21,6 +20,7 @@ use crate::runtime::cloud_relay_profile_store::{
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::remote_relay_inventory::projected_relay_status;
+use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
 
 pub(crate) async fn execute_cloud_relay_status_request(
@@ -35,7 +35,7 @@ pub(crate) async fn execute_cloud_relay_status_request(
 }
 
 pub(crate) async fn ensure_cloud_relay_connection(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
@@ -64,23 +64,25 @@ pub(crate) async fn ensure_cloud_relay_connection(
     {
         Ok(issued) => issued,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };
     let mut updated_profile = profile.clone();
     updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-    {
-        let mut app = app.lock().await;
-        app.configure_relay(Some(profile.relay_url), Some(issued.token))?;
-        app.persist_cloud_relay_profile(Some(updated_profile))?;
-        config_projection.update(app.config().clone());
-    }
+    runtime_state
+        .configure_relay_with_cloud_profile(
+            Some(profile.relay_url),
+            Some(issued.token),
+            Some(updated_profile),
+            false,
+        )
+        .await?;
     Ok(())
 }
 
 pub(crate) async fn execute_connect_cloud_relay_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
@@ -105,13 +107,14 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     .await?;
     profile.token_expires_at_ms =
         Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-    let saved = persist_cloud_profile(app, config_projection, profile.clone()).await?;
-    {
-        let mut app = app.lock().await;
-        app.configure_relay(Some(profile.relay_url.clone()), Some(issued.token.clone()))?;
-        app.invalidate_provider_catalog_cache();
-        config_projection.update(app.config().clone());
-    }
+    let saved = persist_cloud_profile(runtime_state, profile.clone()).await?;
+    runtime_state
+        .configure_relay(
+            Some(profile.relay_url.clone()),
+            Some(issued.token.clone()),
+            true,
+        )
+        .await?;
     provider_catalog_projection.invalidate();
     let token = CloudRelayRuntimeToken {
         relay_url: profile.relay_url,
@@ -126,7 +129,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
 }
 
 pub(crate) async fn execute_issue_cloud_relay_client_token_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -145,7 +148,7 @@ pub(crate) async fn execute_issue_cloud_relay_client_token_request(
         {
             Ok(pairing) => pairing,
             Err(error) => {
-                clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+                clear_cloud_profile_if_stale(runtime_state, &error).await?;
                 return Err(error);
             }
         };
@@ -161,11 +164,11 @@ pub(crate) async fn execute_issue_cloud_relay_client_token_request(
         )
         .await
         {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
         profile.client_id = Some(request.client_id.clone());
-        profile = persist_cloud_profile(app, config_projection, profile).await?;
+        profile = persist_cloud_profile(runtime_state, profile).await?;
     }
     let client_id = profile
         .client_id
@@ -187,7 +190,7 @@ pub(crate) async fn execute_issue_cloud_relay_client_token_request(
     {
         Ok(issued) => issued,
         Err(error) => {
-            clear_cloud_profile_if_stale(app, config_projection, &error).await?;
+            clear_cloud_profile_if_stale(runtime_state, &error).await?;
             return Err(error);
         }
     };

@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
@@ -14,7 +9,6 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
 
 pub(crate) async fn execute_user_config_request(
-    app: &Arc<Mutex<DaemonApp>>,
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     request: LocalDaemonRequest,
@@ -27,12 +21,10 @@ pub(crate) async fn execute_user_config_request(
             execute_get_user_config_schema_request(request).await
         }
         LocalDaemonRequest::SetUserConfigValue(request) => {
-            execute_set_user_config_value_request(app, config_projection, runtime_state, request)
-                .await
+            execute_set_user_config_value_request(runtime_state, request).await
         }
         LocalDaemonRequest::UnsetUserConfigValue(request) => {
-            execute_unset_user_config_value_request(app, config_projection, runtime_state, request)
-                .await
+            execute_unset_user_config_value_request(runtime_state, request).await
         }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             execute_set_credential_secret_request(config_projection, request).await
@@ -67,14 +59,10 @@ pub(crate) async fn execute_get_user_config_schema_request(
 }
 
 pub(crate) async fn execute_set_user_config_value_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     request: SetUserConfigValueRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let (config, effects) = apply_user_config_mutation(
-        app,
-        config_projection,
         runtime_state,
         UserConfigMutation::Set {
             path: request.path,
@@ -90,14 +78,10 @@ pub(crate) async fn execute_set_user_config_value_request(
 }
 
 pub(crate) async fn execute_unset_user_config_value_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     request: UnsetUserConfigValueRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let (config, effects) = apply_user_config_mutation(
-        app,
-        config_projection,
         runtime_state,
         UserConfigMutation::Unset { path: request.path },
     )
@@ -110,8 +94,6 @@ pub(crate) async fn execute_unset_user_config_value_request(
 }
 
 async fn apply_user_config_mutation(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     mutation: UserConfigMutation,
 ) -> Result<(crate::config::DaemonConfig, Vec<UserConfigMutationEffect>), DaemonError> {
@@ -120,19 +102,12 @@ async fn apply_user_config_mutation(
             path.trim().to_string()
         }
     };
-    let config = {
-        let mut app = app.lock().await;
-        match mutation {
-            UserConfigMutation::Set { path, value } => {
-                app.set_user_config_value(path, value)?;
-            }
-            UserConfigMutation::Unset { path } => {
-                app.unset_user_config_value(path)?;
-            }
+    let config = match mutation {
+        UserConfigMutation::Set { path, value } => {
+            runtime_state.set_user_config_value(path, value).await?
         }
-        app.config().clone()
+        UserConfigMutation::Unset { path } => runtime_state.unset_user_config_value(path).await?,
     };
-    config_projection.update(config.clone());
     let effects = user_config_mutation_effects(runtime_state, &changed_path).await?;
     Ok((config, effects))
 }

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::cloud_relay_connection_executor::{
@@ -22,10 +21,11 @@ use crate::runtime::cloud_session_control_executor::{
     execute_revoke_cloud_session_invite_request, execute_show_cloud_session_invite_request,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
 
 pub(crate) async fn execute_cloud_relay_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
@@ -39,17 +39,17 @@ pub(crate) async fn execute_cloud_relay_request(
             execute_start_cloud_relay_login_request(request).await
         }
         LocalDaemonRequest::PollCloudRelayLogin(request) => {
-            execute_poll_cloud_relay_login_request(app, config_projection, request).await
+            execute_poll_cloud_relay_login_request(runtime_state, request).await
         }
         LocalDaemonRequest::LogoutCloudRelay(request) => {
-            execute_logout_cloud_relay_request(app, config_projection, request).await
+            execute_logout_cloud_relay_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::PairCloudRelayClient(request) => {
-            execute_pair_cloud_relay_client_request(app, config_projection, request).await
+            execute_pair_cloud_relay_client_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::PairCloudRelayMachine(request) => {
             execute_pair_cloud_relay_machine_request(
-                app,
+                runtime_state,
                 config_projection,
                 provider_catalog_projection,
                 request,
@@ -58,7 +58,7 @@ pub(crate) async fn execute_cloud_relay_request(
         }
         LocalDaemonRequest::ConnectCloudRelay(request) => {
             execute_connect_cloud_relay_request(
-                app,
+                runtime_state,
                 config_projection,
                 provider_catalog_projection,
                 relay_state,
@@ -67,25 +67,35 @@ pub(crate) async fn execute_cloud_relay_request(
             .await
         }
         LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
-            execute_issue_cloud_relay_client_token_request(app, config_projection, request).await
+            execute_issue_cloud_relay_client_token_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::CreateCloudSessionInvite(request) => {
-            execute_create_cloud_session_invite_request(app, config_projection, request).await
+            execute_create_cloud_session_invite_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::ShowCloudSessionInvite(request) => {
             execute_show_cloud_session_invite_request(config_projection, request).await
         }
         LocalDaemonRequest::AcceptCloudSessionInvite(request) => {
-            execute_accept_cloud_session_invite_request(app, config_projection, request).await
+            execute_accept_cloud_session_invite_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::RevokeCloudSessionInvite(request) => {
-            execute_revoke_cloud_session_invite_request(app, config_projection, request).await
+            execute_revoke_cloud_session_invite_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::ListCloudSessionMembers(request) => {
-            execute_list_cloud_session_members_request(app, config_projection, request).await
+            execute_list_cloud_session_members_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::ListCloudCollaborators(request) => {
-            execute_list_cloud_collaborators_request(app, config_projection, request).await
+            execute_list_cloud_collaborators_request(runtime_state, config_projection, request)
+                .await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "cloud relay request",

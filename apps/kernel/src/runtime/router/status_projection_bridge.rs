@@ -11,7 +11,7 @@ use crate::runtime::waiting_room_control::waiting_room_inventory_version;
 impl CommandRouter {
     pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
         waiting_room_inventory_version(
-            &self.app,
+            &self.runtime_state,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
         )

@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use tokio::sync::Mutex;
-
-use crate::app::{ActiveTurnStore, DaemonApp, PromptActivityStore};
+use crate::app::{ActiveTurnStore, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
@@ -14,6 +11,7 @@ use crate::runtime::projection::{
     SessionStateProjectionStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
 };
@@ -83,7 +81,7 @@ pub(crate) fn projected_resolve_session_response(
 }
 
 pub(crate) async fn projected_list_sessions_response(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -95,14 +93,11 @@ pub(crate) async fn projected_list_sessions_response(
             .collect();
         return Ok(LocalDaemonResponse::SessionsListed { sessions });
     }
-    let sessions: Vec<_> = {
-        let app = app.lock().await;
-        app.sessions()
-            .list_sessions()
-            .into_iter()
-            .filter(|session| session.has_member(caller_user_id))
-            .collect()
-    };
+    let sessions: Vec<_> = runtime_state
+        .list_session_snapshots()
+        .into_iter()
+        .filter(|session| session.has_member(caller_user_id))
+        .collect();
     session_projection.update_list(sessions.clone());
     Ok(LocalDaemonResponse::SessionsListed {
         sessions: sessions
@@ -113,7 +108,7 @@ pub(crate) async fn projected_list_sessions_response(
 }
 
 pub(crate) async fn projected_session_read_response(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     provider_run_projection: &ProviderRunProjectionStore,
     provider_launch_pending: &ProviderLaunchPendingTracker,
@@ -152,7 +147,8 @@ pub(crate) async fn projected_session_read_response(
     }
     if matches!(request, LocalDaemonRequest::ListSessions(_)) {
         return Some(
-            projected_list_sessions_response(app, session_projection, caller_user_id).await,
+            projected_list_sessions_response(runtime_state, session_projection, caller_user_id)
+                .await,
         );
     }
     None
@@ -316,52 +312,54 @@ pub(crate) fn projected_session_inspection_response(
 }
 
 pub(crate) async fn execute_list_sessions_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     _request: ListSessionsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    crate::app::KernelSessionReadService::new(&app).list_sessions_response()
+    Ok(LocalDaemonResponse::SessionsListed {
+        sessions: runtime_state.list_session_snapshots(),
+    })
 }
 
 pub(crate) async fn execute_resolve_session_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: ResolveSessionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    crate::app::KernelSessionReadService::new(&app).resolve_session_response(request)
+    Ok(LocalDaemonResponse::SessionResolved {
+        session: runtime_state.resolve_session_snapshot(request)?,
+    })
 }
 
 pub(crate) async fn execute_get_session_state_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: GetSessionStateRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    crate::app::KernelSessionReadService::new(&app).get_session_state_response(request)
+    runtime_state.session_state_response(request)
 }
 
 pub(crate) async fn execute_list_agents_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: ListAgentsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    crate::app::KernelSessionReadService::new(&app).list_agents_response(request)
+    Ok(runtime_state.list_agents_response(request))
 }
 
 pub(crate) async fn execute_session_read_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::ListSessions(request) => {
-            execute_list_sessions_request(app, request).await
+            execute_list_sessions_request(runtime_state, request).await
         }
         LocalDaemonRequest::ResolveSession(request) => {
-            execute_resolve_session_request(app, request).await
+            execute_resolve_session_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSessionState(request) => {
-            execute_get_session_state_request(app, request).await
+            execute_get_session_state_request(runtime_state, request).await
         }
-        LocalDaemonRequest::ListAgents(request) => execute_list_agents_request(app, request).await,
+        LocalDaemonRequest::ListAgents(request) => {
+            execute_list_agents_request(runtime_state, request).await
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "session read request",
             message: "unsupported session read request".to_string(),

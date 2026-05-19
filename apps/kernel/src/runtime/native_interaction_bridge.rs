@@ -2,9 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonResponse, NativeProviderInteractionResolution,
@@ -20,7 +18,6 @@ use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
 struct RuntimeStateNativeInteractionBridge {
     handle: Handle,
-    app: Arc<Mutex<DaemonApp>>,
     state: KernelRuntimeState,
 }
 
@@ -32,17 +29,11 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
         let session_id = session_id.to_string();
         let interaction_agent_id = interaction.agent_id().to_string();
+        let state = self.state.clone();
         let remote_target = self.handle.block_on(async {
-            let mut app = self.app.lock().await;
-            let target = crate::app::RemoteLeaseRuntime::new(&mut app)
-                .native_interaction_context_for_backing_agent(
-                    &session_id,
-                    &interaction_agent_id,
-                    "unknown",
-                );
-            Ok::<_, DaemonError>(
-                target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
-            )
+            state
+                .remote_native_interaction_context(&session_id, &interaction_agent_id)
+                .await
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
             let response = self.handle.block_on(async move {
@@ -90,13 +81,12 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
-    app: Arc<Mutex<DaemonApp>>,
     state: KernelRuntimeState,
     provider_store: &ProviderProcessServiceStore,
 ) {
     if let Ok(handle) = Handle::try_current() {
         provider_store.set_native_interaction_bridge(Arc::new(
-            RuntimeStateNativeInteractionBridge { handle, app, state },
+            RuntimeStateNativeInteractionBridge { handle, state },
         ));
     }
 }

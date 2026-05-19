@@ -122,4 +122,42 @@ impl KernelRuntimeState {
             .terminal_stream
             .drain_notice_records(session_id, attachment_id)
     }
+
+    pub(crate) fn append_native_provider_output(
+        &self,
+        request: crate::local::AppendNativeProviderOutputRequest,
+    ) -> Result<
+        (
+            Vec<crate::terminal::TerminalOutputRecord>,
+            crate::session::RuntimeSession,
+        ),
+        DaemonError,
+    > {
+        self.owned
+            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+        let provider_run = self
+            .owned
+            .provider_store
+            .get_run(&request.provider_run_id)?;
+        if provider_run.session_id() != request.session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: request.session_id,
+                provider_run_id: request.provider_run_id,
+            });
+        }
+        let recipient_attachment_ids = self
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(&request.session_id);
+        let record = self.owned.fan_out_terminal_output(
+            &request.session_id,
+            &request.provider_run_id,
+            request.kind,
+            request.merge_key,
+            recipient_attachment_ids,
+            request.text.as_bytes(),
+        );
+        let session = self.owned.session_snapshot(&request.session_id)?;
+        Ok((vec![record], session))
+    }
 }

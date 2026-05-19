@@ -25,7 +25,7 @@ impl CommandRouter {
         match request {
             request @ LocalDaemonRequest::ConfigureRelay(_) => {
                 execute_relay_config_request(
-                    &self.app,
+                    &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -48,7 +48,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListCloudSessionMembers(_)
             | LocalDaemonRequest::ListCloudCollaborators(_)) => {
                 execute_cloud_relay_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     Arc::clone(&self.relay_state),
@@ -62,13 +62,8 @@ impl CommandRouter {
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
-                execute_user_config_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.runtime_state,
-                    request,
-                )
-                .await
+                execute_user_config_request(&self.config_projection, &self.runtime_state, request)
+                    .await
             }
             request @ (LocalDaemonRequest::ListSlices(_)
             | LocalDaemonRequest::CreateSlice(_)
@@ -78,7 +73,7 @@ impl CommandRouter {
             | LocalDaemonRequest::DeleteSlice(_)
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
-                execute_slice_request(&self.app, &self.config_projection, request).await
+                execute_slice_request(&self.runtime_state, &self.config_projection, request).await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {
                 execute_kernel_lifecycle_request(
@@ -109,8 +104,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AttachWorkspaceLink(_)
             | LocalDaemonRequest::DetachWorkspaceLink(_)) => {
                 execute_session_collaboration_request(
-                    &self.app,
-                    &self.session_projection,
+                    &self.runtime_state,
                     &self.config_projection,
                     &command,
                     request,
@@ -126,7 +120,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RecordPairedClient(_)
             | LocalDaemonRequest::RevokePairedClient(_)) => {
                 execute_pairing_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     request,
@@ -140,7 +134,6 @@ impl CommandRouter {
             | LocalDaemonRequest::SearchHistory(_)
             | LocalDaemonRequest::SemanticSearchHistory(_)) => {
                 execute_history_request(
-                    &self.app,
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     self.history_projection.clone(),
@@ -155,9 +148,10 @@ impl CommandRouter {
             }
             request @ LocalDaemonRequest::TeardownProviderProcesses(_) => {
                 execute_provider_process_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.session_projection,
                     &self.agent_runtime_projection,
+                    &self.provider_process_projection,
                     request,
                 )
                 .await

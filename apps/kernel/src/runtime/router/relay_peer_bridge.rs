@@ -13,8 +13,7 @@ impl CommandRouter {
     }
 
     pub(crate) async fn relay_registration(&self) -> arroba_relay::protocol::DaemonRegistration {
-        let mut app = self.app.lock().await;
-        app.relay_registration()
+        self.runtime_state.relay_registration().await
     }
 
     pub(crate) async fn ensure_relay_subscription_attachment(
@@ -23,7 +22,7 @@ impl CommandRouter {
         attachment_id: &str,
     ) -> Result<(), DaemonError> {
         relay_peer_runtime::ensure_relay_subscription_attachment(
-            &self.app,
+            &self.runtime_state,
             &self.session_projection,
             session_id,
             attachment_id,
@@ -40,7 +39,7 @@ impl CommandRouter {
         last_workflow_design_sequence: u64,
     ) -> crate::runtime_transport::WatchResult {
         relay_peer_runtime::watch_relay_subscription_state(
-            &self.app,
+            &self.runtime_state,
             session_id,
             attachment_id,
             tick,
@@ -58,7 +57,7 @@ impl CommandRouter {
         owner_user_id: &str,
     ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
         relay_peer_runtime::create_relay_execution_lease(
-            &self.app,
+            &self.runtime_state,
             home_kernel_id,
             home_session_id,
             home_agent_id,
@@ -71,7 +70,7 @@ impl CommandRouter {
         &self,
         lease_id: &str,
     ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
-        relay_peer_runtime::destroy_relay_execution_lease(&self.app, lease_id).await
+        relay_peer_runtime::destroy_relay_execution_lease(&self.runtime_state, lease_id).await
     }
 
     pub(crate) async fn relay_create_leased_agent(
@@ -86,7 +85,7 @@ impl CommandRouter {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         relay_peer_runtime::create_relay_leased_agent(
-            &self.app,
+            &self.runtime_state,
             lease_id,
             provider,
             model,
@@ -103,7 +102,7 @@ impl CommandRouter {
         &self,
         leased_agent_id: &str,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
-        relay_peer_runtime::destroy_relay_leased_agent(&self.app, leased_agent_id).await
+        relay_peer_runtime::destroy_relay_leased_agent(&self.runtime_state, leased_agent_id).await
     }
 
     pub(crate) async fn relay_update_leased_agent_config(
@@ -113,7 +112,7 @@ impl CommandRouter {
         permission_level: crate::provider::AgentPermissionLevel,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
         relay_peer_runtime::update_relay_leased_agent_config(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             execution_mode,
             permission_level,
@@ -135,7 +134,7 @@ impl CommandRouter {
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         relay_peer_runtime::launch_relay_leased_native_provider_run(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             adapter_key,
             provider,
@@ -157,7 +156,7 @@ impl CommandRouter {
         data_base64: &str,
     ) -> Result<usize, DaemonError> {
         relay_peer_runtime::send_relay_leased_native_provider_input(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             provider_run_id,
             attachment_id,
@@ -176,7 +175,7 @@ impl CommandRouter {
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         relay_peer_runtime::submit_relay_leased_prompt(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             prompt,
             attachments,
@@ -192,7 +191,12 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteSkillSyncContext,
         packages: Vec<crate::skill::ArrobaSkillPackage>,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
-        relay_peer_runtime::ensure_relay_remote_skill_packages(&self.app, context, packages).await
+        relay_peer_runtime::ensure_relay_remote_skill_packages(
+            &self.runtime_state,
+            context,
+            packages,
+        )
+        .await
     }
 
     pub(crate) async fn relay_check_remote_mcp_availability(
@@ -200,15 +204,19 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteMcpCheckContext,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteMcpAvailability>, DaemonError> {
-        relay_peer_runtime::check_relay_remote_mcp_availability(&self.app, context, required_mcps)
-            .await
+        relay_peer_runtime::check_relay_remote_mcp_availability(
+            &self.runtime_state,
+            context,
+            required_mcps,
+        )
+        .await
     }
 
     pub(crate) async fn relay_complete_leased_prompt(
         &self,
         leased_agent_id: &str,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        relay_peer_runtime::complete_relay_leased_prompt(&self.app, leased_agent_id).await
+        relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
     pub(crate) async fn relay_observe_leased_git_after(
@@ -217,7 +225,7 @@ impl CommandRouter {
         provider_run_id: &str,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteGitObservation>, DaemonError> {
         relay_peer_runtime::observe_relay_leased_git_after(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             provider_run_id,
         )
@@ -228,14 +236,15 @@ impl CommandRouter {
         &self,
         leased_agent_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_prompt(&self.app, leased_agent_id).await
+        relay_peer_runtime::cancel_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(
         &self,
         leased_agent_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        relay_peer_runtime::relay_leased_agent_provider_run_id(&self.app, leased_agent_id).await
+        relay_peer_runtime::relay_leased_agent_provider_run_id(&self.runtime_state, leased_agent_id)
+            .await
     }
 
     pub(crate) async fn relay_provider_run_terminal_diagnostic(
@@ -251,7 +260,7 @@ impl CommandRouter {
     pub(crate) async fn relay_pump_leased_runtime_projections(
         &self,
     ) -> Result<Vec<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::pump_relay_leased_runtime_projections(&self.app).await
+        relay_peer_runtime::pump_relay_leased_runtime_projections(&self.runtime_state).await
     }
 
     pub(crate) async fn relay_drain_leased_runtime_projection(
@@ -261,7 +270,7 @@ impl CommandRouter {
         pump_output: bool,
     ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
         relay_peer_runtime::drain_relay_leased_runtime_projection(
-            &self.app,
+            &self.runtime_state,
             leased_agent_id,
             provider_run_id,
             pump_output,
@@ -280,7 +289,7 @@ impl CommandRouter {
         completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>,
     ) -> Result<(), DaemonError> {
         relay_peer_runtime::project_relay_remote_runtime_projection(
-            &self.app,
+            &self.runtime_state,
             session_id,
             agent_id,
             provider_run_id,

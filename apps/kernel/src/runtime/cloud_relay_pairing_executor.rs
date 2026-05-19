@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonResponse, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
@@ -15,10 +10,11 @@ use crate::runtime::cloud_relay_profile_store::{
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use crate::runtime::provider_catalog_control::provider_catalog_json_value;
+use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::waiting_room_public_projection::infer_waiting_room_launch_target;
 
 pub(crate) async fn execute_pair_cloud_relay_client_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: PairCloudRelayClientRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -49,14 +45,14 @@ pub(crate) async fn execute_pair_cloud_relay_client_request(
     if request.alias.is_some() {
         profile.client_alias = request.alias;
     }
-    let saved = persist_cloud_profile(app, config_projection, profile).await?;
+    let saved = persist_cloud_profile(runtime_state, profile).await?;
     Ok(LocalDaemonResponse::CloudRelayClientPaired {
         profile: cloud_profile_from_persisted(&saved),
     })
 }
 
 pub(crate) async fn execute_pair_cloud_relay_machine_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
     request: PairCloudRelayMachineRequest,
@@ -92,7 +88,7 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
     if request.alias.is_some() {
         profile.machine_alias = request.alias;
     }
-    let saved = persist_cloud_profile(app, config_projection, profile).await?;
+    let saved = persist_cloud_profile(runtime_state, profile).await?;
     Ok(LocalDaemonResponse::CloudRelayMachinePaired {
         profile: cloud_profile_from_persisted(&saved),
     })

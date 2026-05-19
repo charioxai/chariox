@@ -17,7 +17,8 @@ impl CommandRouter {
     }
 
     pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
-        ensure_cloud_relay_connection_with_executor(&self.app, &self.config_projection).await
+        ensure_cloud_relay_connection_with_executor(&self.runtime_state, &self.config_projection)
+            .await
     }
 
     pub(crate) async fn publish_cloud_kernel_presence(

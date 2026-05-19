@@ -1,10 +1,7 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use tokio::sync::Mutex;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
     AttachWorkspaceLinkRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
@@ -16,42 +13,41 @@ use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::invite_tokens::{
     decode_session_invite_token, encode_session_invite_token, SessionInviteToken,
 };
-use crate::runtime::projection::{DaemonConfigProjectionStore, SessionStateProjectionStore};
+use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_session_collaboration_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     command: &KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::ListSessionMembers(request) => {
-            execute_list_session_members_request(app, request).await
+            execute_list_session_members_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateSessionInvite(request) => {
-            execute_create_session_invite_request(app, session_projection, command, request).await
+            execute_create_session_invite_request(runtime_state, command, request).await
         }
         LocalDaemonRequest::JoinSessionInvite(request) => {
-            execute_join_session_invite_request(app, session_projection, request).await
+            execute_join_session_invite_request(runtime_state, request).await
         }
         LocalDaemonRequest::RevokeSessionInvite(request) => {
-            execute_revoke_session_invite_request(app, session_projection, request).await
+            execute_revoke_session_invite_request(runtime_state, request).await
         }
         LocalDaemonRequest::CreateWorkspaceLink(request) => {
-            execute_create_workspace_link_request(app, session_projection, command, request).await
+            execute_create_workspace_link_request(runtime_state, command, request).await
         }
         LocalDaemonRequest::ListWorkspaceLinks(request) => {
-            execute_list_workspace_links_request(app, request).await
+            execute_list_workspace_links_request(runtime_state, request).await
         }
         LocalDaemonRequest::ShowWorkspaceLink(request) => {
-            execute_show_workspace_link_request(app, request).await
+            execute_show_workspace_link_request(runtime_state, request).await
         }
         LocalDaemonRequest::AttachWorkspaceLink(request) => {
             let config = config_projection.snapshot();
             execute_attach_workspace_link_request(
-                app,
-                session_projection,
+                runtime_state,
                 command,
                 config.host_machine_id,
                 config.daemon_id,
@@ -60,7 +56,7 @@ pub(crate) async fn execute_session_collaboration_request(
             .await
         }
         LocalDaemonRequest::DetachWorkspaceLink(request) => {
-            execute_detach_workspace_link_request(app, session_projection, command, request).await
+            execute_detach_workspace_link_request(runtime_state, command, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "session collaboration request",
@@ -70,17 +66,15 @@ pub(crate) async fn execute_session_collaboration_request(
 }
 
 pub(crate) async fn execute_list_session_members_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: ListSessionMembersRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    let (members, invites) = app.sessions().list_session_members(&request.session_id)?;
+    let (members, invites) = runtime_state.list_session_members(&request.session_id)?;
     Ok(LocalDaemonResponse::SessionMembersListed { members, invites })
 }
 
 pub(crate) async fn execute_create_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
     request: CreateSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -90,17 +84,13 @@ pub(crate) async fn execute_create_session_invite_request(
         .map(|expires_in_ms| now_ms.saturating_add(expires_in_ms));
     let invite_id = random_hex_id();
     let created_by_user_id = command_caller_user_id(command);
-    let (session, invite) = {
-        let app = app.lock().await;
-        let result = app.sessions_mut().create_session_invite(
-            &request.session_id,
-            invite_id,
-            created_by_user_id,
-            expires_at_ms,
-            request.max_uses.or(Some(1)),
-        )?;
-        result
-    };
+    let (session, invite) = runtime_state.create_session_invite(
+        &request.session_id,
+        invite_id,
+        created_by_user_id,
+        expires_at_ms,
+        request.max_uses.or(Some(1)),
+    )?;
     let invite_token = encode_session_invite_token(&SessionInviteToken {
         version: 1,
         session_id: session.id().to_string(),
@@ -110,7 +100,6 @@ pub(crate) async fn execute_create_session_invite_request(
         expires_at_ms: invite.expires_at_ms(),
         max_uses: invite.max_uses(),
     })?;
-    session_projection.update(session.clone());
     Ok(LocalDaemonResponse::SessionInviteCreated {
         invite: SessionInviteRecord {
             invite,
@@ -121,8 +110,7 @@ pub(crate) async fn execute_create_session_invite_request(
 }
 
 pub(crate) async fn execute_join_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     request: JoinSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let token = decode_session_invite_token(&request.invite_token)?;
@@ -136,79 +124,56 @@ pub(crate) async fn execute_join_session_invite_request(
             message: "session invite is expired".to_string(),
         });
     }
-    let (session, member) = {
-        let app = app.lock().await;
-        let result = app.sessions_mut().join_session_invite(
-            &token.session_id,
-            &token.invite_id,
-            request.user_id,
-            now_ms,
-        )?;
-        result
-    };
-    session_projection.update(session.clone());
+    let (session, member) = runtime_state.join_session_invite(
+        &token.session_id,
+        &token.invite_id,
+        request.user_id,
+        now_ms,
+    )?;
     Ok(LocalDaemonResponse::SessionInviteJoined { member, session })
 }
 
 pub(crate) async fn execute_revoke_session_invite_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     request: RevokeSessionInviteRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (session, invite) = {
-        let app = app.lock().await;
-        let result = app
-            .sessions_mut()
-            .revoke_session_invite(&request.session_id, &request.invite_ref)?;
-        result
-    };
-    session_projection.update(session.clone());
+    let (session, invite) =
+        runtime_state.revoke_session_invite(&request.session_id, &request.invite_ref)?;
     Ok(LocalDaemonResponse::SessionInviteRevoked { invite, session })
 }
 
 pub(crate) async fn execute_create_workspace_link_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
     request: CreateWorkspaceLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let created_by_user_id = command_caller_user_id(command);
-    let (session, link) = {
-        let app = app.lock().await;
-        let result = app.sessions_mut().create_workspace_link(
-            &request.session_id,
-            request.name,
-            created_by_user_id,
-        )?;
-        result
-    };
-    session_projection.update(session.clone());
+    let (session, link) = runtime_state.create_workspace_link(
+        &request.session_id,
+        request.name,
+        created_by_user_id,
+    )?;
     Ok(LocalDaemonResponse::WorkspaceLinkCreated { link, session })
 }
 
 pub(crate) async fn execute_list_workspace_links_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: ListWorkspaceLinksRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    let links = app.sessions().list_workspace_links(&request.session_id)?;
+    let links = runtime_state.list_workspace_links(&request.session_id)?;
     Ok(LocalDaemonResponse::WorkspaceLinksListed { links })
 }
 
 pub(crate) async fn execute_show_workspace_link_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     request: ShowWorkspaceLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let app = app.lock().await;
-    let link = app
-        .sessions()
-        .resolve_workspace_link_ref(&request.session_id, &request.link_ref)?;
+    let link = runtime_state.resolve_workspace_link_ref(&request.session_id, &request.link_ref)?;
     Ok(LocalDaemonResponse::WorkspaceLinkShown { link })
 }
 
 pub(crate) async fn execute_attach_workspace_link_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
     host_machine_id: String,
     kernel_id: String,
@@ -219,27 +184,22 @@ pub(crate) async fn execute_attach_workspace_link_request(
     let repo_root = if let Some(repo_root) = request.repo_root {
         repo_root
     } else {
-        let app = app.lock().await;
-        app.sessions()
-            .get_session(&request.session_id)?
+        runtime_state
+            .session_snapshot(&request.session_id)
+            .await?
             .worktree_id()
             .to_string()
     };
-    let (session, link, attachment) = {
-        let app = app.lock().await;
-        let result = app.sessions_mut().attach_workspace_link(
-            &request.session_id,
-            &request.link_ref,
-            user_id,
-            machine_id,
-            kernel_id,
-            repo_root,
-            request.branch,
-            request.repo_fingerprint,
-        )?;
-        result
-    };
-    session_projection.update(session.clone());
+    let (session, link, attachment) = runtime_state.attach_workspace_link(
+        &request.session_id,
+        &request.link_ref,
+        user_id,
+        machine_id,
+        kernel_id,
+        repo_root,
+        request.branch,
+        request.repo_fingerprint,
+    )?;
     Ok(LocalDaemonResponse::WorkspaceLinkAttached {
         link,
         attachment,
@@ -248,24 +208,18 @@ pub(crate) async fn execute_attach_workspace_link_request(
 }
 
 pub(crate) async fn execute_detach_workspace_link_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_projection: &SessionStateProjectionStore,
+    runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
     request: DetachWorkspaceLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_id = command_caller_user_id(command);
     let repo_root = request.repo_root.as_deref().map(std::path::Path::new);
-    let (session, link, detached) = {
-        let app = app.lock().await;
-        let result = app.sessions_mut().detach_workspace_link(
-            &request.session_id,
-            &request.link_ref,
-            user_id,
-            repo_root,
-        )?;
-        result
-    };
-    session_projection.update(session.clone());
+    let (session, link, detached) = runtime_state.detach_workspace_link(
+        &request.session_id,
+        &request.link_ref,
+        user_id,
+        repo_root,
+    )?;
     Ok(LocalDaemonResponse::WorkspaceLinkDetached {
         link,
         detached,

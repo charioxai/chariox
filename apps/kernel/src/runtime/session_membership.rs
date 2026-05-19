@@ -1,12 +1,8 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
 use crate::runtime::projection::SessionStateProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 mod scope;
@@ -31,7 +27,7 @@ pub(crate) fn is_implicit_local_session_caller(command: &KernelCommand) -> bool 
 }
 
 pub(crate) async fn authorize_session_membership(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     command: &KernelCommand,
     request: &LocalDaemonRequest,
@@ -62,7 +58,7 @@ pub(crate) async fn authorize_session_membership(
     match scope {
         SessionMembershipScope::AllSessions => Ok(user_id),
         SessionMembershipScope::SessionId(session_id) => {
-            ensure_session_member(app, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
             Ok(user_id)
         }
         SessionMembershipScope::SessionRef {
@@ -70,7 +66,7 @@ pub(crate) async fn authorize_session_membership(
             workspace_id,
         } => {
             let session = resolve_session_for_membership(
-                app,
+                runtime_state,
                 session_projection,
                 &session_ref,
                 workspace_id.as_deref(),
@@ -90,24 +86,16 @@ pub(crate) async fn authorize_session_membership(
             {
                 session_id
             } else {
-                let app = app.lock().await;
-                app.sessions()
-                    .list_sessions()
-                    .into_iter()
-                    .find(|session| session.has_attachment(&attachment_id))
-                    .map(|session| session.id().to_string())
-                    .ok_or_else(|| DaemonError::AttachmentNotFound {
-                        attachment_id: attachment_id.clone(),
-                    })?
+                runtime_state.attachment_session_id(&attachment_id).await?
             };
-            ensure_session_member(app, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
             Ok(user_id)
         }
     }
 }
 
 async fn ensure_session_member(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     session_id: &str,
     user_id: &str,
@@ -121,10 +109,7 @@ async fn ensure_session_member(
             user_id: user_id.to_string(),
         });
     }
-    let session = {
-        let app = app.lock().await;
-        app.sessions().get_session(session_id)?
-    };
+    let session = runtime_state.session_snapshot(session_id).await?;
     if session.has_member(user_id) {
         Ok(())
     } else {
@@ -136,7 +121,7 @@ async fn ensure_session_member(
 }
 
 async fn resolve_session_for_membership(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     session_ref: &str,
     workspace_id: Option<&str>,
@@ -144,9 +129,10 @@ async fn resolve_session_for_membership(
     if let Some(session) = session_projection.resolve_session_ref(session_ref, workspace_id) {
         return Ok(session);
     }
-    let app = app.lock().await;
-    app.sessions()
-        .resolve_session_ref(session_ref, workspace_id)
+    let session_id = runtime_state
+        .resolve_session_ref_id(session_ref, workspace_id)
+        .await?;
+    runtime_state.session_snapshot(&session_id).await
 }
 
 #[cfg(test)]

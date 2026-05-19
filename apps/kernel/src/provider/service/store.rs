@@ -219,6 +219,17 @@ impl ProviderProcessServiceStore {
         self.write().enqueue_run_selection_sync(provider_run_id)
     }
 
+    pub(crate) fn update_run_selection(
+        &self,
+        provider_run_id: &str,
+        model: Option<String>,
+        variant: Option<String>,
+        clear_variant: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_selection(provider_run_id, model, variant, clear_variant)
+    }
+
     pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&self) {
         self.write()
             .apply_finished_provider_run_selection_sync_jobs()

@@ -71,20 +71,23 @@ impl CommandRouter {
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
             | LocalDaemonRequest::ListAgents(_)) => {
-                execute_session_read_request(&self.app, request).await
+                execute_session_read_request(&self.runtime_state, request).await
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
             }
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => {
-                execute_provider_run_request(&self.app, &self.provider_catalog_projection, request)
-                    .await
+                execute_provider_run_request(
+                    &self.runtime_state,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)) => {
                 execute_history_request(
-                    &self.app,
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     self.history_projection.clone(),
@@ -102,7 +105,7 @@ impl CommandRouter {
             | LocalDaemonRequest::DeleteSlice(_)
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
-                execute_slice_request(&self.app, &self.config_projection, request).await
+                execute_slice_request(&self.runtime_state, &self.config_projection, request).await
             }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
@@ -136,7 +139,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListSkills(_)) => execute_capability_registry_request(request),
             request @ LocalDaemonRequest::RelayStatus(_) => {
                 execute_relay_config_request(
-                    &self.app,
+                    &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -146,7 +149,7 @@ impl CommandRouter {
             }
             request @ LocalDaemonRequest::ConfigureRelay(_) => {
                 execute_relay_config_request(
-                    &self.app,
+                    &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -169,7 +172,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListCloudSessionMembers(_)
             | LocalDaemonRequest::ListCloudCollaborators(_)) => {
                 execute_cloud_relay_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     Arc::clone(&self.relay_state),
@@ -183,13 +186,8 @@ impl CommandRouter {
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
-                execute_user_config_request(
-                    &self.app,
-                    &self.config_projection,
-                    &self.runtime_state,
-                    request,
-                )
-                .await
+                execute_user_config_request(&self.config_projection, &self.runtime_state, request)
+                    .await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {
                 execute_kernel_lifecycle_request(
@@ -213,7 +211,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
                 execute_waiting_room_request(
-                    &self.app,
+                    &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
                     request,
@@ -232,17 +230,17 @@ impl CommandRouter {
             | LocalDaemonRequest::CommitWorkspaceChanges(_)
             | LocalDaemonRequest::PushWorkspaceBranch(_)
             | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                execute_workspace_command_request(&self.app, &self.session_projection, request)
-                    .await
-            }
-            request @ (LocalDaemonRequest::RunAgentUtility(_)
-            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
-                execute_agent_utility_request(
-                    Arc::clone(&self.app),
-                    &self.config_projection,
+                execute_workspace_command_request(
+                    &self.runtime_state,
+                    &self.session_projection,
                     request,
                 )
                 .await
+            }
+            request @ (LocalDaemonRequest::RunAgentUtility(_)
+            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
+                execute_agent_utility_request(&self.runtime_state, &self.config_projection, request)
+                    .await
             }
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::ForgetRemoteMachine(_)
@@ -265,8 +263,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AttachWorkspaceLink(_)
             | LocalDaemonRequest::DetachWorkspaceLink(_)) => {
                 execute_session_collaboration_request(
-                    &self.app,
-                    &self.session_projection,
+                    &self.runtime_state,
                     &self.config_projection,
                     &command,
                     request,
@@ -282,7 +279,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RecordPairedClient(_)
             | LocalDaemonRequest::RevokePairedClient(_)) => {
                 execute_pairing_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.config_projection,
                     &self.provider_catalog_projection,
                     request,
@@ -294,15 +291,20 @@ impl CommandRouter {
                 execute_provider_auth_request(request).await
             }
             request @ LocalDaemonRequest::LogoutProvider(_) => {
-                execute_provider_run_request(&self.app, &self.provider_catalog_projection, request)
-                    .await
+                execute_provider_run_request(
+                    &self.runtime_state,
+                    &self.provider_catalog_projection,
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::ListProviderProcesses(_)
             | LocalDaemonRequest::TeardownProviderProcesses(_)) => {
                 execute_provider_process_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.session_projection,
                     &self.agent_runtime_projection,
+                    &self.provider_process_projection,
                     request,
                 )
                 .await
@@ -312,7 +314,6 @@ impl CommandRouter {
             | LocalDaemonRequest::SearchHistory(_)
             | LocalDaemonRequest::SemanticSearchHistory(_)) => {
                 execute_history_request(
-                    &self.app,
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     self.history_projection.clone(),
@@ -327,7 +328,7 @@ impl CommandRouter {
             }
             LocalDaemonRequest::AppendNativeProviderOutput(request) => {
                 execute_append_native_provider_output_request(
-                    &self.app,
+                    &self.runtime_state,
                     &self.session_projection,
                     &self.agent_runtime_projection,
                     request,

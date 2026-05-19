@@ -1,12 +1,8 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::runtime::cloud_api_client::is_stale_cloud_link_error;
 use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) fn required_cloud_relay_profile(
     config_projection: &DaemonConfigProjectionStore,
@@ -39,37 +35,28 @@ pub(crate) fn required_cloud_relay_profile_with_session(
 }
 
 pub(crate) async fn persist_cloud_profile(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
     profile: PersistedCloudRelayProfile,
 ) -> Result<PersistedCloudRelayProfile, DaemonError> {
-    {
-        let mut app = app.lock().await;
-        app.persist_cloud_relay_profile(Some(profile.clone()))?;
-        config_projection.update(app.config().clone());
-    }
+    runtime_state
+        .persist_cloud_relay_profile(Some(profile.clone()))
+        .await?;
     Ok(profile)
 }
 
 pub(crate) async fn clear_cloud_profile(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
 ) -> Result<(), DaemonError> {
-    {
-        let mut app = app.lock().await;
-        app.persist_cloud_relay_profile(None)?;
-        config_projection.update(app.config().clone());
-    }
+    runtime_state.persist_cloud_relay_profile(None).await?;
     Ok(())
 }
 
 pub(crate) async fn clear_cloud_profile_if_stale(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
     error: &DaemonError,
 ) -> Result<(), DaemonError> {
     if !is_stale_cloud_link_error(error) {
         return Ok(());
     }
-    clear_cloud_profile(app, config_projection).await
+    clear_cloud_profile(runtime_state).await
 }

@@ -18,9 +18,13 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let focus_refresh = focus_projection_refresh(&request);
-        let caller_user_id =
-            authorize_session_membership(&self.app, &self.session_projection, &command, &request)
-                .await?;
+        let caller_user_id = authorize_session_membership(
+            &self.runtime_state,
+            &self.session_projection,
+            &command,
+            &request,
+        )
+        .await?;
         if let Some(response) = self
             .dispatch_pre_lane(&command, &request, &caller_user_id)
             .await?

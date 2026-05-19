@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 use crate::local::{
@@ -15,6 +10,7 @@ use crate::runtime::cloud_api_client::{
 };
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
 use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_start_cloud_relay_login_request(
     request: StartCloudRelayLoginRequest,
@@ -44,8 +40,7 @@ pub(crate) async fn execute_start_cloud_relay_login_request(
 }
 
 pub(crate) async fn execute_poll_cloud_relay_login_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
     request: PollCloudRelayLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let api_url = normalize_cloud_api_url(&request.api_url)?;
@@ -101,7 +96,7 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
                 cloud_session_expires_at_ms: None,
                 token_expires_at_ms: None,
             };
-            persist_cloud_profile(app, config_projection, persisted.clone()).await?;
+            persist_cloud_profile(runtime_state, persisted.clone()).await?;
             CloudRelayLoginPoll {
                 status: CloudRelayLoginPollStatus::Approved,
                 interval_seconds: None,
@@ -120,7 +115,7 @@ pub(crate) async fn execute_poll_cloud_relay_login_request(
 }
 
 pub(crate) async fn execute_logout_cloud_relay_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: LogoutCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -140,6 +135,6 @@ pub(crate) async fn execute_logout_cloud_relay_request(
         )
         .await;
     }
-    clear_cloud_profile(app, config_projection).await?;
+    clear_cloud_profile(runtime_state).await?;
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }

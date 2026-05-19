@@ -216,11 +216,7 @@ pub(super) fn compose_command_router(
         terminal_stream.clone(),
         workspace_coordinator.clone(),
     );
-    install_provider_native_interaction_bridge(
-        Arc::clone(&app),
-        runtime_state.clone(),
-        &provider_store,
-    );
+    install_provider_native_interaction_bridge(runtime_state.clone(), &provider_store);
     let provider_launch_pending = ProviderLaunchPendingTracker::default();
     let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
     let agent_runtime = AgentRuntime::new(

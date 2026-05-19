@@ -33,10 +33,12 @@ mod managed_io_workspace_context;
 use managed_io_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
+mod config_runtime_state;
 mod provider_reload;
 pub(crate) use provider_reload::*;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
+mod provider_run_read_state;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -81,6 +83,7 @@ mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_profile_owned_state;
+mod agent_utility_runtime_state;
 mod attachment_owned_state;
 mod capability_owned_state;
 mod owned;
@@ -104,11 +107,14 @@ mod provider_launch_runtime;
 mod provider_liveness_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
+mod provider_process_runtime_state;
+pub(crate) use provider_process_runtime_state::*;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
+mod relay_peer_runtime_state;
 mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
@@ -118,8 +124,10 @@ mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
 mod session;
+mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod slice_runtime_state;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;

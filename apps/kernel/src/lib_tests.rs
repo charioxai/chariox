@@ -58,6 +58,7 @@ fn wait_for_terminal_output(
 }
 
 mod app_lifecycle;
+mod architecture_boundaries;
 mod capability_boundaries;
 mod provider_sessions;
 mod remote_leases;
