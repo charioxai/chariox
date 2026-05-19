@@ -145,7 +145,7 @@ async function waitForProxyHiddenForward(logFile, timeoutMs = 90_000) {
 
 async function assertNativeTuiDidNotShowHiddenInstructions(logFile) {
   const text = await readFile(logFile, "utf8").catch(() => "")
-  if (text.includes(hiddenMarker) || text.includes("list_capabilities") || text.includes("native approval request")) {
+  if (text.includes(hiddenMarker) || text.includes("list_extensions") || text.includes("native approval request")) {
     throw new Error(`native TUI log showed hidden Arroba instructions in ${logFile}`)
   }
 }

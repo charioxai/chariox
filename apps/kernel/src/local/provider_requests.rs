@@ -364,7 +364,8 @@ fn required_remote_mcps_for_native_provider_launch(
     session_id: &str,
     agent: &crate::agent::AgentInstance,
 ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
-    if agent.mcp_grants().is_empty() {
+    let mcp_grants = agent.mcp_grants();
+    if mcp_grants.is_empty() {
         return Ok(Vec::new());
     }
     let session = app.sessions().get_session(session_id)?;
@@ -374,8 +375,7 @@ fn required_remote_mcps_for_native_provider_launch(
         roots.push(user_root);
     }
     let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-    agent
-        .mcp_grants()
+    mcp_grants
         .iter()
         .map(|grant| {
             let config = registry

@@ -59,7 +59,7 @@ const {
   setWorkflowFlushContextRequest,
   endSessionRequest,
   installMcpServerRequest,
-  grantAgentCapabilityRequest,
+  grantAgentExtensionRequest,
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
@@ -773,7 +773,7 @@ function buildMcpEchoWorkflowScenario(providers, model) {
       await client.send(installMcpServerRequest(options.workspace, workflowEchoMcpConfig(mcpPath)))
     },
     async afterAgentSpawn(client, options, { agent }) {
-      await client.send(grantAgentCapabilityRequest(options.workspace, agent.id, 'mcp', 'workflow_echo'))
+      await client.send(grantAgentExtensionRequest(options.workspace, agent.id, 'mcp', 'workflow_echo'))
     },
     nodePrompt() {
       return [

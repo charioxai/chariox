@@ -1,7 +1,10 @@
 import type {
   AgentInstance,
+  ArrobaEnvironmentConfig,
   ArrobaMcpServerConfig,
+  ArrobaScriptMetadata,
   ArrobaSkillMetadata,
+  ExtensionKind,
   McpImportOutcome,
   SkillImportOutcome,
 } from "./kernel-types.js"
@@ -51,12 +54,34 @@ export function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
   return lines.length === 0 ? "No skills imported." : lines.join("\n")
 }
 
-export function formatAgentCapabilityGrants(agent: AgentInstance, kind: "mcp" | "skill"): string {
-  const grants = kind === "mcp" ? (agent.mcp_grants ?? []) : (agent.skill_grants ?? [])
-  const label = kind === "mcp" ? "MCP" : "skill"
+export function formatEnvironmentList(environments: ArrobaEnvironmentConfig[]): string {
+  if (environments.length === 0) {
+    return "no environments registered"
+  }
+  return environments.map((environment) => {
+    const runtime = typeof environment.runtime?.type === "string"
+      ? environment.runtime.type
+      : Object.keys(environment.runtime ?? {})[0] ?? "runtime"
+    return `${environment.name} [${runtime}]`
+  }).join("\n")
+}
+
+export function formatScriptList(scripts: ArrobaScriptMetadata[]): string {
+  if (scripts.length === 0) {
+    return "no scripts registered"
+  }
+  return scripts.map((script) => `${script.name} [${script.runtime}] - ${script.description}`).join("\n")
+}
+
+export function formatAgentExtensionGrants(agent: AgentInstance, kind: ExtensionKind): string {
+  const grants = (agent.extension_grants ?? []).filter((grant) => grant.kind === kind)
+  const label = kind === "mcp" ? "MCP" : kind
   const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
   if (grants.length === 0) {
     return `${agentLabel} has no ${label} grants.`
   }
-  return `${agentLabel} ${label} grants:\n${grants.map((grant) => `- ${grant}`).join("\n")}`
+  return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
+    const suffix = grant.environment ? ` @ ${grant.environment}` : ""
+    return `- ${grant.name}${suffix}`
+  }).join("\n")}`
 }

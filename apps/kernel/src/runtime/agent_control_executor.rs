@@ -1,9 +1,11 @@
 use crate::error::DaemonError;
 use crate::local::{
-    AgentGrantKind, GrantAgentCapabilityRequest, LocalDaemonRequest, LocalDaemonResponse,
-    MoveAgentToRemoteRequest, RevokeAgentCapabilityRequest,
+    ExtensionKind, GrantAgentExtensionRequest, LocalDaemonRequest, LocalDaemonResponse,
+    MoveAgentToRemoteRequest, RevokeAgentExtensionRequest,
 };
-use crate::runtime::capability_registry::{ensure_mcp_exists, ensure_skill_exists};
+use crate::runtime::capability_registry::{
+    ensure_environment_exists, ensure_mcp_exists, ensure_script_exists, ensure_skill_exists,
+};
 use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_agent_control_request(
@@ -12,14 +14,14 @@ pub(crate) async fn execute_agent_control_request(
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
-        LocalDaemonRequest::GrantAgentCapability(request) => {
-            execute_grant_agent_capability_request(runtime_state, caller_user_id, request).await
+        LocalDaemonRequest::GrantAgentExtension(request) => {
+            execute_grant_agent_extension_request(runtime_state, caller_user_id, request).await
         }
         LocalDaemonRequest::MoveAgentToRemote(request) => {
             execute_move_agent_to_remote_request(runtime_state, caller_user_id, request).await
         }
-        LocalDaemonRequest::RevokeAgentCapability(request) => {
-            execute_revoke_agent_capability_request(runtime_state, caller_user_id, request).await
+        LocalDaemonRequest::RevokeAgentExtension(request) => {
+            execute_revoke_agent_extension_request(runtime_state, caller_user_id, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "agent control request",
@@ -28,25 +30,40 @@ pub(crate) async fn execute_agent_control_request(
     }
 }
 
-pub(crate) async fn execute_grant_agent_capability_request(
+pub(crate) async fn execute_grant_agent_extension_request(
     runtime_state: &KernelRuntimeState,
     caller_user_id: &str,
-    request: GrantAgentCapabilityRequest,
+    request: GrantAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request.kind {
-        AgentGrantKind::Mcp => {
+        ExtensionKind::Mcp => {
             ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
             let agent = runtime_state
                 .grant_agent_mcp(&request.agent_ref, request.name, caller_user_id)
                 .await?;
-            Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
+            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
         }
-        AgentGrantKind::Skill => {
+        ExtensionKind::Skill => {
             ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
             let agent = runtime_state
                 .grant_agent_skill(&request.agent_ref, request.name, caller_user_id)
                 .await?;
-            Ok(LocalDaemonResponse::AgentCapabilityGranted { agent })
+            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
+        }
+        ExtensionKind::Script => {
+            let environment = request
+                .environment
+                .ok_or_else(|| DaemonError::InvalidConfig {
+                    field: "environment",
+                    message: "script extension grants require an environment",
+                })?;
+            ensure_script_exists(request.workspace_id.as_deref(), &request.name)?;
+            ensure_environment_exists(request.workspace_id.as_deref(), &environment)?;
+            let grant = crate::extension::ExtensionGrant::script(request.name, environment);
+            let agent = runtime_state
+                .grant_agent_extension(&request.agent_ref, grant, caller_user_id)
+                .await?;
+            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
         }
     }
 }
@@ -67,22 +84,32 @@ pub(crate) async fn execute_move_agent_to_remote_request(
     Ok(LocalDaemonResponse::AgentMovedToRemote { agent })
 }
 
-pub(crate) async fn execute_revoke_agent_capability_request(
+pub(crate) async fn execute_revoke_agent_extension_request(
     runtime_state: &KernelRuntimeState,
     caller_user_id: &str,
-    request: RevokeAgentCapabilityRequest,
+    request: RevokeAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let agent = match request.kind {
-        AgentGrantKind::Mcp => {
+        ExtensionKind::Mcp => {
             runtime_state
                 .revoke_agent_mcp(&request.agent_ref, &request.name, caller_user_id)
                 .await?
         }
-        AgentGrantKind::Skill => {
+        ExtensionKind::Skill => {
             runtime_state
                 .revoke_agent_skill(&request.agent_ref, &request.name, caller_user_id)
                 .await?
         }
+        ExtensionKind::Script => {
+            runtime_state
+                .revoke_agent_extension(
+                    &request.agent_ref,
+                    crate::extension::ExtensionKind::Script,
+                    &request.name,
+                    caller_user_id,
+                )
+                .await?
+        }
     };
-    Ok(LocalDaemonResponse::AgentCapabilityRevoked { agent })
+    Ok(LocalDaemonResponse::AgentExtensionRevoked { agent })
 }

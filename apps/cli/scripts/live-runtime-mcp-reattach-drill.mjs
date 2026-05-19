@@ -322,12 +322,12 @@ async function main() {
       const beforeCount = await countCompletedRuntimeToolCalls({
         historyDir,
         agentId: agent.id,
-        toolNeedles: ['list_capabilities', 'read_artifact'],
+        toolNeedles: ['list_extensions', 'read_artifact'],
       })
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is a runtime MCP attachment drill.',
         'Do not use shell commands or direct filesystem tools.',
-        'First call Arroba `list_capabilities`.',
+        'First call Arroba `list_extensions`.',
         'Then call Arroba `read_artifact` for `seed.txt` with domain text.',
         `Then call Arroba \`write_artifact\` for \`outputs/${provider}-before-reattach.txt\` with exactly \`${provider}:BEFORE_REATTACH_OK\\n\`.`,
         `Reply exactly ${provider.toUpperCase()}_BEFORE_REATTACH_DONE.`,
@@ -344,7 +344,7 @@ async function main() {
       await waitForRuntimeToolCalls({
         historyDir,
         agentId: agent.id,
-        toolNeedles: ['list_capabilities', 'read_artifact'],
+        toolNeedles: ['list_extensions', 'read_artifact'],
         minCount: beforeCount + 2,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
@@ -374,12 +374,12 @@ async function main() {
       const beforeCount = await countCompletedRuntimeToolCalls({
         historyDir,
         agentId: agent.id,
-        toolNeedles: ['list_capabilities', 'read_artifact'],
+        toolNeedles: ['list_extensions', 'read_artifact'],
       })
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is the after-reattach runtime MCP verification.',
         'Do not use shell commands or direct filesystem tools.',
-        'First call Arroba `list_capabilities` again.',
+        'First call Arroba `list_extensions` again.',
         `Then call Arroba \`read_artifact\` for \`outputs/${provider}-before-reattach.txt\` with domain text.`,
         `Then call Arroba \`write_artifact\` for \`outputs/${provider}-after-reattach.txt\` with exactly \`${provider}:AFTER_REATTACH_OK\\n\`.`,
         `Reply exactly ${provider.toUpperCase()}_AFTER_REATTACH_DONE.`,
@@ -396,7 +396,7 @@ async function main() {
       await waitForRuntimeToolCalls({
         historyDir,
         agentId: agent.id,
-        toolNeedles: ['list_capabilities', 'read_artifact'],
+        toolNeedles: ['list_extensions', 'read_artifact'],
         minCount: beforeCount + 2,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,

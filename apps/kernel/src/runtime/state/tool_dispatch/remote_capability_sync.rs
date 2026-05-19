@@ -17,12 +17,13 @@ impl KernelRuntimeState {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(Vec::new());
         };
-        if agent.skill_grants().is_empty() {
+        let skill_grants = agent.skill_grants();
+        if skill_grants.is_empty() {
             return Ok(Vec::new());
         }
         let session = self.owned.session_store.get_session(agent.session_id())?;
         let skill_registry = skill_registry_for_workspace(session.workspace_id());
-        let packages = package_granted_skills(&skill_registry, agent.skill_grants())?;
+        let packages = package_granted_skills(&skill_registry, &skill_grants)?;
         if packages.is_empty() {
             return Ok(Vec::new());
         }
@@ -62,12 +63,13 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
-        if agent.mcp_grants().is_empty() {
+        let mcp_grants = agent.mcp_grants();
+        if mcp_grants.is_empty() {
             return Ok(Vec::new());
         }
         let session = self.owned.session_store.get_session(agent.session_id())?;
         let registry = mcp_registry_for_workspace(session.workspace_id());
-        required_remote_mcps(&registry, agent.mcp_grants())
+        required_remote_mcps(&registry, &mcp_grants)
     }
 
     pub(in crate::runtime::state) async fn ensure_remote_mcp_availability_for_agent(
@@ -137,7 +139,8 @@ impl KernelRuntimeState {
         prompt: &str,
         materialized: &[crate::transport::relay_peer::RemoteSkillMaterialization],
     ) -> Result<String, DaemonError> {
-        if agent.skill_grants().is_empty() {
+        let skill_grants = agent.skill_grants();
+        if skill_grants.is_empty() {
             return Ok(prompt.to_string());
         }
         let session = self.owned.session_store.get_session(agent.session_id())?;
@@ -151,8 +154,8 @@ impl KernelRuntimeState {
             "These granted skills were synchronized from the home kernel and materialized on this worker before this prompt. Follow them when they match the task; assets, scripts, and references are available under each materialized_root.".to_string(),
         ];
         let mut bodies = Vec::new();
-        for grant in agent.skill_grants() {
-            let Some(skill) = registry.get(grant)? else {
+        for grant in skill_grants {
+            let Some(skill) = registry.get(&grant)? else {
                 return Err(DaemonError::LocalTransport {
                     operation: "remote provider.prompt.skills",
                     message: format!(

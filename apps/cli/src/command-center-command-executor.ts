@@ -29,6 +29,9 @@ type CommandCenterCommandExecutorDeps = {
   onWorkflow: CommandHandler<"workflow">
   onMcp: CommandHandler<"mcp">
   onSkill: CommandHandler<"skill">
+  onEnv: CommandHandler<"env">
+  onScript: CommandHandler<"script">
+  onExtension: CommandHandler<"extension">
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError: (error: unknown) => string
 }
@@ -68,6 +71,9 @@ export function createCommandCenterCommandExecutor(
       onWorkflow: contained(deps.onWorkflow),
       onMcp: contained(deps.onMcp),
       onSkill: contained(deps.onSkill),
+      onEnv: contained(deps.onEnv),
+      onScript: contained(deps.onScript),
+      onExtension: contained(deps.onExtension),
     })
   }
 

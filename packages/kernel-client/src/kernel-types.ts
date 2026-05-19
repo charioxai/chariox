@@ -27,6 +27,28 @@ export type ArrobaSkillMetadata = {
   path: string
 }
 
+export type ArrobaEnvironmentConfig = {
+  name: string
+  runtime: Record<string, unknown>
+}
+
+export type ArrobaScriptMetadata = {
+  name: string
+  runtime: "python" | "typescript" | string
+  path: string
+  description: string
+  input_schema: Record<string, unknown>
+  definition_hash: string
+}
+
+export type ExtensionKind = "mcp" | "skill" | "script"
+
+export type ExtensionGrant = {
+  kind: ExtensionKind
+  name: string
+  environment?: string | null
+}
+
 export type SkillImportSkip = {
   name: string
   path: string
@@ -370,8 +392,7 @@ export type AgentInstance = {
     execution_lease_id: string
     leased_agent_id: string
   } | null
-  mcp_grants?: string[]
-  skill_grants?: string[]
+  extension_grants?: ExtensionGrant[]
   substitutes?: AgentSubstituteProfile[]
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
@@ -778,7 +799,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 35
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 36
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

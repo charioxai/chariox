@@ -147,6 +147,9 @@ function createHarness(options: {
     handleWorkflowCommand: (command) => calls.push(`workflow:${command.args.join(" ")}`),
     handleMcpCommand: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     handleSkillCommand: (command) => calls.push(`skill:${command.args.join(" ")}`),
+    handleEnvCommand: (command) => calls.push(`env:${command.args.join(" ")}`),
+    handleScriptCommand: (command) => calls.push(`script:${command.args.join(" ")}`),
+    handleExtensionCommand: (command) => calls.push(`extension:${command.args.join(" ")}`),
   }
 
   return {

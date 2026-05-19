@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 35;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 36;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -83,6 +83,15 @@ pub enum LocalDaemonRequest {
     ImportMcpServers(ImportMcpServersRequest),
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
+    RegisterEnvironment(RegisterEnvironmentRequest),
+    RemoveEnvironment(RemoveEnvironmentRequest),
+    GetEnvironment(GetEnvironmentRequest),
+    ListEnvironments(ListEnvironmentsRequest),
+    ValidateScript(ValidateScriptRequest),
+    RegisterScript(RegisterScriptRequest),
+    RemoveScript(RemoveScriptRequest),
+    GetScript(GetScriptRequest),
+    ListScripts(ListScriptsRequest),
     InstallSkill(InstallSkillRequest),
     UpdateSkill(UpdateSkillRequest),
     UninstallSkill(UninstallSkillRequest),
@@ -190,8 +199,8 @@ pub enum LocalDaemonRequest {
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
-    GrantAgentCapability(GrantAgentCapabilityRequest),
-    RevokeAgentCapability(RevokeAgentCapabilityRequest),
+    GrantAgentExtension(GrantAgentExtensionRequest),
+    RevokeAgentExtension(RevokeAgentExtensionRequest),
     ListAgents(ListAgentsRequest),
     CreateWorkflow(CreateWorkflowRequest),
     ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest),
@@ -342,6 +351,37 @@ pub enum LocalDaemonResponse {
     },
     McpServersListed {
         mcps: Vec<ArrobaMcpServerConfig>,
+    },
+    EnvironmentRegistered {
+        environment: ArrobaEnvironmentConfig,
+        path: PathBuf,
+    },
+    EnvironmentRemoved {
+        name: String,
+        path: PathBuf,
+    },
+    Environment {
+        environment: ArrobaEnvironmentConfig,
+    },
+    EnvironmentsListed {
+        environments: Vec<ArrobaEnvironmentConfig>,
+    },
+    ScriptValidated {
+        script: ArrobaScriptMetadata,
+    },
+    ScriptRegistered {
+        script: ArrobaScriptMetadata,
+        path: PathBuf,
+    },
+    ScriptRemoved {
+        script: ArrobaScriptMetadata,
+        path: PathBuf,
+    },
+    Script {
+        script: ArrobaScriptMetadata,
+    },
+    ScriptsListed {
+        scripts: Vec<ArrobaScriptMetadata>,
     },
     Skill {
         skill: ArrobaSkillMetadata,
@@ -686,10 +726,10 @@ pub enum LocalDaemonResponse {
     AgentFocusCycled {
         agent: Option<AgentInstance>,
     },
-    AgentCapabilityGranted {
+    AgentExtensionGranted {
         agent: AgentInstance,
     },
-    AgentCapabilityRevoked {
+    AgentExtensionRevoked {
         agent: AgentInstance,
     },
     AgentsListed {

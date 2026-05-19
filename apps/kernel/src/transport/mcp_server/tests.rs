@@ -103,14 +103,12 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
         .any(|tool| tool["name"] == "arroba.write_artifact"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.list_capabilities"));
-    assert!(tools.iter().any(|tool| tool["name"] == "list_capabilities"));
+        .any(|tool| tool["name"] == "arroba.list_extensions"));
+    assert!(tools.iter().any(|tool| tool["name"] == "list_extensions"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.request_capability"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "request_capability"));
+        .any(|tool| tool["name"] == "arroba.request_extension"));
+    assert!(tools.iter().any(|tool| tool["name"] == "request_extension"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "arroba.list_credential_handles"));
@@ -941,7 +939,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "list_capabilities",
+                "name": "list_extensions",
                 "arguments": {"kind": "all"}
             }
         }),
@@ -960,11 +958,11 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
         agent_ref
     );
     assert_eq!(
-        list_value["result"]["structuredContent"]["capabilities"]["mcps"][0]["name"],
+        list_value["result"]["structuredContent"]["extensions"]["mcps"][0]["name"],
         "browser"
     );
     assert_eq!(
-        list_value["result"]["structuredContent"]["capabilities"]["skills"][0]["name"],
+        list_value["result"]["structuredContent"]["extensions"]["skills"][0]["name"],
         "browser-qa"
     );
 
@@ -976,7 +974,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "request_capability",
+                "name": "request_extension",
                 "arguments": {"kind": "skill", "name": "browser-qa"}
             }
         }),
@@ -1014,7 +1012,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
         .agents()
         .get_agent(&agent_id)
         .expect("agent should exist");
-    assert_eq!(agent.skill_grants(), &["browser-qa".to_string()]);
+    assert_eq!(agent.skill_grants(), vec!["browser-qa".to_string()]);
 
     let _ = std::fs::remove_dir_all(root);
 }

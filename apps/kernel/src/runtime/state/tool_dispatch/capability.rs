@@ -1,4 +1,6 @@
-use super::capability_registry::{mcp_registry_for_workspace, skill_registry_for_workspace};
+use super::capability_registry::{
+    mcp_registry_for_workspace, script_registry_for_workspace, skill_registry_for_workspace,
+};
 use super::*;
 
 impl KernelRuntimeState {
@@ -171,21 +173,21 @@ impl KernelRuntimeState {
         let skill_registry = skill_registry_for_workspace(session.workspace_id());
 
         match tool_name {
-            crate::transport::runtime_tools::LIST_CAPABILITIES_TOOL => {
+            crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::ListCapabilitiesArgs,
+                    crate::transport::runtime_tools::ListExtensionsArgs,
                 >(arguments)
                 .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_list_capabilities",
+                    operation: "runtime_tool_list_extensions",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let kind = args.kind.as_deref().unwrap_or("all");
-                if !matches!(kind, "all" | "mcp" | "skill") {
+                if !matches!(kind, "all" | "mcp" | "skill" | "script") {
                     return Ok((
                         crate::transport::runtime_tools::RuntimeToolResult {
                             ok: false,
                             payload: serde_json::json!({
-                                "error": "kind must be one of: all, mcp, skill"
+                                "error": "kind must be one of: all, mcp, skill, script"
                             }),
                         },
                         None,
@@ -196,7 +198,10 @@ impl KernelRuntimeState {
                         .list()?
                         .into_iter()
                         .map(|mcp| {
-                            let granted = agent.mcp_grants().contains(&mcp.name);
+                            let granted = agent.has_extension_grant(
+                                crate::extension::ExtensionKind::Mcp,
+                                &mcp.name,
+                            );
                             serde_json::json!({
                                 "kind": "mcp",
                                 "name": mcp.name,
@@ -215,7 +220,10 @@ impl KernelRuntimeState {
                         .list()?
                         .into_iter()
                         .map(|skill| {
-                            let granted = agent.skill_grants().contains(&skill.name);
+                            let granted = agent.has_extension_grant(
+                                crate::extension::ExtensionKind::Skill,
+                                &skill.name,
+                            );
                             serde_json::json!({
                                 "kind": "skill",
                                 "name": skill.name,
@@ -229,26 +237,51 @@ impl KernelRuntimeState {
                 } else {
                     Vec::new()
                 };
+                let script_registry = script_registry_for_workspace(session.workspace_id());
+                let scripts = if matches!(kind, "all" | "script") {
+                    script_registry
+                        .list()?
+                        .into_iter()
+                        .map(|script| {
+                            let granted = agent.has_extension_grant(
+                                crate::extension::ExtensionKind::Script,
+                                &script.name,
+                            );
+                            serde_json::json!({
+                                "kind": "script",
+                                "name": script.name,
+                                "description": script.description,
+                                "runtime": script.runtime,
+                                "definition_hash": script.definition_hash,
+                                "granted": granted,
+                                "effective_when_requested": "current_or_next_turn"
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 Ok((
                     crate::transport::runtime_tools::RuntimeToolResult {
                         ok: true,
                         payload: serde_json::json!({
                             "agent_ref": agent.agent_ref(),
-                            "capabilities": {
+                            "extensions": {
                                 "mcps": mcps,
-                                "skills": skills
+                                "skills": skills,
+                                "scripts": scripts
                             }
                         }),
                     },
                     None,
                 ))
             }
-            crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL => {
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
                 let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::RequestCapabilityArgs,
+                    crate::transport::runtime_tools::RequestExtensionArgs,
                 >(arguments)
                 .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_request_capability",
+                    operation: "runtime_tool_request_extension",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let mut skill_payload = serde_json::Value::Null;
@@ -269,7 +302,10 @@ impl KernelRuntimeState {
                             ));
                         }
                         if agent.remote_execution().is_some()
-                            && !agent.mcp_grants().contains(&args.name)
+                            && !agent.has_extension_grant(
+                                crate::extension::ExtensionKind::Mcp,
+                                &args.name,
+                            )
                         {
                             let mut checked = agent.clone();
                             checked.grant_mcp(args.name.clone());
@@ -333,7 +369,7 @@ impl KernelRuntimeState {
                         if args.return_body.unwrap_or(true) {
                             let body = std::fs::read_to_string(&skill.path).map_err(|error| {
                                 DaemonError::LocalTransport {
-                                    operation: "runtime_tool_request_capability",
+                                    operation: "runtime_tool_request_extension",
                                     message: format!(
                                         "failed to read skill `{}` body: {error}",
                                         skill.name
@@ -361,12 +397,50 @@ impl KernelRuntimeState {
                         .await?;
                         (granted_agent, "now", false)
                     }
+                    "script" => {
+                        let environment = args.environment.clone().ok_or_else(|| {
+                            DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_extension",
+                                message: "script extension requests require environment"
+                                    .to_string(),
+                            }
+                        })?;
+                        let script_registry = script_registry_for_workspace(session.workspace_id());
+                        if script_registry.get(&args.name)?.is_none() {
+                            return Ok((
+                                crate::transport::runtime_tools::RuntimeToolResult {
+                                    ok: false,
+                                    payload: serde_json::json!({
+                                        "error": format!("script `{}` is not registered", args.name),
+                                        "kind": "script",
+                                        "name": args.name,
+                                    }),
+                                },
+                                None,
+                            ));
+                        }
+                        let granted_agent = self.owned.grant_agent_extension(
+                            agent.id(),
+                            crate::extension::ExtensionGrant::script(
+                                args.name.clone(),
+                                environment,
+                            ),
+                            agent.owner_user_id(),
+                        )?;
+                        self.append_agent_durable_event(
+                            "agent.extension_granted",
+                            &granted_agent,
+                            Some(&format!("script:{}", args.name)),
+                        )
+                        .await?;
+                        (granted_agent, "now", false)
+                    }
                     _ => {
                         return Ok((
                             crate::transport::runtime_tools::RuntimeToolResult {
                                 ok: false,
                                 payload: serde_json::json!({
-                                    "error": "kind must be one of: mcp, skill"
+                                    "error": "kind must be one of: mcp, skill, script"
                                 }),
                             },
                             None,
@@ -384,7 +458,7 @@ impl KernelRuntimeState {
                         "after_provider_reload" => "Arroba will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                         "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                         "now" => "The skill grant is persisted and the returned SKILL.md body can be followed immediately in this turn.",
-                        _ => "The capability grant is persisted."
+                        _ => "The extension grant is persisted."
                     }
                 });
                 if !skill_payload.is_null() {

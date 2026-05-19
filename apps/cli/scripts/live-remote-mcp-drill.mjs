@@ -386,7 +386,7 @@ async function main() {
     attachToSessionRequest,
     createSessionRequest,
     endSessionRequest,
-    grantAgentCapabilityRequest,
+    grantAgentExtensionRequest,
     submitPromptRequest,
     listRemoteMachinesRequest,
   } = requests
@@ -507,7 +507,7 @@ async function main() {
       scenario: 'worker_missing_mcp_fails_fast',
       ...(await expectReject(
         'worker missing MCP',
-        () => client.send(grantAgentCapabilityRequest(workspace, missingWorkerAgent.id, 'mcp', 'remote-mcp-drill')),
+        () => client.send(grantAgentExtensionRequest(workspace, missingWorkerAgent.id, 'mcp', 'remote-mcp-drill')),
         'missing on worker',
       )),
     })
@@ -526,7 +526,7 @@ async function main() {
       scenario: 'worker_global_mismatch_fails_fast',
       ...(await expectReject(
         'worker global mismatch',
-        () => client.send(grantAgentCapabilityRequest(workspace, mismatchAgent.id, 'mcp', 'remote-mcp-drill')),
+        () => client.send(grantAgentExtensionRequest(workspace, mismatchAgent.id, 'mcp', 'remote-mcp-drill')),
         'definition mismatch',
       )),
     })
@@ -541,16 +541,16 @@ async function main() {
       options.effort,
       workerMachineId,
     )), 'AgentSpawned').agent
-    const overrideGranted = unwrapVariant(await client.send(grantAgentCapabilityRequest(
+    const overrideGranted = unwrapVariant(await client.send(grantAgentExtensionRequest(
       workspace,
       overrideAgent.id,
       'mcp',
       'remote-mcp-drill',
-    )), 'AgentCapabilityGranted').agent
+    )), 'AgentExtensionGranted').agent
     scenarioResults.push({
       scenario: 'worker_project_local_override_passes',
       ok: true,
-      agent: { id: overrideGranted.id, ref: overrideGranted.agent_ref, mcp_grants: overrideGranted.mcp_grants },
+      agent: { id: overrideGranted.id, ref: overrideGranted.agent_ref, extension_grants: overrideGranted.extension_grants },
     })
 
     await clearProjectMcps(workspace)
@@ -569,7 +569,7 @@ async function main() {
       scenario: 'worker_missing_command_fails_fast',
       ...(await expectReject(
         'worker missing command',
-        () => client.send(grantAgentCapabilityRequest(workspace, missingCommandAgent.id, 'mcp', 'remote-mcp-missing-command')),
+        () => client.send(grantAgentExtensionRequest(workspace, missingCommandAgent.id, 'mcp', 'remote-mcp-missing-command')),
         'missing command',
       )),
     })
@@ -589,7 +589,7 @@ async function main() {
       scenario: 'worker_missing_env_fails_fast',
       ...(await expectReject(
         'worker missing env',
-        () => client.send(grantAgentCapabilityRequest(workspace, missingEnvAgent.id, 'mcp', 'remote-mcp-missing-env')),
+        () => client.send(grantAgentExtensionRequest(workspace, missingEnvAgent.id, 'mcp', 'remote-mcp-missing-env')),
         'missing environment variable',
       )),
     })
@@ -606,13 +606,13 @@ async function main() {
         options.effort,
         workerMachineId,
       )), 'AgentSpawned').agent
-      await client.send(grantAgentCapabilityRequest(workspace, liveAgent.id, 'mcp', 'playwright'))
+      await client.send(grantAgentExtensionRequest(workspace, liveAgent.id, 'mcp', 'playwright'))
       const markerFile = path.join(workspace, 'outputs', 'remote-playwright-mcp.txt')
       await rm(markerFile, { force: true }).catch(() => {})
       const before = events.filter((event) => event.event === 'assistant_message_completed').length
       await client.send(submitPromptRequest(session.id, attachment.id, liveAgent.id, [
         'This is a remote live MCP grant drill.',
-        'Use the provider-native Playwright MCP tool that is available to this remote agent, not Arroba list_capabilities/request_capability.',
+        'Use the provider-native Playwright MCP tool that is available to this remote agent, not Arroba list_extensions/request_extension.',
         'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
         'Prefer a non-mutating browser snapshot/title/text tool first; navigating to https://example.com is optional.',
         'After any Playwright/browser MCP tool call completes successfully, use Arroba managed I/O to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',

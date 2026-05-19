@@ -1,6 +1,8 @@
 import type {
   AgentInstance,
+  ArrobaEnvironmentConfig,
   ArrobaMcpServerConfig,
+  ArrobaScriptMetadata,
   ArrobaSkillMetadata,
   McpImportOutcome,
   SkillImportOutcome,
@@ -8,19 +10,28 @@ import type {
 import type { LocalIpcClient } from "./ipc.js"
 import {
   getMcpServerRequest,
+  getEnvironmentRequest,
+  getScriptRequest,
   getSkillRequest,
-  grantAgentCapabilityRequest,
+  grantAgentExtensionRequest,
   importMcpServersRequest,
   importSkillsRequest,
   installMcpServerRequest,
   installSkillRequest,
+  listEnvironmentsRequest,
   listMcpServersRequest,
+  listScriptsRequest,
   listSkillsRequest,
-  revokeAgentCapabilityRequest,
+  registerEnvironmentRequest,
+  registerScriptRequest,
+  removeEnvironmentRequest,
+  removeScriptRequest,
+  revokeAgentExtensionRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateMcpServerRequest,
   updateSkillRequest,
+  validateScriptRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
@@ -89,9 +100,9 @@ export async function grantAgentMcp(
   name: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    grantAgentCapabilityRequest(workspaceTarget, agentRef, "mcp", name),
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "mcp", name),
   )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
 }
 
 export async function revokeAgentMcp(
@@ -99,8 +110,8 @@ export async function revokeAgentMcp(
   agentRef: string,
   name: string,
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentCapabilityRequest(agentRef, "mcp", name))
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "mcp", name))
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 
 export async function listSkills(
@@ -164,9 +175,9 @@ export async function grantAgentSkill(
   name: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    grantAgentCapabilityRequest(workspaceTarget, agentRef, "skill", name),
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "skill", name),
   )
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityGranted").agent
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
 }
 
 export async function revokeAgentSkill(
@@ -174,6 +185,117 @@ export async function revokeAgentSkill(
   agentRef: string,
   name: string,
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentCapabilityRequest(agentRef, "skill", name))
-  return expectVariant<{ agent: AgentInstance }>(response, "AgentCapabilityRevoked").agent
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "skill", name))
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
+}
+
+export async function listEnvironments(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+): Promise<ArrobaEnvironmentConfig[]> {
+  const response = await client.send<Record<string, unknown>>(listEnvironmentsRequest(workspaceTarget))
+  return expectVariant<{ environments: ArrobaEnvironmentConfig[] }>(response, "EnvironmentsListed").environments
+}
+
+export async function getEnvironment(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  name: string,
+): Promise<ArrobaEnvironmentConfig> {
+  const response = await client.send<Record<string, unknown>>(getEnvironmentRequest(workspaceTarget, name))
+  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "Environment").environment
+}
+
+export async function registerEnvironment(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  config: ArrobaEnvironmentConfig,
+): Promise<ArrobaEnvironmentConfig> {
+  const response = await client.send<Record<string, unknown>>(
+    registerEnvironmentRequest(workspaceTarget, config as unknown as Record<string, unknown>),
+  )
+  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRegistered").environment
+}
+
+export async function removeEnvironment(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  name: string,
+): Promise<ArrobaEnvironmentConfig> {
+  const response = await client.send<Record<string, unknown>>(removeEnvironmentRequest(workspaceTarget, name))
+  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRemoved").environment
+}
+
+export async function listScripts(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+): Promise<ArrobaScriptMetadata[]> {
+  const response = await client.send<Record<string, unknown>>(listScriptsRequest(workspaceTarget))
+  return expectVariant<{ scripts: ArrobaScriptMetadata[] }>(response, "ScriptsListed").scripts
+}
+
+export async function getScript(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  name: string,
+): Promise<ArrobaScriptMetadata> {
+  const response = await client.send<Record<string, unknown>>(getScriptRequest(workspaceTarget, name))
+  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "Script").script
+}
+
+export async function validateScript(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  sourcePath: string,
+  environment: string,
+  name?: string | null,
+): Promise<ArrobaScriptMetadata> {
+  const response = await client.send<Record<string, unknown>>(
+    validateScriptRequest(workspaceTarget, sourcePath, environment, name),
+  )
+  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptValidated").script
+}
+
+export async function registerScript(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  sourcePath: string,
+  environment: string,
+  name?: string | null,
+): Promise<ArrobaScriptMetadata> {
+  const response = await client.send<Record<string, unknown>>(
+    registerScriptRequest(workspaceTarget, sourcePath, environment, name),
+  )
+  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptRegistered").script
+}
+
+export async function removeScript(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  name: string,
+): Promise<ArrobaScriptMetadata> {
+  const response = await client.send<Record<string, unknown>>(removeScriptRequest(workspaceTarget, name))
+  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptRemoved").script
+}
+
+export async function grantAgentScript(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  agentRef: string,
+  name: string,
+  environment: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "script", name, environment),
+  )
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
+}
+
+export async function revokeAgentScript(
+  client: LocalIpcClient,
+  agentRef: string,
+  name: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "script", name))
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }

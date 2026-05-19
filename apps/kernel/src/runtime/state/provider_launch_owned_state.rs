@@ -181,7 +181,8 @@ impl KernelRuntimeOwnedState {
             return Ok(Vec::new());
         };
         let agent = self.agent_store.get_agent(agent_id)?;
-        if agent.mcp_grants().is_empty() {
+        let mcp_grants = agent.mcp_grants();
+        if mcp_grants.is_empty() {
             return Ok(Vec::new());
         }
         let session = self.session_store.get_session(&request.session_id)?;
@@ -192,8 +193,8 @@ impl KernelRuntimeOwnedState {
         }
         let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
         let mut servers = Vec::new();
-        for grant in agent.mcp_grants() {
-            let Some(server) = registry.get(grant)? else {
+        for grant in mcp_grants {
+            let Some(server) = registry.get(&grant)? else {
                 return Err(DaemonError::LocalTransport {
                     operation: "provider.launch.mcps",
                     message: format!(

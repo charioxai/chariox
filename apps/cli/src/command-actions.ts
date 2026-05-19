@@ -31,6 +31,9 @@ import {
 } from "./remote-machine-command-handlers.js"
 import {
   handleMcpSlashCommand,
+  handleEnvironmentSlashCommand,
+  handleExtensionSlashCommand,
+  handleScriptSlashCommand,
   handleSkillSlashCommand,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
@@ -237,6 +240,24 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleSkillSlashCommand(deps, command)
   }
 
+  const handleEnvCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "env" }>,
+  ): Promise<void> => {
+    await handleEnvironmentSlashCommand(deps, command)
+  }
+
+  const handleScriptCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "script" }>,
+  ): Promise<void> => {
+    await handleScriptSlashCommand(deps, command)
+  }
+
+  const handleExtensionCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "extension" }>,
+  ): Promise<void> => {
+    await handleExtensionSlashCommand(deps, command)
+  }
+
   const handleWorkspaceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
   ): Promise<void> => {
@@ -274,5 +295,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorkflowCommand,
     handleMcpCommand,
     handleSkillCommand,
+    handleEnvCommand,
+    handleScriptCommand,
+    handleExtensionCommand,
   }
 }

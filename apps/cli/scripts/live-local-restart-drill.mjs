@@ -16,7 +16,7 @@ const {
   spawnAgentRequest,
   launchProviderRunRequest,
   installMcpServerRequest,
-  grantAgentCapabilityRequest,
+  grantAgentExtensionRequest,
   installSkillRequest,
   createWorkflowRequest,
   addWorkflowNodeRequest,
@@ -170,8 +170,8 @@ function asArray(value) {
   return Array.isArray(value) ? value : []
 }
 
-function hasGrant(agent, field, name) {
-  return asArray(agent?.[field]).includes(name)
+function hasExtensionGrant(agent, kind, name) {
+  return asArray(agent?.extension_grants).some((grant) => grant.kind === kind && grant.name === name)
 }
 
 async function main() {
@@ -253,8 +253,8 @@ async function main() {
       required: false,
     }))
     await client.send(installSkillRequest(workspace, skillDir))
-    await client.send(grantAgentCapabilityRequest(workspace, agent.id, 'mcp', 'm8_restart_echo'))
-    await client.send(grantAgentCapabilityRequest(workspace, agent.id, 'skill', 'm8-restart-skill'))
+    await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', 'm8_restart_echo'))
+    await client.send(grantAgentExtensionRequest(workspace, agent.id, 'skill', 'm8-restart-skill'))
 
     const launched = oneOfVariant(
       await client.send(launchProviderRunRequest(sessionId, 'dev-stub', 'default', 'm8-restart-profile', 'low', agent.id)),
@@ -337,8 +337,8 @@ async function main() {
     assert(restoredAgent, 'spawned agent did not restore')
     assert(restoredAgent.provider === 'dev-stub', `expected restored provider dev-stub, got ${restoredAgent.provider}`)
     assert(restoredAgent.model === 'workflow-drill-node-1', `expected restored model workflow-drill-node-1, got ${restoredAgent.model}`)
-    assert(hasGrant(restoredAgent, 'mcp_grants', 'm8_restart_echo'), 'MCP grant did not restore')
-    assert(hasGrant(restoredAgent, 'skill_grants', 'm8-restart-skill'), 'skill grant did not restore')
+    assert(hasExtensionGrant(restoredAgent, 'mcp', 'm8_restart_echo'), 'MCP grant did not restore')
+    assert(hasExtensionGrant(restoredAgent, 'skill', 'm8-restart-skill'), 'skill grant did not restore')
     assert(asArray(restored.workflows).some((candidate) => candidate.id === workflow.id), 'workflow definition did not restore')
     const restoredRun = asArray(restored.workflow_runs).find((candidate) => candidate.id === workflowRun.id)
     assert(restoredRun, 'workflow run did not restore')

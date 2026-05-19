@@ -40,6 +40,9 @@ export type SlashCommandSubmitControllerDeps = {
   handleWorkflowCommand: (command: SlashCommand<"workflow">) => Promise<unknown> | unknown
   handleMcpCommand: (command: SlashCommand<"mcp">) => Promise<unknown> | unknown
   handleSkillCommand: (command: SlashCommand<"skill">) => Promise<unknown> | unknown
+  handleEnvCommand: (command: SlashCommand<"env">) => Promise<unknown> | unknown
+  handleScriptCommand: (command: SlashCommand<"script">) => Promise<unknown> | unknown
+  handleExtensionCommand: (command: SlashCommand<"extension">) => Promise<unknown> | unknown
 }
 
 export type SlashCommandSubmitController = {
@@ -127,6 +130,9 @@ export function createSlashCommandSubmitController(
         onWorkflow: (command) => runWithFooterError(deps.handleWorkflowCommand, command),
         onMcp: (command) => runWithFooterError(deps.handleMcpCommand, command),
         onSkill: (command) => runWithFooterError(deps.handleSkillCommand, command),
+        onEnv: (command) => runWithFooterError(deps.handleEnvCommand, command),
+        onScript: (command) => runWithFooterError(deps.handleScriptCommand, command),
+        onExtension: (command) => runWithFooterError(deps.handleExtensionCommand, command),
       })
       if (!handledCommand) {
         return null

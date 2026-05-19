@@ -591,9 +591,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     ) -> Result<String, DaemonError> {
         let agent = self.app.agents.get_agent(agent_id)?;
         let session = self.app.sessions.get_session(session_id)?;
+        let skill_grants = agent.skill_grants();
         crate::skill::format_granted_skill_prompt_context(
             agent.agent_ref(),
-            agent.skill_grants(),
+            &skill_grants,
             session.workspace_id(),
             prompt,
         )

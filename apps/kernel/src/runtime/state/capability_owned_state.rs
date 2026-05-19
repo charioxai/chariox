@@ -1,6 +1,31 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn grant_agent_extension(
+        &self,
+        agent_ref: &str,
+        grant: crate::extension::ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent extension")?;
+        let agent = self.agent_store.grant_extension(agent_ref, grant)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
+    pub(super) fn revoke_agent_extension(
+        &self,
+        agent_ref: &str,
+        kind: crate::extension::ExtensionKind,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent extension")?;
+        let agent = self.agent_store.revoke_extension(agent_ref, kind, name)?;
+        let _ = self.session_snapshot(agent.session_id())?;
+        Ok(agent)
+    }
+
     pub(super) fn grant_agent_mcp(
         &self,
         agent_ref: &str,

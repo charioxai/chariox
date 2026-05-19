@@ -20,7 +20,9 @@ export async function buildClaudeNativeSkillContext(
 ): Promise<string> {
   const session = await sessionState(client, sessionId)
   const agent = session.agents.find((candidate) => candidate.id === agentId)
-  const grants = agent?.skill_grants ?? []
+  const grants = (agent?.extension_grants ?? [])
+    .filter((grant) => grant.kind === "skill")
+    .map((grant) => grant.name)
   if (grants.length === 0) return ""
   const lines = [
     "Available Arroba skills for this agent:",

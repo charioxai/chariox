@@ -18,6 +18,32 @@ pub(super) fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::ArrobaM
     crate::mcp::ArrobaMcpRegistry::new(roots)
 }
 
+pub(super) fn script_registry_for_workspace(
+    workspace: &str,
+) -> crate::script::ArrobaScriptRegistry {
+    let workspace = std::path::PathBuf::from(workspace);
+    let mut roots = vec![crate::script::ArrobaScriptRegistry::project_root(
+        &workspace,
+    )];
+    if let Some(user_root) = crate::script::ArrobaScriptRegistry::user_root() {
+        roots.push(user_root);
+    }
+    crate::script::ArrobaScriptRegistry::new(roots)
+}
+
+pub(super) fn environment_registry_for_workspace(
+    workspace: &str,
+) -> crate::script::ArrobaEnvironmentRegistry {
+    let workspace = std::path::PathBuf::from(workspace);
+    let mut roots = vec![crate::script::ArrobaEnvironmentRegistry::project_root(
+        &workspace,
+    )];
+    if let Some(user_root) = crate::script::ArrobaEnvironmentRegistry::user_root() {
+        roots.push(user_root);
+    }
+    crate::script::ArrobaEnvironmentRegistry::new(roots)
+}
+
 pub(super) fn required_remote_mcps(
     registry: &crate::mcp::ArrobaMcpRegistry,
     grants: &[String],

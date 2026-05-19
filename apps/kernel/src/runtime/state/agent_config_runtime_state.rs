@@ -1,6 +1,69 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn grant_agent_extension(
+        &self,
+        agent_ref: &str,
+        grant: crate::extension::ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        match grant.kind {
+            crate::extension::ExtensionKind::Mcp => {
+                self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
+                    .await
+            }
+            crate::extension::ExtensionKind::Skill => {
+                self.grant_agent_skill(agent_ref, grant.name, caller_user_id)
+                    .await
+            }
+            crate::extension::ExtensionKind::Script => {
+                let agent =
+                    self.owned
+                        .grant_agent_extension(agent_ref, grant.clone(), caller_user_id)?;
+                self.append_agent_durable_event(
+                    "agent.extension_granted",
+                    &agent,
+                    Some(&format!("script:{}", grant.name)),
+                )
+                .await?;
+                Ok(agent)
+            }
+        }
+    }
+
+    pub(crate) async fn revoke_agent_extension(
+        &self,
+        agent_ref: &str,
+        kind: crate::extension::ExtensionKind,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        match kind {
+            crate::extension::ExtensionKind::Mcp => {
+                self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
+            }
+            crate::extension::ExtensionKind::Skill => {
+                self.revoke_agent_skill(agent_ref, name, caller_user_id)
+                    .await
+            }
+            crate::extension::ExtensionKind::Script => {
+                let agent = self.owned.revoke_agent_extension(
+                    agent_ref,
+                    crate::extension::ExtensionKind::Script,
+                    name,
+                    caller_user_id,
+                )?;
+                self.append_agent_durable_event(
+                    "agent.extension_revoked",
+                    &agent,
+                    Some(&format!("script:{name}")),
+                )
+                .await?;
+                Ok(agent)
+            }
+        }
+    }
+
     pub(crate) async fn grant_agent_mcp(
         &self,
         agent_ref: &str,

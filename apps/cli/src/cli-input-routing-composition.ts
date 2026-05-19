@@ -66,6 +66,9 @@ export type CliInputRoutingCompositionDeps = {
   handleWorkflowCommand: AnyFn
   handleMcpCommand: AnyFn
   handleSkillCommand: AnyFn
+  handleEnvCommand: AnyFn
+  handleScriptCommand: AnyFn
+  handleExtensionCommand: AnyFn
   workspaceShellContext: AnyFn
   setWorkspaceShellContext: AnyFn
   workspaceShellEntryCounter: AnyFn
@@ -198,6 +201,9 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleWorkflowCommand: deps.handleWorkflowCommand,
     handleMcpCommand: deps.handleMcpCommand,
     handleSkillCommand: deps.handleSkillCommand,
+    handleEnvCommand: deps.handleEnvCommand,
+    handleScriptCommand: deps.handleScriptCommand,
+    handleExtensionCommand: deps.handleExtensionCommand,
   })
 
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({

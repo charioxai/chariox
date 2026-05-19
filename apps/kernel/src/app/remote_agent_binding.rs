@@ -217,7 +217,8 @@ impl DaemonApp {
         let Some(remote_execution) = agent.remote_execution() else {
             return Ok(());
         };
-        if agent.skill_grants().is_empty() {
+        let skill_grants = agent.skill_grants();
+        if skill_grants.is_empty() {
             return Ok(());
         }
         let session = self.sessions.get_session(agent.session_id())?;
@@ -228,8 +229,7 @@ impl DaemonApp {
             roots.push(user_root);
         }
         let registry = crate::skill::ArrobaSkillRegistry::new(roots);
-        let packages = agent
-            .skill_grants()
+        let packages = skill_grants
             .iter()
             .map(|grant| {
                 registry
@@ -276,7 +276,8 @@ impl DaemonApp {
         let Some(remote_execution) = agent.remote_execution() else {
             return Ok(());
         };
-        if agent.mcp_grants().is_empty() {
+        let mcp_grants = agent.mcp_grants();
+        if mcp_grants.is_empty() {
             return Ok(());
         }
         let session = self.sessions.get_session(agent.session_id())?;
@@ -287,8 +288,7 @@ impl DaemonApp {
             roots.push(user_root);
         }
         let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-        let required_mcps = agent
-            .mcp_grants()
+        let required_mcps = mcp_grants
             .iter()
             .map(|grant| {
                 let config = registry

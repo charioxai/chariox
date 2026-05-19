@@ -13,6 +13,7 @@ mod managed_io_local;
 mod managed_io_permission;
 mod managed_io_remote_dispatch;
 mod remote_capability_sync;
+mod script;
 mod slice;
 mod workflow_authenticated;
 mod workflow_forwarding;
@@ -24,7 +25,8 @@ impl KernelRuntimeState {
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         let mut specs = crate::transport::runtime_tools::managed_io_runtime_tool_specs()
             .into_iter()
-            .chain(crate::transport::runtime_tools::capability_runtime_tool_specs())
+            .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
+            .chain(self.script_runtime_tool_specs_for_auth_token(auth_token))
             .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
             .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
             .collect::<Vec<_>>();
@@ -47,7 +49,7 @@ impl KernelRuntimeState {
             let canonical_tool_name =
                 crate::transport::runtime_tools::canonical_managed_io_tool_name(tool_name)
                     .or_else(|| {
-                        crate::transport::runtime_tools::canonical_capability_tool_name(tool_name)
+                        crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_credential_tool_name(tool_name)
@@ -94,8 +96,8 @@ impl KernelRuntimeState {
             }
             if matches!(
                 canonical_tool_name,
-                crate::transport::runtime_tools::LIST_CAPABILITIES_TOOL
-                    | crate::transport::runtime_tools::REQUEST_CAPABILITY_TOOL
+                crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
+                    | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_capability_runtime_tool_call(
@@ -114,6 +116,16 @@ impl KernelRuntimeState {
                         arguments,
                     )
                     .await;
+            }
+            if let Some(result) = self
+                .try_dispatch_script_runtime_tool_call(
+                    &provider_runs[0],
+                    canonical_tool_name,
+                    arguments.clone(),
+                )
+                .await?
+            {
+                return Ok(result);
             }
             if matches!(
                 canonical_tool_name,

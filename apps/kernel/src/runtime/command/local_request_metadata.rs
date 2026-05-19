@@ -155,12 +155,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CycleAgentFocus(request) => {
             LocalRequestMetadata::new("agent.cycle_focus", Interactive).session(&request.session_id)
         }
-        LocalDaemonRequest::GrantAgentCapability(request) => {
-            LocalRequestMetadata::new("agent.capability.grant", Interactive)
+        LocalDaemonRequest::GrantAgentExtension(request) => {
+            LocalRequestMetadata::new("agent.extension.grant", Interactive)
                 .agent(&request.agent_ref)
         }
-        LocalDaemonRequest::RevokeAgentCapability(request) => {
-            LocalRequestMetadata::new("agent.capability.revoke", Interactive)
+        LocalDaemonRequest::RevokeAgentExtension(request) => {
+            LocalRequestMetadata::new("agent.extension.revoke", Interactive)
                 .agent(&request.agent_ref)
         }
         LocalDaemonRequest::EndSession(request) => {
@@ -249,6 +249,15 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ImportMcpServers(_) => "mcp.import",
         LocalDaemonRequest::GetMcpServer(_) => "mcp.get",
         LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
+        LocalDaemonRequest::RegisterEnvironment(_) => "env.register",
+        LocalDaemonRequest::RemoveEnvironment(_) => "env.remove",
+        LocalDaemonRequest::GetEnvironment(_) => "env.get",
+        LocalDaemonRequest::ListEnvironments(_) => "env.list",
+        LocalDaemonRequest::ValidateScript(_) => "script.validate",
+        LocalDaemonRequest::RegisterScript(_) => "script.register",
+        LocalDaemonRequest::RemoveScript(_) => "script.remove",
+        LocalDaemonRequest::GetScript(_) => "script.get",
+        LocalDaemonRequest::ListScripts(_) => "script.list",
         LocalDaemonRequest::InstallSkill(_) => "skill.install",
         LocalDaemonRequest::UpdateSkill(_) => "skill.update",
         LocalDaemonRequest::UninstallSkill(_) => "skill.uninstall",
@@ -350,8 +359,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
-        LocalDaemonRequest::GrantAgentCapability(_) => "agent.capability.grant",
-        LocalDaemonRequest::RevokeAgentCapability(_) => "agent.capability.revoke",
+        LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
+        LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",

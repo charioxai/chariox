@@ -338,7 +338,7 @@ async function main() {
       const nativeLog = await readFile(log.native, "utf8").catch(() => "")
       const leakedWorkflowInjection = [
         hiddenMarker,
-        "list_capabilities",
+        "list_extensions",
         "You are an agent participating in an Arroba workflow turn",
         "System node-level prompt:",
         "Node instruction reference (daemon-managed)",

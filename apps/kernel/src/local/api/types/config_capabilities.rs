@@ -82,6 +82,64 @@ pub struct GetSkillRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterEnvironmentRequest {
+    pub workspace_id: Option<String>,
+    pub config: ArrobaEnvironmentConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveEnvironmentRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEnvironmentRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEnvironmentsRequest {
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateScriptRequest {
+    pub workspace_id: Option<String>,
+    pub source_path: PathBuf,
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterScriptRequest {
+    pub workspace_id: Option<String>,
+    pub source_path: PathBuf,
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveScriptRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetScriptRequest {
+    pub workspace_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListScriptsRequest {
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallSkillRequest {
     pub workspace_id: Option<String>,
     pub source_path: PathBuf,
@@ -108,23 +166,36 @@ pub struct ImportSkillsRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentGrantKind {
+pub enum ExtensionKind {
     Mcp,
     Skill,
+    Script,
+}
+
+impl From<ExtensionKind> for crate::extension::ExtensionKind {
+    fn from(value: ExtensionKind) -> Self {
+        match value {
+            ExtensionKind::Mcp => Self::Mcp,
+            ExtensionKind::Skill => Self::Skill,
+            ExtensionKind::Script => Self::Script,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAgentCapabilityRequest {
+pub struct GrantAgentExtensionRequest {
     pub workspace_id: Option<String>,
     pub agent_ref: String,
-    pub kind: AgentGrantKind,
+    pub kind: ExtensionKind,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RevokeAgentCapabilityRequest {
+pub struct RevokeAgentExtensionRequest {
     pub agent_ref: String,
-    pub kind: AgentGrantKind,
+    pub kind: ExtensionKind,
     pub name: String,
 }
 

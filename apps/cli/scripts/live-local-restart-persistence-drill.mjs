@@ -94,6 +94,10 @@ function unwrap(resp, key) {
   return resp?.[key] ?? resp
 }
 
+function hasExtensionGrant(agent, kind, name) {
+  return Array.isArray(agent?.extension_grants) && agent.extension_grants.some((grant) => grant.kind === kind && grant.name === name)
+}
+
 async function waitForDaemon(LocalIpcClient, kernelUrl) {
   const deadline = Date.now() + 20_000
   let lastError = null
@@ -155,7 +159,7 @@ async function main() {
     searchHistoryRequest,
     installMcpServerRequest,
     installSkillRequest,
-    grantAgentCapabilityRequest,
+    grantAgentExtensionRequest,
     listAgentsRequest,
     createWorkflowRequest,
     addWorkflowNodeRequest,
@@ -251,10 +255,10 @@ async function main() {
       },
     }))
     await client.send(installSkillRequest(workspace, skillDir))
-    const grantedMcp = unwrap(await client.send(grantAgentCapabilityRequest(workspace, workerAgent.id, 'mcp', 'm8_restart_echo')), 'AgentCapabilityGranted').agent
-    const grantedSkill = unwrap(await client.send(grantAgentCapabilityRequest(workspace, workerAgent.id, 'skill', 'm8-restart-skill')), 'AgentCapabilityGranted').agent
-    assert.deepEqual(grantedMcp.mcp_grants, ['m8_restart_echo'])
-    assert.deepEqual(grantedSkill.skill_grants, ['m8-restart-skill'])
+    const grantedMcp = unwrap(await client.send(grantAgentExtensionRequest(workspace, workerAgent.id, 'mcp', 'm8_restart_echo')), 'AgentExtensionGranted').agent
+    const grantedSkill = unwrap(await client.send(grantAgentExtensionRequest(workspace, workerAgent.id, 'skill', 'm8-restart-skill')), 'AgentExtensionGranted').agent
+    assert.equal(hasExtensionGrant(grantedMcp, 'mcp', 'm8_restart_echo'), true)
+    assert.equal(hasExtensionGrant(grantedSkill, 'skill', 'm8-restart-skill'), true)
 
     const providerRun = unwrap(
       await client.send(launchProviderRunRequest(sessionId, 'dev-stub', 'default', 'm8-restart-profile-model', 'low', workerAgent.id)),
@@ -327,8 +331,8 @@ async function main() {
     assert.ok(restoredWorker, 'persisted-worker agent should restore')
     assert.equal(restoredWorker.provider, 'dev-stub')
     assert.equal(restoredWorker.model, 'm8-restart-profile-model')
-    assert.deepEqual(restoredWorker.mcp_grants, ['m8_restart_echo'])
-    assert.deepEqual(restoredWorker.skill_grants, ['m8-restart-skill'])
+    assert.equal(hasExtensionGrant(restoredWorker, 'mcp', 'm8_restart_echo'), true)
+    assert.equal(hasExtensionGrant(restoredWorker, 'skill', 'm8-restart-skill'), true)
 
     const history = unwrap(await client.send(getSessionHistoryRequest(sessionId, 10, 20_000, null, workerAgent.id)), 'SessionHistory')
     assert.equal(

@@ -25,7 +25,7 @@ Current implementation status:
 - A small scale matrix is validated for Codex and OpenCode across 1-2 agents and 1-3 MCPs per agent.
 - Overlapping-but-not-identical grants are validated for Codex and OpenCode with `agent-a: fake-alpha,fake-beta` and `agent-b: fake-beta,fake-gamma`.
 - Production integration has started: Arroba now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and streamable HTTP/HTTPS MCP backing relay tests, including chunked responses.
-- Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_capability`, provider conversation relaunch/resume, automatic continuation, and managed-I/O marker writes.
+- Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_extension`, provider conversation relaunch/resume, automatic continuation, and managed-I/O marker writes.
 - Remaining production work is remote/workflow MCP drills after production proxy integration.
 
 ## Why This Exists
@@ -186,7 +186,7 @@ Simulate:
 
 ```text
 agent prompt: "If browser/playwright is needed, request it."
-agent calls Arroba-like request_capability(kind=mcp, name=fake-browser)
+agent calls Arroba-like request_extension(kind=mcp, name=fake-browser)
 harness grants MCP
 harness restarts/resumes provider runtime
 harness sends: "MCP is now loaded. Continue."

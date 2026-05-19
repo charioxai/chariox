@@ -211,6 +211,8 @@ impl DaemonApp {
             | "agent.mcp_revoked"
             | "agent.skill_granted"
             | "agent.skill_revoked"
+            | "agent.extension_granted"
+            | "agent.extension_revoked"
             | "agent.runtime_profile_updated"
             | "agent.updated" => {
                 let agent: AgentInstance = decode_durable_payload_field(

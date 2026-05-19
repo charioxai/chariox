@@ -30,10 +30,10 @@ pub const DELETE_ARTIFACT_TOOL_ALIAS: &str = "delete_artifact";
 #[allow(dead_code)]
 pub const MOVE_ARTIFACT_TOOL: &str = "arroba.move_artifact";
 pub const MOVE_ARTIFACT_TOOL_ALIAS: &str = "move_artifact";
-pub const LIST_CAPABILITIES_TOOL: &str = "arroba.list_capabilities";
-pub const LIST_CAPABILITIES_TOOL_ALIAS: &str = "list_capabilities";
-pub const REQUEST_CAPABILITY_TOOL: &str = "arroba.request_capability";
-pub const REQUEST_CAPABILITY_TOOL_ALIAS: &str = "request_capability";
+pub const LIST_EXTENSIONS_TOOL: &str = "arroba.list_extensions";
+pub const LIST_EXTENSIONS_TOOL_ALIAS: &str = "list_extensions";
+pub const REQUEST_EXTENSION_TOOL: &str = "arroba.request_extension";
+pub const REQUEST_EXTENSION_TOOL_ALIAS: &str = "request_extension";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "arroba.list_credential_handles";
 pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_credential";
@@ -175,19 +175,21 @@ pub struct ManagedMoveArtifactArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListCapabilitiesArgs {
+pub struct ListExtensionsArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestCapabilityArgs {
+pub struct RequestExtensionArgs {
     pub kind: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_body: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,36 +327,37 @@ impl ManagedMoveArtifactArgs {
     }
 }
 
-pub fn capability_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
-            name: LIST_CAPABILITIES_TOOL.to_string(),
-            description: "List Arroba-managed MCPs and skills available in this workspace, including whether they are already granted to the current agent. Use this before requesting a capability.".to_string(),
+            name: LIST_EXTENSIONS_TOOL.to_string(),
+            description: "List Arroba-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "all"]
+                        "enum": ["mcp", "skill", "script", "all"]
                     }
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
-            name: REQUEST_CAPABILITY_TOOL.to_string(),
-            description: "Request access to an Arroba-managed MCP or skill for the current agent. V1 grants valid requests automatically. MCP grants activate through an Arroba-managed provider conversation reload; agent-requested MCPs resume via an automatic continuation prompt after the current turn. Skill requests can return the full SKILL.md body so the current turn can use the skill immediately.".to_string(),
+            name: REQUEST_EXTENSION_TOOL.to_string(),
+            description: "Request access to an Arroba-managed MCP, skill, or script for the current agent. V1 grants valid MCP and skill requests automatically. Script requests require an existing environment grant and are usually granted by the user.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill"]
+                        "enum": ["mcp", "skill", "script"]
                     },
                     "name": {"type": "string"},
                     "reason": {"type": "string"},
-                    "return_body": {"type": "boolean"}
+                    "return_body": {"type": "boolean"},
+                    "environment": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
@@ -362,7 +365,7 @@ pub fn capability_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ];
     let aliases = canonical
         .iter()
-        .filter_map(capability_alias_spec)
+        .filter_map(extension_alias_spec)
         .collect::<Vec<_>>();
     let mut specs = canonical;
     specs.extend(aliases);
@@ -517,10 +520,10 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
     }
 }
 
-fn capability_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+fn extension_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     let alias = match spec.name.as_str() {
-        LIST_CAPABILITIES_TOOL => LIST_CAPABILITIES_TOOL_ALIAS,
-        REQUEST_CAPABILITY_TOOL => REQUEST_CAPABILITY_TOOL_ALIAS,
+        LIST_EXTENSIONS_TOOL => LIST_EXTENSIONS_TOOL_ALIAS,
+        REQUEST_EXTENSION_TOOL => REQUEST_EXTENSION_TOOL_ALIAS,
         _ => return None,
     };
     let mut spec = spec.clone();
@@ -528,23 +531,23 @@ fn capability_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     spec.description = format!(
         "{} Alias for `{}`.",
         spec.description,
-        canonical_capability_tool_name(alias).unwrap_or(alias)
+        canonical_extension_tool_name(alias).unwrap_or(alias)
     );
     Some(spec)
 }
 
-pub fn canonical_capability_tool_name(tool_name: &str) -> Option<&'static str> {
+pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        LIST_CAPABILITIES_TOOL
-        | LIST_CAPABILITIES_TOOL_ALIAS
-        | "arroba_list_capabilities"
-        | "mcp__arroba__list_capabilities"
-        | "mcp__arroba__arroba_list_capabilities" => Some(LIST_CAPABILITIES_TOOL),
-        REQUEST_CAPABILITY_TOOL
-        | REQUEST_CAPABILITY_TOOL_ALIAS
-        | "arroba_request_capability"
-        | "mcp__arroba__request_capability"
-        | "mcp__arroba__arroba_request_capability" => Some(REQUEST_CAPABILITY_TOOL),
+        LIST_EXTENSIONS_TOOL
+        | LIST_EXTENSIONS_TOOL_ALIAS
+        | "arroba_list_extensions"
+        | "mcp__arroba__list_extensions"
+        | "mcp__arroba__arroba_list_extensions" => Some(LIST_EXTENSIONS_TOOL),
+        REQUEST_EXTENSION_TOOL
+        | REQUEST_EXTENSION_TOOL_ALIAS
+        | "arroba_request_extension"
+        | "mcp__arroba__request_extension"
+        | "mcp__arroba__arroba_request_extension" => Some(REQUEST_EXTENSION_TOOL),
         _ => None,
     }
 }
@@ -1062,18 +1065,16 @@ mod managed_io_tests {
     }
 
     #[test]
-    fn capability_specs_expose_discovery_and_request_tools() {
-        let specs = capability_runtime_tool_specs();
-        assert!(specs.iter().any(|spec| spec.name == LIST_CAPABILITIES_TOOL));
+    fn extension_specs_expose_discovery_and_request_tools() {
+        let specs = extension_runtime_tool_specs();
+        assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
         assert!(specs
             .iter()
-            .any(|spec| spec.name == LIST_CAPABILITIES_TOOL_ALIAS));
+            .any(|spec| spec.name == LIST_EXTENSIONS_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
         assert!(specs
             .iter()
-            .any(|spec| spec.name == REQUEST_CAPABILITY_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REQUEST_CAPABILITY_TOOL_ALIAS));
+            .any(|spec| spec.name == REQUEST_EXTENSION_TOOL_ALIAS));
     }
 
     #[test]
@@ -1097,16 +1098,16 @@ mod managed_io_tests {
     }
 
     #[test]
-    fn canonical_capability_tool_name_accepts_provider_aliases() {
+    fn canonical_extension_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_capability_tool_name("mcp__arroba__list_capabilities"),
-            Some(LIST_CAPABILITIES_TOOL)
+            canonical_extension_tool_name("mcp__arroba__list_extensions"),
+            Some(LIST_EXTENSIONS_TOOL)
         );
         assert_eq!(
-            canonical_capability_tool_name("mcp__arroba__arroba_request_capability"),
-            Some(REQUEST_CAPABILITY_TOOL)
+            canonical_extension_tool_name("mcp__arroba__arroba_request_extension"),
+            Some(REQUEST_EXTENSION_TOOL)
         );
-        assert_eq!(canonical_capability_tool_name("unknown"), None);
+        assert_eq!(canonical_extension_tool_name("unknown"), None);
     }
 
     #[test]

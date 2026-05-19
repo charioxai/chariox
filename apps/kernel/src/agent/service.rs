@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
+use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
@@ -563,6 +564,14 @@ impl AgentService {
         agent_ref: &str,
         name: String,
     ) -> Result<AgentInstance, DaemonError> {
+        self.grant_extension(agent_ref, ExtensionGrant::new(ExtensionKind::Mcp, name))
+    }
+
+    pub fn grant_extension(
+        &mut self,
+        agent_ref: &str,
+        grant: ExtensionGrant,
+    ) -> Result<AgentInstance, DaemonError> {
         let agent_id = self.resolve_agent_id(agent_ref)?;
         let agent = self
             .store
@@ -570,7 +579,7 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.grant_mcp(name);
+        agent.grant_extension(grant);
         Ok(agent.clone())
     }
 
@@ -586,7 +595,7 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.revoke_mcp(name);
+        agent.revoke_extension(ExtensionKind::Mcp, name);
         Ok(agent.clone())
     }
 
@@ -595,15 +604,7 @@ impl AgentService {
         agent_ref: &str,
         name: String,
     ) -> Result<AgentInstance, DaemonError> {
-        let agent_id = self.resolve_agent_id(agent_ref)?;
-        let agent = self
-            .store
-            .get_mut(&agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_ref.to_string(),
-            })?;
-        agent.grant_skill(name);
-        Ok(agent.clone())
+        self.grant_extension(agent_ref, ExtensionGrant::new(ExtensionKind::Skill, name))
     }
 
     pub fn revoke_skill(
@@ -618,7 +619,24 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.revoke_skill(name);
+        agent.revoke_extension(ExtensionKind::Skill, name);
+        Ok(agent.clone())
+    }
+
+    pub fn revoke_extension(
+        &mut self,
+        agent_ref: &str,
+        kind: ExtensionKind,
+        name: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        let agent = self
+            .store
+            .get_mut(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        agent.revoke_extension(kind, name);
         Ok(agent.clone())
     }
 
@@ -890,6 +908,14 @@ impl AgentServiceStore {
         self.write().grant_mcp(agent_ref, name)
     }
 
+    pub fn grant_extension(
+        &self,
+        agent_ref: &str,
+        grant: ExtensionGrant,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().grant_extension(agent_ref, grant)
+    }
+
     pub fn revoke_mcp(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
         self.write().revoke_mcp(agent_ref, name)
     }
@@ -900,6 +926,15 @@ impl AgentServiceStore {
 
     pub fn revoke_skill(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
         self.write().revoke_skill(agent_ref, name)
+    }
+
+    pub fn revoke_extension(
+        &self,
+        agent_ref: &str,
+        kind: ExtensionKind,
+        name: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().revoke_extension(agent_ref, kind, name)
     }
 
     pub fn remove_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {

@@ -2,10 +2,12 @@ use std::path::PathBuf;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetMcpServerRequest, GetSkillRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, ListMcpServersRequest, ListSkillsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, UninstallMcpServerRequest, UninstallSkillRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest,
+    GetEnvironmentRequest, GetMcpServerRequest, GetScriptRequest, GetSkillRequest,
+    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest, ListSkillsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RegisterEnvironmentRequest, RegisterScriptRequest,
+    RemoveEnvironmentRequest, RemoveScriptRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest, ValidateScriptRequest,
 };
 
 pub(crate) fn execute_capability_registry_request(
@@ -24,6 +26,19 @@ pub(crate) fn execute_capability_registry_request(
         }
         LocalDaemonRequest::GetMcpServer(request) => execute_get_mcp_server_request(request),
         LocalDaemonRequest::ListMcpServers(request) => execute_list_mcp_servers_request(request),
+        LocalDaemonRequest::RegisterEnvironment(request) => {
+            execute_register_environment_request(request)
+        }
+        LocalDaemonRequest::RemoveEnvironment(request) => {
+            execute_remove_environment_request(request)
+        }
+        LocalDaemonRequest::GetEnvironment(request) => execute_get_environment_request(request),
+        LocalDaemonRequest::ListEnvironments(request) => execute_list_environments_request(request),
+        LocalDaemonRequest::ValidateScript(request) => execute_validate_script_request(request),
+        LocalDaemonRequest::RegisterScript(request) => execute_register_script_request(request),
+        LocalDaemonRequest::RemoveScript(request) => execute_remove_script_request(request),
+        LocalDaemonRequest::GetScript(request) => execute_get_script_request(request),
+        LocalDaemonRequest::ListScripts(request) => execute_list_scripts_request(request),
         LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
         LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
         LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
@@ -115,6 +130,118 @@ pub(crate) fn execute_list_mcp_servers_request(
         crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     Ok(LocalDaemonResponse::McpServersListed {
         mcps: registry.list()?,
+    })
+}
+
+pub(crate) fn execute_register_environment_request(
+    request: RegisterEnvironmentRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let path = registry.install(&request.config)?;
+    Ok(LocalDaemonResponse::EnvironmentRegistered {
+        environment: request.config,
+        path,
+    })
+}
+
+pub(crate) fn execute_remove_environment_request(
+    request: RemoveEnvironmentRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let path = registry.uninstall(&request.name)?;
+    Ok(LocalDaemonResponse::EnvironmentRemoved {
+        name: request.name,
+        path,
+    })
+}
+
+pub(crate) fn execute_get_environment_request(
+    request: GetEnvironmentRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let Some(environment) = registry.get(&request.name)? else {
+        return Err(DaemonError::LocalTransport {
+            operation: "env.get",
+            message: format!("environment `{}` was not found", request.name),
+        });
+    };
+    Ok(LocalDaemonResponse::Environment { environment })
+}
+
+pub(crate) fn execute_list_environments_request(
+    request: ListEnvironmentsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    Ok(LocalDaemonResponse::EnvironmentsListed {
+        environments: registry.list()?,
+    })
+}
+
+pub(crate) fn execute_validate_script_request(
+    request: ValidateScriptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (script_registry, env, source_path) = script_validation_context(
+        request.workspace_id.as_deref(),
+        &request.environment,
+        request.source_path,
+    )?;
+    let script = script_registry.validate_script(&source_path, request.name.as_deref(), &env)?;
+    Ok(LocalDaemonResponse::ScriptValidated { script })
+}
+
+pub(crate) fn execute_register_script_request(
+    request: RegisterScriptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (script_registry, env, source_path) = script_validation_context(
+        request.workspace_id.as_deref(),
+        &request.environment,
+        request.source_path,
+    )?;
+    let (script, path) = script_registry.install(&source_path, request.name.as_deref(), &env)?;
+    Ok(LocalDaemonResponse::ScriptRegistered { script, path })
+}
+
+pub(crate) fn execute_remove_script_request(
+    request: RemoveScriptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let (script, path) = registry.uninstall(&request.name)?;
+    Ok(LocalDaemonResponse::ScriptRemoved { script, path })
+}
+
+pub(crate) fn execute_get_script_request(
+    request: GetScriptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let Some(script) = registry.get(&request.name)? else {
+        return Err(DaemonError::LocalTransport {
+            operation: "script.get",
+            message: format!("script `{}` was not found", request.name),
+        });
+    };
+    Ok(LocalDaemonResponse::Script { script })
+}
+
+pub(crate) fn execute_list_scripts_request(
+    request: ListScriptsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    Ok(LocalDaemonResponse::ScriptsListed {
+        scripts: registry.list()?,
     })
 }
 
@@ -214,7 +341,7 @@ pub(crate) fn ensure_mcp_exists(workspace_id: Option<&str>, name: &str) -> Resul
     let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
-            operation: "agent.capability.grant",
+            operation: "agent.extension.grant",
             message: format!("MCP `{name}` is not installed"),
         });
     }
@@ -228,8 +355,37 @@ pub(crate) fn ensure_skill_exists(
     let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
-            operation: "agent.capability.grant",
+            operation: "agent.extension.grant",
             message: format!("skill `{name}` is not installed"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_script_exists(
+    workspace_id: Option<&str>,
+    name: &str,
+) -> Result<(), DaemonError> {
+    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(workspace_id)?);
+    if registry.get(name)?.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "agent.extension.grant",
+            message: format!("script `{name}` is not registered"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_environment_exists(
+    workspace_id: Option<&str>,
+    name: &str,
+) -> Result<(), DaemonError> {
+    let registry =
+        crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
+    if registry.get(name)?.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "agent.extension.grant",
+            message: format!("environment `{name}` is not registered"),
         });
     }
     Ok(())
@@ -242,6 +398,63 @@ fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, Daemon
         roots.push(root);
     }
     Ok(roots)
+}
+
+pub(crate) fn script_registry_roots(
+    workspace_id: Option<&str>,
+) -> Result<Vec<PathBuf>, DaemonError> {
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = vec![crate::script::ArrobaScriptRegistry::project_root(
+        &workspace,
+    )];
+    if let Some(root) = crate::script::ArrobaScriptRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(roots)
+}
+
+pub(crate) fn environment_registry_roots(
+    workspace_id: Option<&str>,
+) -> Result<Vec<PathBuf>, DaemonError> {
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = vec![crate::script::ArrobaEnvironmentRegistry::project_root(
+        &workspace,
+    )];
+    if let Some(root) = crate::script::ArrobaEnvironmentRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(roots)
+}
+
+fn script_validation_context(
+    workspace_id: Option<&str>,
+    environment: &str,
+    source_path: PathBuf,
+) -> Result<
+    (
+        crate::script::ArrobaScriptRegistry,
+        crate::script::ArrobaEnvironmentConfig,
+        PathBuf,
+    ),
+    DaemonError,
+> {
+    let workspace = registry_workspace_root(workspace_id)?;
+    let source_path = if source_path.is_absolute() {
+        source_path
+    } else {
+        workspace.join(source_path)
+    };
+    let env_registry =
+        crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
+    let env = env_registry
+        .get(environment)?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "script.validate",
+            message: format!("environment `{environment}` is not registered"),
+        })?;
+    let script_registry =
+        crate::script::ArrobaScriptRegistry::new(script_registry_roots(workspace_id)?);
+    Ok((script_registry, env, source_path))
 }
 
 fn skill_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {

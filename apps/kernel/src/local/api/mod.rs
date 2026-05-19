@@ -17,6 +17,7 @@ use crate::provider::{
     ProviderProcessInfo, RuntimeProviderRun,
 };
 use crate::runtime::projection::DaemonHealthProjection;
+use crate::script::{ArrobaEnvironmentConfig, ArrobaScriptMetadata};
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, RuntimeSession, SessionConfigState,

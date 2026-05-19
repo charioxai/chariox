@@ -350,18 +350,23 @@ test("executeShellCommand imports MCP servers and skills", async () => {
   ])
 })
 
-test("executeShellCommand grants, revokes, and lists agent capabilities", async () => {
-  const agent = makeAgent({ mcp_grants: ["playwright"], skill_grants: ["qa"] })
+test("executeShellCommand grants, revokes, and lists agent extensions", async () => {
+  const agent = makeAgent({
+    extension_grants: [
+      { kind: "mcp", name: "playwright" },
+      { kind: "skill", name: "qa" },
+    ],
+  })
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
-        if ("GrantAgentCapability" in request) {
-          return { AgentCapabilityGranted: { agent } }
+        if ("GrantAgentExtension" in request) {
+          return { AgentExtensionGranted: { agent } }
         }
-        if ("RevokeAgentCapability" in request) {
-          return { AgentCapabilityRevoked: { agent } }
+        if ("RevokeAgentExtension" in request) {
+          return { AgentExtensionRevoked: { agent } }
         }
         return { AgentsListed: { agents: [agent] } }
       },
@@ -385,9 +390,58 @@ test("executeShellCommand grants, revokes, and lists agent capabilities", async 
   assert.match(grantsResult.message ?? "", /agent-1 MCP grants/)
   assert.match(grantsResult.message ?? "", /playwright/)
   assert.deepEqual(requests, [
-    { GrantAgentCapability: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
-    { RevokeAgentCapability: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
     { ListAgents: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand manages script environments and script extensions", async () => {
+  const environment = { name: "py", runtime: { type: "python", python: "/usr/bin/python3" } }
+  const script = {
+    name: "lookup",
+    runtime: "python",
+    path: "/repo/lookup.py",
+    description: "Lookup a record.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    definition_hash: "hash",
+  }
+  const agent = makeAgent({ extension_grants: [{ kind: "script", name: "lookup", environment: "py" }] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("RegisterEnvironment" in request) return { EnvironmentRegistered: { environment } }
+        if ("RegisterScript" in request) return { ScriptRegistered: { script } }
+        if ("ValidateScript" in request) return { ScriptValidated: { script } }
+        if ("GrantAgentExtension" in request) return { AgentExtensionGranted: { agent } }
+        if ("ListScripts" in request) return { ScriptsListed: { scripts: [script] } }
+        return { EnvironmentsListed: { environments: [environment] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const envResult = await executeShellCommand(parseShellCommand("env register py --python /usr/bin/python3"), context, { client: fake.client })
+  const validateResult = await executeShellCommand(parseShellCommand("script validate /repo/lookup.py --env py --name lookup"), context, { client: fake.client })
+  const registerResult = await executeShellCommand(parseShellCommand("script register /repo/lookup.py --env py --name lookup"), context, { client: fake.client })
+  const grantResult = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py"), context, { client: fake.client })
+  const listScriptsResult = await executeShellCommand(parseShellCommand("script list"), context, { client: fake.client })
+  const listEnvsResult = await executeShellCommand(parseShellCommand("env list"), context, { client: fake.client })
+
+  assert.equal(envResult.ok, true)
+  assert.equal(validateResult.ok, true)
+  assert.equal(registerResult.ok, true)
+  assert.equal(grantResult.ok, true)
+  assert.match(listScriptsResult.message ?? "", /lookup \[python\]/)
+  assert.match(listEnvsResult.message ?? "", /py \[python\]/)
+  assert.deepEqual(requests, [
+    { RegisterEnvironment: { workspace_id: "/repo", config: environment } },
+    { ValidateScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
+    { RegisterScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
+    { ListScripts: { workspace_id: "/repo" } },
+    { ListEnvironments: { workspace_id: "/repo" } },
   ])
 })
 

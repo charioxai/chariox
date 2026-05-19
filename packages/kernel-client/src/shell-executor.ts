@@ -2,7 +2,10 @@ import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./she
 import { executeShellLocalCommand } from "./shell-local-command.js"
 import { executeAgentCommand } from "./shell-agent-command.js"
 import {
+  executeEnvironmentCommand,
+  executeExtensionCommand,
   executeMcpCommand,
+  executeScriptCommand,
   executeSkillCommand,
 } from "./shell-capability-command.js"
 import { executeHistoryCommand } from "./shell-history-command.js"
@@ -82,7 +85,15 @@ export async function executeShellCommand(
     case "mcp":
       return executeMcpCommand(parsed, context, deps)
     case "skill":
+    case "skills":
       return executeSkillCommand(parsed, context, deps)
+    case "env":
+    case "environment":
+      return executeEnvironmentCommand(parsed, context, deps)
+    case "script":
+      return executeScriptCommand(parsed, context, deps)
+    case "extension":
+      return executeExtensionCommand(parsed, context, deps)
     case "workflow":
       return executeWorkflowCommand(parsed, context, deps)
     case "workspace":

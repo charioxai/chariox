@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
@@ -124,9 +125,7 @@ pub struct AgentInstance {
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    mcp_grants: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    skill_grants: Vec<String>,
+    extension_grants: Vec<ExtensionGrant>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,8 +173,7 @@ impl AgentInstance {
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
-            mcp_grants: Vec::new(),
-            skill_grants: Vec::new(),
+            extension_grants: Vec::new(),
             substitutes: Vec::new(),
             active_substitute_index: None,
             last_substitution: None,
@@ -266,12 +264,38 @@ impl AgentInstance {
         &self.provider_resume_state
     }
 
-    pub fn mcp_grants(&self) -> &[String] {
-        &self.mcp_grants
+    pub fn extension_grants(&self) -> &[ExtensionGrant] {
+        &self.extension_grants
     }
 
-    pub fn skill_grants(&self) -> &[String] {
-        &self.skill_grants
+    pub fn granted_extension_names(&self, kind: ExtensionKind) -> Vec<String> {
+        self.extension_grants
+            .iter()
+            .filter(|grant| grant.kind == kind)
+            .map(|grant| grant.name.clone())
+            .collect()
+    }
+
+    pub fn mcp_grants(&self) -> Vec<String> {
+        self.granted_extension_names(ExtensionKind::Mcp)
+    }
+
+    pub fn skill_grants(&self) -> Vec<String> {
+        self.granted_extension_names(ExtensionKind::Skill)
+    }
+
+    pub fn script_grants(&self) -> Vec<ExtensionGrant> {
+        self.extension_grants
+            .iter()
+            .filter(|grant| grant.kind == ExtensionKind::Script)
+            .cloned()
+            .collect()
+    }
+
+    pub fn has_extension_grant(&self, kind: ExtensionKind, name: &str) -> bool {
+        self.extension_grants
+            .iter()
+            .any(|grant| grant.kind == kind && grant.name == name)
     }
 
     pub fn substitutes(&self) -> &[AgentSubstituteProfile] {
@@ -382,28 +406,40 @@ impl AgentInstance {
         self.remote_execution = remote_execution;
     }
 
+    pub fn grant_extension(&mut self, grant: ExtensionGrant) {
+        self.extension_grants
+            .retain(|existing| !(existing.kind == grant.kind && existing.name == grant.name));
+        self.extension_grants.push(grant);
+        self.extension_grants.sort();
+    }
+
+    pub fn revoke_extension(&mut self, kind: ExtensionKind, name: &str) {
+        self.extension_grants
+            .retain(|grant| !(grant.kind == kind && grant.name == name));
+    }
+
     pub fn grant_mcp(&mut self, name: impl Into<String>) {
-        let name = name.into();
-        if !self.mcp_grants.contains(&name) {
-            self.mcp_grants.push(name);
-            self.mcp_grants.sort();
-        }
+        self.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, name));
     }
 
     pub fn revoke_mcp(&mut self, name: &str) {
-        self.mcp_grants.retain(|grant| grant != name);
+        self.revoke_extension(ExtensionKind::Mcp, name);
     }
 
     pub fn grant_skill(&mut self, name: impl Into<String>) {
-        let name = name.into();
-        if !self.skill_grants.contains(&name) {
-            self.skill_grants.push(name);
-            self.skill_grants.sort();
-        }
+        self.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, name));
     }
 
     pub fn revoke_skill(&mut self, name: &str) {
-        self.skill_grants.retain(|grant| grant != name);
+        self.revoke_extension(ExtensionKind::Skill, name);
+    }
+
+    pub fn grant_script(&mut self, name: impl Into<String>, environment: impl Into<String>) {
+        self.grant_extension(ExtensionGrant::script(name, environment));
+    }
+
+    pub fn revoke_script(&mut self, name: &str) {
+        self.revoke_extension(ExtensionKind::Script, name);
     }
 
     pub fn add_substitute(&mut self, profile: AgentSubstituteProfile) {

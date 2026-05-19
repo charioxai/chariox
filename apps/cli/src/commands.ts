@@ -28,6 +28,9 @@ export type ParsedSlashCommand =
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "mcp"; raw: string; args: string[] }
   | { kind: "skill"; raw: string; args: string[] }
+  | { kind: "env"; raw: string; args: string[] }
+  | { kind: "script"; raw: string; args: string[] }
+  | { kind: "extension"; raw: string; args: string[] }
 
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
@@ -51,6 +54,9 @@ export type SlashCommandHandlers = {
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
+  onEnv: (command: Extract<ParsedSlashCommand, { kind: "env" }>) => Promise<unknown> | unknown
+  onScript: (command: Extract<ParsedSlashCommand, { kind: "script" }>) => Promise<unknown> | unknown
+  onExtension: (command: Extract<ParsedSlashCommand, { kind: "extension" }>) => Promise<unknown> | unknown
 }
 
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
@@ -193,6 +199,27 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/skills?\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed.startsWith("/env") || trimmed.startsWith("/environment")) {
+    return {
+      kind: "env",
+      raw: trimmed,
+      args: trimmed.replace(/^\/(?:env|environment)\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/script")) {
+    return {
+      kind: "script",
+      raw: trimmed,
+      args: trimmed.replace(/^\/script\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/extension")) {
+    return {
+      kind: "extension",
+      raw: trimmed,
+      args: trimmed.replace(/^\/extension\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   return null
 }
 
@@ -268,6 +295,15 @@ export async function executeSlashCommand(
     case "skill":
       await handlers.onSkill(command)
       break
+    case "env":
+      await handlers.onEnv(command)
+      break
+    case "script":
+      await handlers.onScript(command)
+      break
+    case "extension":
+      await handlers.onExtension(command)
+      break
   }
   return command
 }
@@ -290,6 +326,9 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "workflow":
     case "mcp":
     case "skill":
+    case "env":
+    case "script":
+    case "extension":
       return true
     default:
       return false

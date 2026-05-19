@@ -90,15 +90,27 @@ export function importSkillsRequest(workspaceId: string | null, provider: string
   }
 }
 
-export function grantAgentCapabilityRequest(
+export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill",
+  kind: "mcp" | "skill" | "script",
   name: string,
+  environment?: string | null,
 ) {
   return {
-    GrantAgentCapability: {
+    GrantAgentExtension: {
       workspace_id: workspaceId ?? null,
+      agent_ref: agentRef,
+      kind,
+      name,
+      ...(environment ? { environment } : {}),
+    },
+  }
+}
+
+export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script", name: string) {
+  return {
+    RevokeAgentExtension: {
       agent_ref: agentRef,
       kind,
       name,
@@ -106,12 +118,85 @@ export function grantAgentCapabilityRequest(
   }
 }
 
-export function revokeAgentCapabilityRequest(agentRef: string, kind: "mcp" | "skill", name: string) {
+export function registerEnvironmentRequest(workspaceId: string | null, config: Record<string, unknown>) {
   return {
-    RevokeAgentCapability: {
-      agent_ref: agentRef,
-      kind,
+    RegisterEnvironment: {
+      workspace_id: workspaceId ?? null,
+      config,
+    },
+  }
+}
+
+export function removeEnvironmentRequest(workspaceId: string | null, name: string) {
+  return {
+    RemoveEnvironment: {
+      workspace_id: workspaceId ?? null,
       name,
+    },
+  }
+}
+
+export function getEnvironmentRequest(workspaceId: string | null, name: string) {
+  return {
+    GetEnvironment: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
+export function listEnvironmentsRequest(workspaceId?: string | null) {
+  return {
+    ListEnvironments: {
+      workspace_id: workspaceId ?? null,
+    },
+  }
+}
+
+export function validateScriptRequest(workspaceId: string | null, sourcePath: string, environment: string, name?: string | null) {
+  return {
+    ValidateScript: {
+      workspace_id: workspaceId ?? null,
+      source_path: sourcePath,
+      environment,
+      name: name ?? null,
+    },
+  }
+}
+
+export function registerScriptRequest(workspaceId: string | null, sourcePath: string, environment: string, name?: string | null) {
+  return {
+    RegisterScript: {
+      workspace_id: workspaceId ?? null,
+      source_path: sourcePath,
+      environment,
+      name: name ?? null,
+    },
+  }
+}
+
+export function removeScriptRequest(workspaceId: string | null, name: string) {
+  return {
+    RemoveScript: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
+export function getScriptRequest(workspaceId: string | null, name: string) {
+  return {
+    GetScript: {
+      workspace_id: workspaceId ?? null,
+      name,
+    },
+  }
+}
+
+export function listScriptsRequest(workspaceId?: string | null) {
+  return {
+    ListScripts: {
+      workspace_id: workspaceId ?? null,
     },
   }
 }

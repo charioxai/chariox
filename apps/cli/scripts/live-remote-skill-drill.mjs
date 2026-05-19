@@ -73,7 +73,7 @@ function printHelp() {
     '- verifies local-to-remote move synchronizes existing skill grants',
     '- verifies remote-first grant-time materialization on the worker',
     '- verifies prompt-time repair after worker materialization is removed',
-    '- optionally verifies same-turn remote request_capability use',
+    '- optionally verifies same-turn remote request_extension use',
     '',
     `  --provider ${DEFAULT_PROVIDER}`,
     `  --model ${DEFAULT_MODEL}`,
@@ -345,7 +345,7 @@ async function main() {
     attachToSessionRequest,
     createSessionRequest,
     endSessionRequest,
-    grantAgentCapabilityRequest,
+    grantAgentExtensionRequest,
     installSkillRequest,
     listRemoteMachinesRequest,
     moveAgentToRemoteRequest,
@@ -501,7 +501,7 @@ async function main() {
       options.effort,
     )), 'AgentSpawned')
     const localAgent = localSpawned.agent
-    await client.send(grantAgentCapabilityRequest(workspace, localAgent.id, 'skill', 'remote-drill'))
+    await client.send(grantAgentExtensionRequest(workspace, localAgent.id, 'skill', 'remote-drill'))
     if (await materializedSkillExists(workspace, homeDaemonId, 'remote-drill')) {
       throw new Error('local-only skill grant unexpectedly materialized on the worker')
     }
@@ -535,7 +535,7 @@ async function main() {
       workerMachineId,
     )), 'AgentSpawned')
     const agent = spawned.agent
-    await client.send(grantAgentCapabilityRequest(workspace, agent.id, 'skill', 'remote-drill'))
+    await client.send(grantAgentExtensionRequest(workspace, agent.id, 'skill', 'remote-drill'))
     const materialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
     const verifiedProviderFileText = await runLivePrompt(
       agent.id,
@@ -587,12 +587,12 @@ async function main() {
       const requestAgent = requestSpawned.agent
       const requestOutput = await runLivePrompt(
         requestAgent.id,
-        'You do not have the remote-drill skill yet. First call list_capabilities for skills, then call request_capability with kind "skill" and name "remote-drill". Follow the returned SKILL.md body immediately. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+        'You do not have the remote-drill skill yet. First call list_extensions for skills, then call request_extension with kind "skill" and name "remote-drill". Follow the returned SKILL.md body immediately. Read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
         outputFile,
       )
       const requestMaterialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)
       requestScenario = {
-        scenario: 'remote_request_capability_same_turn',
+        scenario: 'remote_request_extension_same_turn',
         agent: { id: requestAgent.id, ref: requestAgent.agent_ref, remote_execution: requestAgent.remote_execution },
         materialized: requestMaterialized,
         verifiedProviderFileText: requestOutput,

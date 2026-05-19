@@ -30,21 +30,32 @@ import {
 } from "./config-api.js"
 import {
   getMcpServer,
+  getEnvironment,
+  getScript,
   getSkill,
   grantAgentMcp,
+  grantAgentScript,
   grantAgentSkill,
   importMcpServers,
   importSkills,
   installMcpServer,
   installSkill,
+  listEnvironments,
   listMcpServers,
+  listScripts,
   listSkills,
+  registerEnvironment,
+  registerScript,
+  removeEnvironment,
+  removeScript,
   revokeAgentMcp,
+  revokeAgentScript,
   revokeAgentSkill,
   uninstallMcpServer,
   uninstallSkill,
   updateMcpServer,
   updateSkill,
+  validateScript,
 } from "./extension-api.js"
 import { deleteKernel } from "./kernel-api.js"
 import {
@@ -422,6 +433,17 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
     grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
+    listEnvironments: () => listEnvironments(client, pendingWorkspaceTarget()),
+    getEnvironment: (name) => getEnvironment(client, pendingWorkspaceTarget(), name),
+    registerEnvironment: (config) => registerEnvironment(client, pendingWorkspaceTarget(), config),
+    removeEnvironment: (name) => removeEnvironment(client, pendingWorkspaceTarget(), name),
+    listScripts: () => listScripts(client, pendingWorkspaceTarget()),
+    getScript: (name) => getScript(client, pendingWorkspaceTarget(), name),
+    validateScript: (sourcePath, environment, name) => validateScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
+    registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
+    removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
+    grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)

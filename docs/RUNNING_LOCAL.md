@@ -516,12 +516,12 @@ Agent-facing tools:
 - `arroba.apply_patch`
 - `arroba.move_artifact`
 - `arroba.delete_artifact`
-- `arroba.list_capabilities`
-- `arroba.request_capability`
+- `arroba.list_extensions`
+- `arroba.request_extension`
 
-The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, `delete_artifact`, `list_capabilities`, and `request_capability`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
+The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, `delete_artifact`, `list_extensions`, and `request_extension`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
 
-`list_capabilities` lets an agent discover Arroba-managed MCPs and skills available in the current workspace. `request_capability` accepts `kind` (`mcp` or `skill`) and `name`; v1 grants valid requests automatically. A requested MCP is rendered into provider-native MCP config by Arroba-managed provider conversation activation; if the agent requested it mid-turn, Arroba reloads after that turn and sends an automatic continuation prompt. A requested skill returns the full `SKILL.md` body by default and is usable immediately in the current turn.
+`list_extensions` lets an agent discover Arroba-managed MCPs, skills, and scripts available in the current workspace. `request_extension` accepts `kind` (`mcp`, `skill`, or `script`) and `name`; script requests also require an `environment`. V1 grants valid requests automatically. A requested MCP is rendered into provider-native MCP config by Arroba-managed provider conversation activation; if the agent requested it mid-turn, Arroba reloads after that turn and sends an automatic continuation prompt. A requested skill returns the full `SKILL.md` body by default and is usable immediately in the current turn. A requested script becomes an agent-facing runtime MCP tool backed by the registered local script and external environment.
 
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 

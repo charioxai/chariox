@@ -549,7 +549,7 @@ async function main() {
     endSessionRequest,
     getProviderRunRequest,
     getSessionStateRequest,
-    grantAgentCapabilityRequest,
+    grantAgentExtensionRequest,
     installMcpServerRequest,
     installSkillRequest,
     launchProviderRunRequest,
@@ -687,13 +687,13 @@ async function main() {
         if (agents.length === 0) throw new Error('no live provider agents were spawned')
 
         const grantedAgent = agents[0]
-        await client.send(grantAgentCapabilityRequest(workspace, grantedAgent.agent.id, 'mcp', 'playwright'))
-        await client.send(grantAgentCapabilityRequest(workspace, grantedAgent.agent.id, 'skill', markerSkillName))
+        await client.send(grantAgentExtensionRequest(workspace, grantedAgent.agent.id, 'mcp', 'playwright'))
+        await client.send(grantAgentExtensionRequest(workspace, grantedAgent.agent.id, 'skill', markerSkillName))
 
         const stateAfterGrant = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
         const grantedState = (stateAfterGrant.session ?? stateAfterGrant).agents.find((agent) => agent.id === grantedAgent.agent.id)
-        if (!grantedState?.mcp_grants?.includes?.('playwright')) throw new Error('granted agent is missing playwright MCP grant')
-        if (!grantedState?.skill_grants?.includes?.(markerSkillName)) throw new Error('granted agent is missing marker skill grant')
+        if (!grantedState?.extension_grants?.some?.((grant) => grant.kind === 'mcp' && grant.name === 'playwright')) throw new Error('granted agent is missing playwright MCP grant')
+        if (!grantedState?.extension_grants?.some?.((grant) => grant.kind === 'skill' && grant.name === markerSkillName)) throw new Error('granted agent is missing marker skill grant')
 
         const pregrantBefore = events.filter((event) => event.event === 'assistant_message_completed').length
         await client.send(submitPromptRequest(session.id, attachment.id, grantedAgent.agent.id, [
@@ -723,13 +723,13 @@ async function main() {
 
         const requestAgent = agents[1] ?? agents[0]
         if (requestAgent.agent.id === grantedAgent.agent.id) {
-          await client.send(grantAgentCapabilityRequest(workspace, requestAgent.agent.id, 'skill', markerSkillName))
+          await client.send(grantAgentExtensionRequest(workspace, requestAgent.agent.id, 'skill', markerSkillName))
         }
         const sameTurnBefore = events.filter((event) => event.event === 'assistant_message_completed').length
         await client.send(submitPromptRequest(session.id, attachment.id, requestAgent.agent.id, [
           'This is an Arroba runtime capability request drill.',
-          `First call \`list_capabilities\` with {"kind":"skill"} and find ${JSON.stringify(markerSkillName)}.`,
-          `Then call \`request_capability\` with {"kind":"skill","name":${JSON.stringify(markerSkillName)}}.`,
+          `First call \`list_extensions\` with {"kind":"skill"} and find ${JSON.stringify(markerSkillName)}.`,
+          `Then call \`request_extension\` with {"kind":"skill","name":${JSON.stringify(markerSkillName)}}.`,
           'Read the returned skill.body and follow its same-turn marker instruction immediately.',
           'Use only Arroba managed I/O to write the required marker file.',
           'When done, reply exactly M7_SAME_TURN_SKILL_DONE.',
@@ -756,7 +756,7 @@ async function main() {
           historyDir,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
-          predicate: (update) => String(update.tool ?? '').endsWith('request_capability') &&
+          predicate: (update) => String(update.tool ?? '').endsWith('request_extension') &&
             update.status === 'completed' &&
             update.input?.kind === 'skill' &&
             update.input?.name === markerSkillName,
@@ -784,8 +784,8 @@ async function main() {
           ).agent
           agents.push({ provider: grantedAgent.provider, agent: userMcpAgent })
 
-          await client.send(grantAgentCapabilityRequest(workspace, userMcpAgent.id, 'mcp', 'playwright'))
-          await client.send(grantAgentCapabilityRequest(workspace, userMcpAgent.id, 'mcp', 'echo'))
+          await client.send(grantAgentExtensionRequest(workspace, userMcpAgent.id, 'mcp', 'playwright'))
+          await client.send(grantAgentExtensionRequest(workspace, userMcpAgent.id, 'mcp', 'echo'))
           await launchProviderRunAndWait({
             client,
             sessionId: session.id,
@@ -804,7 +804,7 @@ async function main() {
           await client.send(submitPromptRequest(session.id, attachment.id, userMcpAgent.id, [
             'This is a live user-triggered MCP grant activation drill.',
             'Use the provider-native echo MCP tool once with marker M7_ECHO_MCP_USER_OK.',
-            'Then use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_capabilities/request_capability.',
+            'Then use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_extensions/request_extension.',
             'The echo tool is usually named `echo_echo_marker`, `mcp__echo__echo_marker`, or similar.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
             'Prefer a non-mutating Playwright browser snapshot/title/text tool first; navigating to https://example.com is optional and may require approval.',
@@ -892,9 +892,9 @@ async function main() {
           const agentMcpStartedAt = Date.now()
           await client.send(submitPromptRequest(session.id, attachment.id, agentMcpAgent.id, [
             'This is a live agent-triggered MCP request drill.',
-            'First call `list_capabilities` with {"kind":"mcp"} and find `playwright`.',
-            'Then call `request_capability` with {"kind":"mcp","name":"playwright"}.',
-            'After Arroba reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Arroba request_capability.',
+            'First call `list_extensions` with {"kind":"mcp"} and find `playwright`.',
+            'Then call `request_extension` with {"kind":"mcp","name":"playwright"}.',
+            'After Arroba reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Arroba request_extension.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
             'After any Playwright/browser MCP tool call completes successfully, you must call Arroba managed I/O (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
             'Do not reply done until that file write tool call has completed.',
@@ -907,7 +907,7 @@ async function main() {
             sinceMs: agentMcpStartedAt,
             timeoutMs: options.timeoutMs,
             pollMs: options.pollMs,
-            predicate: (update) => String(update.tool ?? '').endsWith('request_capability') &&
+            predicate: (update) => String(update.tool ?? '').endsWith('request_extension') &&
               update.status === 'completed' &&
               update.input?.kind === 'mcp' &&
               update.input?.name === 'playwright',

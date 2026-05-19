@@ -86,6 +86,9 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onWorkflow: () => calls.push("workflow"),
     onMcp: () => calls.push("mcp"),
     onSkill: () => calls.push("skill"),
+    onEnv: () => calls.push("env"),
+    onScript: () => calls.push("script"),
+    onExtension: () => calls.push("extension"),
   })
 
   assert.deepEqual(calls, ["view"])
@@ -119,12 +122,15 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onWorkflow: () => undefined,
     onMcp: () => undefined,
     onSkill: () => undefined,
+    onEnv: () => undefined,
+    onScript: () => undefined,
+    onExtension: () => undefined,
   })
 
   assert.equal(command, null)
 })
 
-test("parseSlashCommand parses mcp and skill commands", () => {
+test("parseSlashCommand parses extension commands", () => {
   assert.deepEqual(parseSlashCommand("/mcp install browser"), {
     kind: "mcp",
     raw: "/mcp install browser",
@@ -135,5 +141,23 @@ test("parseSlashCommand parses mcp and skill commands", () => {
     kind: "skill",
     raw: "/skills list",
     args: ["list"],
+  })
+
+  assert.deepEqual(parseSlashCommand("/env register py"), {
+    kind: "env",
+    raw: "/env register py",
+    args: ["register", "py"],
+  })
+
+  assert.deepEqual(parseSlashCommand("/script list"), {
+    kind: "script",
+    raw: "/script list",
+    args: ["list"],
+  })
+
+  assert.deepEqual(parseSlashCommand("/extension grants script agent-1"), {
+    kind: "extension",
+    raw: "/extension grants script agent-1",
+    args: ["grants", "script", "agent-1"],
   })
 })
