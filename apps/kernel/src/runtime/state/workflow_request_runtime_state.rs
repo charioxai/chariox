@@ -22,10 +22,7 @@ impl KernelRuntimeState {
                 let op_id = request.op_id.clone();
                 let session_id = request.session_id.clone();
                 let op = request.op.clone();
-                let event_store = {
-                    let app = self.app.lock().await;
-                    app.workflow_design_event_store()
-                };
+                let event_store = owned.workflow_design_events.clone();
                 let result = owned
                     .workflow_apply_design_op(request, &caller_user_id)
                     .map(|session| {

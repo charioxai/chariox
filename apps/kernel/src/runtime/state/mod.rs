@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::agent::AgentServiceStore;
 use crate::app::{
     ActiveTurnStore, DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore,
-    ProviderProcessTrackingStore,
+    ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -67,6 +67,7 @@ struct KernelRuntimeOwnedState {
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     terminal_stream: crate::terminal::TerminalStreamStore,
+    workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     managed_io_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
     managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor,
@@ -183,6 +184,7 @@ impl KernelRuntimeState {
         prompt_workspace_claims: PromptWorkspaceClaimStore,
         structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
         terminal_stream: crate::terminal::TerminalStreamStore,
+        workflow_design_events: WorkflowDesignEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         Self {
@@ -207,6 +209,7 @@ impl KernelRuntimeState {
                 prompt_workspace_claims,
                 structured_output_records,
                 terminal_stream,
+                workflow_design_events,
                 workspace_coordinator,
                 managed_io_coordinator: Arc::new(Mutex::new(
                     crate::io::ArtifactEditCoordinator::new(),

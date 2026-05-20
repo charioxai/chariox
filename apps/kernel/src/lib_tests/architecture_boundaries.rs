@@ -35,6 +35,9 @@ fn runtime_command_paths_do_not_lock_daemon_app() {
         for pattern in ["app.lock().await", "app.lock().await;"] {
             for (line_index, line) in production_source.lines().enumerate() {
                 if line.contains(pattern) {
+                    if allowed_direct_app_lock(&relative, line) {
+                        continue;
+                    }
                     violations.push(format!(
                         "{}:{}: {}",
                         relative.display(),
@@ -62,7 +65,11 @@ fn scan_runtime_command_path(relative: &Path) -> bool {
     {
         return false;
     }
-    if relative.starts_with("runtime/state") {
+    if relative
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .is_some_and(|file_name| file_name.ends_with("_tests.rs"))
+    {
         return false;
     }
     if relative == Path::new("runtime/router/composition.rs") {
@@ -72,6 +79,11 @@ fn scan_runtime_command_path(relative: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         == Some("rs")
+}
+
+fn allowed_direct_app_lock(relative: &Path, line: &str) -> bool {
+    relative == Path::new("runtime/state/mod.rs")
+        && line.trim() == "let mut app = self.app.lock().await;"
 }
 
 fn rust_files(root: &Path) -> Vec<PathBuf> {

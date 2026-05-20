@@ -328,10 +328,15 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
 
-    use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
+    use crate::local::{
+        ApplyWorkflowDesignOpRequest, CreateWorkflowRequest, LocalDaemonRequest,
+        LocalDaemonResponse, WorkflowDesignOp, WorkflowDesignWorkflow,
+    };
+    use crate::runtime::command::KernelCommand;
     use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::runtime::state::KernelRuntimeState;
     use crate::runtime::workflow_actor::WorkflowRuntime;
+    use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -357,6 +362,7 @@ mod tests {
             app_locked.prompt_workspace_claim_store(),
             app_locked.structured_output_record_store(),
             app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
             app_locked.workspace_coordinator(),
         )
     }
@@ -396,5 +402,57 @@ mod tests {
             !runtime.has_lane("missing-session").await,
             "missing workflow session should be rejected before creating a workflow lane"
         );
+    }
+
+    #[tokio::test]
+    async fn workflow_design_op_appends_event_without_app_lock() {
+        let mut daemon =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut daemon)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let event_store = daemon.workflow_design_event_store();
+        let app = Arc::new(Mutex::new(daemon));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update(session.clone());
+        let runtime = WorkflowRuntime::new(
+            owned_runtime_state(&app).await,
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+        let request = LocalDaemonRequest::ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest {
+            session_id: session.id().to_string(),
+            origin_client_id: "web-canvas".to_string(),
+            op_id: "op-create-workflow".to_string(),
+            op: WorkflowDesignOp::WorkflowCreate {
+                workflow: WorkflowDesignWorkflow {
+                    id: "workflow-design-lock-free".to_string(),
+                    alias: Some("lock-free".to_string()),
+                    flush_agent_context_before_run: None,
+                    run_output_schema_ref: None,
+                    intermediate_output_schema_ref: None,
+                },
+            },
+        });
+        let command =
+            KernelCommand::from_local_request("cmd-workflow-design", None, None, &request);
+
+        let _locked_app = app.lock().await;
+        let response = timeout(Duration::from_millis(100), async {
+            runtime.dispatch_workflow_command(command, request).await
+        })
+        .await
+        .expect("workflow design op should not wait for the app lock")
+        .expect("workflow design op should succeed");
+
+        let LocalDaemonResponse::WorkflowDesignOpAccepted { event, .. } = response else {
+            panic!("unexpected response: {response:?}");
+        };
+        assert_eq!(event.session_id, session.id());
+        assert_eq!(event.origin_client_id, "web-canvas");
+        assert_eq!(event.op_id, "op-create-workflow");
+
+        let forwarded = event_store.events_since(session.id(), 0, "other-client");
+        assert_eq!(forwarded, vec![event]);
     }
 }

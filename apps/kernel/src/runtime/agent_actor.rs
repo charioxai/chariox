@@ -284,6 +284,7 @@ mod tests {
             app_locked.prompt_workspace_claim_store(),
             app_locked.structured_output_record_store(),
             app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
             app_locked.workspace_coordinator(),
         )
     }

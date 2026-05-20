@@ -11,7 +11,6 @@ impl KernelRuntimeState {
         launch_delay_ms: u64,
     ) {
         let state = self.clone();
-        let app = self.app.clone();
         tokio::spawn(async move {
             if let Some(terminated_run_id) = terminated_run_id {
                 let (_, process_key) = state
@@ -42,11 +41,12 @@ impl KernelRuntimeState {
             if runtime_init_delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
             }
-            let spawn_result = {
-                let mut app = app.lock().await;
-                crate::app::ProviderLaunchProcessRuntime::new(&mut app)
-                    .spawn_for_launch(&started.run)
-            };
+            let spawn_result = state
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .spawn_for_launch(&started.run)
+                })
+                .await;
             if let Err(error) = spawn_result {
                 state.fail_provider_launch(&started, &error).await;
                 return;
