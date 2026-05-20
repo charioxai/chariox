@@ -4,6 +4,7 @@ use crate::local::provider_requests::{
 };
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use std::time::Instant;
 
 pub(crate) async fn execute_provider_catalog_request(
     provider_catalog_projection: &ProviderCatalogProjectionStore,
@@ -30,16 +31,34 @@ pub(crate) async fn execute_get_provider_catalog_request(
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "provider catalog cache hit",
+            serde_json::json!({
+                "provider_count": catalog.all.len(),
+                "connected_provider_count": catalog.connected.len(),
+            }),
+        );
         return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
     }
 
     let config = config_projection.snapshot();
+    let load_started = Instant::now();
     let catalog = tokio::task::spawn_blocking(move || load_provider_catalog(config))
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "load provider catalog",
             message: error.to_string(),
         })??;
+    crate::logging::info_with_fields(
+        "daemon.startup",
+        "provider catalog loaded",
+        serde_json::json!({
+            "load_ms": load_started.elapsed().as_millis(),
+            "provider_count": catalog.all.len(),
+            "connected_provider_count": catalog.connected.len(),
+        }),
+    );
     provider_catalog_projection.update(catalog.clone());
     Ok(LocalDaemonResponse::ProviderCatalog { catalog })
 }
@@ -57,9 +76,21 @@ pub(crate) async fn provider_catalog_json_value(
         return serde_json::to_value(catalog).ok();
     }
     let config = config_projection.snapshot();
+    let load_started = Instant::now();
     tokio::task::spawn_blocking(move || load_provider_catalog(config))
         .await
         .ok()
         .and_then(Result::ok)
-        .and_then(|catalog| serde_json::to_value(catalog).ok())
+        .and_then(|catalog| {
+            crate::logging::info_with_fields(
+                "daemon.startup",
+                "provider catalog loaded for health projection",
+                serde_json::json!({
+                    "load_ms": load_started.elapsed().as_millis(),
+                    "provider_count": catalog.all.len(),
+                    "connected_provider_count": catalog.connected.len(),
+                }),
+            );
+            serde_json::to_value(catalog).ok()
+        })
 }

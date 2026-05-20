@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub(crate) mod attachment_artifacts;
 mod config_runtime;
@@ -131,7 +132,54 @@ pub struct DaemonApp {
 
 impl DaemonApp {
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
+        let bootstrap_started = Instant::now();
+        let validate_started = Instant::now();
         config.validate()?;
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "daemon config validated",
+            serde_json::json!({
+                "validate_ms": validate_started.elapsed().as_millis(),
+                "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+            }),
+        );
+
+        let history_started = Instant::now();
+        let history = SessionHistoryStore::new_with_read_delay(
+            config.session_history_root.clone(),
+            config.session_history_read_delay_ms,
+        )?;
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "session history store opened",
+            serde_json::json!({
+                "open_ms": history_started.elapsed().as_millis(),
+                "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+                "session_history_root": config.session_history_root.display().to_string(),
+            }),
+        );
+
+        let operational_history_started = Instant::now();
+        let operational_history = OperationalHistoryStore::open(config.operational_history_path())?;
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "operational history store opened",
+            serde_json::json!({
+                "open_ms": operational_history_started.elapsed().as_millis(),
+                "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+            }),
+        );
+
+        let durable_state_started = Instant::now();
+        let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "durable state store opened",
+            serde_json::json!({
+                "open_ms": durable_state_started.elapsed().as_millis(),
+                "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+            }),
+        );
 
         let mut app = Self {
             agents: AgentServiceStore::new(AgentService::new()),
@@ -145,12 +193,9 @@ impl DaemonApp {
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(SessionService::new(&config)),
-            history: SessionHistoryStore::new_with_read_delay(
-                config.session_history_root.clone(),
-                config.session_history_read_delay_ms,
-            )?,
-            operational_history: OperationalHistoryStore::open(config.operational_history_path())?,
-            durable_state: DurableKernelStateStore::open(config.durable_state_path())?,
+            history,
+            operational_history,
+            durable_state,
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
@@ -176,7 +221,25 @@ impl DaemonApp {
             relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
             config,
         };
+        let restore_started = Instant::now();
         app.restore_durable_state()?;
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "durable state restored",
+            serde_json::json!({
+                "restore_ms": restore_started.elapsed().as_millis(),
+                "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+            }),
+        );
+        crate::logging::info_with_fields(
+            "daemon.startup",
+            "kernel runtime initialized",
+            serde_json::json!({
+                "bootstrap_ms": bootstrap_started.elapsed().as_millis(),
+                "daemon_id": app.config.daemon_id.as_str(),
+                "machine_id": app.config.host_machine_id.as_str(),
+            }),
+        );
         Ok(app)
     }
 

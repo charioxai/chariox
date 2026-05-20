@@ -33,14 +33,27 @@ pub async fn run_daemon_relay_connector(
             return;
         }
 
-        if let Err(error) = router.ensure_cloud_relay_connection().await {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "failed to refresh cloud relay token",
-                serde_json::json!({
-                    "error": error.to_string(),
-                }),
-            );
+        let cloud_refresh_started = Instant::now();
+        match router.ensure_cloud_relay_connection().await {
+            Ok(()) => {
+                crate::logging::info_with_fields(
+                    "daemon.startup",
+                    "cloud relay profile hydrated",
+                    serde_json::json!({
+                        "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to refresh cloud relay token",
+                    serde_json::json!({
+                        "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
 
         let (relay_url, mut active_relay_token, heartbeat) = {
@@ -86,6 +99,7 @@ pub async fn run_daemon_relay_connector(
                 "relay_url": relay_url,
             }),
         );
+        let connect_started = Instant::now();
         match timeout(RELAY_CONNECT_TIMEOUT, connect_async(&relay_url)).await {
             Err(_) => {
                 crate::logging::warn_with_fields(
@@ -93,6 +107,7 @@ pub async fn run_daemon_relay_connector(
                     "relay socket connect timed out",
                     serde_json::json!({
                         "relay_url": relay_url,
+                        "connect_ms": connect_started.elapsed().as_millis(),
                         "timeout_ms": RELAY_CONNECT_TIMEOUT.as_millis(),
                     }),
                 );
@@ -102,13 +117,16 @@ pub async fn run_daemon_relay_connector(
                 continue;
             }
             Ok(Ok((socket, _))) => {
+                let connect_ms = connect_started.elapsed().as_millis();
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
                     "relay socket connected",
                     serde_json::json!({
                         "relay_url": relay_url,
+                        "connect_ms": connect_ms,
                     }),
                 );
+                let registration_started = Instant::now();
                 let (mut writer, mut reader) = socket.split();
                 let (outgoing_tx, mut outgoing_rx) =
                     mpsc::channel::<RelayEnvelope>(RELAY_OUTGOING_QUEUE_LIMIT);
@@ -148,6 +166,9 @@ pub async fn run_daemon_relay_connector(
                     "relay register sent",
                     serde_json::json!({
                         "relay_url": relay_url,
+                        "connect_ms": connect_ms,
+                        "registration_send_ms": registration_started.elapsed().as_millis(),
+                        "connect_to_registration_ms": connect_started.elapsed().as_millis(),
                     }),
                 );
                 set_connected(&state, outgoing_tx.clone()).await;
@@ -365,6 +386,7 @@ pub async fn run_daemon_relay_connector(
                     "relay socket connect failed",
                     serde_json::json!({
                         "relay_url": relay_url,
+                        "connect_ms": connect_started.elapsed().as_millis(),
                         "error": error.to_string(),
                     }),
                 );

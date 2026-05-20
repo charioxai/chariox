@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{oneshot, RwLock};
 
@@ -51,16 +52,35 @@ pub(super) async fn publish_cloud_presence(
     online: bool,
     reason: &str,
 ) {
-    if let Err(error) = router.publish_cloud_kernel_presence(online).await {
-        crate::logging::warn_with_fields(
-            "daemon.relay_client",
-            "failed to publish cloud relay presence",
-            serde_json::json!({
-                "online": online,
-                "reason": reason,
-                "error": error.to_string(),
-            }),
-        );
+    let publish_started = Instant::now();
+    match router.publish_cloud_kernel_presence(online).await {
+        Ok(()) => {
+            crate::logging::info_with_fields(
+                "daemon.startup",
+                if online {
+                    "kernel cloud presence visible"
+                } else {
+                    "kernel cloud presence offline"
+                },
+                serde_json::json!({
+                    "online": online,
+                    "reason": reason,
+                    "publish_ms": publish_started.elapsed().as_millis(),
+                }),
+            );
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to publish cloud relay presence",
+                serde_json::json!({
+                    "online": online,
+                    "reason": reason,
+                    "publish_ms": publish_started.elapsed().as_millis(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 

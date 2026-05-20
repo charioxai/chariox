@@ -2,7 +2,7 @@ use std::future::Future;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -131,12 +131,22 @@ where
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
     ));
     let (bind_host, bind_port) = router.kernel_websocket_bind_address();
+    let bind_started = Instant::now();
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "bind kernel websocket",
             message: error.to_string(),
         })?;
+    crate::logging::info_with_fields(
+        "daemon.startup",
+        "kernel websocket listener bound",
+        serde_json::json!({
+            "bind_ms": bind_started.elapsed().as_millis(),
+            "bind_host": bind_host,
+            "bind_port": bind_port,
+        }),
+    );
     run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
 }
 
@@ -177,10 +187,20 @@ where
     let transport_health = router.transport_health_store();
     let durable_snapshot_scheduler = router.durable_snapshot_scheduler();
     let event_counter_path = router.kernel_event_counter_path();
+    let local_addr = listener.local_addr().ok().map(|addr| addr.to_string());
     let runtime = Arc::new(KernelTransportRuntime::new_with_persistent_event_ids(
         transport_health.clone(),
         event_counter_path,
     )?);
+    crate::logging::info_with_fields(
+        "daemon.startup",
+        "kernel ready for local command",
+        serde_json::json!({
+            "kernel_websocket_addr": local_addr,
+            "recent_event_limit": RECENT_EVENT_LIMIT,
+            "inbound_request_limit": INBOUND_REQUEST_LIMIT,
+        }),
+    );
 
     tokio::pin!(shutdown);
 
