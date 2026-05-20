@@ -42,6 +42,32 @@ test("kernel event dispatch refreshes waiting-room inventory asynchronously", as
   assert.deepEqual(harness.calls, ["refresh-waiting-room"])
 })
 
+test("kernel event dispatch resyncs after workflow design events", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "workflow_design_op",
+    design_op: {
+      session_id: "session-1",
+      origin_client_id: "client-1",
+      op_id: "op-1",
+      kernel_sequence: 1,
+      op: {
+        kind: "workflow_create",
+        workflow: {
+          id: "workflow-1",
+          alias: "Review",
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_workflow_design_op",
+    "resync:workflow_design_op",
+  ])
+})
+
 test("kernel event dispatch handles replay gaps through notice, footer, and resync", async () => {
   const harness = createHarness()
 

@@ -74,6 +74,10 @@ export function createKernelEventDispatchController(
       case "waiting_room_inventory_changed":
         void deps.refreshWaitingRoomData()
         return
+      case "workflow_design_op":
+        deps.recordDaemonActivity("kernel_workflow_design_op")
+        void deps.resyncAttachedKernelState("workflow_design_op")
+        return
       case "transport_resumed":
         deps.applyTransportResumed()
         deps.scheduleSharedPromptInputHistoryRefresh()

@@ -1,3 +1,5 @@
+import type { WorkflowDesignOpForwarded } from "./kernel-types.js"
+
 export type KernelEvent =
   | {
     event: "terminal_output"
@@ -55,6 +57,10 @@ export type KernelEvent =
   | {
     event: "waiting_room_inventory_changed"
     inventory_version: string
+  }
+  | {
+    event: "workflow_design_op"
+    design_op: WorkflowDesignOpForwarded
   }
   | {
     event: "heartbeat"

@@ -11,6 +11,7 @@
     "start:cli": "node scripts/start-cli.mjs",
     "test": "pnpm -r run test",
     "test:daemon": "cargo test --manifest-path apps/kernel/Cargo.toml",
+    "protocol:conformance": "cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture",
     "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness",
     "start:shell": "pnpm --filter @arroba/shell run start"
   },
