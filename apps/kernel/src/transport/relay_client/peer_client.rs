@@ -8,6 +8,80 @@ use super::*;
 
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug)]
+struct RelayPeerRequestTrace {
+    request_id: String,
+    target_daemon_id: Option<String>,
+    target_daemon_alias: Option<String>,
+    transport: &'static str,
+    started_at: Instant,
+    timeout_ms: u64,
+}
+
+impl RelayPeerRequestTrace {
+    fn new(
+        request_id: &str,
+        target: &ClientTarget,
+        transport: &'static str,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            request_id: request_id.to_string(),
+            target_daemon_id: target.daemon_id.clone(),
+            target_daemon_alias: target.daemon_alias.clone(),
+            transport,
+            started_at: Instant::now(),
+            timeout_ms,
+        }
+    }
+
+    fn fields(
+        &self,
+        status: &'static str,
+        error: Option<&str>,
+        from_daemon_id: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "request_id": self.request_id,
+            "target_daemon_id": self.target_daemon_id,
+            "target_daemon_alias": self.target_daemon_alias,
+            "from_daemon_id": from_daemon_id,
+            "transport": self.transport,
+            "status": status,
+            "relay_rtt_ms": elapsed_ms_u64(self.started_at),
+            "timeout_ms": self.timeout_ms,
+            "error": error,
+        })
+    }
+
+    fn log_completed(
+        &self,
+        status: &'static str,
+        error: Option<&str>,
+        from_daemon_id: Option<&str>,
+    ) {
+        let fields = self.fields(status, error, from_daemon_id);
+        if error.is_some() {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "relay peer request completed",
+                fields,
+            );
+        } else {
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "relay peer request completed",
+                fields,
+            );
+        }
+    }
+}
+
+fn elapsed_ms_u64(started_at: Instant) -> u64 {
+    let elapsed_ms = started_at.elapsed().as_millis();
+    elapsed_ms.min(u128::from(u64::MAX)) as u64
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(super) struct RelayPeerResponseEnvelope {
@@ -57,6 +131,12 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
             .insert(request_id.clone(), response_tx);
         (request_id, response_rx, outgoing_tx)
     };
+    let trace = RelayPeerRequestTrace::new(
+        &request_id,
+        &target,
+        "persistent",
+        config.relay_request_timeout_ms,
+    );
     if send_outgoing_envelope(
         &outgoing_tx,
         RelayEnvelope::DaemonPeerRequest {
@@ -69,6 +149,7 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
     {
         let mut guard = state.write().await;
         guard.pending_peer_requests.remove(&request_id);
+        trace.log_completed("send_failed", Some("relay is not connected"), None);
         return Err(DaemonError::LocalTransport {
             operation: "send relay peer request",
             message: "relay is not connected".to_string(),
@@ -82,6 +163,7 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
     {
         Ok(Ok(envelope)) => envelope,
         Ok(Err(_)) => {
+            trace.log_completed("cancelled", Some("relay peer request was cancelled"), None);
             return Err(DaemonError::LocalTransport {
                 operation: "read relay peer response",
                 message: "relay peer request was cancelled".to_string(),
@@ -90,41 +172,79 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
         Err(_) => {
             let mut guard = state.write().await;
             guard.pending_peer_requests.remove(&request_id);
+            let message = format!(
+                "timed out waiting for relay peer response after {}ms",
+                config.relay_request_timeout_ms
+            );
+            trace.log_completed("timeout", Some(&message), None);
             return Err(DaemonError::LocalTransport {
                 operation: "read relay peer response",
-                message: format!(
-                    "timed out waiting for relay peer response after {}ms",
-                    config.relay_request_timeout_ms
-                ),
+                message,
             });
         }
     };
     if let Some(error) = envelope.error {
+        trace.log_completed(
+            "relay_error",
+            Some(&error.message),
+            Some(&envelope.from_daemon_id),
+        );
         return Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
             message: error.message,
         });
     }
-    let encrypted_response =
-        envelope
-            .encrypted_response
-            .ok_or_else(|| DaemonError::LocalTransport {
+    let encrypted_response = match envelope.encrypted_response {
+        Some(encrypted_response) => encrypted_response,
+        None => {
+            let message = format!(
+                "peer `{}` returned no response payload",
+                envelope.from_daemon_id
+            );
+            trace.log_completed(
+                "empty_response",
+                Some(&message),
+                Some(&envelope.from_daemon_id),
+            );
+            return Err(DaemonError::LocalTransport {
                 operation: "read relay peer response",
-                message: format!(
-                    "peer `{}` returned no response payload",
-                    envelope.from_daemon_id
-                ),
-            })?;
-    let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                message,
+            });
+        }
+    };
+    let decrypted = match relay_crypto::decrypt_payload_for_private_key(
         &config.relay_private_key,
         &encrypted_response,
-    )?;
-    serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "decode relay peer response",
-            message: error.to_string(),
+    ) {
+        Ok(decrypted) => decrypted,
+        Err(error) => {
+            let message = error.to_string();
+            trace.log_completed(
+                "decrypt_failed",
+                Some(&message),
+                Some(&envelope.from_daemon_id),
+            );
+            return Err(error);
         }
-    })
+    };
+    match serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext) {
+        Ok(response) => {
+            trace.log_completed("success", None, Some(&envelope.from_daemon_id));
+            Ok(response)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            trace.log_completed(
+                "decode_failed",
+                Some(&message),
+                Some(&envelope.from_daemon_id),
+            );
+            Err(DaemonError::LocalTransport {
+                operation: "decode relay peer response",
+                message,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -233,6 +353,12 @@ pub async fn send_peer_request_via_temporary_connection(
             operation: "write temporary relay register",
             message: error.to_string(),
         })?;
+    let trace = RelayPeerRequestTrace::new(
+        &request_id,
+        &target,
+        "temporary",
+        config.relay_request_timeout_ms,
+    );
     socket
         .send(Message::Text(
             serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
@@ -240,16 +366,24 @@ pub async fn send_peer_request_via_temporary_connection(
                 target,
                 encrypted_request,
             })
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "serialize temporary relay peer request",
-                message: error.to_string(),
+            .map_err(|error| {
+                let message = error.to_string();
+                trace.log_completed("serialize_failed", Some(&message), None);
+                DaemonError::LocalTransport {
+                    operation: "serialize temporary relay peer request",
+                    message,
+                }
             })?
             .into(),
         ))
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "write temporary relay peer request",
-            message: error.to_string(),
+        .map_err(|error| {
+            let message = error.to_string();
+            trace.log_completed("send_failed", Some(&message), None);
+            DaemonError::LocalTransport {
+                operation: "write temporary relay peer request",
+                message,
+            }
         })?;
     let response = timeout(
         Duration::from_millis(config.relay_request_timeout_ms),
@@ -259,14 +393,16 @@ pub async fn send_peer_request_via_temporary_connection(
                     Some(Ok(Message::Text(text))) => {
                         let envelope =
                             serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
+                                let message = error.to_string();
+                                trace.log_completed("decode_failed", Some(&message), None);
                                 DaemonError::LocalTransport {
                                     operation: "decode temporary relay peer response",
-                                    message: error.to_string(),
+                                    message,
                                 }
                             })?;
                         if let RelayEnvelope::DaemonPeerResponse {
                             request_id: response_request_id,
-                            from_daemon_id: _,
+                            from_daemon_id,
                             encrypted_response,
                             error,
                         } = envelope
@@ -275,32 +411,71 @@ pub async fn send_peer_request_via_temporary_connection(
                                 continue;
                             }
                             if let Some(error) = error {
+                                trace.log_completed(
+                                    "relay_error",
+                                    Some(&error.message),
+                                    Some(&from_daemon_id),
+                                );
                                 return Err(DaemonError::LocalTransport {
                                     operation: "read temporary relay peer response",
                                     message: error.message,
                                 });
                             }
-                            let encrypted_response =
-                                encrypted_response.ok_or_else(|| DaemonError::LocalTransport {
+                            let encrypted_response = encrypted_response.ok_or_else(|| {
+                                let message = "peer returned no response payload".to_string();
+                                trace.log_completed(
+                                    "empty_response",
+                                    Some(&message),
+                                    Some(&from_daemon_id),
+                                );
+                                DaemonError::LocalTransport {
                                     operation: "read temporary relay peer response",
-                                    message: "peer returned no response payload".to_string(),
-                                })?;
-                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                    message,
+                                }
+                            })?;
+                            let decrypted = match relay_crypto::decrypt_payload_for_private_key(
                                 &config.relay_private_key,
                                 &encrypted_response,
-                            )?;
-                            return serde_json::from_slice::<RelayPeerResponse>(
-                                &decrypted.plaintext,
-                            )
-                            .map_err(|error| {
-                                DaemonError::LocalTransport {
-                                    operation: "decode temporary relay peer response",
-                                    message: error.to_string(),
+                            ) {
+                                Ok(decrypted) => decrypted,
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    trace.log_completed(
+                                        "decrypt_failed",
+                                        Some(&message),
+                                        Some(&from_daemon_id),
+                                    );
+                                    return Err(error);
                                 }
-                            });
+                            };
+                            let response =
+                                serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext);
+                            return match response {
+                                Ok(response) => {
+                                    trace.log_completed("success", None, Some(&from_daemon_id));
+                                    Ok(response)
+                                }
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    trace.log_completed(
+                                        "decode_failed",
+                                        Some(&message),
+                                        Some(&from_daemon_id),
+                                    );
+                                    Err(DaemonError::LocalTransport {
+                                        operation: "decode temporary relay peer response",
+                                        message,
+                                    })
+                                }
+                            };
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
+                        trace.log_completed(
+                            "connection_closed",
+                            Some("relay closed temporary peer connection"),
+                            None,
+                        );
                         return Err(DaemonError::LocalTransport {
                             operation: "read temporary relay peer response",
                             message: "relay closed temporary peer connection".to_string(),
@@ -308,9 +483,11 @@ pub async fn send_peer_request_via_temporary_connection(
                     }
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {
+                        let message = error.to_string();
+                        trace.log_completed("read_failed", Some(&message), None);
                         return Err(DaemonError::LocalTransport {
                             operation: "read temporary relay peer response",
-                            message: error.to_string(),
+                            message,
                         });
                     }
                 }
@@ -319,12 +496,14 @@ pub async fn send_peer_request_via_temporary_connection(
     )
     .await;
     response.unwrap_or_else(|_| {
+        let message = format!(
+            "timed out waiting for relay peer response after {}ms",
+            config.relay_request_timeout_ms
+        );
+        trace.log_completed("timeout", Some(&message), None);
         Err(DaemonError::LocalTransport {
             operation: "read temporary relay peer response",
-            message: format!(
-                "timed out waiting for relay peer response after {}ms",
-                config.relay_request_timeout_ms
-            ),
+            message,
         })
     })
 }
@@ -341,5 +520,56 @@ pub(super) async fn resolve_pending_peer_response(
         .remove(&request_id);
     if let Some(sender) = sender {
         let _ = sender.send(response);
+    }
+}
+
+#[cfg(test)]
+mod relay_rtt_tests {
+    use super::*;
+
+    #[test]
+    fn relay_peer_request_trace_fields_include_rtt_and_target() {
+        let trace = RelayPeerRequestTrace::new(
+            "request-1",
+            &ClientTarget {
+                daemon_id: Some("daemon-1".to_string()),
+                daemon_alias: Some("worker".to_string()),
+            },
+            "persistent",
+            250,
+        );
+
+        let fields = trace.fields("success", None, Some("daemon-1"));
+
+        assert_eq!(fields["request_id"], serde_json::json!("request-1"));
+        assert_eq!(fields["target_daemon_id"], serde_json::json!("daemon-1"));
+        assert_eq!(fields["target_daemon_alias"], serde_json::json!("worker"));
+        assert_eq!(fields["from_daemon_id"], serde_json::json!("daemon-1"));
+        assert_eq!(fields["transport"], serde_json::json!("persistent"));
+        assert_eq!(fields["status"], serde_json::json!("success"));
+        assert_eq!(fields["timeout_ms"], serde_json::json!(250));
+        assert!(fields["relay_rtt_ms"].as_u64().is_some());
+        assert!(fields["error"].is_null());
+    }
+
+    #[test]
+    fn relay_peer_request_trace_fields_include_errors() {
+        let trace = RelayPeerRequestTrace::new(
+            "request-2",
+            &ClientTarget {
+                daemon_id: None,
+                daemon_alias: Some("worker".to_string()),
+            },
+            "temporary",
+            500,
+        );
+
+        let fields = trace.fields("timeout", Some("timed out"), None);
+
+        assert_eq!(fields["status"], serde_json::json!("timeout"));
+        assert_eq!(fields["target_daemon_id"], serde_json::Value::Null);
+        assert_eq!(fields["target_daemon_alias"], serde_json::json!("worker"));
+        assert_eq!(fields["transport"], serde_json::json!("temporary"));
+        assert_eq!(fields["error"], serde_json::json!("timed out"));
     }
 }
