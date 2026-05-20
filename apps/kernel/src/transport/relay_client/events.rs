@@ -33,7 +33,7 @@ impl RelayEventRuntime {
 
 pub(super) async fn emit_relay_event(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     client_public_key: &str,
     event_runtime: &Arc<RelayEventRuntime>,
@@ -62,7 +62,7 @@ pub(super) async fn emit_relay_event(
 pub(super) async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     client_public_key: &str,
     session_id: &str,
@@ -151,7 +151,7 @@ pub(super) async fn replay_recent_relay_events(
 
 async fn emit_relay_replay_gap_snapshot(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     client_public_key: &str,
     event_runtime: &Arc<RelayEventRuntime>,
@@ -192,7 +192,7 @@ async fn emit_relay_replay_gap_snapshot(
 }
 
 fn send_relay_event_frame(
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     event_id: u64,
     encrypted_event: EncryptedRelayPayload,

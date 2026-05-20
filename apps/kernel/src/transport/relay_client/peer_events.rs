@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) async fn pump_leased_projection_events(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
 ) {
     let events = match router.relay_pump_leased_runtime_projections().await {
         Ok(events) => events,
@@ -132,7 +132,7 @@ pub(super) async fn handle_daemon_peer_event(
 
 pub(super) async fn emit_leased_projection_event(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     leased_agent_id: &str,
     provider_run_id: &str,
     pump_output: bool,

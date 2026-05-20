@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use arroba_relay::protocol::{EncryptedRelayPayload, RelayEnvelope};
-use tokio::sync::mpsc;
+use arroba_relay::protocol::EncryptedRelayPayload;
 
 use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
@@ -12,10 +11,11 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
+use super::RelayOutgoingSender;
 
 pub(super) async fn handle_daemon_peer_request(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, requester_public_key, daemon_private_key, daemon_id) = {

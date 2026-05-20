@@ -342,7 +342,7 @@ where
 }
 
 pub(super) async fn decrypt_relay_event_from_channel(
-    outgoing_rx: &mut mpsc::UnboundedReceiver<RelayEnvelope>,
+    outgoing_rx: &mut mpsc::Receiver<RelayEnvelope>,
     client_private_key: &str,
 ) -> (u64, serde_json::Value) {
     match outgoing_rx

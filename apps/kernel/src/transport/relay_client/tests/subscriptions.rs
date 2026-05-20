@@ -333,7 +333,7 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
         .await
         .expect("second event should append");
 
-    let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel();
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(RELAY_OUTGOING_QUEUE_LIMIT);
     let subscription_private_key = relay_crypto::generate_private_key_base64();
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)

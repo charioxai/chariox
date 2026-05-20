@@ -28,13 +28,50 @@ pub(super) fn encrypt_peer_payload<T: serde::Serialize>(
 }
 
 pub(super) fn send_outgoing_envelope(
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     envelope: RelayEnvelope,
 ) -> Result<(), DaemonError> {
-    outgoing_tx
-        .send(envelope)
-        .map_err(|error| DaemonError::LocalTransport {
+    outgoing_tx.try_send(envelope).map_err(|error| {
+        let message = match error {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                "relay outgoing queue overloaded".to_string()
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                "relay connection writer is closed".to_string()
+            }
+        };
+        DaemonError::LocalTransport {
             operation: "send relay envelope",
-            message: error.to_string(),
-        })
+            message,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_outgoing_envelope_fails_when_relay_queue_is_full() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::Close {
+                reason: "first".to_string(),
+            },
+        )
+        .expect("first envelope should fit");
+
+        let error = send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::Close {
+                reason: "second".to_string(),
+            },
+        )
+        .expect_err("second envelope should overflow bounded queue");
+
+        assert!(error
+            .to_string()
+            .contains("relay outgoing queue overloaded"));
+    }
 }

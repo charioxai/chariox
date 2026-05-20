@@ -41,7 +41,7 @@ pub(super) fn relay_subscription_task_key(
 
 pub(super) async fn handle_relay_subscribe(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     event_runtime: &Arc<RelayEventRuntime>,
     relay_request_id: String,
@@ -195,7 +195,7 @@ pub(super) async fn handle_relay_subscribe(
 
 pub(super) async fn handle_relay_unsubscribe(
     router: &Arc<CommandRouter>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     relay_request_id: String,
     relay_subscription_id: String,
@@ -239,7 +239,7 @@ pub(super) async fn handle_relay_unsubscribe(
 
 pub(super) async fn run_relay_subscription_loop(
     router: Arc<CommandRouter>,
-    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: RelayOutgoingSender,
     subscription_id: String,
     client_public_key: String,
     session_id: String,
@@ -454,7 +454,7 @@ pub(super) async fn run_relay_subscription_loop(
 
 async fn run_relay_waiting_room_inventory_subscription_loop(
     router: Arc<CommandRouter>,
-    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: RelayOutgoingSender,
     subscription_id: String,
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,

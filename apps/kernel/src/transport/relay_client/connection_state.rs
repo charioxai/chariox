@@ -3,20 +3,19 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, RwLock};
-
-use arroba_relay::protocol::RelayEnvelope;
+use tokio::sync::{oneshot, RwLock};
 
 use crate::runtime::router::CommandRouter;
 
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
+use super::RelayOutgoingSender;
 
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct RelayClientState {
     pub(super) connected: bool,
-    pub(super) outgoing_tx: Option<mpsc::UnboundedSender<RelayEnvelope>>,
+    pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
 }
@@ -40,7 +39,7 @@ impl Default for RelayClientState {
 
 pub(super) async fn set_connected(
     state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: RelayOutgoingSender,
 ) {
     let mut guard = state.write().await;
     guard.connected = true;

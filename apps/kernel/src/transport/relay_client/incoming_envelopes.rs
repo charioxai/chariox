@@ -6,7 +6,7 @@ pub(super) async fn handle_incoming_envelope(
     router: &Arc<CommandRouter>,
     command_sequence: &Arc<AtomicU64>,
     state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     event_runtime: &Arc<RelayEventRuntime>,
     payload: &str,

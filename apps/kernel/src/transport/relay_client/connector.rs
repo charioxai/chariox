@@ -110,7 +110,8 @@ pub async fn run_daemon_relay_connector(
                     }),
                 );
                 let (mut writer, mut reader) = socket.split();
-                let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<RelayEnvelope>();
+                let (outgoing_tx, mut outgoing_rx) =
+                    mpsc::channel::<RelayEnvelope>(RELAY_OUTGOING_QUEUE_LIMIT);
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
                     while let Some(envelope) = outgoing_rx.recv().await {
@@ -130,7 +131,7 @@ pub async fn run_daemon_relay_connector(
                 let register = RelayEnvelope::DaemonRegister {
                     registration: router.relay_registration().await,
                 };
-                if outgoing_tx.send(register).is_err() {
+                if send_outgoing_envelope(&outgoing_tx, register).is_err() {
                     writer_task.abort();
                     clear_remote_inventory_projection(&router);
                     publish_offline_and_set_disconnected(
@@ -167,7 +168,7 @@ pub async fn run_daemon_relay_connector(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 publish_cloud_presence(&router, false, "daemon shutting down").await;
-                                let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
                                 });
                                 sleep(Duration::from_millis(25)).await;
@@ -269,7 +270,7 @@ pub async fn run_daemon_relay_connector(
                                             "phase": "token_refresh",
                                         }),
                                     );
-                                    let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                    let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                         reason: "relay configuration changed".to_string(),
                                     });
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
@@ -309,7 +310,7 @@ pub async fn run_daemon_relay_connector(
                                             "phase": "heartbeat",
                                         }),
                                     );
-                                    let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                    let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                         reason: "relay configuration changed".to_string(),
                                     });
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
@@ -335,7 +336,7 @@ pub async fn run_daemon_relay_connector(
                                 daemon_id: daemon_id.clone(),
                                 registration: None,
                             };
-                            if outgoing_tx.send(heartbeat_frame).is_err() {
+                            if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();

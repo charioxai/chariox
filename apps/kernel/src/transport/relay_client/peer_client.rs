@@ -57,13 +57,15 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
             .insert(request_id.clone(), response_tx);
         (request_id, response_rx, outgoing_tx)
     };
-    if outgoing_tx
-        .send(RelayEnvelope::DaemonPeerRequest {
+    if send_outgoing_envelope(
+        &outgoing_tx,
+        RelayEnvelope::DaemonPeerRequest {
             request_id: request_id.clone(),
             target,
             encrypted_request,
-        })
-        .is_err()
+        },
+    )
+    .is_err()
     {
         let mut guard = state.write().await;
         guard.pending_peer_requests.remove(&request_id);
