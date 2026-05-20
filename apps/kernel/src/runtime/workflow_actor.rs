@@ -6,6 +6,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
+use crate::runtime::command_latency::{
+    log_lane_completed, log_lane_dispatched, log_lane_enqueue_failed, log_lane_enqueued,
+    CommandTrace, LaneCommandTrace,
+};
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
@@ -18,6 +22,7 @@ pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 struct WorkflowCommandEnvelope {
     command_id: String,
     command_type: String,
+    telemetry: LaneCommandTrace,
     caller_user_id: String,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
@@ -68,17 +73,46 @@ impl WorkflowRuntime {
         let lane = self.workflow_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_workflow_actor_user_id(&command);
-        lane.try_send(WorkflowCommandEnvelope {
-            command_id: command.command_id,
-            command_type: command.command_type,
+        let telemetry = LaneCommandTrace::new(
+            CommandTrace::from_command(&command),
+            crate::runtime::command_latency::now_ms(),
+        );
+        let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
+        match lane.try_send(WorkflowCommandEnvelope {
+            command_id: telemetry.command_id().to_string(),
+            command_type: telemetry.command_type().to_string(),
+            telemetry: telemetry.clone(),
             caller_user_id,
             request,
             result_tx,
-        })
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "enqueue workflow kernel command",
-            message: format!("workflow command lane overloaded: {error}"),
-        })?;
+        }) {
+            Ok(()) => {
+                let queue_depth_after = self.queue_limit.saturating_sub(lane.capacity());
+                log_lane_enqueued(
+                    &telemetry,
+                    "workflow",
+                    &session_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    queue_depth_after,
+                );
+            }
+            Err(error) => {
+                let message = format!("workflow command lane overloaded: {error}");
+                log_lane_enqueue_failed(
+                    &telemetry,
+                    "workflow",
+                    &session_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    &message,
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "enqueue workflow kernel command",
+                    message,
+                });
+            }
+        }
         result_rx
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -184,6 +218,13 @@ async fn run_workflow_command_lane(
     let executor =
         WorkflowRuntimeCommandExecutor::new(store, session_projection, agent_runtime_projection);
     while let Some(envelope) = rx.recv().await {
+        let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
+        log_lane_dispatched(
+            &envelope.telemetry,
+            "workflow",
+            &session_id,
+            dispatch_started_at_ms,
+        );
         crate::logging::info_with_fields(
             "daemon.kernel_workflow_actor",
             "workflow kernel command dispatched",
@@ -196,6 +237,13 @@ async fn run_workflow_command_lane(
         let result = executor
             .execute(envelope.request, envelope.caller_user_id)
             .await;
+        log_lane_completed(
+            &envelope.telemetry,
+            "workflow",
+            &session_id,
+            dispatch_started_at_ms,
+            &result,
+        );
         let _ = envelope.result_tx.send(result);
     }
 }

@@ -6,6 +6,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::{KernelCallerKind, KernelCommand};
+use crate::runtime::command_latency::{
+    log_lane_completed, log_lane_dispatched, log_lane_enqueue_failed, log_lane_enqueued,
+    LaneCommandTrace,
+};
 use crate::runtime::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
@@ -22,6 +26,7 @@ use super::store::SessionRuntimeStore;
 struct SessionCommandEnvelope {
     command_id: String,
     command_type: String,
+    telemetry: LaneCommandTrace,
     caller_user_id: String,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
@@ -85,17 +90,48 @@ impl SessionRuntime {
         let lane = self.session_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_session_actor_user_id(&command);
-        lane.try_send(SessionCommandEnvelope {
-            command_id: command.command_id,
-            command_type: command.command_type,
+        let telemetry = LaneCommandTrace::new(
+            crate::runtime::command_latency::CommandTrace::from_command(&command),
+            crate::runtime::command_latency::now_ms(),
+        );
+        let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
+        let command_id = command.command_id;
+        let command_type = command.command_type;
+        match lane.try_send(SessionCommandEnvelope {
+            telemetry: telemetry.clone(),
+            command_id,
+            command_type,
             caller_user_id,
             request,
             result_tx,
-        })
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "enqueue session kernel command",
-            message: format!("session command lane overloaded: {error}"),
-        })?;
+        }) {
+            Ok(()) => {
+                let queue_depth_after = self.queue_limit.saturating_sub(lane.capacity());
+                log_lane_enqueued(
+                    &telemetry,
+                    "session",
+                    &session_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    queue_depth_after,
+                );
+            }
+            Err(error) => {
+                let message = format!("session command lane overloaded: {error}");
+                log_lane_enqueue_failed(
+                    &telemetry,
+                    "session",
+                    &session_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    &message,
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "enqueue session kernel command",
+                    message,
+                });
+            }
+        }
         let response = result_rx
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -182,9 +218,18 @@ impl SessionRuntime {
     ) -> Result<oneshot::Receiver<Result<LocalDaemonResponse, DaemonError>>, DaemonError> {
         let lane = self.session_lane(session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
+        let command_id = command_id.into();
+        let command_type = command_type.into();
+        let mut command =
+            KernelCommand::from_local_request(command_id.clone(), None, None, &request);
+        command.command_type = command_type.clone();
         lane.try_send(SessionCommandEnvelope {
-            command_id: command_id.into(),
-            command_type: command_type.into(),
+            command_id,
+            command_type,
+            telemetry: LaneCommandTrace::new(
+                crate::runtime::command_latency::CommandTrace::from_command(&command),
+                crate::runtime::command_latency::now_ms(),
+            ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
             request,
             result_tx,
@@ -215,6 +260,13 @@ async fn run_session_command_lane(
         session_id.clone(),
     );
     while let Some(envelope) = rx.recv().await {
+        let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
+        log_lane_dispatched(
+            &envelope.telemetry,
+            "session",
+            &session_id,
+            dispatch_started_at_ms,
+        );
         crate::logging::info_with_fields(
             "daemon.kernel_session_actor",
             "session kernel command dispatched",
@@ -227,6 +279,13 @@ async fn run_session_command_lane(
         let result = executor
             .execute(envelope.request, envelope.caller_user_id)
             .await;
+        log_lane_completed(
+            &envelope.telemetry,
+            "session",
+            &session_id,
+            dispatch_started_at_ms,
+            &result,
+        );
         match &result {
             Ok(response) => crate::logging::info_with_fields(
                 "daemon.kernel_session_actor",

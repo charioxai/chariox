@@ -7,6 +7,7 @@ use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_prompt_service::AgentPromptCommandService;
+use crate::runtime::command_latency::CommandTrace;
 use crate::runtime::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::runtime::session_actor::FocusedAgentProjection;
@@ -94,8 +95,7 @@ impl AgentRuntime {
         request.target_agent_id = Some(agent_id.clone());
         self.dispatch_to_agent(
             agent_id,
-            command.command_id.clone(),
-            command.command_type.clone(),
+            CommandTrace::from_command(command),
             AgentCommand::SubmitPrompt { request },
         )
         .await
@@ -115,8 +115,7 @@ impl AgentRuntime {
             .await?;
         self.dispatch_to_agent(
             agent_id.clone(),
-            command.command_id.clone(),
-            command.command_type.clone(),
+            CommandTrace::from_command(command),
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -150,8 +149,7 @@ impl AgentRuntime {
             });
         self.dispatch_to_agent(
             agent_id.clone(),
-            command.command_id.clone(),
-            command.command_type.clone(),
+            CommandTrace::from_command(command),
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id: agent_id.clone(),

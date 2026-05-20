@@ -4,6 +4,10 @@ use tokio::sync::oneshot;
 
 use super::command_executor::AgentRuntimeCommandExecutor;
 use super::*;
+use crate::runtime::command_latency::{
+    log_lane_completed, log_lane_dispatched, log_lane_enqueue_failed, log_lane_enqueued,
+    CommandTrace, LaneCommandTrace,
+};
 use crate::runtime::projection::ActorQueueSnapshot;
 
 #[derive(Debug)]
@@ -26,6 +30,7 @@ pub(super) enum AgentCommand {
 pub(super) struct AgentCommandEnvelope {
     pub(super) command_id: String,
     pub(super) command_type: String,
+    pub(super) telemetry: LaneCommandTrace,
     pub(super) command: AgentCommand,
     pub(super) result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -34,23 +39,49 @@ impl AgentRuntime {
     pub(super) async fn dispatch_to_agent(
         &self,
         agent_id: String,
-        command_id: String,
-        command_type: String,
+        command_trace: CommandTrace,
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let lane_key = agent_id;
         let lane = self.agent_lane(&lane_key).await;
         let (result_tx, result_rx) = oneshot::channel();
-        lane.try_send(AgentCommandEnvelope {
-            command_id,
-            command_type,
+        let telemetry =
+            LaneCommandTrace::new(command_trace, crate::runtime::command_latency::now_ms());
+        let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
+        match lane.try_send(AgentCommandEnvelope {
+            command_id: telemetry.command_id().to_string(),
+            command_type: telemetry.command_type().to_string(),
+            telemetry: telemetry.clone(),
             command,
             result_tx,
-        })
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "enqueue agent kernel command",
-            message: format!("agent command lane overloaded: {error}"),
-        })?;
+        }) {
+            Ok(()) => {
+                let queue_depth_after = self.queue_limit.saturating_sub(lane.capacity());
+                log_lane_enqueued(
+                    &telemetry,
+                    "agent",
+                    &lane_key,
+                    self.queue_limit,
+                    queue_depth_before,
+                    queue_depth_after,
+                );
+            }
+            Err(error) => {
+                let message = format!("agent command lane overloaded: {error}");
+                log_lane_enqueue_failed(
+                    &telemetry,
+                    "agent",
+                    &lane_key,
+                    self.queue_limit,
+                    queue_depth_before,
+                    &message,
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "enqueue agent kernel command",
+                    message,
+                });
+            }
+        }
         result_rx
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -117,6 +148,13 @@ async fn run_agent_command_lane(
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
+        let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
+        log_lane_dispatched(
+            &envelope.telemetry,
+            "agent",
+            &agent_id,
+            dispatch_started_at_ms,
+        );
         crate::logging::info_with_fields(
             "daemon.kernel_agent_actor",
             "agent kernel command dispatched",
@@ -127,6 +165,13 @@ async fn run_agent_command_lane(
             }),
         );
         let result = executor.execute(envelope.command).await;
+        log_lane_completed(
+            &envelope.telemetry,
+            "agent",
+            &agent_id,
+            dispatch_started_at_ms,
+            &result,
+        );
         let _ = envelope.result_tx.send(result);
     }
 }

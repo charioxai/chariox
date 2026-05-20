@@ -1,6 +1,7 @@
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::KernelCommand;
+use crate::runtime::command_latency::{log_command_completed, log_command_received, CommandTrace};
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
@@ -17,19 +18,39 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let command_trace = CommandTrace::from_command(&command);
+        log_command_received(&command_trace);
         let focus_refresh = focus_projection_refresh(&request);
-        let caller_user_id = authorize_session_membership(
+        let caller_user_id = match authorize_session_membership(
             &self.runtime_state,
             &self.session_projection,
             &command,
             &request,
         )
-        .await?;
-        if let Some(response) = self
-            .dispatch_pre_lane(&command, &request, &caller_user_id)
-            .await?
+        .await
         {
-            return Ok(response);
+            Ok(caller_user_id) => caller_user_id,
+            Err(error) => {
+                let result = Err(error);
+                log_command_completed(&command_trace, &result);
+                return result;
+            }
+        };
+        match self
+            .dispatch_pre_lane(&command, &request, &caller_user_id)
+            .await
+        {
+            Ok(Some(response)) => {
+                let result = Ok(response);
+                log_command_completed(&command_trace, &result);
+                return result;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let result = Err(error);
+                log_command_completed(&command_trace, &result);
+                return result;
+            }
         }
 
         let session_refresh = session_projection_refresh(&request);
@@ -52,6 +73,8 @@ impl CommandRouter {
             &result,
         )
         .await;
-        self.redact_result_for_user(result, &caller_user_id)
+        let result = self.redact_result_for_user(result, &caller_user_id);
+        log_command_completed(&command_trace, &result);
+        result
     }
 }

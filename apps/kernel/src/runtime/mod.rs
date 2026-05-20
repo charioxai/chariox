@@ -13,6 +13,7 @@ pub(crate) mod cloud_relay_pairing_executor;
 pub(crate) mod cloud_relay_profile_store;
 pub(crate) mod cloud_session_control_executor;
 pub mod command;
+pub(crate) mod command_latency;
 pub(crate) mod command_response_refresh;
 pub(crate) mod daemon_health_projection;
 pub mod event_log;
