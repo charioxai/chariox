@@ -866,7 +866,7 @@ mod tests {
 
         let relay = local_docker_private_relay(&slice);
 
-        assert_eq!(relay.relay_url, "ws://127.0.0.1:43130");
+        assert_eq!(relay.relay_url, "ws://127.0.0.1:53130");
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
     }

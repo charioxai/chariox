@@ -69,7 +69,7 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock() {
 }
 
 #[tokio::test]
-async fn get_provider_run_does_not_bypass_opencode_selection_sync_path() {
+async fn get_provider_run_projection_does_not_serve_opencode_arroba_runs() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -84,32 +84,24 @@ async fn get_provider_run_does_not_bypass_opencode_selection_sync_path() {
 
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let app_guard = app.lock().await;
     let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
         provider_run_id: provider_run.id().to_string(),
     });
-    let provider_command = KernelCommand::from_local_request(
-        "cmd-opencode-provider-run-refresh",
-        None,
-        None,
-        &provider_request,
-    );
-    let provider_router = router.clone();
-    let provider_task = tokio::spawn(async move {
-        provider_router
-            .dispatch(provider_command, provider_request)
-            .await
-    });
+    let LocalDaemonRequest::GetProviderRun(provider_request) = provider_request else {
+        unreachable!("request shape should stay GetProviderRun")
+    };
 
-    tokio::task::yield_now().await;
+    let projected = crate::runtime::provider_run_control::projected_provider_run_response(
+        &router.provider_run_projection,
+        &provider_request,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    )
+    .expect("projection visibility check should not fail");
+
     assert!(
-        !provider_task.is_finished(),
-        "warmed opencode GetProviderRun must not bypass the refresh/sync handler"
+        projected.is_none(),
+        "warmed opencode GetProviderRun must stay eligible for the refresh/sync handler"
     );
-    drop(app_guard);
-    let _ = provider_task
-        .await
-        .expect("provider task should join after app lock is released");
 }
 
 #[tokio::test]

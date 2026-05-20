@@ -463,7 +463,7 @@ mod tests {
 
         assert_eq!(
             relay_config.relay_url.as_deref(),
-            Some("ws://127.0.0.1:43130")
+            Some("ws://127.0.0.1:53130")
         );
         assert_eq!(
             relay_config.relay_token.as_deref(),

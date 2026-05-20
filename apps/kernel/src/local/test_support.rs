@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use crate::agent::AgentInstance;
 use crate::runtime::command::{KernelCaller, KernelCommand};
 use crate::runtime::router::CommandRouter;
-use crate::session::{WorkflowNodeDefinition, WorkflowRun};
+use crate::session::{WorkflowNodeDefinition, WorkflowRun, WorkflowRunStatus};
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -231,14 +231,16 @@ impl LocalRouterTestHarness {
 
     pub(crate) fn complete_workflow_test_prompt(&self, session_id: &str, label: &str) {
         self.fan_out_workflow_test_output(session_id, label);
-        match self
-            .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-                session_id: session_id.to_string(),
-            }))
-            .unwrap_or_else(|error| panic!("{label} should complete: {error}"))
-        {
-            LocalDaemonResponse::PromptCompleted { .. } => {}
-            _ => panic!("unexpected local response"),
+        match self.dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session_id.to_string(),
+        })) {
+            Ok(LocalDaemonResponse::PromptCompleted { .. }) => {}
+            Ok(_) => panic!("unexpected local response"),
+            Err(DaemonError::NoActivePrompt {
+                session_id: error_session_id,
+            }) if error_session_id == session_id
+                && self.session_has_no_active_workflow(session_id) => {}
+            Err(error) => panic!("{label} should complete: {error}"),
         }
     }
 
@@ -285,6 +287,26 @@ impl LocalRouterTestHarness {
             LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
             _ => panic!("unexpected local response"),
         }
+    }
+
+    fn session_has_no_active_workflow(&self, session_id: &str) -> bool {
+        self.with_app(|app| {
+            app.sessions()
+                .get_session(session_id)
+                .map(|session| {
+                    !session.has_active_prompt()
+                        && session.workflow_runs().iter().all(|run| {
+                            !matches!(
+                                run.status(),
+                                WorkflowRunStatus::Created
+                                    | WorkflowRunStatus::Running
+                                    | WorkflowRunStatus::Waiting
+                                    | WorkflowRunStatus::Completing
+                            )
+                        })
+                })
+                .unwrap_or(false)
+        })
     }
 
     pub(crate) fn wait_for_active_provider_run(&self, session_id: &str) -> String {
