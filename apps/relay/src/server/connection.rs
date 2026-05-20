@@ -1293,6 +1293,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn performance_drill_relay_fanout_resolves_daemon_routes_from_index() {
+        let mut registry = RelayRegistry::default();
+        for index in 0..2_000 {
+            let daemon_id = format!("daemon-{index}");
+            let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, daemon_id.clone());
+            let registration = daemon_registration(&daemon_id);
+            let addr = peer_addr(20_000 + index as u16);
+            let (sender, _receiver) = mpsc::channel::<Message>(1);
+            registry
+                .daemons
+                .insert(daemon_key.clone(), registration.clone());
+            registry
+                .peers
+                .insert(addr, daemon_peer(sender, registration));
+            registry.daemon_peers.insert(daemon_key, addr);
+        }
+
+        let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1999");
+        assert!(resolve_daemon_sender_locked(&registry, &target_key).is_some());
+        assert_eq!(registry.daemon_peers.len(), registry.daemons.len());
+
+        registry
+            .daemon_peers
+            .insert(target_key.clone(), peer_addr(65_000));
+        assert!(
+            resolve_daemon_sender_locked(&registry, &target_key).is_none(),
+            "indexed routing must not scan all relay peers when an index entry is stale"
+        );
+    }
+
     #[tokio::test]
     async fn remove_daemon_peer_clears_daemon_route_index() {
         let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");

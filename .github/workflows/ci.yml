@@ -49,11 +49,19 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --manifest-path apps/kernel/Cargo.toml --check
+
+      - name: Performance drills
+        run: node scripts/performance-drills.mjs
 
       - name: Client protocol conformance gate
         run: cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture
