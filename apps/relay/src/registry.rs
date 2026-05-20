@@ -75,6 +75,7 @@ pub(crate) struct ActiveSubscription {
 pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
     pub(crate) daemons: BTreeMap<DaemonKey, DaemonRegistration>,
+    pub(crate) daemon_peers: BTreeMap<DaemonKey, SocketAddr>,
     pub(crate) pending_requests: BTreeMap<String, PendingClientRequest>,
     pub(crate) pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,

@@ -153,7 +153,8 @@ pub(crate) async fn handle_connection(
                                     daemon_registration: Some(registration.clone()),
                                 },
                             );
-                            guard.daemons.insert(daemon_key, registration);
+                            guard.daemons.insert(daemon_key.clone(), registration);
+                            guard.daemon_peers.insert(daemon_key, peer_addr);
                             drop(guard);
                             for sender in replaced_senders {
                                 send_close(&sender, "daemon reconnected".to_string());
@@ -1029,19 +1030,20 @@ fn resolve_daemon_sender_locked(
     daemon_key: &DaemonKey,
 ) -> Option<RelaySender> {
     let registration = registry.daemons.get(daemon_key)?;
-    registry
-        .peers
-        .values()
-        .find(|peer| {
-            peer.role == RelayConnectionRole::Daemon
-                && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
-                && peer
-                    .daemon_registration
-                    .as_ref()
-                    .map(|candidate| candidate.daemon_id.as_str())
-                    == Some(registration.daemon_id.as_str())
-        })
-        .map(|peer| peer.sender.clone())
+    let peer_addr = registry.daemon_peers.get(daemon_key)?;
+    let peer = registry.peers.get(peer_addr)?;
+    if peer.role == RelayConnectionRole::Daemon
+        && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
+        && peer
+            .daemon_registration
+            .as_ref()
+            .map(|candidate| candidate.daemon_id.as_str())
+            == Some(registration.daemon_id.as_str())
+    {
+        Some(peer.sender.clone())
+    } else {
+        None
+    }
 }
 
 async fn remove_peer(
@@ -1078,6 +1080,7 @@ async fn remove_peer(
             return (Vec::new(), Vec::new(), Vec::new());
         }
         guard.daemons.remove(daemon_key);
+        guard.daemon_peers.remove(daemon_key);
         let daemon_subscriptions = guard
             .subscriptions
             .iter()
@@ -1217,4 +1220,100 @@ fn daemon_key_log_value(daemon_key: &DaemonKey) -> Value {
         "realm_id": daemon_key.realm_id,
         "daemon_id": daemon_key.daemon_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use tokio::sync::{mpsc, RwLock};
+
+    use super::*;
+    use crate::protocol::DaemonRegistration;
+
+    fn peer_addr(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
+    fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
+        DaemonRegistration {
+            auth_token: "token".to_string(),
+            daemon_id: daemon_id.to_string(),
+            machine_id: "machine-1".to_string(),
+            machine_alias: None,
+            os_name: None,
+            kernel_started_at_ms: 0,
+            daemon_alias: None,
+            kernel_alias: None,
+            public_key: "public-key".to_string(),
+            capabilities: Vec::new(),
+            available_providers: Vec::new(),
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 0,
+        }
+    }
+
+    fn daemon_peer(sender: RelaySender, registration: DaemonRegistration) -> PeerHandle {
+        PeerHandle {
+            sender,
+            role: RelayConnectionRole::Daemon,
+            realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
+            identity: None,
+            daemon_registration: Some(registration),
+        }
+    }
+
+    #[test]
+    fn resolve_daemon_sender_uses_daemon_peer_index() {
+        let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+        let registration = daemon_registration("daemon-1");
+        let daemon_addr = peer_addr(10_001);
+        let (sender, _receiver) = mpsc::channel::<Message>(1);
+        let mut registry = RelayRegistry::default();
+        registry
+            .daemons
+            .insert(daemon_key.clone(), registration.clone());
+        registry
+            .peers
+            .insert(daemon_addr, daemon_peer(sender, registration));
+        registry
+            .daemon_peers
+            .insert(daemon_key.clone(), daemon_addr);
+
+        assert!(resolve_daemon_sender_locked(&registry, &daemon_key).is_some());
+
+        registry
+            .daemon_peers
+            .insert(daemon_key.clone(), peer_addr(10_002));
+
+        assert!(
+            resolve_daemon_sender_locked(&registry, &daemon_key).is_none(),
+            "stale route index entries must not fall back to scanning all peers"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_daemon_peer_clears_daemon_route_index() {
+        let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+        let registration = daemon_registration("daemon-1");
+        let peer_addr = peer_addr(10_003);
+        let (sender, _receiver) = mpsc::channel::<Message>(1);
+        let mut registry = RelayRegistry::default();
+        registry
+            .daemons
+            .insert(daemon_key.clone(), registration.clone());
+        registry
+            .peers
+            .insert(peer_addr, daemon_peer(sender, registration));
+        registry.daemon_peers.insert(daemon_key.clone(), peer_addr);
+        let registry = Arc::new(RwLock::new(registry));
+
+        let _ = remove_peer(&registry, peer_addr, Some(&daemon_key)).await;
+
+        let guard = registry.read().await;
+        assert!(!guard.daemons.contains_key(&daemon_key));
+        assert!(!guard.daemon_peers.contains_key(&daemon_key));
+        assert!(!guard.peers.contains_key(&peer_addr));
+    }
 }
