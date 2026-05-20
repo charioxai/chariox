@@ -4,6 +4,7 @@ use std::sync::Mutex as StdMutex;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
+const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalInputRecord {
@@ -266,6 +267,7 @@ pub struct TerminalStreamService {
     notice_records: Vec<RuntimeNoticeRecord>,
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
+    output_coalesce_byte_limit: usize,
     trimmed_pending_output_recipients: u64,
     health_store: TerminalStreamHealthStore,
 }
@@ -275,6 +277,7 @@ impl TerminalStreamService {
         let service = Self {
             pending_output_record_limit_per_attachment:
                 DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
+            output_coalesce_byte_limit: DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT,
             ..Self::default()
         };
         service.refresh_health();
@@ -285,6 +288,16 @@ impl TerminalStreamService {
     fn with_pending_output_record_limit_per_attachment(limit: usize) -> Self {
         let service = Self {
             pending_output_record_limit_per_attachment: limit,
+            ..Self::new()
+        };
+        service.refresh_health();
+        service
+    }
+
+    #[cfg(test)]
+    fn with_output_coalesce_byte_limit(limit: usize) -> Self {
+        let service = Self {
+            output_coalesce_byte_limit: limit,
             ..Self::new()
         };
         service.refresh_health();
@@ -332,10 +345,40 @@ impl TerminalStreamService {
             bytes: bytes.to_vec(),
         };
 
-        self.output_records.push(record.clone());
+        if !self.try_coalesce_output_record(&record) {
+            self.output_records.push(record.clone());
+        }
         self.enforce_pending_output_record_limits();
         self.refresh_health();
         record
+    }
+
+    fn try_coalesce_output_record(&mut self, record: &TerminalOutputRecord) -> bool {
+        if self.output_coalesce_byte_limit == 0 || !is_coalescible_output_kind(&record.kind) {
+            return false;
+        }
+        let Some(previous) = self.output_records.last_mut() else {
+            return false;
+        };
+        if !is_coalescible_output_kind(&previous.kind)
+            || previous.session_id != record.session_id
+            || previous.provider_run_id != record.provider_run_id
+            || previous.agent_id != record.agent_id
+            || previous.kind != record.kind
+            || previous.merge_key != record.merge_key
+            || previous.recipient_attachment_ids != record.recipient_attachment_ids
+            || previous.pending_recipient_attachment_ids != record.pending_recipient_attachment_ids
+        {
+            return false;
+        }
+        let Some(coalesced_len) = previous.bytes.len().checked_add(record.bytes.len()) else {
+            return false;
+        };
+        if coalesced_len > self.output_coalesce_byte_limit {
+            return false;
+        }
+        previous.bytes.extend_from_slice(&record.bytes);
+        true
     }
 
     pub fn record_notice(
@@ -548,6 +591,13 @@ impl TerminalStreamService {
     }
 }
 
+fn is_coalescible_output_kind(kind: &TerminalOutputKind) -> bool {
+    matches!(
+        kind,
+        TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TerminalOutputKind, TerminalStreamService};
@@ -620,7 +670,7 @@ mod tests {
                 "provider-run-1",
                 Some("agent-1"),
                 TerminalOutputKind::ProviderOutput,
-                None,
+                Some(format!("chunk-{index}")),
                 vec!["slow-attachment".to_string(), "fast-attachment".to_string()],
                 format!("chunk-{index}").as_bytes(),
             );
@@ -648,7 +698,7 @@ mod tests {
                 "provider-run-1",
                 Some("agent-1"),
                 TerminalOutputKind::ProviderOutput,
-                None,
+                Some(format!("chunk-{index}")),
                 vec!["slow-attachment".to_string()],
                 format!("chunk-{index}").as_bytes(),
             );
@@ -675,6 +725,99 @@ mod tests {
         assert_eq!(health.pending_completion_records, 1);
         assert_eq!(health.pending_output_record_limit_per_attachment, 2);
         assert_eq!(health.trimmed_pending_output_recipients, 2);
+    }
+
+    #[test]
+    fn adjacent_provider_output_records_coalesce() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"hello ",
+        );
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"world",
+        );
+
+        assert_eq!(terminal.output_records().len(), 1);
+        assert_eq!(terminal.output_records()[0].bytes, b"hello world");
+
+        let first = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].bytes, b"hello world");
+    }
+
+    #[test]
+    fn output_coalescing_preserves_recipient_progress() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["slow-attachment".to_string(), "fast-attachment".to_string()],
+            b"first",
+        );
+        let fast_first = terminal.drain_output_records("session-1", "fast-attachment");
+        assert_eq!(fast_first.len(), 1);
+        assert_eq!(fast_first[0].bytes, b"first");
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["slow-attachment".to_string(), "fast-attachment".to_string()],
+            b"second",
+        );
+
+        let fast_second = terminal.drain_output_records("session-1", "fast-attachment");
+        assert_eq!(fast_second.len(), 1);
+        assert_eq!(fast_second[0].bytes, b"second");
+
+        let slow_records = terminal.drain_output_records("session-1", "slow-attachment");
+        assert_eq!(slow_records.len(), 2);
+        assert_eq!(slow_records[0].bytes, b"first");
+        assert_eq!(slow_records[1].bytes, b"second");
+    }
+
+    #[test]
+    fn output_coalescing_respects_byte_limit() {
+        let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(5);
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"1234",
+        );
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"56",
+        );
+
+        assert_eq!(terminal.output_records().len(), 2);
+        assert_eq!(terminal.output_records()[0].bytes, b"1234");
+        assert_eq!(terminal.output_records()[1].bytes, b"56");
     }
 
     #[test]
