@@ -1,5 +1,6 @@
 type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
   delayMs: number
+  maxRecordsPerFlush?: number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer: (timer: TimerHandle) => void
   processRecords: (records: RecordValue[]) => void
@@ -18,6 +19,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
 ): TerminalOutputRecordQueue<RecordValue> {
   let pendingTimer: TimerHandle | undefined
   let pendingRecords: RecordValue[] = []
+  const maxRecordsPerFlush = Math.max(1, options.maxRecordsPerFlush ?? Number.POSITIVE_INFINITY)
 
   const clearPendingTimer = () => {
     if (pendingTimer === undefined) {
@@ -32,9 +34,21 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
     if (pendingRecords.length === 0) {
       return
     }
-    const records = pendingRecords
-    pendingRecords = []
+    const records = pendingRecords.splice(0, maxRecordsPerFlush)
     options.processRecords(records)
+    if (pendingRecords.length > 0) {
+      scheduleFlush()
+    }
+  }
+
+  const scheduleFlush = () => {
+    if (pendingTimer !== undefined) {
+      return
+    }
+    pendingTimer = options.scheduleTimer(() => {
+      pendingTimer = undefined
+      flush()
+    }, options.delayMs)
   }
 
   return {
@@ -43,13 +57,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
         return
       }
       pendingRecords.push(...records)
-      if (pendingTimer !== undefined) {
-        return
-      }
-      pendingTimer = options.scheduleTimer(() => {
-        pendingTimer = undefined
-        flush()
-      }, options.delayMs)
+      scheduleFlush()
     },
     flush,
     clearTimer() {

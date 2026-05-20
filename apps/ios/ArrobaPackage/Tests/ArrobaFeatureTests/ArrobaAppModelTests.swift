@@ -115,6 +115,61 @@ import Testing
 }
 
 @MainActor
+@Test func terminalOutputRecordsCoalesceBeforeTranscriptMutation() async {
+    let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
+    let client = MockKernelClient(
+        response: .sessionAttached(RuntimeAttachment(id: "attachment-1", sessionID: session.id)),
+        eventFrames: [
+            KernelEventFrame(
+                type: "event",
+                eventID: 1,
+                event: .terminalOutput([
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("A".utf8)
+                    ),
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("B".utf8)
+                    ),
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_reasoning",
+                        mergeKey: nil,
+                        bytes: Array("thinking".utf8)
+                    ),
+                    TerminalOutputRecord(
+                        agentID: "agent-1",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("C".utf8)
+                    ),
+                    TerminalOutputRecord(
+                        agentID: "agent-2",
+                        kind: "provider_output",
+                        mergeKey: nil,
+                        bytes: Array("D".utf8)
+                    ),
+                ])
+            ),
+        ]
+    )
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.terminalBudget")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.terminalBudget")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.selectSession(session)
+
+    await model.attachSelectedSession()
+    try? await Task.sleep(for: .milliseconds(10))
+
+    #expect(model.transcriptEntries.map(\.text) == ["AB", "thinking", "C", "D"])
+}
+
+@MainActor
 @Test func failedDetachKeepsLocalAttachmentState() async {
     let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
     let client = SequencedMockKernelClient(responses: [

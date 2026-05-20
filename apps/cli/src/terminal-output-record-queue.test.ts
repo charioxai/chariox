@@ -30,6 +30,28 @@ function createHarness() {
   return { processed, queue, timers }
 }
 
+function createBudgetedHarness() {
+  const timers: FakeTimer[] = []
+  const processed: number[][] = []
+  const queue = createTerminalOutputRecordQueue<FakeTimer, number>({
+    delayMs: 25,
+    maxRecordsPerFlush: 2,
+    scheduleTimer(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer(timer) {
+      timer.cleared = true
+    },
+    processRecords(records) {
+      processed.push(records)
+    },
+  })
+
+  return { processed, queue, timers }
+}
+
 test("terminal output record queue batches records on one timer", () => {
   const { processed, queue, timers } = createHarness()
 
@@ -82,4 +104,25 @@ test("terminal output record queue can clear the timer while retaining records",
 
   queue.flush()
   assert.deepEqual(processed, [[1]])
+})
+
+test("terminal output record queue limits each flush and reschedules overflow", () => {
+  const { processed, queue, timers } = createBudgetedHarness()
+
+  queue.queue([1, 2, 3, 4, 5])
+
+  assert.equal(timers.length, 1)
+  timers[0]?.callback()
+
+  assert.deepEqual(processed, [[1, 2]])
+  assert.equal(queue.pendingCount(), 3)
+  assert.equal(queue.hasPendingFlush(), true)
+  assert.equal(timers.length, 2)
+
+  timers[1]?.callback()
+  timers[2]?.callback()
+
+  assert.deepEqual(processed, [[1, 2], [3, 4], [5]])
+  assert.equal(queue.pendingCount(), 0)
+  assert.equal(queue.hasPendingFlush(), false)
 })

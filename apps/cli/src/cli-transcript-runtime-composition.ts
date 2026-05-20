@@ -4,6 +4,7 @@ import {
   LIVE_TRANSCRIPT_LIMIT,
   LIVE_TRANSCRIPT_MAX_CHARS,
   STREAM_BATCH_WINDOW_MS,
+  STREAM_RECORDS_PER_FLUSH,
   TURN_COMPLETION_QUIET_MS,
 } from "./cli-runtime-tuning.js"
 import type { TerminalOutputRecord } from "./cli-types.js"
@@ -112,6 +113,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   })
   const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof deps.scheduleTimer>, TerminalOutputRecord>({
     delayMs: STREAM_BATCH_WINDOW_MS,
+    maxRecordsPerFlush: STREAM_RECORDS_PER_FLUSH,
     scheduleTimer: deps.scheduleTimer,
     clearTimer: deps.clearTimer,
     processRecords(records) {

@@ -1156,13 +1156,7 @@ public final class ArrobaAppModel {
         lastEventID = eventFrame.eventID
         switch eventFrame.event {
         case let .terminalOutput(records):
-            for record in records where !record.text.isEmpty {
-                appendTranscript(
-                    kind: TranscriptEntry.Kind(terminalKind: record.kind),
-                    agentID: record.agentID,
-                    text: record.text
-                )
-            }
+            appendTerminalOutput(records)
         case let .runtimeNotices(notices):
             for notice in notices {
                 appendTranscript(kind: .notice, agentID: nil, text: notice.message)
@@ -1200,6 +1194,33 @@ public final class ArrobaAppModel {
         case let .unknown(name):
             statusMessage = "Kernel event received: \(name)."
         }
+    }
+
+    private func appendTerminalOutput(_ records: [TerminalOutputRecord]) {
+        var pendingKind: TranscriptEntry.Kind?
+        var pendingAgentID: String?
+        var pendingText = ""
+
+        func flushPending() {
+            guard let kind = pendingKind, !pendingText.isEmpty else { return }
+            appendTranscript(kind: kind, agentID: pendingAgentID, text: pendingText)
+            pendingKind = nil
+            pendingAgentID = nil
+            pendingText = ""
+        }
+
+        for record in records where !record.text.isEmpty {
+            let kind = TranscriptEntry.Kind(terminalKind: record.kind)
+            if pendingKind == kind, pendingAgentID == record.agentID {
+                pendingText += record.text
+            } else {
+                flushPending()
+                pendingKind = kind
+                pendingAgentID = record.agentID
+                pendingText = record.text
+            }
+        }
+        flushPending()
     }
 
     private func appendTranscript(kind: TranscriptEntry.Kind, agentID: String?, text: String) {

@@ -11,9 +11,13 @@ export function createRenderScheduler(options: {
   schedule?: (callback: () => void) => SchedulerTimer
   clearSchedule?: (timer: SchedulerTimer) => void
   requestRootRender?: () => void
+  maxTreesPerFlush?: number
+  maxRenderablesPerFlush?: number
 }) {
   const schedule = options.schedule ?? ((callback) => setTimeout(callback, 0))
   const clearSchedule = options.clearSchedule ?? clearTimeout
+  const maxTreesPerFlush = Math.max(1, options.maxTreesPerFlush ?? Number.POSITIVE_INFINITY)
+  const maxRenderablesPerFlush = Math.max(1, options.maxRenderablesPerFlush ?? Number.POSITIVE_INFINITY)
   const dirtyRenderables = new Set<RenderTreeNode>()
   const dirtyTrees = new Set<RenderTreeNode>()
   let rootDirty = false
@@ -56,21 +60,34 @@ export function createRenderScheduler(options: {
       timer = null
     }
     const seen = new Set<string | number>()
+    let renderedTrees = 0
     for (const tree of [...dirtyTrees]) {
+      if (renderedTrees >= maxTreesPerFlush) {
+        break
+      }
       requestRenderableTreeRender(tree, seen)
+      dirtyTrees.delete(tree)
+      renderedTrees += 1
     }
-    dirtyTrees.clear()
+    let renderedRenderables = 0
     for (const renderable of [...dirtyRenderables]) {
+      if (renderedRenderables >= maxRenderablesPerFlush) {
+        break
+      }
       const renderableId = renderable.id
+      dirtyRenderables.delete(renderable)
       if (renderableId !== undefined && seen.has(renderableId)) {
         continue
       }
       renderable.requestRender?.()
+      renderedRenderables += 1
     }
-    dirtyRenderables.clear()
     if (rootDirty) {
       rootDirty = false
       options.requestRootRender?.()
+    }
+    if (dirtyTrees.size > 0 || dirtyRenderables.size > 0) {
+      ensureScheduled()
     }
   }
 

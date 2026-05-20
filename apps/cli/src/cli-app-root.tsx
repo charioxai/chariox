@@ -33,6 +33,8 @@ import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
+  RENDER_SCHEDULER_RENDERABLES_PER_FLUSH,
+  RENDER_SCHEDULER_TREES_PER_FLUSH,
 } from "./cli-runtime-tuning.js"
 import { CliAppWorkspaceView } from "./cli-app-workspace-view.js"
 import { createAgentFocusTransitionController } from "./agent-focus-transition-controller.js"
@@ -347,6 +349,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderScheduler = createRenderScheduler({
     schedule: (callback) => startTimeout(callback, 0),
     clearSchedule: clearTimeout,
+    maxTreesPerFlush: RENDER_SCHEDULER_TREES_PER_FLUSH,
+    maxRenderablesPerFlush: RENDER_SCHEDULER_RENDERABLES_PER_FLUSH,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },

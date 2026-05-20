@@ -78,3 +78,29 @@ test("render scheduler renders tree once and skips duplicate child render", () =
   assert.equal(child.renders, 1)
   assert.equal(child.rebuilds, 1)
 })
+
+test("render scheduler defers renderables past the per-flush budget", () => {
+  const scheduled: Array<() => void> = []
+  const panes = [renderable("pane-1"), renderable("pane-2"), renderable("pane-3")]
+  const scheduler = createRenderScheduler({
+    maxRenderablesPerFlush: 2,
+    schedule: (callback) => {
+      scheduled.push(callback)
+      return scheduled.length as unknown as ReturnType<typeof setTimeout>
+    },
+    clearSchedule: () => {},
+  })
+
+  for (const pane of panes) {
+    scheduler.requestRenderable(pane)
+  }
+
+  assert.equal(scheduled.length, 1)
+  scheduled[0]!()
+
+  assert.deepEqual(panes.map((pane) => pane.renders), [1, 1, 0])
+  assert.equal(scheduled.length, 2)
+
+  scheduled[1]!()
+  assert.deepEqual(panes.map((pane) => pane.renders), [1, 1, 1])
+})
