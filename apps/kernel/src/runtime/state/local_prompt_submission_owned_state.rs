@@ -58,7 +58,7 @@ impl KernelRuntimeOwnedState {
             &session,
             prepared.prompt.clone(),
             force_queue,
-        );
+        )?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {

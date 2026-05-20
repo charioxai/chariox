@@ -62,9 +62,9 @@ impl DaemonApp {
                 attachment_id: source_attachment_id,
             });
         }
-        let outcome = self
-            .prompt_state_owner
-            .submit_prepared_prompt(&session, prompt, force_queue);
+        let outcome =
+            self.prompt_state_owner
+                .submit_prepared_prompt(&session, prompt, force_queue)?;
         self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         Ok(outcome)
     }

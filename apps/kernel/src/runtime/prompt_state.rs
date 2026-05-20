@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
+pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
+
 #[derive(Debug, Clone, Default)]
 struct OwnedAgentPromptState {
     active_prompt: Option<PromptQueueItem>,
@@ -166,7 +168,7 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         mut prompt: PromptQueueItem,
         force_queue: bool,
-    ) -> PromptSubmissionOutcome {
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
         let mut owner = self
             .state
@@ -176,11 +178,30 @@ impl PromptStateOwner {
         if !force_queue && state.active_prompt.is_none() {
             prompt.set_status(PromptStatus::Running);
             state.active_prompt = Some(prompt.clone());
-            PromptSubmissionOutcome::Started { prompt }
+            Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
+            if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
+                crate::logging::warn_with_fields(
+                    "daemon.prompt_queue",
+                    "agent prompt queue overloaded",
+                    serde_json::json!({
+                        "session_id": session.id(),
+                        "agent_id": agent_id,
+                        "prompt_id": prompt.id(),
+                        "queued_prompts": state.queued_prompts.len(),
+                        "queue_limit": PROMPT_QUEUE_LIMIT,
+                    }),
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "queue prompt",
+                    message: format!(
+                        "agent prompt queue overloaded: queued prompt limit {PROMPT_QUEUE_LIMIT} reached"
+                    ),
+                });
+            }
             prompt.set_status(PromptStatus::Queued);
             state.queued_prompts.push_back(prompt.clone());
-            PromptSubmissionOutcome::Queued { prompt }
+            Ok(PromptSubmissionOutcome::Queued { prompt })
         }
     }
 
@@ -406,5 +427,60 @@ impl PromptStateOwnerState {
         self.states
             .entry(key)
             .or_insert_with(|| OwnedAgentPromptState::from_session(session, agent_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submit_prepared_prompt_rejects_queue_overflow() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+
+        for index in 0..PROMPT_QUEUE_LIMIT {
+            let outcome = owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new(
+                        format!("prompt-{index}"),
+                        "attachment-1",
+                        "agent-1",
+                        "queued",
+                        PromptStatus::Queued,
+                    ),
+                    true,
+                )
+                .expect("prompt should fit while under queue limit");
+            assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+        }
+
+        let error = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-overflow",
+                    "attachment-1",
+                    "agent-1",
+                    "overflow",
+                    PromptStatus::Queued,
+                ),
+                true,
+            )
+            .expect_err("queue limit should reject overflow prompt");
+
+        assert!(error.to_string().contains("agent prompt queue overloaded"));
+        assert_eq!(
+            owner.queued_prompt_count_for_agent(&session, "agent-1"),
+            PROMPT_QUEUE_LIMIT
+        );
     }
 }
