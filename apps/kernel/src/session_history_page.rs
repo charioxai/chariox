@@ -41,7 +41,30 @@ pub fn paginate_session_history(
     before_entry_index: Option<usize>,
     before_entry_char_offset: Option<usize>,
 ) -> SessionHistoryPage {
-    let mut slices = build_history_slices(entries, before_entry_index, before_entry_char_offset);
+    paginate_session_history_from_index(
+        entries,
+        0,
+        round_count,
+        max_chars,
+        before_entry_index,
+        before_entry_char_offset,
+    )
+}
+
+pub(crate) fn paginate_session_history_from_index(
+    entries: &[SessionHistoryEntry],
+    base_entry_index: usize,
+    round_count: Option<usize>,
+    max_chars: Option<usize>,
+    before_entry_index: Option<usize>,
+    before_entry_char_offset: Option<usize>,
+) -> SessionHistoryPage {
+    let mut slices = build_history_slices(
+        entries,
+        base_entry_index,
+        before_entry_index,
+        before_entry_char_offset,
+    );
 
     if slices.is_empty() {
         return SessionHistoryPage {
@@ -122,17 +145,26 @@ fn history_start_for_recent_user_rounds_in_slices(
 
 fn build_history_slices(
     entries: &[SessionHistoryEntry],
+    base_entry_index: usize,
     before_entry_index: Option<usize>,
     before_entry_char_offset: Option<usize>,
 ) -> Vec<SessionHistorySlice> {
+    let end_entry_index = base_entry_index.saturating_add(entries.len());
+    let before_entry_index = before_entry_index
+        .unwrap_or(end_entry_index)
+        .min(end_entry_index);
+    let retained_entry_count = before_entry_index
+        .saturating_sub(base_entry_index)
+        .min(entries.len());
     let mut slices: Vec<SessionHistorySlice> = entries
         .iter()
         .cloned()
+        .take(retained_entry_count)
         .enumerate()
         .map(|(entry_index, entry)| {
             let total_chars = entry.text.chars().count();
             SessionHistorySlice {
-                entry_index,
+                entry_index: base_entry_index + entry_index,
                 fragment_start: 0,
                 fragment_end: total_chars,
                 total_chars,
@@ -140,9 +172,6 @@ fn build_history_slices(
             }
         })
         .collect();
-
-    let before_entry_index = before_entry_index.unwrap_or(slices.len()).min(slices.len());
-    slices.truncate(before_entry_index);
 
     if let Some(slice) = slices.last_mut() {
         if let Some(before_entry_char_offset) = before_entry_char_offset {
@@ -212,8 +241,9 @@ fn text_range(text: &str, start: usize, char_count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        history_start_for_recent_user_rounds, paginate_session_history, SessionHistoryCursor,
-        SessionHistoryPage, SessionHistoryPageEntry,
+        history_start_for_recent_user_rounds, paginate_session_history,
+        paginate_session_history_from_index, SessionHistoryCursor, SessionHistoryPage,
+        SessionHistoryPageEntry,
     };
     use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 
@@ -356,6 +386,40 @@ mod tests {
                 next_cursor: Some(SessionHistoryCursor {
                     before_entry_index: 2,
                     before_entry_char_offset: Some(4),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_absolute_entry_indices_for_retained_suffixes() {
+        let entries = vec![
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 3"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 3"),
+        ];
+
+        let page = paginate_session_history_from_index(&entries, 4, Some(1), None, None, None);
+
+        assert_eq!(
+            page,
+            SessionHistoryPage {
+                entries: vec![
+                    page_entry(
+                        4,
+                        0,
+                        8,
+                        history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 3")
+                    ),
+                    page_entry(
+                        5,
+                        0,
+                        8,
+                        history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 3")
+                    ),
+                ],
+                next_cursor: Some(SessionHistoryCursor {
+                    before_entry_index: 4,
+                    before_entry_char_offset: None,
                 }),
             }
         );
