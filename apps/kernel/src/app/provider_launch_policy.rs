@@ -6,7 +6,9 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
 
 pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
-    crate::secret::RuntimeSecretService::credential_env_names_from(&config.user_config.credentials)
+    let credentials = crate::credential::load_user_credentials().unwrap_or_default();
+    let _ = config;
+    crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
         .into_iter()
         .collect()
 }

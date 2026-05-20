@@ -62,6 +62,8 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onSkill: (command) => calls.push(`skill:${command.args.join(" ")}`),
     onEnv: (command) => calls.push(`env:${command.args.join(" ")}`),
     onScript: (command) => calls.push(`script:${command.args.join(" ")}`),
+    onCredential: (command) => calls.push(`credential:${command.args.join(" ")}`),
+    onConnector: (command) => calls.push(`connector:${command.args.join(" ")}`),
     onExtension: (command) => calls.push(`extension:${command.args.join(" ")}`),
     flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
     formatError: (error) => error instanceof Error ? error.message : String(error),

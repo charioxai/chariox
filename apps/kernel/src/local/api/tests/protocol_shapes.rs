@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -391,7 +391,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::RequestNativeProviderInteraction(
         RequestNativeProviderInteractionRequest::allow_deny(
@@ -442,7 +442,7 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -474,7 +474,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -509,7 +509,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -532,7 +532,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -581,7 +581,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -699,7 +699,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_history_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
         session_id: Some("session-1".to_string()),
@@ -733,7 +733,7 @@ fn local_daemon_protocol_query_history_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -766,7 +766,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -796,7 +796,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 36);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 38);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),

@@ -140,6 +140,54 @@ pub struct ListScriptsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterCredentialRequest {
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveCredentialRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetCredentialRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListCredentialsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterConnectorRequest {
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveConnectorRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetConnectorRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListConnectorsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestConnectorRequest {
+    pub name: String,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default)]
+    pub input: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallSkillRequest {
     pub workspace_id: Option<String>,
     pub source_path: PathBuf,
@@ -170,6 +218,7 @@ pub enum ExtensionKind {
     Mcp,
     Skill,
     Script,
+    Connector,
 }
 
 impl From<ExtensionKind> for crate::extension::ExtensionKind {
@@ -178,6 +227,7 @@ impl From<ExtensionKind> for crate::extension::ExtensionKind {
             ExtensionKind::Mcp => Self::Mcp,
             ExtensionKind::Skill => Self::Skill,
             ExtensionKind::Script => Self::Script,
+            ExtensionKind::Connector => Self::Connector,
         }
     }
 }
@@ -190,6 +240,10 @@ pub struct GrantAgentExtensionRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_safety: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

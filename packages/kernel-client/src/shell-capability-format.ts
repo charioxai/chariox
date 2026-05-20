@@ -81,7 +81,12 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
     return `${agentLabel} has no ${label} grants.`
   }
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
-    const suffix = grant.environment ? ` @ ${grant.environment}` : ""
+    const parts = [
+      grant.environment ? `env=${grant.environment}` : null,
+      grant.credential ? `credential=${grant.credential}` : null,
+      grant.max_safety ? `allow=${grant.max_safety}` : null,
+    ].filter(Boolean)
+    const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : ""
     return `- ${grant.name}${suffix}`
   }).join("\n")}`
 }

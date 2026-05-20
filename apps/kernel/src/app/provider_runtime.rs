@@ -701,8 +701,15 @@ mod tests {
 
     #[test]
     fn provider_launch_scrubs_configured_credential_env_names() {
-        let mut config = DaemonConfig::for_tests();
-        config.user_config.credentials.push(UserCredentialConfig {
+        let _guard = crate::env_lock::lock();
+        let old_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join("arroba-provider-env-credential-test");
+        let _ = std::fs::remove_dir_all(&temp_home);
+        std::env::set_var("HOME", &temp_home);
+        let source = temp_home.join("credential.yaml");
+        std::fs::create_dir_all(&temp_home).unwrap();
+        let registry = crate::credential::ArrobaCredentialRegistry::user().unwrap();
+        let credential = UserCredentialConfig {
             id: "github".to_string(),
             description: None,
             source: UserCredentialSourceConfig::Env {
@@ -714,7 +721,10 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
-        });
+        };
+        std::fs::write(&source, serde_yaml::to_string(&credential).unwrap()).unwrap();
+        registry.install_from_file(&source).unwrap();
+        let config = DaemonConfig::for_tests();
         let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -733,6 +743,11 @@ mod tests {
         assert!(run
             .pty_env_remove()
             .contains(&"ARROBA_TEST_GH_TOKEN".to_string()));
+        match old_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
     }
 
     #[test]

@@ -120,13 +120,32 @@ impl CommandRouter {
             | LocalDaemonRequest::RemoveScript(_)
             | LocalDaemonRequest::GetScript(_)
             | LocalDaemonRequest::ListScripts(_)
+            | LocalDaemonRequest::RegisterCredential(_)
+            | LocalDaemonRequest::RemoveCredential(_)
+            | LocalDaemonRequest::GetCredential(_)
+            | LocalDaemonRequest::ListCredentials(_)
+            | LocalDaemonRequest::RegisterConnector(_)
+            | LocalDaemonRequest::RemoveConnector(_)
+            | LocalDaemonRequest::GetConnector(_)
+            | LocalDaemonRequest::ListConnectors(_)
+            | LocalDaemonRequest::TestConnector(_)
             | LocalDaemonRequest::InstallSkill(_)
             | LocalDaemonRequest::UpdateSkill(_)
             | LocalDaemonRequest::UninstallSkill(_)
             | LocalDaemonRequest::ImportSkills(_)
             | LocalDaemonRequest::GetSkill(_)
             | LocalDaemonRequest::ListSkills(_)) => {
-                return execute_capability_registry_request(request.clone()).map(Some);
+                let vault_service = self
+                    .config_projection
+                    .snapshot()
+                    .user_config
+                    .credential_vault
+                    .service;
+                return execute_capability_registry_request(
+                    request.clone(),
+                    Some(vault_service.as_str()),
+                )
+                .map(Some);
             }
             _ => {}
         }

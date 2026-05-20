@@ -7,6 +7,7 @@ use super::*;
 
 mod capability;
 mod capability_registry;
+mod connector;
 mod credential;
 mod managed_io_access;
 mod managed_io_local;
@@ -27,6 +28,7 @@ impl KernelRuntimeState {
             .into_iter()
             .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
             .chain(self.script_runtime_tool_specs_for_auth_token(auth_token))
+            .chain(self.connector_runtime_tool_specs_for_auth_token(auth_token))
             .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
             .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
             .collect::<Vec<_>>();
@@ -119,6 +121,16 @@ impl KernelRuntimeState {
             }
             if let Some(result) = self
                 .try_dispatch_script_runtime_tool_call(
+                    &provider_runs[0],
+                    canonical_tool_name,
+                    arguments.clone(),
+                )
+                .await?
+            {
+                return Ok(result);
+            }
+            if let Some(result) = self
+                .try_dispatch_connector_runtime_tool_call(
                     &provider_runs[0],
                     canonical_tool_name,
                     arguments.clone(),

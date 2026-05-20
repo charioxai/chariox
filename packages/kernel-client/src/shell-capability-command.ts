@@ -1,6 +1,8 @@
 import type {
   AgentInstance,
   ArrobaEnvironmentConfig,
+  ArrobaConnectorDefinition,
+  ArrobaCredentialConfig,
   ArrobaMcpServerConfig,
   ArrobaScriptMetadata,
   ArrobaSkillMetadata,
@@ -10,6 +12,8 @@ import type {
 } from "./kernel-types.js"
 import {
   getEnvironmentRequest,
+  getConnectorRequest,
+  getCredentialRequest,
   getMcpServerRequest,
   getScriptRequest,
   getSkillRequest,
@@ -19,14 +23,18 @@ import {
   installMcpServerRequest,
   installSkillRequest,
   listEnvironmentsRequest,
+  listConnectorsRequest,
   listMcpServersRequest,
   listScriptsRequest,
   listSkillsRequest,
   registerEnvironmentRequest,
+  registerConnectorRequest,
   registerScriptRequest,
   removeEnvironmentRequest,
+  removeConnectorRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
+  testConnectorRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateMcpServerRequest,
@@ -322,6 +330,85 @@ export async function executeScriptCommand(
   }
 }
 
+export async function executeConnectorCommand(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellCapabilityCommandDeps,
+): Promise<ShellCommandResult> {
+  const [action, name] = parsed.args
+  switch (action) {
+    case "list":
+    case "ls": {
+      const response = await deps.client.send(listConnectorsRequest())
+      const connectors = expectVariant<{ connectors: ArrobaConnectorDefinition[] }>(response, "ConnectorsListed").connectors
+      return { ok: true, message: connectors.length === 0 ? "no connectors registered" : connectors.map(formatConnectorSummary).join("\n"), data: { connectors } }
+    }
+    case "show": {
+      if (!name) return { ok: false, message: "usage: connector show <name>" }
+      const response = await deps.client.send(getConnectorRequest(name))
+      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "Connector").connector
+      return { ok: true, message: JSON.stringify(connector, null, 2), data: { connector }, format: "json" }
+    }
+    case "register": {
+      if (!name) return { ok: false, message: "usage: connector register <file.yaml>" }
+      const response = await deps.client.send(registerConnectorRequest(name))
+      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRegistered").connector
+      return { ok: true, message: `registered connector ${connector.name}`, data: { connector } }
+    }
+    case "remove":
+    case "unregister": {
+      if (!name) return { ok: false, message: `usage: connector ${action} <name>` }
+      const response = await deps.client.send(removeConnectorRequest(name))
+      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRemoved").connector
+      return { ok: true, message: `removed connector ${connector.name}`, data: { connector } }
+    }
+    case "test": {
+      const operation = parsed.args[2]
+      const inputText = readOption(parsed.args, "--input") ?? "{}"
+      if (!name || !operation) return { ok: false, message: "usage: connector test <name> <operation> [--credential <id>] [--allow read|write|destructive] --input '<json>'" }
+      const response = await deps.client.send(testConnectorRequest(name, operation, JSON.parse(inputText), readOption(parsed.args, "--credential"), readOption(parsed.args, "--allow")))
+      const execution = expectVariant<{ execution: Record<string, unknown> }>(response, "ConnectorTested").execution
+      return { ok: true, message: JSON.stringify(execution, null, 2), data: { execution }, format: "json" }
+    }
+    case "doctor": {
+      if (!name) return { ok: false, message: "usage: connector doctor <name> [--credential <id>]" }
+      const connectorResponse = await deps.client.send(getConnectorRequest(name))
+      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(connectorResponse, "Connector").connector
+      const credentialId = readOption(parsed.args, "--credential")
+      let credential: ArrobaCredentialConfig | null = null
+      if (credentialId) {
+        const credentialResponse = await deps.client.send(getCredentialRequest(credentialId))
+        credential = expectVariant<{ credential: ArrobaCredentialConfig }>(credentialResponse, "Credential").credential
+      }
+      return { ok: true, message: formatConnectorDoctor(connector, credentialId, credential), data: { connector, credential } }
+    }
+    case "grant":
+    case "revoke": {
+      const agentRef = name
+      const connectorName = parsed.args[2]
+      if (!agentRef || !connectorName) return { ok: false, message: `usage: connector ${action} <agent-ref> <name>` }
+      const request = action === "grant"
+        ? grantAgentExtensionRequest(context.workspace, agentRef, "connector", connectorName, null, {
+          credential: readOption(parsed.args, "--credential"),
+          maxSafety: readOption(parsed.args, "--allow"),
+        })
+        : revokeAgentExtensionRequest(agentRef, "connector", connectorName)
+      const response = await deps.client.send(request)
+      const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
+      const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
+      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} connector ${connectorName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+    }
+    case "grants":
+    case "agent": {
+      const agent = await resolveShellAgent(context, deps, name)
+      if (!agent.ok) return { ok: false, message: agent.message }
+      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "connector"), data: { agent: agent.agent } }
+    }
+    default:
+      return { ok: false, message: "usage: connector list|show|register|remove|doctor|test|grant|revoke|grants" }
+  }
+}
+
 export async function executeExtensionCommand(
   parsed: ParsedShellCommand,
   context: ShellContext,
@@ -329,10 +416,10 @@ export async function executeExtensionCommand(
 ): Promise<ShellCommandResult> {
   const [action, kind, agentRef, name] = parsed.args
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script> <agent-ref> <name> [--env <environment>] | extension grants <mcp|skill|script> [agent-ref]" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref]" }
   }
   if (!isExtensionKind(kind)) {
-    return { ok: false, message: "extension kind must be mcp, skill, or script" }
+    return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }
   }
   if (action === "grants") {
     const agent = await resolveShellAgent(context, deps, agentRef)
@@ -340,14 +427,17 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatAgentExtensionGrants(agent.agent, kind), data: { agent: agent.agent } }
   }
   if (!agentRef || !name) {
-    return { ok: false, message: `usage: extension ${action} <mcp|skill|script> <agent-ref> <name> [--env <environment>]` }
+    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>]` }
   }
   const environment = readOption(parsed.args, "--env")
   if (action === "grant" && kind === "script" && !environment) {
     return { ok: false, message: "usage: extension grant script <agent-ref> <name> --env <environment>" }
   }
   const request = action === "grant"
-    ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment)
+    ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment, {
+      credential: readOption(parsed.args, "--credential"),
+      maxSafety: readOption(parsed.args, "--allow"),
+    })
     : revokeAgentExtensionRequest(agentRef, kind, name)
   const response = await deps.client.send(request)
   const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
@@ -444,7 +534,60 @@ function readOption(args: string[], flag: string): string | null {
 }
 
 function isExtensionKind(value: string | undefined): value is ExtensionKind {
-  return value === "mcp" || value === "skill" || value === "script"
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector"
+}
+
+function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
+  const operations = Array.isArray(connector.operations) ? connector.operations.length : 0
+  return `${connector.name} [${connector.type}, ${operations} op${operations === 1 ? "" : "s"}] - ${connector.description}`
+}
+
+function formatConnectorDoctor(
+  connector: ArrobaConnectorDefinition,
+  credentialId: string | null,
+  credential: ArrobaCredentialConfig | null,
+): string {
+  const findings: string[] = []
+  const ok = (message: string) => findings.push(`ok: ${message}`)
+  const warn = (message: string) => findings.push(`warn: ${message}`)
+  if (connector.kind !== "connector") warn("kind is not connector")
+  if (connector.type !== "http") warn(`unsupported connector type ${connector.type}`)
+  const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
+  if (operationCount > 0) ok(`${operationCount} operation${operationCount === 1 ? "" : "s"} configured`)
+  else warn("no operations configured")
+  if (connector.timeout_ms && connector.timeout_ms > 0) ok(`timeout ${connector.timeout_ms}ms`)
+  if (connector.max_response_bytes && connector.max_response_bytes > 0) ok(`response cap ${connector.max_response_bytes} bytes`)
+  const requiresCredential = connector.credential?.required === true
+  if (requiresCredential && !credentialId) warn("connector requires a credential; pass --credential <id>")
+  if (credentialId && !credential) warn(`credential ${credentialId} could not be loaded`)
+  if (credential) {
+    const uses = credential.allowed_uses ?? []
+    if (uses.length === 0 || uses.includes("http")) ok(`credential ${credential.id} allows http`)
+    else warn(`credential ${credential.id} does not allow http`)
+    const injectionKind = typeof credential.injection?.kind === "string" ? credential.injection.kind : "unknown"
+    if (injectionKind === "pty") warn(`credential ${credential.id} is configured for terminal injection`)
+    else ok(`credential ${credential.id} injection is ${injectionKind}`)
+    const host = connectorHost(connector.base_url)
+    if (host) {
+      const allowedHosts = credential.allowed_hosts ?? []
+      if (allowedHosts.length === 0 || allowedHosts.includes(host.host) || allowedHosts.includes(host.hostWithPort)) {
+        ok(`credential host policy allows ${host.hostWithPort}`)
+      } else {
+        warn(`credential host policy does not allow ${host.hostWithPort}`)
+      }
+    }
+  }
+  return [`${connector.name} connector doctor`, ...findings].join("\n")
+}
+
+function connectorHost(baseUrl?: string | null): { host: string; hostWithPort: string } | null {
+  if (!baseUrl) return null
+  try {
+    const url = new URL(baseUrl)
+    return { host: url.hostname, hostWithPort: url.port ? `${url.hostname}:${url.port}` : url.hostname }
+  } catch {
+    return null
+  }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

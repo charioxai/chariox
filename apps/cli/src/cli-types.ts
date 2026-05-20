@@ -49,12 +49,35 @@ export type ArrobaScriptMetadata = {
   definition_hash: string
 }
 
-export type ExtensionKind = "mcp" | "skill" | "script"
+export type ArrobaConnectorDefinition = {
+  kind: "connector" | string
+  name: string
+  description: string
+  type: "http" | string
+  base_url?: string | null
+  credential?: { required?: boolean } | null
+  timeout_ms?: number | null
+  max_response_bytes?: number | null
+  operations: Array<Record<string, unknown>>
+}
+
+export type ArrobaCredentialConfig = {
+  id: string
+  description?: string | null
+  source: Record<string, unknown>
+  allowed_hosts?: string[]
+  allowed_uses?: string[]
+  injection: Record<string, unknown>
+}
+
+export type ExtensionKind = "mcp" | "skill" | "script" | "connector"
 
 export type ExtensionGrant = {
   kind: ExtensionKind
   name: string
   environment?: string | null
+  credential?: string | null
+  max_safety?: "read" | "write" | "destructive" | string | null
 }
 
 export type SkillImportSkip = {

@@ -25,15 +25,19 @@ import {
 import {
   getUserConfig,
   getUserConfigSchema,
+  setCredentialSecret,
   setUserConfigValue,
   unsetUserConfigValue,
 } from "./config-api.js"
 import {
   getMcpServer,
+  getConnector,
+  getCredential,
   getEnvironment,
   getScript,
   getSkill,
   grantAgentMcp,
+  grantAgentConnector,
   grantAgentScript,
   grantAgentSkill,
   importMcpServers,
@@ -41,14 +45,21 @@ import {
   installMcpServer,
   installSkill,
   listEnvironments,
+  listConnectors,
+  listCredentials,
   listMcpServers,
   listScripts,
   listSkills,
   registerEnvironment,
+  registerConnector,
+  registerCredential,
   registerScript,
   removeEnvironment,
+  removeConnector,
+  removeCredential,
   removeScript,
   revokeAgentMcp,
+  revokeAgentConnector,
   revokeAgentScript,
   revokeAgentSkill,
   uninstallMcpServer,
@@ -56,6 +67,7 @@ import {
   updateMcpServer,
   updateSkill,
   validateScript,
+  testConnector,
 } from "./extension-api.js"
 import { deleteKernel } from "./kernel-api.js"
 import {
@@ -145,6 +157,7 @@ export type CliCommandActionCompositionDeps = {
   maxAgentsPerScreen: AnyFn
   flashFooter: AnyFn
   appendNotice: AnyFn
+  readSecret?: AnyFn
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
@@ -444,6 +457,18 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
+    listCredentials: () => listCredentials(client),
+    getCredential: (id) => getCredential(client, id),
+    setCredentialSecret: (key, value) => setCredentialSecret(client, key, value),
+    registerCredential: (sourcePath) => registerCredential(client, sourcePath),
+    removeCredential: (id) => removeCredential(client, id),
+    listConnectors: () => listConnectors(client),
+    getConnector: (name) => getConnector(client, name),
+    registerConnector: (sourcePath) => registerConnector(client, sourcePath),
+    removeConnector: (name) => removeConnector(client, name),
+    testConnector: (name, operation, input, credential, allow) => testConnector(client, name, operation, input, credential, allow),
+    grantAgentConnector: (agentRef, name, credential, maxSafety) => grantAgentConnector(client, pendingWorkspaceTarget(), agentRef, name, credential, maxSafety),
+    revokeAgentConnector: (agentRef, name) => revokeAgentConnector(client, agentRef, name),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)

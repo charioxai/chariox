@@ -159,11 +159,11 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if request.provider_env_remove.is_empty() {
-            let config = self.config_projection.snapshot();
-            let credential_env_names =
-                crate::secret::RuntimeSecretService::credential_env_names_from(
-                    &config.user_config.credentials,
-                );
+            let credential_env_names = crate::credential::load_user_credentials()
+                .map(|credentials| {
+                    crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
+                })
+                .unwrap_or_default();
             request = request.with_provider_env_remove(credential_env_names.into_iter().collect());
         }
         if request.mcp_servers.is_empty() {

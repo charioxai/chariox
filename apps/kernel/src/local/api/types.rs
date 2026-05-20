@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 36;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 38;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -92,6 +92,15 @@ pub enum LocalDaemonRequest {
     RemoveScript(RemoveScriptRequest),
     GetScript(GetScriptRequest),
     ListScripts(ListScriptsRequest),
+    RegisterCredential(RegisterCredentialRequest),
+    RemoveCredential(RemoveCredentialRequest),
+    GetCredential(GetCredentialRequest),
+    ListCredentials(ListCredentialsRequest),
+    RegisterConnector(RegisterConnectorRequest),
+    RemoveConnector(RemoveConnectorRequest),
+    GetConnector(GetConnectorRequest),
+    ListConnectors(ListConnectorsRequest),
+    TestConnector(TestConnectorRequest),
     InstallSkill(InstallSkillRequest),
     UpdateSkill(UpdateSkillRequest),
     UninstallSkill(UninstallSkillRequest),
@@ -382,6 +391,37 @@ pub enum LocalDaemonResponse {
     },
     ScriptsListed {
         scripts: Vec<ArrobaScriptMetadata>,
+    },
+    CredentialRegistered {
+        credential: UserCredentialConfig,
+        path: PathBuf,
+    },
+    CredentialRemoved {
+        credential: UserCredentialConfig,
+        path: PathBuf,
+    },
+    Credential {
+        credential: UserCredentialConfig,
+    },
+    CredentialsListed {
+        credentials: Vec<UserCredentialConfig>,
+    },
+    ConnectorRegistered {
+        connector: ArrobaConnectorDefinition,
+        path: PathBuf,
+    },
+    ConnectorRemoved {
+        connector: ArrobaConnectorDefinition,
+        path: PathBuf,
+    },
+    Connector {
+        connector: ArrobaConnectorDefinition,
+    },
+    ConnectorsListed {
+        connectors: Vec<ArrobaConnectorDefinition>,
+    },
+    ConnectorTested {
+        execution: ConnectorExecution,
     },
     Skill {
         skill: ArrobaSkillMetadata,

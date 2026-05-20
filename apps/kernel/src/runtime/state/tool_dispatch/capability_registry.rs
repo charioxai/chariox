@@ -44,6 +44,11 @@ pub(super) fn environment_registry_for_workspace(
     crate::script::ArrobaEnvironmentRegistry::new(roots)
 }
 
+pub(super) fn connector_registry() -> Result<crate::connector::ArrobaConnectorRegistry, DaemonError>
+{
+    crate::connector::ArrobaConnectorRegistry::user()
+}
+
 pub(super) fn required_remote_mcps(
     registry: &crate::mcp::ArrobaMcpRegistry,
     grants: &[String],

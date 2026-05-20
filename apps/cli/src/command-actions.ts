@@ -32,6 +32,8 @@ import {
 import {
   handleMcpSlashCommand,
   handleEnvironmentSlashCommand,
+  handleConnectorSlashCommand,
+  handleCredentialSlashCommand,
   handleExtensionSlashCommand,
   handleScriptSlashCommand,
   handleSkillSlashCommand,
@@ -252,6 +254,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleScriptSlashCommand(deps, command)
   }
 
+  const handleCredentialCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "credential" }>,
+  ): Promise<void> => {
+    await handleCredentialSlashCommand(deps, command)
+  }
+
+  const handleConnectorCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "connector" }>,
+  ): Promise<void> => {
+    await handleConnectorSlashCommand(deps, command)
+  }
+
   const handleExtensionCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "extension" }>,
   ): Promise<void> => {
@@ -297,6 +311,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleSkillCommand,
     handleEnvCommand,
     handleScriptCommand,
+    handleCredentialCommand,
+    handleConnectorCommand,
     handleExtensionCommand,
   }
 }

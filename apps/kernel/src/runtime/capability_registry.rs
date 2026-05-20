@@ -2,16 +2,20 @@ use std::path::PathBuf;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetEnvironmentRequest, GetMcpServerRequest, GetScriptRequest, GetSkillRequest,
-    ImportMcpServersRequest, ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    GetConnectorRequest, GetCredentialRequest, GetEnvironmentRequest, GetMcpServerRequest,
+    GetScriptRequest, GetSkillRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    InstallMcpServerRequest, InstallSkillRequest, ListConnectorsRequest, ListCredentialsRequest,
     ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest, ListSkillsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, RegisterEnvironmentRequest, RegisterScriptRequest,
-    RemoveEnvironmentRequest, RemoveScriptRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest, ValidateScriptRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorRequest, RegisterCredentialRequest,
+    RegisterEnvironmentRequest, RegisterScriptRequest, RemoveConnectorRequest,
+    RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    ValidateScriptRequest,
 };
 
 pub(crate) fn execute_capability_registry_request(
     request: LocalDaemonRequest,
+    vault_service: Option<&str>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::InstallMcpServer(request) => {
@@ -39,6 +43,21 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::RemoveScript(request) => execute_remove_script_request(request),
         LocalDaemonRequest::GetScript(request) => execute_get_script_request(request),
         LocalDaemonRequest::ListScripts(request) => execute_list_scripts_request(request),
+        LocalDaemonRequest::RegisterCredential(request) => {
+            execute_register_credential_request(request)
+        }
+        LocalDaemonRequest::RemoveCredential(request) => execute_remove_credential_request(request),
+        LocalDaemonRequest::GetCredential(request) => execute_get_credential_request(request),
+        LocalDaemonRequest::ListCredentials(request) => execute_list_credentials_request(request),
+        LocalDaemonRequest::RegisterConnector(request) => {
+            execute_register_connector_request(request)
+        }
+        LocalDaemonRequest::RemoveConnector(request) => execute_remove_connector_request(request),
+        LocalDaemonRequest::GetConnector(request) => execute_get_connector_request(request),
+        LocalDaemonRequest::ListConnectors(request) => execute_list_connectors_request(request),
+        LocalDaemonRequest::TestConnector(request) => {
+            execute_test_connector_request(request, vault_service)
+        }
         LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
         LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
         LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
@@ -50,6 +69,99 @@ pub(crate) fn execute_capability_registry_request(
             message: "unsupported capability registry request".to_string(),
         }),
     }
+}
+
+pub(crate) fn execute_register_credential_request(
+    request: RegisterCredentialRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let (credential, path) = registry.install_from_file(&request.source_path)?;
+    Ok(LocalDaemonResponse::CredentialRegistered { credential, path })
+}
+
+pub(crate) fn execute_remove_credential_request(
+    request: RemoveCredentialRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let (credential, path) = registry.remove(&request.id)?;
+    Ok(LocalDaemonResponse::CredentialRemoved { credential, path })
+}
+
+pub(crate) fn execute_get_credential_request(
+    request: GetCredentialRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let Some(credential) = registry.get(&request.id)? else {
+        return Err(DaemonError::LocalTransport {
+            operation: "credential.get",
+            message: format!("credential `{}` was not found", request.id),
+        });
+    };
+    Ok(LocalDaemonResponse::Credential { credential })
+}
+
+pub(crate) fn execute_list_credentials_request(
+    _request: ListCredentialsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    Ok(LocalDaemonResponse::CredentialsListed {
+        credentials: registry.list()?,
+    })
+}
+
+pub(crate) fn execute_register_connector_request(
+    request: RegisterConnectorRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let (connector, path) = registry.install_from_file(&request.source_path)?;
+    Ok(LocalDaemonResponse::ConnectorRegistered { connector, path })
+}
+
+pub(crate) fn execute_remove_connector_request(
+    request: RemoveConnectorRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let (connector, path) = registry.remove(&request.name)?;
+    Ok(LocalDaemonResponse::ConnectorRemoved { connector, path })
+}
+
+pub(crate) fn execute_get_connector_request(
+    request: GetConnectorRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let Some(connector) = registry.get(&request.name)? else {
+        return Err(DaemonError::LocalTransport {
+            operation: "connector.get",
+            message: format!("connector `{}` was not found", request.name),
+        });
+    };
+    Ok(LocalDaemonResponse::Connector { connector })
+}
+
+pub(crate) fn execute_list_connectors_request(
+    _request: ListConnectorsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    Ok(LocalDaemonResponse::ConnectorsListed {
+        connectors: registry.list()?,
+    })
+}
+
+pub(crate) fn execute_test_connector_request(
+    request: TestConnectorRequest,
+    vault_service: Option<&str>,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let max_safety = crate::connector::ConnectorSafety::parse(request.allow.as_deref())?;
+    let execution = registry.execute(
+        &request.name,
+        &request.operation,
+        request.credential.as_deref(),
+        max_safety,
+        request.input,
+        vault_service.unwrap_or("arroba"),
+    )?;
+    Ok(LocalDaemonResponse::ConnectorTested { execution })
 }
 
 pub(crate) fn execute_install_mcp_server_request(
@@ -371,6 +483,28 @@ pub(crate) fn ensure_script_exists(
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
             message: format!("script `{name}` is not registered"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_connector_exists(name: &str) -> Result<(), DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    if registry.get(name)?.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "agent.extension.grant",
+            message: format!("connector `{name}` is not registered"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_credential_exists(name: &str) -> Result<(), DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    if registry.get(name)?.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "agent.extension.grant",
+            message: format!("credential `{name}` is not registered"),
         });
     }
     Ok(())

@@ -12,8 +12,9 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
+        let credentials = crate::credential::load_user_credentials()?;
         let service = crate::secret::RuntimeSecretService::with_vault_service(
-            user_config.credentials,
+            credentials,
             user_config.credential_vault.service,
         );
         match tool_name {
@@ -40,6 +41,8 @@ impl KernelRuntimeState {
                     headers: args.headers,
                     body_text: args.body_text,
                     body_json: args.body_json,
+                    timeout_ms: args.timeout_ms,
+                    max_response_bytes: args.max_response_bytes,
                 };
                 let response = tokio::task::spawn_blocking(move || {
                     service.http_request_with_credential(request)

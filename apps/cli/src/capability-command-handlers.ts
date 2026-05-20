@@ -1,5 +1,7 @@
 import type {
   AgentInstance,
+  ArrobaConnectorDefinition,
+  ArrobaCredentialConfig,
   ArrobaEnvironmentConfig,
   ArrobaMcpServerConfig,
   ArrobaScriptMetadata,
@@ -44,6 +46,19 @@ export type CapabilityCommandHandlerDeps = {
   removeScript?: (name: string) => Promise<ArrobaScriptMetadata>
   grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
   revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
+  listCredentials?: () => Promise<ArrobaCredentialConfig[]>
+  getCredential?: (id: string) => Promise<ArrobaCredentialConfig>
+  setCredentialSecret?: (key: string, value: string) => Promise<string>
+  readSecret?: (prompt: string) => Promise<string>
+  registerCredential?: (sourcePath: string) => Promise<ArrobaCredentialConfig>
+  removeCredential?: (id: string) => Promise<ArrobaCredentialConfig>
+  listConnectors?: () => Promise<ArrobaConnectorDefinition[]>
+  getConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
+  registerConnector?: (sourcePath: string) => Promise<ArrobaConnectorDefinition>
+  removeConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
+  testConnector?: (name: string, operation: string, input: Record<string, unknown>, credential?: string | null, allow?: string | null) => Promise<Record<string, unknown>>
+  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
+  revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
 }
 
 export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | null => {
@@ -138,7 +153,12 @@ export function formatAgentCapabilityGrants(agent: AgentInstance, kind: Extensio
     return `${agentLabel} has no ${label} grants.`
   }
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
-    const suffix = grant.environment ? ` @ ${grant.environment}` : ""
+    const parts = [
+      grant.environment ? `env=${grant.environment}` : null,
+      grant.credential ? `credential=${grant.credential}` : null,
+      grant.max_safety ? `allow=${grant.max_safety}` : null,
+    ].filter(Boolean)
+    const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : ""
     return `- ${grant.name}${suffix}`
   }).join("\n")}`
 }
@@ -359,6 +379,16 @@ export async function handleEnvironmentSlashCommand(
     deps.flashFooter(`registered environment ${environment.name}`, "info")
     return
   }
+  if (action === "set") {
+    const key = command.args[1]
+    if (!key || !deps.setCredentialSecret) return deps.flashFooter("usage: /credential set <vault-key>", "error")
+    if (!deps.readSecret) return deps.flashFooter("credential set requires hidden input support", "error")
+    const value = await deps.readSecret(`credential ${key}: `)
+    if (!value) return deps.flashFooter("credential value must not be empty", "error")
+    await deps.setCredentialSecret(key, value)
+    deps.flashFooter(`credential ${key} stored in OS keychain`, "info")
+    return
+  }
   if (action === "remove" || action === "unregister") {
     const name = command.args[1]
     if (!name || !deps.removeEnvironment) return deps.flashFooter(`usage: /env ${action} <name>`, "error")
@@ -429,25 +459,143 @@ export async function handleScriptSlashCommand(
   deps.flashFooter("usage: /script list | /script show <name> | /script validate <path> --env <environment> [--name <name>] | /script register <path> --env <environment> [--name <name>] | /script remove <name> | /script grant <agent-ref> <name> --env <environment> | /script revoke <agent-ref> <name>", "error")
 }
 
+export async function handleCredentialSlashCommand(
+  deps: CapabilityCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "credential" }>,
+): Promise<void> {
+  const [action] = command.args
+  if (!action || action === "list" || action === "ls") {
+    if (!deps.listCredentials) return deps.flashFooter("credential registry is not available in this daemon", "error")
+    const credentials = await deps.listCredentials()
+    deps.appendNotice(credentials.length === 0 ? "No Arroba credentials registered." : credentials.map(formatCredentialSummary).join("\n"))
+    deps.flashFooter(`listed ${credentials.length} credential${credentials.length === 1 ? "" : "s"}`, "info")
+    return
+  }
+  if (action === "show") {
+    const id = command.args[1]
+    if (!id || !deps.getCredential) return deps.flashFooter("usage: /credential show <id>", "error")
+    const credential = await deps.getCredential(id)
+    deps.appendNotice(JSON.stringify(credential, null, 2))
+    deps.flashFooter(`showing credential ${credential.id}`, "info")
+    return
+  }
+  if (action === "register") {
+    const sourcePath = command.args[1]
+    if (!sourcePath || !deps.registerCredential) return deps.flashFooter("usage: /credential register <file.yaml>", "error")
+    const credential = await deps.registerCredential(sourcePath)
+    deps.flashFooter(`registered credential ${credential.id}`, "info")
+    return
+  }
+  if (action === "remove" || action === "unregister") {
+    const id = command.args[1]
+    if (!id || !deps.removeCredential) return deps.flashFooter(`usage: /credential ${action} <id>`, "error")
+    const credential = await deps.removeCredential(id)
+    deps.flashFooter(`removed credential ${credential.id}`, "info")
+    return
+  }
+  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id>", "error")
+}
+
+export async function handleConnectorSlashCommand(
+  deps: CapabilityCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "connector" }>,
+): Promise<void> {
+  const [action] = command.args
+  if (!action || action === "list" || action === "ls") {
+    if (!deps.listConnectors) return deps.flashFooter("connector registry is not available in this daemon", "error")
+    const connectors = await deps.listConnectors()
+    deps.appendNotice(connectors.length === 0 ? "No Arroba connectors registered." : connectors.map(formatConnectorSummary).join("\n"))
+    deps.flashFooter(`listed ${connectors.length} connector${connectors.length === 1 ? "" : "s"}`, "info")
+    return
+  }
+  if (action === "show") {
+    const name = command.args[1]
+    if (!name || !deps.getConnector) return deps.flashFooter("usage: /connector show <name>", "error")
+    const connector = await deps.getConnector(name)
+    deps.appendNotice(JSON.stringify(connector, null, 2))
+    deps.flashFooter(`showing connector ${connector.name}`, "info")
+    return
+  }
+  if (action === "register") {
+    const sourcePath = command.args[1]
+    if (!sourcePath || !deps.registerConnector) return deps.flashFooter("usage: /connector register <file.yaml>", "error")
+    const connector = await deps.registerConnector(sourcePath)
+    deps.flashFooter(`registered connector ${connector.name}`, "info")
+    return
+  }
+  if (action === "remove" || action === "unregister") {
+    const name = command.args[1]
+    if (!name || !deps.removeConnector) return deps.flashFooter(`usage: /connector ${action} <name>`, "error")
+    const connector = await deps.removeConnector(name)
+    deps.flashFooter(`removed connector ${connector.name}`, "info")
+    return
+  }
+  if (action === "test") {
+    const name = command.args[1]
+    const operation = command.args[2]
+    const inputText = readOption(command.args, "--input") ?? "{}"
+    const credential = readOption(command.args, "--credential")
+    const allow = readOption(command.args, "--allow")
+    if (!name || !operation || !deps.testConnector) return deps.flashFooter("usage: /connector test <name> <operation> [--credential <id>] [--allow read|write|destructive] --input '<json>'", "error")
+    const input = JSON.parse(inputText) as Record<string, unknown>
+    const execution = await deps.testConnector(name, operation, input, credential, allow)
+    deps.appendNotice(JSON.stringify(execution, null, 2))
+    deps.flashFooter(`tested connector ${name}.${operation}`, "info")
+    return
+  }
+  if (action === "doctor") {
+    const name = command.args[1]
+    if (!name || !deps.getConnector) return deps.flashFooter("usage: /connector doctor <name> [--credential <id>]", "error")
+    const connector = await deps.getConnector(name)
+    const credentialId = readOption(command.args, "--credential")
+    const credential = credentialId && deps.getCredential ? await deps.getCredential(credentialId) : null
+    deps.appendNotice(formatConnectorDoctor(connector, credentialId, credential))
+    deps.flashFooter(`checked connector ${connector.name}`, "info")
+    return
+  }
+  if (action === "grant" || action === "revoke") {
+    const agentRef = command.args[1]
+    const name = command.args[2]
+    if (action === "grant") {
+      if (!agentRef || !name || !deps.grantAgentConnector) return deps.flashFooter("usage: /connector grant <agent-ref> <name> [--credential <id>] [--allow read|write|destructive]", "error")
+      const agent = await deps.grantAgentConnector(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
+      deps.flashFooter(`granted connector ${name} to ${agent.agent_ref}`, "info")
+      return
+    }
+    if (!agentRef || !name || !deps.revokeAgentConnector) return deps.flashFooter("usage: /connector revoke <agent-ref> <name>", "error")
+    const agent = await deps.revokeAgentConnector(agentRef, name)
+    deps.flashFooter(`revoked connector ${name} from ${agent.agent_ref}`, "info")
+    return
+  }
+  if (action === "grants" || action === "agent") {
+    const agent = resolveGrantTarget(deps, command.args[1], `usage: /connector ${action} <agent-ref>`)
+    if (!agent) return
+    deps.appendNotice(formatAgentCapabilityGrants(agent, "connector"))
+    deps.flashFooter(`showing connector grants for ${agent.agent_ref}`, "info")
+    return
+  }
+  deps.flashFooter("usage: /connector list | /connector show <name> | /connector register <file.yaml> | /connector remove <name> | /connector doctor <name> [--credential <id>] | /connector test <name> <operation> --input '<json>' | /connector grant <agent-ref> <name> | /connector revoke <agent-ref> <name>", "error")
+}
+
 export async function handleExtensionSlashCommand(
   deps: CapabilityCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "extension" }>,
 ): Promise<void> {
   const [action, kind, agentRef, name] = command.args
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script> <agent-ref> <name> [--env <environment>] | /extension grants <mcp|skill|script> <agent-ref>", "error")
+    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref>", "error")
     return
   }
-  if (kind !== "mcp" && kind !== "skill" && kind !== "script") return deps.flashFooter("extension kind must be mcp, skill, or script", "error")
+  if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector") return deps.flashFooter("extension kind must be mcp, skill, script, or connector", "error")
   if (action === "grants") {
-    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script> <agent-ref>")
+    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector> <agent-ref>")
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, kind))
     deps.flashFooter(`showing ${kind} grants for ${agent.agent_ref}`, "info")
     return
   }
   const environment = readOption(command.args, "--env")
-  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script> <agent-ref> <name> [--env <environment>]`, "error")
+  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>]`, "error")
   if (kind === "mcp") {
     const handler = action === "grant" ? deps.grantAgentMcp : deps.revokeAgentMcp
     if (!handler) return deps.flashFooter(`MCP ${action} is not available`, "error")
@@ -460,6 +608,15 @@ export async function handleExtensionSlashCommand(
     if (!handler) return deps.flashFooter(`skill ${action} is not available`, "error")
     const agent = await handler(agentRef, name)
     deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    return
+  }
+  if (kind === "connector") {
+    const handler = action === "grant" ? deps.grantAgentConnector : deps.revokeAgentConnector
+    if (!handler) return deps.flashFooter(`connector ${action} is not available`, "error")
+    const agent = action === "grant"
+      ? await deps.grantAgentConnector!(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
+      : await deps.revokeAgentConnector!(agentRef, name)
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} connector ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
     return
   }
   if (action === "grant") {
@@ -493,6 +650,64 @@ function formatEnvironmentSummary(environment: ArrobaEnvironmentConfig): string 
 
 function formatScriptSummary(script: ArrobaScriptMetadata): string {
   return `${script.name} [${script.runtime}]: ${script.description}`
+}
+
+function formatCredentialSummary(credential: ArrobaCredentialConfig): string {
+  const uses = (credential.allowed_uses ?? []).join(",") || "any"
+  return `${credential.id} [${uses}]${credential.description ? `: ${credential.description}` : ""}`
+}
+
+function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
+  const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
+  return `${connector.name} [${connector.type}, ${operationCount} op${operationCount === 1 ? "" : "s"}]: ${connector.description}`
+}
+
+function formatConnectorDoctor(
+  connector: ArrobaConnectorDefinition,
+  credentialId: string | null,
+  credential: ArrobaCredentialConfig | null,
+): string {
+  const findings: string[] = []
+  const ok = (message: string) => findings.push(`ok: ${message}`)
+  const warn = (message: string) => findings.push(`warn: ${message}`)
+  if (connector.kind !== "connector") warn("kind is not connector")
+  if (connector.type !== "http") warn(`unsupported connector type ${connector.type}`)
+  const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
+  if (operationCount > 0) ok(`${operationCount} operation${operationCount === 1 ? "" : "s"} configured`)
+  else warn("no operations configured")
+  if (connector.timeout_ms && connector.timeout_ms > 0) ok(`timeout ${connector.timeout_ms}ms`)
+  if (connector.max_response_bytes && connector.max_response_bytes > 0) ok(`response cap ${connector.max_response_bytes} bytes`)
+  const requiresCredential = connector.credential?.required === true
+  if (requiresCredential && !credentialId) warn("connector requires a credential; pass --credential <id>")
+  if (credentialId && !credential) warn(`credential ${credentialId} could not be loaded`)
+  if (credential) {
+    const uses = credential.allowed_uses ?? []
+    if (uses.length === 0 || uses.includes("http")) ok(`credential ${credential.id} allows http`)
+    else warn(`credential ${credential.id} does not allow http`)
+    const injectionKind = typeof credential.injection?.kind === "string" ? credential.injection.kind : "unknown"
+    if (injectionKind === "pty") warn(`credential ${credential.id} is configured for terminal injection`)
+    else ok(`credential ${credential.id} injection is ${injectionKind}`)
+    const host = connectorHost(connector.base_url)
+    if (host) {
+      const allowedHosts = credential.allowed_hosts ?? []
+      if (allowedHosts.length === 0 || allowedHosts.includes(host.host) || allowedHosts.includes(host.hostWithPort)) {
+        ok(`credential host policy allows ${host.hostWithPort}`)
+      } else {
+        warn(`credential host policy does not allow ${host.hostWithPort}`)
+      }
+    }
+  }
+  return [`${connector.name} connector doctor`, ...findings].join("\n")
+}
+
+function connectorHost(baseUrl?: string | null): { host: string; hostWithPort: string } | null {
+  if (!baseUrl) return null
+  try {
+    const url = new URL(baseUrl)
+    return { host: url.hostname, hostWithPort: url.port ? `${url.hostname}:${url.port}` : url.hostname }
+  } catch {
+    return null
+  }
 }
 
 function formatMcpDetails(mcp: ArrobaMcpServerConfig): string {

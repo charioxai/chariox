@@ -292,6 +292,14 @@ impl AgentInstance {
             .collect()
     }
 
+    pub fn connector_grants(&self) -> Vec<ExtensionGrant> {
+        self.extension_grants
+            .iter()
+            .filter(|grant| grant.kind == ExtensionKind::Connector)
+            .cloned()
+            .collect()
+    }
+
     pub fn has_extension_grant(&self, kind: ExtensionKind, name: &str) -> bool {
         self.extension_grants
             .iter()
@@ -440,6 +448,19 @@ impl AgentInstance {
 
     pub fn revoke_script(&mut self, name: &str) {
         self.revoke_extension(ExtensionKind::Script, name);
+    }
+
+    pub fn grant_connector(
+        &mut self,
+        name: impl Into<String>,
+        credential: Option<String>,
+        max_safety: impl Into<String>,
+    ) {
+        self.grant_extension(ExtensionGrant::connector(name, credential, max_safety));
+    }
+
+    pub fn revoke_connector(&mut self, name: &str) {
+        self.revoke_extension(ExtensionKind::Connector, name);
     }
 
     pub fn add_substitute(&mut self, profile: AgentSubstituteProfile) {

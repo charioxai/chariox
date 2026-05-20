@@ -17,6 +17,11 @@ impl KernelRuntimeState {
                     .await
             }
             crate::extension::ExtensionKind::Script => {
+                self.ensure_agent_extension_tool_names_available(
+                    agent_ref,
+                    &grant,
+                    caller_user_id,
+                )?;
                 let agent =
                     self.owned
                         .grant_agent_extension(agent_ref, grant.clone(), caller_user_id)?;
@@ -28,7 +33,94 @@ impl KernelRuntimeState {
                 .await?;
                 Ok(agent)
             }
+            crate::extension::ExtensionKind::Connector => {
+                self.ensure_agent_extension_tool_names_available(
+                    agent_ref,
+                    &grant,
+                    caller_user_id,
+                )?;
+                let agent =
+                    self.owned
+                        .grant_agent_extension(agent_ref, grant.clone(), caller_user_id)?;
+                self.append_agent_durable_event(
+                    "agent.extension_granted",
+                    &agent,
+                    Some(&format!("connector:{}", grant.name)),
+                )
+                .await?;
+                Ok(agent)
+            }
         }
+    }
+
+    fn ensure_agent_extension_tool_names_available(
+        &self,
+        agent_ref: &str,
+        proposed: &crate::extension::ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<(), DaemonError> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        self.owned
+            .ensure_agent_owner(agent.id(), caller_user_id, "grant agent extension")?;
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let mut reserved = static_runtime_tool_names();
+        let script_registry = crate::script::ArrobaScriptRegistry::new(
+            crate::runtime::capability_registry::script_registry_roots(Some(
+                session.workspace_id(),
+            ))?,
+        );
+        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        for grant in agent.extension_grants() {
+            if grant.kind == proposed.kind && grant.name == proposed.name {
+                continue;
+            }
+            match grant.kind {
+                crate::extension::ExtensionKind::Script => {
+                    if let Some(script) = script_registry.get(&grant.name)? {
+                        reserved.insert(script.name);
+                    }
+                }
+                crate::extension::ExtensionKind::Connector => {
+                    if let Some(connector) = connector_registry.get(&grant.name)? {
+                        let max_safety =
+                            crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
+                        reserved.extend(connector.allowed_operation_tool_names(max_safety));
+                    }
+                }
+                crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {}
+            }
+        }
+        let proposed_names = match proposed.kind {
+            crate::extension::ExtensionKind::Script => script_registry
+                .get(&proposed.name)?
+                .map(|script| vec![script.name])
+                .unwrap_or_default(),
+            crate::extension::ExtensionKind::Connector => {
+                let Some(connector) = connector_registry.get(&proposed.name)? else {
+                    return Ok(());
+                };
+                let max_safety =
+                    crate::connector::ConnectorSafety::parse(proposed.max_safety.as_deref())?;
+                connector.allowed_operation_tool_names(max_safety)
+            }
+            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {
+                Vec::new()
+            }
+        };
+        for name in proposed_names {
+            if reserved.contains(&name) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "agent.extension.grant",
+                    message: format!("extension tool name `{name}` is already in use"),
+                });
+            }
+            reserved.insert(name);
+        }
+        Ok(())
     }
 
     pub(crate) async fn revoke_agent_extension(
@@ -57,6 +149,21 @@ impl KernelRuntimeState {
                     "agent.extension_revoked",
                     &agent,
                     Some(&format!("script:{name}")),
+                )
+                .await?;
+                Ok(agent)
+            }
+            crate::extension::ExtensionKind::Connector => {
+                let agent = self.owned.revoke_agent_extension(
+                    agent_ref,
+                    crate::extension::ExtensionKind::Connector,
+                    name,
+                    caller_user_id,
+                )?;
+                self.append_agent_durable_event(
+                    "agent.extension_revoked",
+                    &agent,
+                    Some(&format!("connector:{name}")),
                 )
                 .await?;
                 Ok(agent)
@@ -295,4 +402,15 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_owner(agent_id, caller_user_id, operation)
     }
+}
+
+fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
+    crate::transport::runtime_tools::managed_io_runtime_tool_specs()
+        .into_iter()
+        .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::slice_runtime_tool_specs())
+        .map(|spec| spec.name)
+        .collect()
 }

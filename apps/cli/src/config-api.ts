@@ -8,6 +8,7 @@ import {
   getUserConfigRequest,
   getUserConfigSchemaRequest,
   setUserConfigValueRequest,
+  setCredentialSecretRequest,
   unsetUserConfigValueRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -37,4 +38,13 @@ export async function unsetUserConfigValue(
 ): Promise<ArrobaUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
   return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+}
+
+export async function setCredentialSecret(
+  client: LocalIpcClient,
+  key: string,
+  value: string,
+): Promise<string> {
+  const response = await client.send<Record<string, unknown>>(setCredentialSecretRequest(key, value))
+  return expectVariant<{ key: string }>(response, "CredentialSecretStored").key
 }

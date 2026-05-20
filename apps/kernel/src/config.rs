@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,8 +21,9 @@ mod user_config_schema;
 mod validation;
 
 pub use credentials::{
-    CredentialVaultBackend, UserCredentialConfig, UserCredentialInjectionConfig,
-    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
+    validate_credentials, CredentialVaultBackend, UserCredentialConfig,
+    UserCredentialInjectionConfig, UserCredentialSourceConfig, UserCredentialUse,
+    UserCredentialVaultConfig,
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
@@ -254,8 +254,6 @@ pub struct ArrobaUserConfig {
     pub kernel: UserKernelConfig,
     #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<UserCredentialConfig>,
 }
 
 impl Default for ArrobaUserConfig {
@@ -271,7 +269,6 @@ impl Default for ArrobaUserConfig {
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
-            credentials: Vec::new(),
         }
     }
 }
@@ -393,6 +390,7 @@ fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::sync::{Mutex, OnceLock};
 
     #[test]
@@ -580,34 +578,6 @@ mod tests {
     }
 
     #[test]
-    fn user_config_parses_credential_handles_without_values() {
-        let payload = r#"
-version = 1
-
-[[credentials]]
-id = "github"
-description = "GitHub API"
-allowed_hosts = ["api.github.com"]
-allowed_uses = ["http"]
-source = { type = "env", name = "GH_TOKEN" }
-injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }
-"#;
-
-        let config =
-            toml::from_str::<ArrobaUserConfig>(payload).expect("credential config should parse");
-        config
-            .validate()
-            .expect("credential config should validate");
-
-        assert_eq!(config.credentials.len(), 1);
-        assert_eq!(config.credentials[0].id, "github");
-        assert_eq!(
-            config.credentials[0].allowed_uses,
-            vec![UserCredentialUse::Http]
-        );
-    }
-
-    #[test]
     fn user_config_parses_slice_defaults() {
         let payload = r#"
 version = 1
@@ -646,58 +616,18 @@ screen_height = 900
     }
 
     #[test]
-    fn user_config_parses_vault_credential_source() {
+    fn user_config_parses_credential_vault_service() {
         let payload = r#"
 version = 1
 
 [credential_vault]
 service = "arroba-test"
-
-[[credentials]]
-id = "github"
-source = { type = "vault", key = "github-token" }
-allowed_uses = ["http"]
-allowed_hosts = ["api.github.com"]
-injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }
 "#;
 
         let config =
-            toml::from_str::<ArrobaUserConfig>(payload).expect("vault credential should parse");
-        config.validate().expect("vault credential should validate");
+            toml::from_str::<ArrobaUserConfig>(payload).expect("credential vault should parse");
+        config.validate().expect("credential vault should validate");
         assert_eq!(config.credential_vault.service, "arroba-test");
-        assert_eq!(
-            config.credentials[0].source,
-            UserCredentialSourceConfig::Vault {
-                key: "github-token".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn user_config_rejects_duplicate_credential_ids() {
-        let payload = r#"
-version = 1
-
-[[credentials]]
-id = "github"
-source = { type = "env", name = "GH_TOKEN" }
-injection = { kind = "query", name = "token" }
-
-[[credentials]]
-id = "github"
-source = { type = "env", name = "OTHER_TOKEN" }
-injection = { kind = "query", name = "token" }
-"#;
-
-        let config = toml::from_str::<ArrobaUserConfig>(payload)
-            .expect("duplicate ids should parse before validation");
-        let error = config
-            .validate()
-            .expect_err("duplicate credential ids should be invalid");
-        match error {
-            DaemonError::InvalidConfig { field, .. } => assert_eq!(field, "credentials"),
-            other => panic!("unexpected error: {other}"),
-        }
     }
 
     #[test]

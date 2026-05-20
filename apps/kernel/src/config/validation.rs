@@ -1,6 +1,4 @@
-use super::{
-    credentials::validate_credentials, validate_non_empty, ArrobaUserConfig, DaemonConfig,
-};
+use super::{validate_non_empty, ArrobaUserConfig, DaemonConfig};
 use crate::error::DaemonError;
 
 impl DaemonConfig {
@@ -80,7 +78,6 @@ impl ArrobaUserConfig {
         self.state.validate()?;
         self.slices.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
-        validate_credentials(&self.credentials)?;
         Ok(())
     }
 }

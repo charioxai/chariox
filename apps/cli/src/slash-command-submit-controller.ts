@@ -42,6 +42,8 @@ export type SlashCommandSubmitControllerDeps = {
   handleSkillCommand: (command: SlashCommand<"skill">) => Promise<unknown> | unknown
   handleEnvCommand: (command: SlashCommand<"env">) => Promise<unknown> | unknown
   handleScriptCommand: (command: SlashCommand<"script">) => Promise<unknown> | unknown
+  handleCredentialCommand: (command: SlashCommand<"credential">) => Promise<unknown> | unknown
+  handleConnectorCommand: (command: SlashCommand<"connector">) => Promise<unknown> | unknown
   handleExtensionCommand: (command: SlashCommand<"extension">) => Promise<unknown> | unknown
 }
 
@@ -132,6 +134,8 @@ export function createSlashCommandSubmitController(
         onSkill: (command) => runWithFooterError(deps.handleSkillCommand, command),
         onEnv: (command) => runWithFooterError(deps.handleEnvCommand, command),
         onScript: (command) => runWithFooterError(deps.handleScriptCommand, command),
+        onCredential: (command) => runWithFooterError(deps.handleCredentialCommand, command),
+        onConnector: (command) => runWithFooterError(deps.handleConnectorCommand, command),
         onExtension: (command) => runWithFooterError(deps.handleExtensionCommand, command),
       })
       if (!handledCommand) {

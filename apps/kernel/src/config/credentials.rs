@@ -100,9 +100,7 @@ fn default_hmac_signature_header() -> String {
     "x-arroba-signature".to_string()
 }
 
-pub(super) fn validate_credentials(
-    credentials: &[UserCredentialConfig],
-) -> Result<(), DaemonError> {
+pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), DaemonError> {
     let mut seen = std::collections::BTreeSet::new();
     for credential in credentials {
         validate_config_key_path(&credential.id)?;

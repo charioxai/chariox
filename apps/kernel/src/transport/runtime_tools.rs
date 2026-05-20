@@ -204,6 +204,10 @@ pub struct HttpRequestWithCredentialArgs {
     pub body_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_json: Option<serde_json::Value>,
+    #[serde(default = "default_http_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_http_max_response_bytes")]
+    pub max_response_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +312,14 @@ fn default_http_method() -> String {
     "GET".to_string()
 }
 
+fn default_http_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_http_max_response_bytes() -> u64 {
+    1_048_576
+}
+
 impl ManagedMoveArtifactArgs {
     pub fn normalized_text_transform_fields(&self) -> (Option<String>, Option<String>) {
         if self.old_text.as_deref() == Some("") && self.new_text.as_deref() == Some("") {
@@ -401,7 +413,17 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "additionalProperties": {"type": "string"}
                     },
                     "body_text": {"type": "string"},
-                    "body_json": {}
+                    "body_json": {},
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional per-call timeout. Defaults to 30000."
+                    },
+                    "max_response_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional response body cap. Defaults to 1048576."
+                    }
                 },
                 "additionalProperties": false
             }),

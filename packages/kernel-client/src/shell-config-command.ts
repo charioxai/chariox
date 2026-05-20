@@ -4,8 +4,12 @@ import type {
 } from "./kernel-types.js"
 import {
   deleteCredentialSecretRequest,
+  getCredentialRequest,
   getUserConfigRequest,
   getUserConfigSchemaRequest,
+  listCredentialsRequest,
+  registerCredentialRequest,
+  removeCredentialRequest,
   setCredentialSecretRequest,
   setUserConfigValueRequest,
   unsetUserConfigValueRequest,
@@ -97,9 +101,8 @@ export async function executeCredentialCommand(
 ): Promise<ShellCommandResult> {
   const [action, key, ...rest] = parsed.args
   if (!action || action === "list" || action === "ls") {
-    const response = await deps.client.send(getUserConfigRequest())
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
-    const credentials = Array.isArray(payload.config.credentials) ? payload.config.credentials : []
+    const response = await deps.client.send(listCredentialsRequest())
+    const credentials = expectVariant<{ credentials: Array<Record<string, unknown>> }>(response, "CredentialsListed").credentials
     if (credentials.length === 0) {
       return { ok: true, message: "no credential handles configured" }
     }
@@ -117,6 +120,22 @@ export async function executeCredentialCommand(
         .join("\n"),
       format: "table",
     }
+  }
+  if (action === "show") {
+    if (!key || rest.length > 0) {
+      return { ok: false, message: "usage: credential show <id>" }
+    }
+    const response = await deps.client.send(getCredentialRequest(key))
+    const credential = expectVariant<{ credential: Record<string, unknown> }>(response, "Credential").credential
+    return { ok: true, message: JSON.stringify(credential, null, 2), data: { credential }, format: "json" }
+  }
+  if (action === "register") {
+    if (!key || rest.length > 0) {
+      return { ok: false, message: "usage: credential register <file.yaml>" }
+    }
+    const response = await deps.client.send(registerCredentialRequest(key))
+    const credential = expectVariant<{ credential: { id: string } }>(response, "CredentialRegistered").credential
+    return { ok: true, message: `registered credential ${credential.id}`, data: { credential } }
   }
   if (action === "set") {
     if (!key || rest.length > 0) {
@@ -139,10 +158,15 @@ export async function executeCredentialCommand(
     if (!key || rest.length > 0) {
       return { ok: false, message: "usage: credential delete <key>" }
     }
+    if (action === "remove") {
+      const response = await deps.client.send(removeCredentialRequest(key))
+      const credential = expectVariant<{ credential: { id: string } }>(response, "CredentialRemoved").credential
+      return { ok: true, message: `removed credential ${credential.id}`, data: { credential } }
+    }
     await deps.client.send(deleteCredentialSecretRequest(key))
     return { ok: true, message: `credential ${key} deleted from OS keychain` }
   }
-  return { ok: false, message: "usage: credential list|set|delete" }
+  return { ok: false, message: "usage: credential list|show|register|remove|set|delete" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

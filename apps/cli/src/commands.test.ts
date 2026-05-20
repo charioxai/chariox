@@ -88,6 +88,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onSkill: () => calls.push("skill"),
     onEnv: () => calls.push("env"),
     onScript: () => calls.push("script"),
+    onCredential: () => calls.push("credential"),
+    onConnector: () => calls.push("connector"),
     onExtension: () => calls.push("extension"),
   })
 
@@ -124,6 +126,8 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onSkill: () => undefined,
     onEnv: () => undefined,
     onScript: () => undefined,
+    onCredential: () => undefined,
+    onConnector: () => undefined,
     onExtension: () => undefined,
   })
 

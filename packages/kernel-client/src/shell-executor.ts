@@ -3,6 +3,7 @@ import { executeShellLocalCommand } from "./shell-local-command.js"
 import { executeAgentCommand } from "./shell-agent-command.js"
 import {
   executeEnvironmentCommand,
+  executeConnectorCommand,
   executeExtensionCommand,
   executeMcpCommand,
   executeScriptCommand,
@@ -92,6 +93,8 @@ export async function executeShellCommand(
       return executeEnvironmentCommand(parsed, context, deps)
     case "script":
       return executeScriptCommand(parsed, context, deps)
+    case "connector":
+      return executeConnectorCommand(parsed, context, deps)
     case "extension":
       return executeExtensionCommand(parsed, context, deps)
     case "workflow":

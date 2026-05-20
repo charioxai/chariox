@@ -31,6 +31,8 @@ type CommandCenterCommandExecutorDeps = {
   onSkill: CommandHandler<"skill">
   onEnv: CommandHandler<"env">
   onScript: CommandHandler<"script">
+  onCredential: CommandHandler<"credential">
+  onConnector: CommandHandler<"connector">
   onExtension: CommandHandler<"extension">
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError: (error: unknown) => string
@@ -73,6 +75,8 @@ export function createCommandCenterCommandExecutor(
       onSkill: contained(deps.onSkill),
       onEnv: contained(deps.onEnv),
       onScript: contained(deps.onScript),
+      onCredential: contained(deps.onCredential),
+      onConnector: contained(deps.onConnector),
       onExtension: contained(deps.onExtension),
     })
   }

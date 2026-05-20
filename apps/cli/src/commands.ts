@@ -30,6 +30,8 @@ export type ParsedSlashCommand =
   | { kind: "skill"; raw: string; args: string[] }
   | { kind: "env"; raw: string; args: string[] }
   | { kind: "script"; raw: string; args: string[] }
+  | { kind: "credential"; raw: string; args: string[] }
+  | { kind: "connector"; raw: string; args: string[] }
   | { kind: "extension"; raw: string; args: string[] }
 
 export type SlashCommandHandlers = {
@@ -56,6 +58,8 @@ export type SlashCommandHandlers = {
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
   onEnv: (command: Extract<ParsedSlashCommand, { kind: "env" }>) => Promise<unknown> | unknown
   onScript: (command: Extract<ParsedSlashCommand, { kind: "script" }>) => Promise<unknown> | unknown
+  onCredential: (command: Extract<ParsedSlashCommand, { kind: "credential" }>) => Promise<unknown> | unknown
+  onConnector: (command: Extract<ParsedSlashCommand, { kind: "connector" }>) => Promise<unknown> | unknown
   onExtension: (command: Extract<ParsedSlashCommand, { kind: "extension" }>) => Promise<unknown> | unknown
 }
 
@@ -213,6 +217,20 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/script\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed.startsWith("/credential")) {
+    return {
+      kind: "credential",
+      raw: trimmed,
+      args: trimmed.replace(/^\/credential\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/connector")) {
+    return {
+      kind: "connector",
+      raw: trimmed,
+      args: trimmed.replace(/^\/connector\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   if (trimmed.startsWith("/extension")) {
     return {
       kind: "extension",
@@ -301,6 +319,12 @@ export async function executeSlashCommand(
     case "script":
       await handlers.onScript(command)
       break
+    case "credential":
+      await handlers.onCredential(command)
+      break
+    case "connector":
+      await handlers.onConnector(command)
+      break
     case "extension":
       await handlers.onExtension(command)
       break
@@ -328,6 +352,8 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "skill":
     case "env":
     case "script":
+    case "credential":
+    case "connector":
     case "extension":
       return true
     default:

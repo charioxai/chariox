@@ -41,6 +41,8 @@ export function createCliAppCommandRoutingComposition(
     onSkill: commandHandlers.handleSkillCommand,
     onEnv: commandHandlers.handleEnvCommand,
     onScript: commandHandlers.handleScriptCommand,
+    onCredential: commandHandlers.handleCredentialCommand,
+    onConnector: commandHandlers.handleConnectorCommand,
     onExtension: commandHandlers.handleExtensionCommand,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,

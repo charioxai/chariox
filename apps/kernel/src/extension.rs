@@ -6,6 +6,7 @@ pub enum ExtensionKind {
     Mcp,
     Skill,
     Script,
+    Connector,
 }
 
 impl ExtensionKind {
@@ -14,6 +15,7 @@ impl ExtensionKind {
             Self::Mcp => "mcp",
             Self::Skill => "skill",
             Self::Script => "script",
+            Self::Connector => "connector",
         }
     }
 }
@@ -24,6 +26,10 @@ pub struct ExtensionGrant {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_safety: Option<String>,
 }
 
 impl ExtensionGrant {
@@ -32,6 +38,8 @@ impl ExtensionGrant {
             kind,
             name: name.into(),
             environment: None,
+            credential: None,
+            max_safety: None,
         }
     }
 
@@ -40,6 +48,22 @@ impl ExtensionGrant {
             kind: ExtensionKind::Script,
             name: name.into(),
             environment: Some(environment.into()),
+            credential: None,
+            max_safety: None,
+        }
+    }
+
+    pub fn connector(
+        name: impl Into<String>,
+        credential: Option<String>,
+        max_safety: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ExtensionKind::Connector,
+            name: name.into(),
+            environment: None,
+            credential,
+            max_safety: Some(max_safety.into()),
         }
     }
 

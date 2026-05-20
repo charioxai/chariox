@@ -4,7 +4,8 @@ use crate::local::{
     MoveAgentToRemoteRequest, RevokeAgentExtensionRequest,
 };
 use crate::runtime::capability_registry::{
-    ensure_environment_exists, ensure_mcp_exists, ensure_script_exists, ensure_skill_exists,
+    ensure_connector_exists, ensure_credential_exists, ensure_environment_exists,
+    ensure_mcp_exists, ensure_script_exists, ensure_skill_exists,
 };
 use crate::runtime::state::KernelRuntimeState;
 
@@ -65,6 +66,23 @@ pub(crate) async fn execute_grant_agent_extension_request(
                 .await?;
             Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
         }
+        ExtensionKind::Connector => {
+            ensure_connector_exists(&request.name)?;
+            if let Some(credential) = request.credential.as_deref() {
+                ensure_credential_exists(credential)?;
+            }
+            let max_safety =
+                crate::connector::ConnectorSafety::parse(request.max_safety.as_deref())?;
+            let grant = crate::extension::ExtensionGrant::connector(
+                request.name,
+                request.credential,
+                max_safety.as_str(),
+            );
+            let agent = runtime_state
+                .grant_agent_extension(&request.agent_ref, grant, caller_user_id)
+                .await?;
+            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
+        }
     }
 }
 
@@ -105,6 +123,16 @@ pub(crate) async fn execute_revoke_agent_extension_request(
                 .revoke_agent_extension(
                     &request.agent_ref,
                     crate::extension::ExtensionKind::Script,
+                    &request.name,
+                    caller_user_id,
+                )
+                .await?
+        }
+        ExtensionKind::Connector => {
+            runtime_state
+                .revoke_agent_extension(
+                    &request.agent_ref,
+                    crate::extension::ExtensionKind::Connector,
                     &request.name,
                     caller_user_id,
                 )

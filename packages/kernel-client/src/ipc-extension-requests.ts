@@ -93,9 +93,10 @@ export function importSkillsRequest(workspaceId: string | null, provider: string
 export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill" | "script",
+  kind: "mcp" | "skill" | "script" | "connector",
   name: string,
   environment?: string | null,
+  options?: { credential?: string | null; maxSafety?: string | null } | null,
 ) {
   return {
     GrantAgentExtension: {
@@ -104,16 +105,62 @@ export function grantAgentExtensionRequest(
       kind,
       name,
       ...(environment ? { environment } : {}),
+      ...(options?.credential ? { credential: options.credential } : {}),
+      ...(options?.maxSafety ? { max_safety: options.maxSafety } : {}),
     },
   }
 }
 
-export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script", name: string) {
+export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script" | "connector", name: string) {
   return {
     RevokeAgentExtension: {
       agent_ref: agentRef,
       kind,
       name,
+    },
+  }
+}
+
+export function registerCredentialRequest(sourcePath: string) {
+  return { RegisterCredential: { source_path: sourcePath } }
+}
+
+export function removeCredentialRequest(id: string) {
+  return { RemoveCredential: { id } }
+}
+
+export function getCredentialRequest(id: string) {
+  return { GetCredential: { id } }
+}
+
+export function listCredentialsRequest() {
+  return { ListCredentials: null }
+}
+
+export function registerConnectorRequest(sourcePath: string) {
+  return { RegisterConnector: { source_path: sourcePath } }
+}
+
+export function removeConnectorRequest(name: string) {
+  return { RemoveConnector: { name } }
+}
+
+export function getConnectorRequest(name: string) {
+  return { GetConnector: { name } }
+}
+
+export function listConnectorsRequest() {
+  return { ListConnectors: null }
+}
+
+export function testConnectorRequest(name: string, operation: string, input: Record<string, unknown>, credential?: string | null, allow?: string | null) {
+  return {
+    TestConnector: {
+      name,
+      operation,
+      input,
+      credential: credential ?? null,
+      allow: allow ?? null,
     },
   }
 }

@@ -188,21 +188,17 @@ test("executeShellCommand stores credentials only through hidden reader", async 
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
-        if ("GetUserConfig" in request) {
+        if ("ListCredentials" in request) {
           return {
-            UserConfig: {
-              path: "/home/.arroba/config.toml",
-              config: {
-                version: 1,
-                credentials: [
-                  {
-                    id: "github",
-                    source: { type: "vault", key: "github-token" },
-                    allowed_uses: ["http"],
-                  },
-                ],
-              },
-            },
+            CredentialsListed: {
+              credentials: [
+                {
+                  id: "github",
+                  source: { type: "vault", key: "github-token" },
+                  allowed_uses: ["http"],
+                },
+              ],
+            }
           }
         }
         if ("SetCredentialSecret" in request) {
@@ -228,7 +224,7 @@ test("executeShellCommand stores credentials only through hidden reader", async 
   assert.equal(setResult.ok, true)
   assert.equal(deleteResult.ok, true)
   assert.deepEqual(requests, [
-    { GetUserConfig: null },
+    { ListCredentials: null },
     { SetCredentialSecret: { key: "github-token", value: "hidden-secret" } },
     { DeleteCredentialSecret: { key: "github-token" } },
   ])

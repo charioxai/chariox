@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -40,6 +41,10 @@ pub struct CredentialHttpRequest {
     pub body_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_json: Option<serde_json::Value>,
+    #[serde(default = "default_http_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_http_max_response_bytes")]
+    pub max_response_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,13 +187,25 @@ impl RuntimeSecretService {
             }
         }
 
+        if request.timeout_ms == 0 {
+            return Err(secret_error(
+                "http_request_with_credential",
+                "timeout_ms must be greater than zero".to_string(),
+            ));
+        }
+        if request.max_response_bytes == 0 {
+            return Err(secret_error(
+                "http_request_with_credential",
+                "max_response_bytes must be greater than zero".to_string(),
+            ));
+        }
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_millis(request.timeout_ms))
+            .build();
         let mut http_request = match method.as_str() {
-            "GET" => ureq::get(target.as_str()),
-            "POST" => ureq::post(target.as_str()),
-            "PUT" => ureq::put(target.as_str()),
-            "PATCH" => ureq::patch(target.as_str()),
-            "DELETE" => ureq::delete(target.as_str()),
-            "HEAD" => ureq::head(target.as_str()),
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" => {
+                agent.request(&method, target.as_str())
+            }
             _ => {
                 return Err(secret_error(
                     "http_request_with_credential",
@@ -206,7 +223,7 @@ impl RuntimeSecretService {
         }
         .map_err(|error| http_error("http_request_with_credential", error))?;
 
-        decode_http_response(response)
+        decode_http_response(response, request.max_response_bytes)
     }
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
@@ -404,6 +421,14 @@ fn default_http_method() -> String {
     "GET".to_string()
 }
 
+fn default_http_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_http_max_response_bytes() -> u64 {
+    1_048_576
+}
+
 fn request_body(
     body_text: Option<String>,
     body_json: Option<serde_json::Value>,
@@ -424,14 +449,27 @@ fn request_body(
     }
 }
 
-fn decode_http_response(response: ureq::Response) -> Result<CredentialHttpResponse, DaemonError> {
+fn decode_http_response(
+    response: ureq::Response,
+    max_response_bytes: u64,
+) -> Result<CredentialHttpResponse, DaemonError> {
     let status = response.status();
-    let body_text = response.into_string().map_err(|error| {
+    let mut body_text = String::new();
+    let mut reader = response
+        .into_reader()
+        .take(max_response_bytes.saturating_add(1));
+    reader.read_to_string(&mut body_text).map_err(|error| {
         secret_error(
             "http_request_with_credential",
             format!("failed to read response body: {error}"),
         )
     })?;
+    if body_text.len() as u64 > max_response_bytes {
+        return Err(secret_error(
+            "http_request_with_credential",
+            format!("response exceeded max_response_bytes ({max_response_bytes})"),
+        ));
+    }
     let body_json = serde_json::from_str::<serde_json::Value>(&body_text).ok();
     Ok(CredentialHttpResponse {
         status,
@@ -647,6 +685,8 @@ mod tests {
                 headers: BTreeMap::new(),
                 body_text: None,
                 body_json: None,
+                timeout_ms: 30_000,
+                max_response_bytes: 1_048_576,
             })
             .expect("credential request should succeed");
         std::env::remove_var("ARROBA_TEST_SECRET_HTTP_TOKEN");
@@ -685,6 +725,8 @@ mod tests {
                 headers: BTreeMap::new(),
                 body_text: None,
                 body_json: None,
+                timeout_ms: 30_000,
+                max_response_bytes: 1_048_576,
             })
             .expect_err("wrong host should be rejected");
 

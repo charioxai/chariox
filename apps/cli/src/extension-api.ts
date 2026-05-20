@@ -1,5 +1,7 @@
 import type {
   AgentInstance,
+  ArrobaConnectorDefinition,
+  ArrobaCredentialConfig,
   ArrobaEnvironmentConfig,
   ArrobaMcpServerConfig,
   ArrobaScriptMetadata,
@@ -10,6 +12,8 @@ import type {
 import type { LocalIpcClient } from "./ipc.js"
 import {
   getMcpServerRequest,
+  getConnectorRequest,
+  getCredentialRequest,
   getEnvironmentRequest,
   getScriptRequest,
   getSkillRequest,
@@ -19,14 +23,21 @@ import {
   installMcpServerRequest,
   installSkillRequest,
   listEnvironmentsRequest,
+  listConnectorsRequest,
+  listCredentialsRequest,
   listMcpServersRequest,
   listScriptsRequest,
   listSkillsRequest,
   registerEnvironmentRequest,
+  registerConnectorRequest,
+  registerCredentialRequest,
   registerScriptRequest,
   removeEnvironmentRequest,
+  removeConnectorRequest,
+  removeCredentialRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
+  testConnectorRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
   updateMcpServerRequest,
@@ -297,5 +308,83 @@ export async function revokeAgentScript(
   name: string,
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "script", name))
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
+}
+
+export async function listCredentials(client: LocalIpcClient): Promise<ArrobaCredentialConfig[]> {
+  const response = await client.send<Record<string, unknown>>(listCredentialsRequest())
+  return expectVariant<{ credentials: ArrobaCredentialConfig[] }>(response, "CredentialsListed").credentials
+}
+
+export async function getCredential(client: LocalIpcClient, id: string): Promise<ArrobaCredentialConfig> {
+  const response = await client.send<Record<string, unknown>>(getCredentialRequest(id))
+  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "Credential").credential
+}
+
+export async function registerCredential(client: LocalIpcClient, sourcePath: string): Promise<ArrobaCredentialConfig> {
+  const response = await client.send<Record<string, unknown>>(registerCredentialRequest(sourcePath))
+  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "CredentialRegistered").credential
+}
+
+export async function removeCredential(client: LocalIpcClient, id: string): Promise<ArrobaCredentialConfig> {
+  const response = await client.send<Record<string, unknown>>(removeCredentialRequest(id))
+  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "CredentialRemoved").credential
+}
+
+export async function listConnectors(client: LocalIpcClient): Promise<ArrobaConnectorDefinition[]> {
+  const response = await client.send<Record<string, unknown>>(listConnectorsRequest())
+  return expectVariant<{ connectors: ArrobaConnectorDefinition[] }>(response, "ConnectorsListed").connectors
+}
+
+export async function getConnector(client: LocalIpcClient, name: string): Promise<ArrobaConnectorDefinition> {
+  const response = await client.send<Record<string, unknown>>(getConnectorRequest(name))
+  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "Connector").connector
+}
+
+export async function registerConnector(client: LocalIpcClient, sourcePath: string): Promise<ArrobaConnectorDefinition> {
+  const response = await client.send<Record<string, unknown>>(registerConnectorRequest(sourcePath))
+  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRegistered").connector
+}
+
+export async function removeConnector(client: LocalIpcClient, name: string): Promise<ArrobaConnectorDefinition> {
+  const response = await client.send<Record<string, unknown>>(removeConnectorRequest(name))
+  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRemoved").connector
+}
+
+export async function testConnector(
+  client: LocalIpcClient,
+  name: string,
+  operation: string,
+  input: Record<string, unknown>,
+  credential?: string | null,
+  allow?: string | null,
+): Promise<Record<string, unknown>> {
+  const response = await client.send<Record<string, unknown>>(testConnectorRequest(name, operation, input, credential, allow))
+  return expectVariant<{ execution: Record<string, unknown> }>(response, "ConnectorTested").execution
+}
+
+export async function grantAgentConnector(
+  client: LocalIpcClient,
+  workspaceTarget: string,
+  agentRef: string,
+  name: string,
+  credential?: string | null,
+  maxSafety?: string | null,
+): Promise<AgentInstance> {
+  const options: { credential?: string | null; maxSafety?: string | null } = {}
+  if (credential !== undefined) options.credential = credential
+  if (maxSafety !== undefined) options.maxSafety = maxSafety
+  const response = await client.send<Record<string, unknown>>(
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "connector", name, null, options),
+  )
+  return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
+}
+
+export async function revokeAgentConnector(
+  client: LocalIpcClient,
+  agentRef: string,
+  name: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "connector", name))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
