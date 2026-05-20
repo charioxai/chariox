@@ -34,6 +34,10 @@ impl CommandTrace {
         &self.command_type
     }
 
+    fn fields_at(&self, now_ms: u64) -> Value {
+        self.base_fields(now_ms)
+    }
+
     fn base_fields(&self, now_ms: u64) -> Value {
         json!({
             "trace_id": self.trace_id,
@@ -238,6 +242,81 @@ pub(crate) fn log_lane_completed(
     );
 }
 
+pub(crate) fn log_provider_launch_accepted(
+    trace: &CommandTrace,
+    run: &crate::provider::RuntimeProviderRun,
+    launch_started_at_ms: u64,
+    runtime_init_delay_ms: u64,
+) {
+    let now_ms = now_ms();
+    crate::logging::info_with_fields(
+        "daemon.provider_latency",
+        "provider launch accepted",
+        merge_fields(
+            merge_fields(trace.fields_at(now_ms), provider_run_fields(run)),
+            json!({
+                "launch_started_at_ms": launch_started_at_ms,
+                "prepare_and_spawn_ms": elapsed_ms(launch_started_at_ms, now_ms),
+                "runtime_init_delay_ms": runtime_init_delay_ms,
+            }),
+        ),
+    );
+}
+
+pub(crate) fn log_provider_runtime_binding_started(
+    trace: &CommandTrace,
+    run: &crate::provider::RuntimeProviderRun,
+    launch_started_at_ms: u64,
+) -> u64 {
+    let now_ms = now_ms();
+    crate::logging::info_with_fields(
+        "daemon.provider_latency",
+        "provider runtime binding started",
+        merge_fields(
+            merge_fields(trace.fields_at(now_ms), provider_run_fields(run)),
+            json!({
+                "launch_started_at_ms": launch_started_at_ms,
+                "binding_started_at_ms": now_ms,
+                "launch_to_binding_start_ms": elapsed_ms(launch_started_at_ms, now_ms),
+            }),
+        ),
+    );
+    now_ms
+}
+
+pub(crate) fn log_provider_runtime_binding_succeeded(
+    trace: &CommandTrace,
+    run: &crate::provider::RuntimeProviderRun,
+    launch_started_at_ms: u64,
+    binding_started_at_ms: u64,
+) {
+    log_provider_runtime_binding_completed(
+        trace,
+        run,
+        launch_started_at_ms,
+        binding_started_at_ms,
+        "ok",
+        None,
+    );
+}
+
+pub(crate) fn log_provider_runtime_binding_failed(
+    trace: &CommandTrace,
+    run: &crate::provider::RuntimeProviderRun,
+    launch_started_at_ms: u64,
+    binding_started_at_ms: u64,
+    error: &DaemonError,
+) {
+    log_provider_runtime_binding_completed(
+        trace,
+        run,
+        launch_started_at_ms,
+        binding_started_at_ms,
+        "error",
+        Some(error.to_string()),
+    );
+}
+
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
     end_ms.saturating_sub(start_ms)
 }
@@ -258,6 +337,47 @@ fn command_priority_label(priority: &KernelCommandPriority) -> &'static str {
         KernelCommandPriority::Normal => "normal",
         KernelCommandPriority::Background => "background",
     }
+}
+
+fn provider_run_fields(run: &crate::provider::RuntimeProviderRun) -> Value {
+    json!({
+        "provider_run_id": run.id(),
+        "session_id": run.session_id(),
+        "agent_id": run.agent_instance_id(),
+        "adapter_key": run.adapter_key(),
+        "provider": run.provider(),
+        "model": run.model(),
+    })
+}
+
+fn log_provider_runtime_binding_completed(
+    trace: &CommandTrace,
+    run: &crate::provider::RuntimeProviderRun,
+    launch_started_at_ms: u64,
+    binding_started_at_ms: u64,
+    status: &'static str,
+    error: Option<String>,
+) {
+    let now_ms = now_ms();
+    let mut fields = merge_fields(
+        merge_fields(trace.fields_at(now_ms), provider_run_fields(run)),
+        json!({
+            "launch_started_at_ms": launch_started_at_ms,
+            "binding_started_at_ms": binding_started_at_ms,
+            "binding_duration_ms": elapsed_ms(binding_started_at_ms, now_ms),
+            "launch_to_binding_complete_ms": elapsed_ms(launch_started_at_ms, now_ms),
+            "status": status,
+        }),
+    );
+    if let Some(error) = error {
+        fields = merge_fields(fields, json!({ "error": error }));
+    }
+    let message = if status == "ok" {
+        "provider runtime binding completed"
+    } else {
+        "provider runtime binding failed"
+    };
+    crate::logging::info_with_fields("daemon.provider_latency", message, fields);
 }
 
 fn merge_fields(mut base: Value, extra: Value) -> Value {

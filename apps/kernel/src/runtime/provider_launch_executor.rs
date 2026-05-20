@@ -10,6 +10,10 @@ use crate::error::DaemonError;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessService, ProviderRunState};
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command_latency::{
+    log_provider_launch_accepted, log_provider_runtime_binding_failed,
+    log_provider_runtime_binding_started, log_provider_runtime_binding_succeeded, CommandTrace,
+};
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::state::KernelRuntimeState;
 
@@ -33,8 +37,9 @@ pub(crate) async fn execute_provider_launch_command(
     command: &KernelCommand,
     request: LaunchProviderRunRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let command_trace = CommandTrace::from_command(command);
     ProviderLaunchCommandExecutor::new(runtime_state.clone())
-        .execute(request, command_caller_user_id(command))
+        .execute(request, command_caller_user_id(command), command_trace)
         .await
 }
 
@@ -49,6 +54,7 @@ impl ProviderLaunchCommandExecutor {
         &self,
         request: LaunchProviderRunRequest,
         caller_user_id: String,
+        command_trace: CommandTrace,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let Some(response) = self
             .store
@@ -57,14 +63,26 @@ impl ProviderLaunchCommandExecutor {
         {
             return Ok(response);
         }
+        let launch_started_at_ms = crate::runtime::command_latency::now_ms();
         let (started, runtime_init_delay_ms) =
             self.store.start_launch(request, caller_user_id).await?;
         let accepted = started.run.clone();
+        log_provider_launch_accepted(
+            &command_trace,
+            &accepted,
+            launch_started_at_ms,
+            runtime_init_delay_ms,
+        );
         let store = self.store.clone();
         tokio::spawn(async move {
             if runtime_init_delay_ms > 0 {
                 sleep(Duration::from_millis(runtime_init_delay_ms)).await;
             }
+            let binding_started_at_ms = log_provider_runtime_binding_started(
+                &command_trace,
+                &started.run,
+                launch_started_at_ms,
+            );
             let run = started.run.clone();
             let binding = tokio::task::spawn_blocking(move || {
                 ProviderProcessService::initialize_runtime_binding(&run)
@@ -77,9 +95,32 @@ impl ProviderLaunchCommandExecutor {
 
             match binding {
                 Ok(Ok(binding)) => {
+                    log_provider_runtime_binding_succeeded(
+                        &command_trace,
+                        &started.run,
+                        launch_started_at_ms,
+                        binding_started_at_ms,
+                    );
                     store.finish_launch(&started, binding).await;
                 }
-                Ok(Err(error)) | Err(error) => {
+                Ok(Err(error)) => {
+                    log_provider_runtime_binding_failed(
+                        &command_trace,
+                        &started.run,
+                        launch_started_at_ms,
+                        binding_started_at_ms,
+                        &error,
+                    );
+                    store.fail_launch(&started, &error).await;
+                }
+                Err(error) => {
+                    log_provider_runtime_binding_failed(
+                        &command_trace,
+                        &started.run,
+                        launch_started_at_ms,
+                        binding_started_at_ms,
+                        &error,
+                    );
                     store.fail_launch(&started, &error).await;
                 }
             }
