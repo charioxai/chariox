@@ -38,7 +38,9 @@ impl AgentRuntimeCommandExecutor {
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match command {
-            AgentCommand::SubmitPrompt { request } => self.submit_prompt(request).await,
+            AgentCommand::SubmitPrompt { request, trace_id } => {
+                self.submit_prompt(request, trace_id).await
+            }
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id,
@@ -57,6 +59,7 @@ impl AgentRuntimeCommandExecutor {
     async fn submit_prompt(
         &self,
         request: crate::local::SubmitPromptRequest,
+        trace_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let target_agent_id =
             request
@@ -92,11 +95,12 @@ impl AgentRuntimeCommandExecutor {
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
         {
-            self.prompt_commands.start_active_turn(
+            self.prompt_commands.start_active_turn_with_trace_id(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 prompt.id(),
                 &dispatch.provider_run_id,
+                &trace_id,
             );
         }
         let agent_activity = self

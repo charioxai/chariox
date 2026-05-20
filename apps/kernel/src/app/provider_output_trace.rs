@@ -138,6 +138,8 @@ impl ProviderOutputTrace {
                     "agent_id": turn.agent_id,
                     "prompt_id": turn.prompt_id,
                     "provider_run_id": turn.provider_run_id,
+                    "trace_id": turn.trace_id,
+                    "started_at_ms": turn.started_at_ms,
                     "settlement_requested": turn.settlement_requested,
                 })
             }),

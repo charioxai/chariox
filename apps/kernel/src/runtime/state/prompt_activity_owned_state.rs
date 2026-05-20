@@ -178,9 +178,25 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn note_prompt_response_content(&self, provider_run_id: &str) {
-        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
-            state.last_output_at = Some(Instant::now());
-            state.saw_response_content = true;
+        let first_response_content = {
+            let mut prompt_activity = self.prompt_activity.write();
+            if let Some(state) = prompt_activity.get_mut(provider_run_id) {
+                let first_response_content = !state.saw_response_content;
+                state.last_output_at = Some(Instant::now());
+                state.saw_response_content = true;
+                first_response_content
+            } else {
+                false
+            }
+        };
+        if first_response_content {
+            if let Ok(run) = self.provider_store.get_run(provider_run_id) {
+                let active_turn = self.active_turns.snapshot().remove(provider_run_id);
+                crate::runtime::command_latency::log_provider_first_response_content(
+                    &run,
+                    active_turn.as_ref(),
+                );
+            }
         }
     }
 

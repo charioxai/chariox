@@ -5,19 +5,23 @@ use crate::app::ActiveTurnState;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(crate) fn start_active_turn(
+    pub(crate) fn start_active_turn_with_trace_id(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt_id: &str,
         provider_run_id: &str,
+        trace_id: &str,
     ) {
-        self.owned.active_turns.start(ActiveTurnState::new(
-            session_id.to_string(),
-            agent_id.to_string(),
-            prompt_id.to_string(),
-            provider_run_id.to_string(),
-        ));
+        self.owned.active_turns.start(
+            ActiveTurnState::new(
+                session_id.to_string(),
+                agent_id.to_string(),
+                prompt_id.to_string(),
+                provider_run_id.to_string(),
+            )
+            .with_trace_id(trace_id),
+        );
     }
 
     pub(crate) fn agent_activity_for_session(

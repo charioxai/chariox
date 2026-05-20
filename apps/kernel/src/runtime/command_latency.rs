@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 
+use crate::app::ActiveTurnState;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
@@ -32,6 +33,10 @@ impl CommandTrace {
 
     pub(crate) fn command_type(&self) -> &str {
         &self.command_type
+    }
+
+    pub(crate) fn trace_id(&self) -> &str {
+        &self.trace_id
     }
 
     fn fields_at(&self, now_ms: u64) -> Value {
@@ -317,6 +322,17 @@ pub(crate) fn log_provider_runtime_binding_failed(
     );
 }
 
+pub(crate) fn log_provider_first_response_content(
+    run: &crate::provider::RuntimeProviderRun,
+    active_turn: Option<&ActiveTurnState>,
+) {
+    crate::logging::info_with_fields(
+        "daemon.provider_latency",
+        "provider first response content observed",
+        provider_first_output_fields(run, active_turn, now_ms()),
+    );
+}
+
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
     end_ms.saturating_sub(start_ms)
 }
@@ -348,6 +364,42 @@ fn provider_run_fields(run: &crate::provider::RuntimeProviderRun) -> Value {
         "provider": run.provider(),
         "model": run.model(),
     })
+}
+
+fn provider_first_output_fields(
+    run: &crate::provider::RuntimeProviderRun,
+    active_turn: Option<&ActiveTurnState>,
+    now_ms: u64,
+) -> Value {
+    let trace_id = active_turn
+        .map(|turn| turn.trace_id.as_str())
+        .unwrap_or_else(|| run.id());
+    let mut fields = merge_fields(
+        json!({
+            "trace_id": trace_id,
+        }),
+        provider_run_fields(run),
+    );
+    fields = merge_fields(
+        fields,
+        json!({
+            "prompt_id": active_turn.map(|turn| turn.prompt_id.as_str()),
+            "turn_started_at_ms": active_turn.map(|turn| turn.started_at_ms),
+            "first_output_at_ms": now_ms,
+            "provider_run_started_at_ms": run.started_at_ms(),
+            "provider_run_to_first_output_ms": elapsed_ms(run.started_at_ms(), now_ms),
+            "output_kind": "response_content",
+        }),
+    );
+    if let Some(turn) = active_turn {
+        fields = merge_fields(
+            fields,
+            json!({
+                "prompt_to_first_output_ms": elapsed_ms(turn.started_at_ms, now_ms),
+            }),
+        );
+    }
+    fields
 }
 
 fn log_provider_runtime_binding_completed(
@@ -392,7 +444,10 @@ fn merge_fields(mut base: Value, extra: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use crate::local::{GetDaemonHealthRequest, LocalDaemonRequest};
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
     use crate::runtime::command::KernelCommand;
 
     #[test]
@@ -434,5 +489,43 @@ mod tests {
     #[test]
     fn elapsed_ms_saturates_for_clock_skew() {
         assert_eq!(elapsed_ms(200, 100), 0);
+    }
+
+    #[test]
+    fn first_output_fields_join_provider_run_to_active_turn_trace() {
+        let request =
+            LaunchProviderRequest::new("session-1", "dev-stub", "dev-stub", "default", "model-a")
+                .with_agent_id("agent-1");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "dev-stub".to_string(),
+            pty_target: Some("pty-1".to_string()),
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = crate::provider::RuntimeProviderRun::new("run-1", &request, launch_result);
+        let mut turn = ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        )
+        .with_trace_id("trace-1");
+        turn.started_at_ms = 1_000;
+
+        let fields = provider_first_output_fields(&run, Some(&turn), 1_050);
+
+        assert_eq!(fields["trace_id"], "trace-1");
+        assert_eq!(fields["provider_run_id"], "run-1");
+        assert_eq!(fields["prompt_id"], "prompt-1");
+        assert_eq!(fields["prompt_to_first_output_ms"], 50);
+        assert_eq!(
+            fields["provider_run_to_first_output_ms"],
+            1_050_u64.saturating_sub(run.started_at_ms())
+        );
     }
 }

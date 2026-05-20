@@ -89,15 +89,21 @@ impl AgentPromptCommandService {
         self.state.session_snapshot(session_id).await
     }
 
-    pub(crate) fn start_active_turn(
+    pub(crate) fn start_active_turn_with_trace_id(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt_id: &str,
         provider_run_id: &str,
+        trace_id: &str,
     ) {
-        self.state
-            .start_active_turn(session_id, agent_id, prompt_id, provider_run_id);
+        self.state.start_active_turn_with_trace_id(
+            session_id,
+            agent_id,
+            prompt_id,
+            provider_run_id,
+            trace_id,
+        );
     }
 
     pub(crate) fn agent_activity_for_session(

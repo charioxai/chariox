@@ -93,10 +93,14 @@ impl AgentRuntime {
             .ensure_agent_owner(&agent_id, &caller_user_id, "submit prompt")
             .await?;
         request.target_agent_id = Some(agent_id.clone());
+        let command_trace = CommandTrace::from_command(command);
         self.dispatch_to_agent(
             agent_id,
-            CommandTrace::from_command(command),
-            AgentCommand::SubmitPrompt { request },
+            command_trace.clone(),
+            AgentCommand::SubmitPrompt {
+                request,
+                trace_id: command_trace.trace_id().to_string(),
+            },
         )
         .await
     }

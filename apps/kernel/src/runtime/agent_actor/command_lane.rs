@@ -14,6 +14,7 @@ use crate::runtime::projection::ActorQueueSnapshot;
 pub(super) enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,
+        trace_id: String,
     },
     CompletePrompt {
         request: crate::local::CompletePromptRequest,
