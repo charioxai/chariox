@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::app::ActiveTurnState;
+use crate::app::{ActivePromptState, ActiveTurnState};
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
@@ -333,8 +333,24 @@ pub(crate) fn log_provider_first_response_content(
     );
 }
 
+pub(crate) fn log_provider_turn_completed(
+    run: &crate::provider::RuntimeProviderRun,
+    active_turn: Option<&ActiveTurnState>,
+    prompt_activity: Option<&ActivePromptState>,
+) {
+    crate::logging::info_with_fields(
+        "daemon.provider_latency",
+        "provider turn activity completed",
+        provider_turn_completion_fields(run, active_turn, prompt_activity, now_ms()),
+    );
+}
+
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
     end_ms.saturating_sub(start_ms)
+}
+
+fn duration_ms(duration: std::time::Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn command_source_label(source: &KernelCommandSource) -> &'static str {
@@ -396,6 +412,48 @@ fn provider_first_output_fields(
             fields,
             json!({
                 "prompt_to_first_output_ms": elapsed_ms(turn.started_at_ms, now_ms),
+            }),
+        );
+    }
+    fields
+}
+
+fn provider_turn_completion_fields(
+    run: &crate::provider::RuntimeProviderRun,
+    active_turn: Option<&ActiveTurnState>,
+    prompt_activity: Option<&ActivePromptState>,
+    now_ms: u64,
+) -> Value {
+    let trace_id = active_turn
+        .map(|turn| turn.trace_id.as_str())
+        .unwrap_or_else(|| run.id());
+    let mut fields = merge_fields(
+        json!({
+            "trace_id": trace_id,
+        }),
+        provider_run_fields(run),
+    );
+    fields = merge_fields(
+        fields,
+        json!({
+            "prompt_id": active_turn.map(|turn| turn.prompt_id.as_str()),
+            "turn_started_at_ms": active_turn.map(|turn| turn.started_at_ms),
+            "completed_at_ms": now_ms,
+            "provider_run_started_at_ms": run.started_at_ms(),
+            "provider_run_to_completion_ms": elapsed_ms(run.started_at_ms(), now_ms),
+            "saw_response_content": prompt_activity.map(|state| state.saw_response_content),
+            "completion_recorded": prompt_activity.map(|state| state.completion_recorded),
+            "settlement_requested": prompt_activity.map(|state| state.settlement_requested),
+            "last_output_to_completion_ms": prompt_activity
+                .and_then(|state| state.last_output_at)
+                .map(|last_output_at| duration_ms(last_output_at.elapsed())),
+        }),
+    );
+    if let Some(turn) = active_turn {
+        fields = merge_fields(
+            fields,
+            json!({
+                "prompt_to_completion_ms": elapsed_ms(turn.started_at_ms, now_ms),
             }),
         );
     }
@@ -527,5 +585,47 @@ mod tests {
             fields["provider_run_to_first_output_ms"],
             1_050_u64.saturating_sub(run.started_at_ms())
         );
+    }
+
+    #[test]
+    fn completion_fields_include_prompt_tail_state() {
+        let request =
+            LaunchProviderRequest::new("session-1", "dev-stub", "dev-stub", "default", "model-a")
+                .with_agent_id("agent-1");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "dev-stub".to_string(),
+            pty_target: Some("pty-1".to_string()),
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = crate::provider::RuntimeProviderRun::new("run-1", &request, launch_result);
+        let mut turn = ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        )
+        .with_trace_id("trace-1");
+        turn.started_at_ms = 2_000;
+        let activity = ActivePromptState {
+            last_output_at: None,
+            saw_response_content: true,
+            completion_recorded: true,
+            settlement_requested: true,
+        };
+
+        let fields = provider_turn_completion_fields(&run, Some(&turn), Some(&activity), 2_075);
+
+        assert_eq!(fields["trace_id"], "trace-1");
+        assert_eq!(fields["prompt_id"], "prompt-1");
+        assert_eq!(fields["prompt_to_completion_ms"], 75);
+        assert_eq!(fields["saw_response_content"], true);
+        assert_eq!(fields["completion_recorded"], true);
+        assert_eq!(fields["settlement_requested"], true);
     }
 }

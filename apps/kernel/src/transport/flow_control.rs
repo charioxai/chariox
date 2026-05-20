@@ -38,7 +38,17 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
 }
 
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
-    app.prompt_activity.write().remove(provider_run_id);
+    let prompt_activity = app.prompt_activity.write().remove(provider_run_id);
+    let active_turn = app.active_turns.snapshot().remove(provider_run_id);
+    if prompt_activity.is_some() || active_turn.is_some() {
+        if let Ok(run) = app.providers().get_run(provider_run_id) {
+            crate::runtime::command_latency::log_provider_turn_completed(
+                &run,
+                active_turn.as_ref(),
+                prompt_activity.as_ref(),
+            );
+        }
+    }
     if app.release_prompt_workspace_claim(provider_run_id) {
         crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app);
     }

@@ -249,10 +249,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
     }
 
     fn clear_prompt_activity(&mut self, provider_run_id: &str) {
-        self.prompt_activity.write().remove(provider_run_id);
-        if self.app.release_prompt_workspace_claim(provider_run_id) {
-            crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(self.app);
-        }
+        crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
     }
 
     fn clear_active_turn(&self, provider_run_id: &str) {

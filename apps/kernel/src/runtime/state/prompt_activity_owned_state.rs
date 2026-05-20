@@ -117,7 +117,17 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
-        self.prompt_activity.write().remove(provider_run_id);
+        let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
+        let active_turn = self.active_turns.snapshot().remove(provider_run_id);
+        if prompt_activity.is_some() || active_turn.is_some() {
+            if let Ok(run) = self.provider_store.get_run(provider_run_id) {
+                crate::runtime::command_latency::log_provider_turn_completed(
+                    &run,
+                    active_turn.as_ref(),
+                    prompt_activity.as_ref(),
+                );
+            }
+        }
         self.active_turns.clear(provider_run_id);
         self.prompt_workspace_claims.remove(provider_run_id)
     }
