@@ -48,6 +48,7 @@ Do not merge protocol shape changes without the version bump and test update.
 
 ## Implementation Rules
 
+- Work on the `main` branch unless the user explicitly states otherwise.
 - Keep core behavior below clients, in kernel services and shared protocol contracts.
 - Do not implement behavior only in the web app or only in the TUI unless explicitly marked temporary.
 - Prefer one shared protocol path across local TUI, remote TUI, web, and native clients.
