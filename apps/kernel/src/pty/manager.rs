@@ -9,6 +9,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
+const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
+
 pub struct PtyManager {
     process_aliases: BTreeMap<String, String>,
     processes: BTreeMap<String, PtyProcess>,
@@ -154,7 +156,7 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        let (output_tx, output_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
 
         thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
