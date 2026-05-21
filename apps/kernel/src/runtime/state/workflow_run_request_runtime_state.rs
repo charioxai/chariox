@@ -153,6 +153,7 @@ impl KernelRuntimeState {
                 );
             }
             owned.workflow_maybe_start_next_queued_launch(&request.session_id);
+            self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             let session = owned.session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowRunCancelled {
                 workflow_run,

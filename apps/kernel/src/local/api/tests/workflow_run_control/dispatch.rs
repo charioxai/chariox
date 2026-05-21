@@ -696,3 +696,158 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         Some(retried_run.node_runs()[0].id())
     );
 }
+
+#[test]
+fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
+    let harness = LocalRouterTestHarness::new();
+    let first_session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("first workflow session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let first_agent = harness.spawn_workflow_test_agent(first_session.id(), "first-worker");
+    let first_workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: first_session.id().to_string(),
+            alias: Some("first".to_string()),
+        }))
+        .expect("first workflow should be created")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let first_node =
+        harness.add_workflow_test_node(first_session.id(), first_workflow.id(), first_agent.id());
+    let first_endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: first_session.id().to_string(),
+                workflow_ref: first_workflow.id().to_string(),
+                entry_node_id: first_node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("first workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    let first_run = match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: first_session.id().to_string(),
+                workflow_ref: first_workflow.id().to_string(),
+                endpoint_ref: first_endpoint.id().to_string(),
+                prompt: Some("hold the workflow claim".to_string()),
+            },
+        ))
+        .expect("first workflow should start")
+    {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        first_run.status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+
+    let blocked_session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("blocked workflow session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let blocked_agent = harness.spawn_workflow_test_agent(blocked_session.id(), "blocked-worker");
+    let blocked_workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: blocked_session.id().to_string(),
+            alias: Some("blocked".to_string()),
+        }))
+        .expect("blocked workflow should be created")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let blocked_node = harness.add_workflow_test_node(
+        blocked_session.id(),
+        blocked_workflow.id(),
+        blocked_agent.id(),
+    );
+    let blocked_endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: blocked_session.id().to_string(),
+                workflow_ref: blocked_workflow.id().to_string(),
+                entry_node_id: blocked_node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("blocked workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    let blocked_run = match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: blocked_session.id().to_string(),
+                workflow_ref: blocked_workflow.id().to_string(),
+                endpoint_ref: blocked_endpoint.id().to_string(),
+                prompt: Some("wait for claim release".to_string()),
+            },
+        ))
+        .expect("blocked workflow invoke should wait on workspace claim")
+    {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        blocked_run.status(),
+        crate::session::WorkflowRunStatus::Waiting
+    );
+    assert_eq!(
+        blocked_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+    );
+
+    match harness
+        .dispatch(LocalDaemonRequest::CancelWorkflowRun(
+            CancelWorkflowRunRequest {
+                session_id: first_session.id().to_string(),
+                workflow_run_ref: first_run.id().to_string(),
+            },
+        ))
+        .expect("first workflow run should cancel")
+    {
+        LocalDaemonResponse::WorkflowRunCancelled { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let retried_run = loop {
+        let workflow_run = harness.get_workflow_test_run(blocked_session.id(), blocked_run.id());
+        if workflow_run.status() == crate::session::WorkflowRunStatus::Running
+            || Instant::now() >= deadline
+        {
+            break workflow_run;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        retried_run.status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+    assert_eq!(
+        retried_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Running
+    );
+}
