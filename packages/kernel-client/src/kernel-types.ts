@@ -255,6 +255,8 @@ export type AgentActiveTurn = {
   prompt_id: string
   provider_run_id?: string | null
   status: "none" | "queued" | "running" | "cancelling" | "settling"
+  phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
+  started_at_ms?: number | null
 }
 
 export type RuntimeInteraction = {
@@ -814,7 +816,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 38
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 39
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

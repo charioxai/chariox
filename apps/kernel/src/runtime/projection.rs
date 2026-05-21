@@ -29,7 +29,7 @@ pub(crate) use session_history_projection::{page_history_entries, SessionHistory
 pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
 pub use session_snapshot_projection::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,
-    SessionSnapshotProjection,
+    AgentTurnRuntimePhase, SessionSnapshotProjection,
 };
 pub(crate) use session_state_projection::SessionStateProjectionStore;
 pub(crate) use transport_health::{TransportHealthSnapshot, TransportHealthStore};

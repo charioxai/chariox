@@ -13,6 +13,34 @@ pub(crate) struct ActivePromptState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ActiveTurnPhase {
+    Accepted,
+    AwaitingFirstOutput,
+    Streaming,
+    Settling,
+}
+
+impl ActiveTurnPhase {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::AwaitingFirstOutput => "awaiting_first_output",
+            Self::Streaming => "streaming",
+            Self::Settling => "settling",
+        }
+    }
+
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::AwaitingFirstOutput => 1,
+            Self::Streaming => 2,
+            Self::Settling => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveTurnState {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
@@ -20,6 +48,7 @@ pub(crate) struct ActiveTurnState {
     pub(crate) provider_run_id: String,
     pub(crate) trace_id: String,
     pub(crate) started_at_ms: u64,
+    pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
 }
 
@@ -38,8 +67,14 @@ impl ActiveTurnState {
             provider_run_id,
             trace_id,
             started_at_ms: crate::session::unix_epoch_ms(),
+            phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
         }
+    }
+
+    pub(crate) fn with_phase(mut self, phase: ActiveTurnPhase) -> Self {
+        self.phase = phase;
+        self
     }
 
     pub(crate) fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
@@ -77,8 +112,25 @@ impl ActiveTurnStore {
                 "provider_run_id": &turn.provider_run_id,
                 "trace_id": &turn.trace_id,
                 "started_at_ms": turn.started_at_ms,
+                "phase": turn.phase.as_str(),
                 "settlement_requested": turn.settlement_requested,
             }),
+        );
+    }
+
+    pub(crate) fn mark_awaiting_first_output(&self, provider_run_id: &str) {
+        self.advance_phase(
+            provider_run_id,
+            ActiveTurnPhase::AwaitingFirstOutput,
+            "active_turn_awaiting_first_output",
+        );
+    }
+
+    pub(crate) fn mark_streaming(&self, provider_run_id: &str) {
+        self.advance_phase(
+            provider_run_id,
+            ActiveTurnPhase::Streaming,
+            "active_turn_streaming",
         );
     }
 
@@ -89,6 +141,9 @@ impl ActiveTurnStore {
             .expect("active turn mutex poisoned")
             .get_mut(provider_run_id)
         {
+            if turn.phase.rank() < ActiveTurnPhase::Settling.rank() {
+                turn.phase = ActiveTurnPhase::Settling;
+            }
             turn.settlement_requested = true;
             crate::debug_trace::record_terminal_turn(
                 &turn.session_id,
@@ -99,7 +154,34 @@ impl ActiveTurnStore {
                     "provider_run_id": &turn.provider_run_id,
                     "trace_id": &turn.trace_id,
                     "started_at_ms": turn.started_at_ms,
+                    "phase": turn.phase.as_str(),
                     "settlement_requested": true,
+                }),
+            );
+        }
+    }
+
+    fn advance_phase(&self, provider_run_id: &str, phase: ActiveTurnPhase, event: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .expect("active turn mutex poisoned")
+            .get_mut(provider_run_id)
+        {
+            if turn.phase.rank() < phase.rank() {
+                turn.phase = phase;
+            }
+            crate::debug_trace::record_terminal_turn(
+                &turn.session_id,
+                event,
+                serde_json::json!({
+                    "agent_id": &turn.agent_id,
+                    "prompt_id": &turn.prompt_id,
+                    "provider_run_id": &turn.provider_run_id,
+                    "trace_id": &turn.trace_id,
+                    "started_at_ms": turn.started_at_ms,
+                    "phase": turn.phase.as_str(),
+                    "settlement_requested": turn.settlement_requested,
                 }),
             );
         }
@@ -121,6 +203,7 @@ impl ActiveTurnStore {
                     "provider_run_id": turn.provider_run_id,
                     "trace_id": turn.trace_id,
                     "started_at_ms": turn.started_at_ms,
+                    "phase": turn.phase.as_str(),
                     "settlement_requested": turn.settlement_requested,
                 }),
             );
@@ -145,6 +228,13 @@ fn merge_active_turn_start(
     {
         incoming.trace_id = existing.trace_id.clone();
         incoming.started_at_ms = existing.started_at_ms;
+    }
+    if existing.phase.rank() > incoming.phase.rank() {
+        incoming.phase = existing.phase.clone();
+    }
+    incoming.settlement_requested |= existing.settlement_requested;
+    if incoming.settlement_requested && incoming.phase.rank() < ActiveTurnPhase::Settling.rank() {
+        incoming.phase = ActiveTurnPhase::Settling;
     }
     incoming
 }
@@ -252,5 +342,85 @@ mod tests {
             .expect("turn should remain active");
         assert_eq!(turn.trace_id, "trace-1");
         assert_eq!(turn.started_at_ms, started_at_ms);
+        assert_eq!(turn.phase, ActiveTurnPhase::Accepted);
+    }
+
+    #[test]
+    fn active_turn_restart_does_not_regress_phase() {
+        let store = ActiveTurnStore::default();
+        store.start(
+            ActiveTurnState::new(
+                "session-1".to_string(),
+                "agent-1".to_string(),
+                "prompt-1".to_string(),
+                "run-1".to_string(),
+            )
+            .with_phase(ActiveTurnPhase::Streaming),
+        );
+
+        store.start(
+            ActiveTurnState::new(
+                "session-1".to_string(),
+                "agent-1".to_string(),
+                "prompt-1".to_string(),
+                "run-1".to_string(),
+            )
+            .with_phase(ActiveTurnPhase::AwaitingFirstOutput),
+        );
+
+        let turn = store
+            .snapshot()
+            .remove("run-1")
+            .expect("turn should remain active");
+        assert_eq!(turn.phase, ActiveTurnPhase::Streaming);
+    }
+
+    #[test]
+    fn active_turn_phase_advances_without_regressing() {
+        let store = ActiveTurnStore::default();
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "run-1".to_string(),
+        ));
+
+        store.mark_awaiting_first_output("run-1");
+        assert_eq!(
+            store
+                .snapshot()
+                .get("run-1")
+                .expect("turn should remain active")
+                .phase,
+            ActiveTurnPhase::AwaitingFirstOutput
+        );
+
+        store.mark_streaming("run-1");
+        assert_eq!(
+            store
+                .snapshot()
+                .get("run-1")
+                .expect("turn should remain active")
+                .phase,
+            ActiveTurnPhase::Streaming
+        );
+
+        store.mark_settling("run-1");
+        let settling = store
+            .snapshot()
+            .remove("run-1")
+            .expect("turn should settle");
+        assert_eq!(settling.phase, ActiveTurnPhase::Settling);
+        assert!(settling.settlement_requested);
+
+        store.mark_streaming("run-1");
+        assert_eq!(
+            store
+                .snapshot()
+                .get("run-1")
+                .expect("turn should remain settling")
+                .phase,
+            ActiveTurnPhase::Settling
+        );
     }
 }

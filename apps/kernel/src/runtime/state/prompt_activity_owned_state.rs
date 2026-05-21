@@ -169,15 +169,20 @@ impl KernelRuntimeOwnedState {
                     .active_prompt_for_agent(&session, &agent_id)?
                     .id()
                     .to_string();
-                Some(crate::app::ActiveTurnState::new(
-                    session_id,
-                    agent_id,
-                    prompt_id,
-                    provider_run_id.to_string(),
-                ))
+                Some(
+                    crate::app::ActiveTurnState::new(
+                        session_id,
+                        agent_id,
+                        prompt_id,
+                        provider_run_id.to_string(),
+                    )
+                    .with_phase(crate::app::ActiveTurnPhase::AwaitingFirstOutput),
+                )
             });
         if let Some(turn) = active_turn {
             self.active_turns.start(turn);
+            self.active_turns
+                .mark_awaiting_first_output(provider_run_id);
         }
     }
 
@@ -185,6 +190,7 @@ impl KernelRuntimeOwnedState {
         if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.last_output_at = Some(Instant::now());
         }
+        self.active_turns.mark_streaming(provider_run_id);
     }
 
     pub(super) fn note_prompt_response_content(&self, provider_run_id: &str) {
@@ -200,6 +206,7 @@ impl KernelRuntimeOwnedState {
             }
         };
         if first_response_content {
+            self.active_turns.mark_streaming(provider_run_id);
             if let Ok(run) = self.provider_store.get_run(provider_run_id) {
                 let active_turn = self.active_turns.snapshot().remove(provider_run_id);
                 crate::runtime::command_latency::log_provider_first_response_content(

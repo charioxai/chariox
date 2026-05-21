@@ -781,6 +781,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.last_output_at = Some(Instant::now());
         }
+        self.active_turns.mark_streaming(provider_run_id);
     }
 
     fn note_prompt_response_content(&self, provider_run_id: &str) {
@@ -796,6 +797,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             }
         };
         if first_response_content {
+            self.active_turns.mark_streaming(provider_run_id);
             if let Ok(run) = self.provider_store.get_run(provider_run_id) {
                 let active_turn = self.active_turns.snapshot().remove(provider_run_id);
                 crate::runtime::command_latency::log_provider_first_response_content(

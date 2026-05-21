@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
+use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};
 
 pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
     app.prompt_activity.write().insert(
@@ -25,15 +25,14 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
                 .flatten()?
                 .id()
                 .to_string();
-            Some(ActiveTurnState::new(
-                session_id,
-                agent_id,
-                prompt_id,
-                provider_run_id.to_string(),
-            ))
+            Some(
+                ActiveTurnState::new(session_id, agent_id, prompt_id, provider_run_id.to_string())
+                    .with_phase(ActiveTurnPhase::AwaitingFirstOutput),
+            )
         });
     if let Some(turn) = active_turn {
         app.active_turns.start(turn);
+        app.active_turns.mark_awaiting_first_output(provider_run_id);
     }
 }
 

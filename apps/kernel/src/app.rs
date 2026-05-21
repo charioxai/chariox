@@ -41,7 +41,7 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use prompt_activity::{
-    ActivePromptState, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
+    ActivePromptState, ActiveTurnPhase, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
     PromptWorkspaceClaimStore,
 };
 pub(crate) use prompt_lifecycle::{

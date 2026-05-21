@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ProjectionMetadata;
 use crate::agent::AgentState;
-use crate::app::{ActivePromptState, ActiveTurnState, DaemonApp};
+use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};
 use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::session::{PromptQueueItem, PromptStatus, RuntimeSession};
@@ -36,6 +36,15 @@ pub enum AgentPromptRuntimeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTurnRuntimePhase {
+    Accepted,
+    AwaitingFirstOutput,
+    Streaming,
+    Settling,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRuntimeActivity {
     pub status: AgentRuntimeStatus,
     pub prompt_status: AgentPromptRuntimeStatus,
@@ -50,6 +59,9 @@ pub struct AgentActiveTurnProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
     pub status: AgentPromptRuntimeStatus,
+    pub phase: AgentTurnRuntimePhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
 }
 
 impl SessionSnapshotProjection {
@@ -75,7 +87,7 @@ impl SessionSnapshotProjection {
             &active_turns,
         );
         Ok(Self {
-            metadata: ProjectionMetadata::new(2, last_event_id),
+            metadata: ProjectionMetadata::new(3, last_event_id),
             session,
             provider_run,
             agent_activity,
@@ -140,17 +152,21 @@ pub(crate) fn agent_activity_for_session_projection(
                 ProviderRunState::Starting | ProviderRunState::Running
             ) && provider_turn_activity.is_some()
         });
-        let active_turn = active_prompt
-            .map(|prompt| AgentActiveTurnProjection {
-                prompt_id: prompt.id().to_string(),
-                provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
+        let active_turn = provider_turn_activity
+            .map(|turn| AgentActiveTurnProjection {
+                prompt_id: turn.prompt_id.clone(),
+                provider_run_id: Some(turn.provider_run_id.clone()),
                 status: prompt_status.clone(),
+                phase: AgentTurnRuntimePhase::from(&turn.phase),
+                started_at_ms: Some(turn.started_at_ms),
             })
             .or_else(|| {
-                provider_turn_activity.map(|turn| AgentActiveTurnProjection {
-                    prompt_id: turn.prompt_id.clone(),
-                    provider_run_id: Some(turn.provider_run_id.clone()),
+                active_prompt.map(|prompt| AgentActiveTurnProjection {
+                    prompt_id: prompt.id().to_string(),
+                    provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
                     status: prompt_status.clone(),
+                    phase: AgentTurnRuntimePhase::Accepted,
+                    started_at_ms: None,
                 })
             });
         let prompt_busy = !matches!(prompt_status, AgentPromptRuntimeStatus::None);
@@ -177,11 +193,25 @@ pub(crate) fn agent_activity_for_session_projection(
     activity
 }
 
+impl From<&ActiveTurnPhase> for AgentTurnRuntimePhase {
+    fn from(value: &ActiveTurnPhase) -> Self {
+        match value {
+            ActiveTurnPhase::Accepted => Self::Accepted,
+            ActiveTurnPhase::AwaitingFirstOutput => Self::AwaitingFirstOutput,
+            ActiveTurnPhase::Streaming => Self::Streaming,
+            ActiveTurnPhase::Settling => Self::Settling,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
-    use super::{AgentPromptRuntimeStatus, AgentRuntimeStatus, SessionSnapshotProjection};
+    use super::{
+        AgentPromptRuntimeStatus, AgentRuntimeStatus, AgentTurnRuntimePhase,
+        SessionSnapshotProjection,
+    };
     use crate::runtime::projection::test_support::{
         attach_cli, launch_dev_stub_provider, submit_prompt,
     };
@@ -198,7 +228,7 @@ mod tests {
         let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
             .expect("projection should build");
 
-        assert_eq!(projection.metadata.projection_version, 2);
+        assert_eq!(projection.metadata.projection_version, 3);
         assert_eq!(projection.metadata.last_event_id, 42);
         assert_eq!(projection.session.id(), session.id());
         assert_eq!(projection.session.agents().len(), 1);
@@ -247,6 +277,12 @@ mod tests {
         assert_eq!(activity.status, AgentRuntimeStatus::Working);
         assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Settling);
         assert!(activity.busy);
+        let active_turn = activity
+            .active_turn
+            .as_ref()
+            .expect("settling prompt should project active turn");
+        assert_eq!(active_turn.phase, AgentTurnRuntimePhase::Settling);
+        assert!(active_turn.started_at_ms.is_some());
     }
 
     #[test]
@@ -256,13 +292,15 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
-        app.active_turn_store()
-            .start(crate::app::ActiveTurnState::new(
+        app.active_turn_store().start(
+            crate::app::ActiveTurnState::new(
                 session.id().to_string(),
                 agent.id().to_string(),
                 "prompt-restored".to_string(),
                 provider_run.id().to_string(),
-            ));
+            )
+            .with_phase(crate::app::ActiveTurnPhase::AwaitingFirstOutput),
+        );
 
         let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
             .expect("projection should build");
@@ -281,6 +319,47 @@ mod tests {
                 .map(|turn| turn.prompt_id.as_str()),
             Some("prompt-restored")
         );
+        assert_eq!(
+            activity.active_turn.as_ref().map(|turn| &turn.phase),
+            Some(&AgentTurnRuntimePhase::AwaitingFirstOutput)
+        );
+    }
+
+    #[test]
+    fn session_snapshot_active_turn_phase_drill_projects_awaiting_first_output() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let attachment_id = attach_cli(&mut app, session.id(), "cli-awaiting-output");
+        submit_prompt(
+            &mut app,
+            session.id(),
+            &attachment_id,
+            agent.id(),
+            "status check",
+        );
+        crate::transport::flow_control::note_prompt_started(&mut app, provider_run.id());
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let active_turn = activity
+            .active_turn
+            .as_ref()
+            .expect("active turn should be projected before first output");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+        assert_eq!(
+            active_turn.phase,
+            AgentTurnRuntimePhase::AwaitingFirstOutput
+        );
+        assert!(active_turn.started_at_ms.is_some());
     }
 
     #[test]

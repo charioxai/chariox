@@ -140,6 +140,7 @@ impl ProviderOutputTrace {
                     "provider_run_id": turn.provider_run_id,
                     "trace_id": turn.trace_id,
                     "started_at_ms": turn.started_at_ms,
+                    "phase": turn.phase.as_str(),
                     "settlement_requested": turn.settlement_requested,
                 })
             }),
