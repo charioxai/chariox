@@ -200,7 +200,11 @@ impl ProviderProcessServiceStore {
     }
 
     pub fn initialize_runtime(&self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
-        self.write().initialize_runtime(run)
+        let binding = ProviderProcessService::initialize_runtime_binding(run)?;
+        if let Some(binding) = binding {
+            self.write().apply_runtime_binding(run.id(), binding)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn apply_runtime_binding(

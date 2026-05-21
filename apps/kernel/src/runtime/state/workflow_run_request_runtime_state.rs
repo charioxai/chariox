@@ -4,7 +4,7 @@ use super::workflow_request_runtime_state::workflow_response_session;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) fn execute_workflow_invoke_endpoint_request(
+    pub(super) async fn execute_workflow_invoke_endpoint_request(
         &self,
         request: crate::local::InvokeWorkflowEndpointRequest,
         caller_user_id: &str,
@@ -14,24 +14,32 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
-        let result = match owned
-            .ensure_workflow_endpoint_owner(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-                caller_user_id,
-                "invoke workflow endpoint",
-            )
-            .and_then(|()| {
-                owned.workflow_invoke_endpoint_with_admission(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt,
-                )
-            }) {
-            Ok((outcome, dispatches)) => {
-                self.spawn_workflow_prompt_dispatches(dispatches);
+        let result = match owned.ensure_workflow_endpoint_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            caller_user_id,
+            "invoke workflow endpoint",
+        ) {
+            Ok(()) => {
+                let invoke_session_id = request.session_id.clone();
+                let workflow_ref = request.workflow_ref.clone();
+                let endpoint_ref = request.endpoint_ref.clone();
+                let prompt = request.prompt.clone();
+                let outcome = self
+                    .with_app_side_effect(move |app| {
+                        app.invoke_workflow_endpoint_with_admission(
+                            &invoke_session_id,
+                            &workflow_ref,
+                            &endpoint_ref,
+                            prompt,
+                        )
+                    })
+                    .await;
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(error) => return (Err(error), owned.session_snapshot(&session_id).ok()),
+                };
                 let session = match owned.session_snapshot(&request.session_id) {
                     Ok(session) => session,
                     Err(error) => return (Err(error), None),

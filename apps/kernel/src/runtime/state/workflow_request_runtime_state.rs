@@ -206,6 +206,7 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
                 self.execute_workflow_invoke_endpoint_request(request, &caller_user_id)
+                    .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
                 self.execute_workflow_cancel_run_request(request)

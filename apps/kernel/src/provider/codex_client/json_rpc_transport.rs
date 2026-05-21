@@ -61,7 +61,7 @@ impl CodexClient {
             .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
 
         loop {
-            let raw = self.read_next_message(socket, Duration::from_secs(30))?;
+            let raw = self.read_next_message(socket, codex_request_timeout(method))?;
             let message: JsonRpcMessage = serde_json::from_str(&raw)
                 .map_err(|error| self.protocol_error("codex_read_parse", error.to_string()))?;
             if self.respond_to_server_request(socket, &message)? {
@@ -202,8 +202,16 @@ impl CodexClient {
         socket: &mut CodexSocket,
         timeout: Duration,
     ) -> Result<String, DaemonError> {
-        set_socket_timeouts(socket, Some(timeout), Some(Duration::from_secs(5)))?;
+        let deadline = Instant::now() + timeout;
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.protocol_error(
+                    "codex_read",
+                    format!("timed out waiting for Codex app-server after {timeout:?}"),
+                ));
+            }
+            set_socket_timeouts(socket, Some(remaining), Some(Duration::from_secs(5)))?;
             match socket.read() {
                 Ok(Message::Text(text)) => return Ok(text.to_string()),
                 Ok(Message::Binary(bytes)) => {
@@ -217,8 +225,61 @@ impl CodexClient {
                     ));
                 }
                 Ok(Message::Frame(_)) => continue,
+                Err(tokio_tungstenite::tungstenite::Error::Io(error))
+                    if codex_read_should_retry(&error) =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 Err(error) => return Err(self.protocol_error("codex_read", error.to_string())),
             }
         }
+    }
+}
+
+fn codex_read_should_retry(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
+}
+
+fn codex_request_timeout(method: &str) -> Duration {
+    match method {
+        "thread/start" | "thread/resume" => Duration::from_secs(120),
+        _ => Duration::from_secs(30),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_read_should_retry;
+    use super::codex_request_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn codex_read_retries_transient_empty_socket_errors() {
+        assert!(codex_read_should_retry(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
+        assert!(codex_read_should_retry(&std::io::Error::from(
+            std::io::ErrorKind::TimedOut
+        )));
+        assert!(!codex_read_should_retry(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset
+        )));
+    }
+
+    #[test]
+    fn codex_thread_lifecycle_requests_get_startup_slack() {
+        assert_eq!(
+            codex_request_timeout("thread/start"),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            codex_request_timeout("thread/resume"),
+            Duration::from_secs(120)
+        );
+        assert_eq!(codex_request_timeout("turn/start"), Duration::from_secs(30));
     }
 }
