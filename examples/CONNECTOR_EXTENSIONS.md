@@ -1,26 +1,70 @@
 # Connector Extensions
 
-Connector extensions expose a configured external API to an agent as runtime tools. V1 supports YAML-defined HTTP connectors, with secrets referenced through Arroba credential records and resolved from the OS vault at call time.
+Connector extensions expose external systems to agents as runtime tools. Arroba core does not implement service protocols directly. A connector uses an adapter, and the adapter executable owns the protocol-specific work.
 
-## 1. Store The Secret
+## Layout
 
-Store the secret value in the Arroba vault. From the workspace shell:
+User-registered connector files are copied to:
+
+```text
+~/.arroba/connectors/definitions/
+```
+
+User-registered adapters are copied to:
+
+```text
+~/.arroba/connectors/adapters/
+```
+
+Package-managed Arroba installs can also ship bundled adapters from the install resource directory. Those appear in `/connector adapter list` with `source: bundled`.
+
+## 1. Register An Adapter
+
+An adapter is an executable that speaks `arroba-connector-adapter-v1` over JSON lines on stdin/stdout.
+
+```yaml
+kind: connector_adapter
+name: http
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: /path/to/arroba-adapter-http
+description: HTTP adapter for Arroba connectors.
+```
+
+If `command` has no path separators, Arroba launches it through the process `PATH`.
+Use `./adapter.py`, `./adapter.mjs`, or another relative path when the executable should be copied with the adapter directory.
+
+Register a user adapter:
+
+```text
+/connector adapter register /path/to/adapter.yaml
+```
+
+Useful commands:
+
+```text
+/connector adapter list
+/connector adapter show http
+/connector adapter remove custom_adapter
+```
+
+## 2. Store A Secret
+
+Store the secret value in the Arroba vault. The value is never sent to the model.
 
 ```sh
 credential set google-maps-prod
 ```
 
-In the TUI, use the slash command when hidden input support is available:
+Or from the TUI:
 
 ```text
 /credential set google-maps-prod
 ```
 
-The shell prompts for the value with hidden input. The value is stored in the OS keychain under the Arroba vault service and is never placed in the model context.
+## 3. Register A Credential
 
-## 2. Register A Credential
-
-Create a credential YAML file. The `source.key` is the vault key, not the secret value.
+Create a credential YAML file. `source.key` is the vault key, not the secret value.
 
 ```yaml
 id: google-maps
@@ -31,7 +75,7 @@ source:
 allowed_hosts:
   - maps.googleapis.com
 allowed_uses:
-  - http
+  - connector
 injection:
   kind: query
   name: key
@@ -43,16 +87,15 @@ Register it:
 /credential register /path/to/google-maps-credential.yaml
 ```
 
-## 3. Register A Connector
+## 4. Register A Connector
 
-Create a connector YAML file:
+A connector is the user-facing integration. It chooses an adapter and defines the operations available to agents.
 
 ```yaml
 kind: connector
 name: google_maps
 description: Google Maps geocoding connector.
-type: http
-base_url: https://maps.googleapis.com
+adapter: http
 credential:
   required: true
 timeout_ms: 30000
@@ -68,45 +111,115 @@ operations:
         address:
           type: string
       additionalProperties: false
-    request:
+    config:
+      base_url: https://maps.googleapis.com
       method: GET
       path: /maps/api/geocode/json
       query:
         address: "{{address}}"
 ```
 
+Arroba treats `config` as opaque data. The `http` adapter validates and executes this config.
+
 Register it:
 
 ```text
-/connector register /path/to/google-maps-connector.yaml
+/connector register /path/to/google-maps.yaml
 ```
 
-## 4. Test And Grant
+Registration fails if common connector validation fails, the adapter is missing, or the adapter rejects the operation configs.
 
-Run a metadata/policy check, then test the connector before granting it to an agent:
+## 5. Test And Grant
 
 ```text
 /connector doctor google_maps --credential google-maps
-```
-
-```text
 /connector test google_maps geocode --credential google-maps --input '{"address":"1600 Amphitheatre Parkway, Mountain View, CA"}'
-```
-
-Grant it to an agent:
-
-```text
 /connector grant agent-1 google_maps --credential google-maps --allow read
 ```
 
-The agent receives a tool named `google_maps_geocode`. If an operation has `safety: write`, grant it with `--allow write`; if it has `safety: destructive`, grant it with `--allow destructive`.
+The agent receives a tool named `google_maps_geocode`.
 
-Useful inspection commands:
+Safety levels:
 
 ```text
-/credential list
-/credential show google-maps
-/connector list
-/connector show google_maps
-/connector grants agent-1
+read
+write
+destructive
 ```
+
+Grant with `--allow write` or `--allow destructive` only when the agent should receive those operations.
+
+## Adapter Protocol
+
+Validate request:
+
+```json
+{
+  "id": "validate-1",
+  "type": "validate",
+  "connector": "google_maps",
+  "operations": [
+    {
+      "name": "geocode",
+      "config": {
+        "base_url": "https://maps.googleapis.com",
+        "method": "GET",
+        "path": "/maps/api/geocode/json"
+      }
+    }
+  ],
+  "timeout_ms": 30000,
+  "max_response_bytes": 1048576
+}
+```
+
+Call request:
+
+```json
+{
+  "id": "call-1",
+  "type": "call",
+  "connector": "google_maps",
+  "operation": "geocode",
+  "arguments": { "address": "1600 Amphitheatre Parkway" },
+  "config": {
+    "base_url": "https://maps.googleapis.com",
+    "method": "GET",
+    "path": "/maps/api/geocode/json",
+    "query": { "address": "{{address}}" }
+  },
+  "credential": {
+    "id": "google-maps",
+    "secret": "...",
+    "injection": { "kind": "query", "name": "key" },
+    "allowed_hosts": ["maps.googleapis.com"]
+  },
+  "timeout_ms": 30000,
+  "max_response_bytes": 1048576
+}
+```
+
+Response:
+
+```json
+{
+  "id": "call-1",
+  "ok": true,
+  "result": {
+    "status": 200,
+    "body_json": {}
+  }
+}
+```
+
+Failure:
+
+```json
+{
+  "id": "call-1",
+  "ok": false,
+  "error": "request failed"
+}
+```
+
+Adapters are trusted local code. If a connector is granted a credential, Arroba resolves the secret from the vault and passes it to the adapter process, never to the model.

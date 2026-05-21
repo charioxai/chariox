@@ -69,7 +69,7 @@ async function run(command, args, options = {}) {
 
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel', '--bin', 'arroba-adapter-http'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -126,6 +126,7 @@ function unwrapOne(response, ...keys) {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
+  if (provider === 'opencode' && options.model === DEFAULT_MODEL) return 'opencode/gpt-5.4'
   if (provider === 'opencode' && !options.model.includes('/')) return `openai/${options.model}`
   return options.model
 }
@@ -148,8 +149,19 @@ function startApiServer(expectedSecret) {
 }
 
 async function registerConnector(client, root, port, vaultKey) {
+  const adapterDir = path.join(root, 'http-adapter')
+  const adapterPath = path.join(adapterDir, 'adapter.yaml')
   const credentialPath = path.join(root, 'agent-credential.yaml')
   const connectorPath = path.join(root, 'agent-connector.yaml')
+  await mkdir(adapterDir, { recursive: true })
+  await writeFile(adapterPath, `
+kind: connector_adapter
+name: http
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: ${path.join(repoRoot, 'apps/kernel/target/debug/arroba-adapter-http')}
+description: HTTP adapter agent drill build.
+`, 'utf8')
   await writeFile(credentialPath, `
 id: agent-local-api
 description: Agent connector drill key
@@ -159,7 +171,7 @@ source:
 allowed_hosts:
   - 127.0.0.1:${port}
 allowed_uses:
-  - http
+  - connector
 injection:
   kind: query
   name: key
@@ -168,8 +180,7 @@ injection:
 kind: connector
 name: agent_local_api
 description: Local HTTP API connector for provider drills.
-type: http
-base_url: http://127.0.0.1:${port}
+adapter: http
 credential:
   required: false
 timeout_ms: 30000
@@ -184,7 +195,8 @@ operations:
       properties:
         q: { type: string }
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${port}
       method: GET
       path: /public
       query:
@@ -196,10 +208,12 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${port}
       method: GET
       path: /secret
 `, 'utf8')
+  await client.send(requests.registerConnectorAdapterRequest(adapterPath))
   await client.send(requests.registerCredentialRequest(credentialPath))
   await client.send(requests.registerConnectorRequest(connectorPath))
 }

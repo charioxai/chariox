@@ -1,4 +1,4 @@
-use super::capability_registry::connector_registry;
+use super::capability_registry::{connector_adapter_registry, connector_registry};
 use super::*;
 
 impl KernelRuntimeState {
@@ -88,8 +88,10 @@ impl KernelRuntimeState {
                 let connector_name = connector.name.clone();
                 let operation_name = operation.name.clone();
                 let credential = grant.credential.clone();
-                let execution = tokio::task::spawn_blocking(move || {
-                    registry.execute(
+                let adapters = connector_adapter_registry()?;
+                let prepared = tokio::task::spawn_blocking(move || {
+                    registry.prepare_call(
+                        &adapters,
                         &connector_name,
                         &operation_name,
                         credential.as_deref(),
@@ -103,6 +105,11 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_connector",
                     message: error.to_string(),
                 })??;
+                let execution = self
+                    .owned
+                    .connector_adapter_processes
+                    .execute(provider_run.id(), prepared)
+                    .await?;
                 return Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(execution).map_err(|error| {

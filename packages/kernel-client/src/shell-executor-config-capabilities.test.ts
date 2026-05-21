@@ -195,7 +195,7 @@ test("executeShellCommand stores credentials only through hidden reader", async 
                 {
                   id: "github",
                   source: { type: "vault", key: "github-token" },
-                  allowed_uses: ["http"],
+                  allowed_uses: ["connector"],
                 },
               ],
             }
@@ -218,7 +218,7 @@ test("executeShellCommand stores credentials only through hidden reader", async 
   const deleteResult = await executeShellCommand(parseShellCommand("credential delete github-token"), context, { client: fake.client })
 
   assert.equal(listResult.ok, true)
-  assert.match(listResult.message ?? "", /github\tvault\thttp/)
+  assert.match(listResult.message ?? "", /github\tvault\tconnector/)
   assert.equal(blockedResult.ok, false)
   assert.match(blockedResult.message ?? "", /hidden input/)
   assert.equal(setResult.ok, true)

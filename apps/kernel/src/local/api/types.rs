@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 39;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -97,6 +97,10 @@ pub enum LocalDaemonRequest {
     GetCredential(GetCredentialRequest),
     ListCredentials(ListCredentialsRequest),
     RegisterConnector(RegisterConnectorRequest),
+    RegisterConnectorAdapter(RegisterConnectorAdapterRequest),
+    RemoveConnectorAdapter(RemoveConnectorAdapterRequest),
+    GetConnectorAdapter(GetConnectorAdapterRequest),
+    ListConnectorAdapters(ListConnectorAdaptersRequest),
     RemoveConnector(RemoveConnectorRequest),
     GetConnector(GetConnectorRequest),
     ListConnectors(ListConnectorsRequest),
@@ -409,6 +413,20 @@ pub enum LocalDaemonResponse {
     ConnectorRegistered {
         connector: ArrobaConnectorDefinition,
         path: PathBuf,
+    },
+    ConnectorAdapterRegistered {
+        adapter: ArrobaConnectorAdapterDefinition,
+        path: PathBuf,
+    },
+    ConnectorAdapterRemoved {
+        adapter: ArrobaConnectorAdapterDefinition,
+        path: PathBuf,
+    },
+    ConnectorAdapter {
+        adapter: ArrobaConnectorAdapterDefinition,
+    },
+    ConnectorAdaptersListed {
+        adapters: Vec<ArrobaConnectorAdapterDefinition>,
     },
     ConnectorRemoved {
         connector: ArrobaConnectorDefinition,

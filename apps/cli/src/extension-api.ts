@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ArrobaConnectorAdapterDefinition,
   ArrobaConnectorDefinition,
   ArrobaCredentialConfig,
   ArrobaEnvironmentConfig,
@@ -13,6 +14,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import {
   getMcpServerRequest,
   getConnectorRequest,
+  getConnectorAdapterRequest,
   getCredentialRequest,
   getEnvironmentRequest,
   getScriptRequest,
@@ -24,16 +26,19 @@ import {
   installSkillRequest,
   listEnvironmentsRequest,
   listConnectorsRequest,
+  listConnectorAdaptersRequest,
   listCredentialsRequest,
   listMcpServersRequest,
   listScriptsRequest,
   listSkillsRequest,
   registerEnvironmentRequest,
   registerConnectorRequest,
+  registerConnectorAdapterRequest,
   registerCredentialRequest,
   registerScriptRequest,
   removeEnvironmentRequest,
   removeConnectorRequest,
+  removeConnectorAdapterRequest,
   removeCredentialRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
@@ -334,6 +339,26 @@ export async function removeCredential(client: LocalIpcClient, id: string): Prom
 export async function listConnectors(client: LocalIpcClient): Promise<ArrobaConnectorDefinition[]> {
   const response = await client.send<Record<string, unknown>>(listConnectorsRequest())
   return expectVariant<{ connectors: ArrobaConnectorDefinition[] }>(response, "ConnectorsListed").connectors
+}
+
+export async function listConnectorAdapters(client: LocalIpcClient): Promise<ArrobaConnectorAdapterDefinition[]> {
+  const response = await client.send<Record<string, unknown>>(listConnectorAdaptersRequest())
+  return expectVariant<{ adapters: ArrobaConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
+}
+
+export async function getConnectorAdapter(client: LocalIpcClient, name: string): Promise<ArrobaConnectorAdapterDefinition> {
+  const response = await client.send<Record<string, unknown>>(getConnectorAdapterRequest(name))
+  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
+}
+
+export async function registerConnectorAdapter(client: LocalIpcClient, sourcePath: string): Promise<ArrobaConnectorAdapterDefinition> {
+  const response = await client.send<Record<string, unknown>>(registerConnectorAdapterRequest(sourcePath))
+  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
+}
+
+export async function removeConnectorAdapter(client: LocalIpcClient, name: string): Promise<ArrobaConnectorAdapterDefinition> {
+  const response = await client.send<Record<string, unknown>>(removeConnectorAdapterRequest(name))
+  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
 }
 
 export async function getConnector(client: LocalIpcClient, name: string): Promise<ArrobaConnectorDefinition> {

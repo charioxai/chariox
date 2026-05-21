@@ -53,12 +53,23 @@ export type ArrobaConnectorDefinition = {
   kind: "connector" | string
   name: string
   description: string
-  type: "http" | string
-  base_url?: string | null
+  adapter: string
   credential?: { required?: boolean } | null
   timeout_ms?: number | null
   max_response_bytes?: number | null
   operations: Array<Record<string, unknown>>
+}
+
+export type ArrobaConnectorAdapterDefinition = {
+  kind: "connector_adapter" | string
+  name: string
+  version?: string | null
+  adapter_protocol: string
+  command: string
+  args?: string[]
+  description?: string | null
+  source?: "user" | "bundled" | string | null
+  manifest_path?: string | null
 }
 
 export type ArrobaCredentialConfig = {

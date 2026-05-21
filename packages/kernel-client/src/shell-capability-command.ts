@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ArrobaConnectorAdapterDefinition,
   ArrobaEnvironmentConfig,
   ArrobaConnectorDefinition,
   ArrobaCredentialConfig,
@@ -12,6 +13,7 @@ import type {
 } from "./kernel-types.js"
 import {
   getEnvironmentRequest,
+  getConnectorAdapterRequest,
   getConnectorRequest,
   getCredentialRequest,
   getMcpServerRequest,
@@ -23,14 +25,17 @@ import {
   installMcpServerRequest,
   installSkillRequest,
   listEnvironmentsRequest,
+  listConnectorAdaptersRequest,
   listConnectorsRequest,
   listMcpServersRequest,
   listScriptsRequest,
   listSkillsRequest,
   registerEnvironmentRequest,
+  registerConnectorAdapterRequest,
   registerConnectorRequest,
   registerScriptRequest,
   removeEnvironmentRequest,
+  removeConnectorAdapterRequest,
   removeConnectorRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
@@ -67,6 +72,40 @@ export async function executeMcpCommand(
   deps: ShellCapabilityCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, name] = parsed.args
+  if (action === "adapter" || action === "adapters") {
+    const subaction = parsed.args[1]
+    const adapterName = parsed.args[2]
+    switch (subaction) {
+      case undefined:
+      case "list":
+      case "ls": {
+        const response = await deps.client.send(listConnectorAdaptersRequest())
+        const adapters = expectVariant<{ adapters: ArrobaConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
+        return { ok: true, message: adapters.length === 0 ? "no connector adapters registered" : adapters.map(formatConnectorAdapterSummary).join("\n"), data: { adapters } }
+      }
+      case "show": {
+        if (!adapterName) return { ok: false, message: "usage: connector adapter show <name>" }
+        const response = await deps.client.send(getConnectorAdapterRequest(adapterName))
+        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
+        return { ok: true, message: JSON.stringify(adapter, null, 2), data: { adapter }, format: "json" }
+      }
+      case "register": {
+        if (!adapterName) return { ok: false, message: "usage: connector adapter register <adapter.yaml>" }
+        const response = await deps.client.send(registerConnectorAdapterRequest(adapterName))
+        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
+        return { ok: true, message: `registered connector adapter ${adapter.name}`, data: { adapter } }
+      }
+      case "remove":
+      case "unregister": {
+        if (!adapterName) return { ok: false, message: `usage: connector adapter ${subaction} <name>` }
+        const response = await deps.client.send(removeConnectorAdapterRequest(adapterName))
+        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
+        return { ok: true, message: `removed connector adapter ${adapter.name}`, data: { adapter } }
+      }
+      default:
+        return { ok: false, message: "usage: connector adapter list|show|register|remove" }
+    }
+  }
   switch (action) {
     case "list":
     case "ls": {
@@ -405,7 +444,7 @@ export async function executeConnectorCommand(
       return { ok: true, message: formatAgentExtensionGrants(agent.agent, "connector"), data: { agent: agent.agent } }
     }
     default:
-      return { ok: false, message: "usage: connector list|show|register|remove|doctor|test|grant|revoke|grants" }
+      return { ok: false, message: "usage: connector list|show|register|adapter|remove|doctor|test|grant|revoke|grants" }
   }
 }
 
@@ -539,7 +578,11 @@ function isExtensionKind(value: string | undefined): value is ExtensionKind {
 
 function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
   const operations = Array.isArray(connector.operations) ? connector.operations.length : 0
-  return `${connector.name} [${connector.type}, ${operations} op${operations === 1 ? "" : "s"}] - ${connector.description}`
+  return `${connector.name} [${connector.adapter}, ${operations} op${operations === 1 ? "" : "s"}] - ${connector.description}`
+}
+
+function formatConnectorAdapterSummary(adapter: ArrobaConnectorAdapterDefinition): string {
+  return `${adapter.name} [${adapter.source ?? "unknown"}] - ${adapter.description ?? adapter.adapter_protocol}`
 }
 
 function formatConnectorDoctor(
@@ -551,7 +594,7 @@ function formatConnectorDoctor(
   const ok = (message: string) => findings.push(`ok: ${message}`)
   const warn = (message: string) => findings.push(`warn: ${message}`)
   if (connector.kind !== "connector") warn("kind is not connector")
-  if (connector.type !== "http") warn(`unsupported connector type ${connector.type}`)
+  if (connector.adapter) ok(`adapter ${connector.adapter}`)
   const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
   if (operationCount > 0) ok(`${operationCount} operation${operationCount === 1 ? "" : "s"} configured`)
   else warn("no operations configured")
@@ -562,32 +605,13 @@ function formatConnectorDoctor(
   if (credentialId && !credential) warn(`credential ${credentialId} could not be loaded`)
   if (credential) {
     const uses = credential.allowed_uses ?? []
-    if (uses.length === 0 || uses.includes("http")) ok(`credential ${credential.id} allows http`)
-    else warn(`credential ${credential.id} does not allow http`)
+    if (uses.length === 0 || uses.includes("connector")) ok(`credential ${credential.id} allows connector`)
+    else warn(`credential ${credential.id} does not allow connector`)
     const injectionKind = typeof credential.injection?.kind === "string" ? credential.injection.kind : "unknown"
     if (injectionKind === "pty") warn(`credential ${credential.id} is configured for terminal injection`)
     else ok(`credential ${credential.id} injection is ${injectionKind}`)
-    const host = connectorHost(connector.base_url)
-    if (host) {
-      const allowedHosts = credential.allowed_hosts ?? []
-      if (allowedHosts.length === 0 || allowedHosts.includes(host.host) || allowedHosts.includes(host.hostWithPort)) {
-        ok(`credential host policy allows ${host.hostWithPort}`)
-      } else {
-        warn(`credential host policy does not allow ${host.hostWithPort}`)
-      }
-    }
   }
   return [`${connector.name} connector doctor`, ...findings].join("\n")
-}
-
-function connectorHost(baseUrl?: string | null): { host: string; hostWithPort: string } | null {
-  if (!baseUrl) return null
-  try {
-    const url = new URL(baseUrl)
-    return { host: url.hostname, hostWithPort: url.port ? `${url.hostname}:${url.port}` : url.hostname }
-  } catch {
-    return null
-  }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

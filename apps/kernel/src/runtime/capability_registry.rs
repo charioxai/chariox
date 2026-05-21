@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetConnectorRequest, GetCredentialRequest, GetEnvironmentRequest, GetMcpServerRequest,
-    GetScriptRequest, GetSkillRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, ListConnectorsRequest, ListCredentialsRequest,
+    GetConnectorAdapterRequest, GetConnectorRequest, GetCredentialRequest, GetEnvironmentRequest,
+    GetMcpServerRequest, GetScriptRequest, GetSkillRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    ListConnectorAdaptersRequest, ListConnectorsRequest, ListCredentialsRequest,
     ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest, ListSkillsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorRequest, RegisterCredentialRequest,
-    RegisterEnvironmentRequest, RegisterScriptRequest, RemoveConnectorRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
+    RegisterConnectorRequest, RegisterCredentialRequest, RegisterEnvironmentRequest,
+    RegisterScriptRequest, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
     ValidateScriptRequest,
@@ -51,6 +53,18 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::ListCredentials(request) => execute_list_credentials_request(request),
         LocalDaemonRequest::RegisterConnector(request) => {
             execute_register_connector_request(request)
+        }
+        LocalDaemonRequest::RegisterConnectorAdapter(request) => {
+            execute_register_connector_adapter_request(request)
+        }
+        LocalDaemonRequest::RemoveConnectorAdapter(request) => {
+            execute_remove_connector_adapter_request(request)
+        }
+        LocalDaemonRequest::GetConnectorAdapter(request) => {
+            execute_get_connector_adapter_request(request)
+        }
+        LocalDaemonRequest::ListConnectorAdapters(request) => {
+            execute_list_connector_adapters_request(request)
         }
         LocalDaemonRequest::RemoveConnector(request) => execute_remove_connector_request(request),
         LocalDaemonRequest::GetConnector(request) => execute_get_connector_request(request),
@@ -113,8 +127,47 @@ pub(crate) fn execute_register_connector_request(
     request: RegisterConnectorRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = crate::connector::ArrobaConnectorRegistry::user()?;
-    let (connector, path) = registry.install_from_file(&request.source_path)?;
+    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let (connector, path) = registry.install_from_file(&request.source_path, &adapters)?;
     Ok(LocalDaemonResponse::ConnectorRegistered { connector, path })
+}
+
+pub(crate) fn execute_register_connector_adapter_request(
+    request: RegisterConnectorAdapterRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let (adapter, path) = registry.install_from_file(&request.source_path)?;
+    Ok(LocalDaemonResponse::ConnectorAdapterRegistered { adapter, path })
+}
+
+pub(crate) fn execute_remove_connector_adapter_request(
+    request: RemoveConnectorAdapterRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let (adapter, path) = registry.remove(&request.name)?;
+    Ok(LocalDaemonResponse::ConnectorAdapterRemoved { adapter, path })
+}
+
+pub(crate) fn execute_get_connector_adapter_request(
+    request: GetConnectorAdapterRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let Some(adapter) = registry.get(&request.name)? else {
+        return Err(DaemonError::LocalTransport {
+            operation: "connector.adapter.get",
+            message: format!("connector adapter `{}` was not found", request.name),
+        });
+    };
+    Ok(LocalDaemonResponse::ConnectorAdapter { adapter })
+}
+
+pub(crate) fn execute_list_connector_adapters_request(
+    _request: ListConnectorAdaptersRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    Ok(LocalDaemonResponse::ConnectorAdaptersListed {
+        adapters: registry.list()?,
+    })
 }
 
 pub(crate) fn execute_remove_connector_request(
@@ -152,8 +205,10 @@ pub(crate) fn execute_test_connector_request(
     vault_service: Option<&str>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
     let max_safety = crate::connector::ConnectorSafety::parse(request.allow.as_deref())?;
-    let execution = registry.execute(
+    let execution = registry.execute_once(
+        &adapters,
         &request.name,
         &request.operation,
         request.credential.as_deref(),

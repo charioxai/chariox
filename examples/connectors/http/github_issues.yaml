@@ -1,0 +1,28 @@
+kind: connector
+name: github_issues
+description: GitHub issues connector.
+adapter: http
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: list_repo_issues
+    description: List open issues in a repository.
+    safety: read
+    input_schema:
+      type: object
+      required: [owner, repo]
+      properties:
+        owner:
+          type: string
+        repo:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://api.github.com
+      method: GET
+      path: /repos/{{owner}}/{{repo}}/issues
+      headers:
+        accept: application/vnd.github+json
+        x-github-api-version: "2022-11-28"

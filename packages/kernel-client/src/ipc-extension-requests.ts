@@ -141,6 +141,22 @@ export function registerConnectorRequest(sourcePath: string) {
   return { RegisterConnector: { source_path: sourcePath } }
 }
 
+export function registerConnectorAdapterRequest(sourcePath: string) {
+  return { RegisterConnectorAdapter: { source_path: sourcePath } }
+}
+
+export function removeConnectorAdapterRequest(name: string) {
+  return { RemoveConnectorAdapter: { name } }
+}
+
+export function getConnectorAdapterRequest(name: string) {
+  return { GetConnectorAdapter: { name } }
+}
+
+export function listConnectorAdaptersRequest() {
+  return { ListConnectorAdapters: null }
+}
+
 export function removeConnectorRequest(name: string) {
   return { RemoveConnector: { name } }
 }

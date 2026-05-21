@@ -1,18 +1,34 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
 
 use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
+use wait_timeout::ChildExt;
 
+use crate::config::{UserCredentialInjectionConfig, UserCredentialUse};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
+
+pub const CONNECTOR_ADAPTER_PROTOCOL_VERSION: &str = "arroba-connector-adapter-v1";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrobaConnectorRegistry {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrobaConnectorAdapterRegistry {
+    user_root: PathBuf,
+    bundled_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,10 +36,7 @@ pub struct ArrobaConnectorDefinition {
     pub kind: String,
     pub name: String,
     pub description: String,
-    #[serde(rename = "type")]
-    pub connector_type: ConnectorType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
+    pub adapter: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<ConnectorCredentialPolicy>,
     #[serde(default = "default_timeout_ms")]
@@ -33,10 +46,29 @@ pub struct ArrobaConnectorDefinition {
     pub operations: Vec<ConnectorOperation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrobaConnectorAdapterDefinition {
+    pub kind: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub adapter_protocol: String,
+    pub command: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ConnectorAdapterSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConnectorType {
-    Http,
+pub enum ConnectorAdapterSource {
+    User,
+    Bundled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +84,8 @@ pub struct ConnectorOperation {
     #[serde(default = "default_safety")]
     pub safety: ConnectorSafety,
     pub input_schema: Value,
-    pub request: HttpConnectorRequest,
+    #[serde(default)]
+    pub config: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -64,25 +97,86 @@ pub enum ConnectorSafety {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HttpConnectorRequest {
-    pub method: String,
-    pub path: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub query: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body_json: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body_text: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorExecution {
     pub connector: String,
     pub operation: String,
     pub safety: ConnectorSafety,
-    pub response: crate::secret::CredentialHttpResponse,
+    pub result: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdapterRequest {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub request_type: ConnectorAdapterRequestType,
+    pub connector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<ConnectorAdapterOperationValidation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<ConnectorAdapterCredential>,
+    pub timeout_ms: u64,
+    pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorAdapterRequestType {
+    Validate,
+    Call,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdapterOperationValidation {
+    pub name: String,
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdapterCredential {
+    pub id: String,
+    pub secret: String,
+    pub injection: UserCredentialInjectionConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdapterResponse {
+    pub id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct ConnectorAdapterProcessPool {
+    processes: Arc<Mutex<BTreeMap<String, Arc<Mutex<WarmConnectorAdapterProcess>>>>>,
+}
+
+#[derive(Debug)]
+struct WarmConnectorAdapterProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: tokio::io::Lines<BufReader<ChildStdout>>,
+    sequence: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedConnectorCall {
+    pub connector: String,
+    pub operation: String,
+    pub safety: ConnectorSafety,
+    pub request: ConnectorAdapterRequest,
+    pub adapter: ArrobaConnectorAdapterDefinition,
 }
 
 impl ArrobaConnectorRegistry {
@@ -91,13 +185,13 @@ impl ArrobaConnectorRegistry {
     }
 
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("connectors"))
+        arroba_home().map(|home| home.join("connectors").join("definitions"))
     }
 
     pub fn user() -> Result<Self, DaemonError> {
         let root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
             field: "connector registry root",
-            message: "HOME must be set to resolve ~/.arroba/connectors",
+            message: "HOME must be set to resolve ~/.arroba/connectors/definitions",
         })?;
         Ok(Self::new(root))
     }
@@ -105,6 +199,7 @@ impl ArrobaConnectorRegistry {
     pub fn install_from_file(
         &self,
         source: &Path,
+        adapters: &ArrobaConnectorAdapterRegistry,
     ) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
         if !source.is_file() {
             return Err(DaemonError::InvalidConfig {
@@ -114,6 +209,16 @@ impl ArrobaConnectorRegistry {
         }
         let definition = Self::read_yaml(source)?;
         definition.validate()?;
+        let adapter = adapters.get(&definition.adapter)?.ok_or_else(|| {
+            connector_error(
+                "connector.register",
+                format!(
+                    "connector adapter `{}` is not registered",
+                    definition.adapter
+                ),
+            )
+        })?;
+        validate_connector_with_adapter(&definition, &adapter)?;
         ensure_private_dir(&self.root, "connector.register")?;
         let path = self.path_for(&definition.name)?;
         let payload =
@@ -163,15 +268,16 @@ impl ArrobaConnectorRegistry {
         Self::read_yaml(&path).map(Some)
     }
 
-    pub fn execute(
+    pub fn prepare_call(
         &self,
+        adapters: &ArrobaConnectorAdapterRegistry,
         connector_name: &str,
         operation_name: &str,
         credential_id: Option<&str>,
         max_safety: ConnectorSafety,
         arguments: Value,
         vault_service: impl Into<String>,
-    ) -> Result<ConnectorExecution, DaemonError> {
+    ) -> Result<PreparedConnectorCall, DaemonError> {
         let definition = self.get(connector_name)?.ok_or_else(|| {
             connector_error(
                 "connector.execute",
@@ -189,32 +295,66 @@ impl ArrobaConnectorRegistry {
             ));
         }
         validate_arguments(&operation.input_schema, &arguments)?;
-        let request = render_http_request(&definition, &operation, &arguments, credential_id)?;
-        let response = if let Some(credential_id) = credential_id {
-            let credentials = crate::credential::load_user_credentials()?;
-            let service = crate::secret::RuntimeSecretService::with_vault_service(
-                credentials,
-                vault_service.into(),
-            );
-            service.http_request_with_credential(crate::secret::CredentialHttpRequest {
-                credential_id: credential_id.to_string(),
-                method: request.method,
-                url: request.url,
-                headers: request.headers,
-                body_text: request.body_text,
-                body_json: request.body_json,
-                timeout_ms: request.timeout_ms,
-                max_response_bytes: request.max_response_bytes,
-            })?
-        } else {
-            execute_plain_http_request(request)?
+        let adapter = adapters.get(&definition.adapter)?.ok_or_else(|| {
+            connector_error(
+                "connector.execute",
+                format!(
+                    "connector adapter `{}` is not registered",
+                    definition.adapter
+                ),
+            )
+        })?;
+        let credential = resolve_connector_credential(
+            credential_id,
+            definition
+                .credential
+                .as_ref()
+                .map(|credential| credential.required)
+                .unwrap_or(false),
+            vault_service,
+        )?;
+        let request = ConnectorAdapterRequest {
+            id: "call-1".to_string(),
+            request_type: ConnectorAdapterRequestType::Call,
+            connector: definition.name.clone(),
+            operation: Some(operation.name.clone()),
+            arguments: Some(arguments),
+            config: Some(operation.config.clone()),
+            operations: Vec::new(),
+            credential,
+            timeout_ms: definition.timeout_ms,
+            max_response_bytes: definition.max_response_bytes,
         };
-        Ok(ConnectorExecution {
-            connector: connector_name.to_string(),
-            operation: operation_name.to_string(),
+        Ok(PreparedConnectorCall {
+            connector: definition.name,
+            operation: operation.name,
             safety: operation.safety,
-            response,
+            request,
+            adapter,
         })
+    }
+
+    pub fn execute_once(
+        &self,
+        adapters: &ArrobaConnectorAdapterRegistry,
+        connector_name: &str,
+        operation_name: &str,
+        credential_id: Option<&str>,
+        max_safety: ConnectorSafety,
+        arguments: Value,
+        vault_service: impl Into<String>,
+    ) -> Result<ConnectorExecution, DaemonError> {
+        let prepared = self.prepare_call(
+            adapters,
+            connector_name,
+            operation_name,
+            credential_id,
+            max_safety,
+            arguments,
+            vault_service,
+        )?;
+        let response = run_adapter_request_once(&prepared.adapter, &prepared.request)?;
+        adapter_response_to_execution(prepared, response)
     }
 
     pub fn path_for(&self, name: &str) -> Result<PathBuf, DaemonError> {
@@ -241,6 +381,118 @@ impl ArrobaConnectorRegistry {
     }
 }
 
+impl ArrobaConnectorAdapterRegistry {
+    pub fn user_root() -> Option<PathBuf> {
+        arroba_home().map(|home| home.join("connectors").join("adapters"))
+    }
+
+    pub fn user() -> Result<Self, DaemonError> {
+        let user_root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
+            field: "connector adapter registry root",
+            message: "HOME must be set to resolve ~/.arroba/connectors/adapters",
+        })?;
+        Ok(Self::new(user_root, bundled_adapter_roots()))
+    }
+
+    pub fn new(user_root: PathBuf, bundled_roots: Vec<PathBuf>) -> Self {
+        Self {
+            user_root,
+            bundled_roots,
+        }
+    }
+
+    pub fn install_from_file(
+        &self,
+        source: &Path,
+    ) -> Result<(ArrobaConnectorAdapterDefinition, PathBuf), DaemonError> {
+        if !source.is_file() {
+            return Err(DaemonError::InvalidConfig {
+                field: "connector adapter file",
+                message: "connector adapter registration requires a YAML file",
+            });
+        }
+        let mut adapter = Self::read_yaml(source, ConnectorAdapterSource::User)?;
+        adapter.validate()?;
+        ensure_private_dir(&self.user_root, "connector.adapter.register")?;
+        let destination = self.user_root.join(&adapter.name);
+        if destination.exists() {
+            fs::remove_dir_all(&destination).map_err(io_error("connector.adapter.register"))?;
+        }
+        fs::create_dir_all(&destination).map_err(io_error("connector.adapter.register"))?;
+        copy_adapter_package(source, &destination)?;
+        set_private_dir_permissions(&destination, "connector.adapter.register")?;
+        let manifest = destination.join("adapter.yaml");
+        if source.file_name().and_then(|name| name.to_str()) != Some("adapter.yaml") {
+            fs::copy(source, &manifest).map_err(io_error("connector.adapter.register"))?;
+            set_private_file_permissions(&manifest, "connector.adapter.register")?;
+        }
+        adapter.manifest_path = Some(manifest.clone());
+        adapter.source = Some(ConnectorAdapterSource::User);
+        Ok((adapter, manifest))
+    }
+
+    pub fn remove(
+        &self,
+        name: &str,
+    ) -> Result<(ArrobaConnectorAdapterDefinition, PathBuf), DaemonError> {
+        validate_registry_name(name, "connector adapter name")?;
+        let path = self.user_root.join(name).join("adapter.yaml");
+        if !path.exists() {
+            return Err(connector_error(
+                "connector.adapter.remove",
+                format!("user connector adapter `{name}` is not registered"),
+            ));
+        }
+        let adapter = Self::read_yaml(&path, ConnectorAdapterSource::User)?;
+        fs::remove_dir_all(self.user_root.join(name))
+            .map_err(io_error("connector.adapter.remove"))?;
+        Ok((adapter, path))
+    }
+
+    pub fn list(&self) -> Result<Vec<ArrobaConnectorAdapterDefinition>, DaemonError> {
+        let mut entries = BTreeMap::new();
+        for root in &self.bundled_roots {
+            read_adapter_root(root, ConnectorAdapterSource::Bundled, &mut entries)?;
+        }
+        read_adapter_root(&self.user_root, ConnectorAdapterSource::User, &mut entries)?;
+        Ok(entries.into_values().collect())
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<ArrobaConnectorAdapterDefinition>, DaemonError> {
+        validate_registry_name(name, "connector adapter name")?;
+        let user = self.user_root.join(name).join("adapter.yaml");
+        if user.exists() {
+            return Self::read_yaml(&user, ConnectorAdapterSource::User).map(Some);
+        }
+        for root in &self.bundled_roots {
+            let path = root.join(name).join("adapter.yaml");
+            if path.exists() {
+                return Self::read_yaml(&path, ConnectorAdapterSource::Bundled).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_yaml(
+        path: &Path,
+        source: ConnectorAdapterSource,
+    ) -> Result<ArrobaConnectorAdapterDefinition, DaemonError> {
+        let contents = fs::read_to_string(path).map_err(io_error("connector.adapter.read"))?;
+        let mut adapter = serde_yaml::from_str::<ArrobaConnectorAdapterDefinition>(&contents)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "connector.adapter.read",
+                message: format!(
+                    "failed to parse connector adapter `{}`: {error}",
+                    path.display()
+                ),
+            })?;
+        adapter.source = Some(source);
+        adapter.manifest_path = Some(path.to_path_buf());
+        adapter.validate()?;
+        Ok(adapter)
+    }
+}
+
 impl ArrobaConnectorDefinition {
     pub fn validate(&self) -> Result<(), DaemonError> {
         if self.kind != "connector" {
@@ -250,22 +502,12 @@ impl ArrobaConnectorDefinition {
             });
         }
         validate_registry_name(&self.name, "connector name")?;
+        validate_registry_name(&self.adapter, "connector adapter")?;
         if self.description.trim().is_empty() {
             return Err(DaemonError::InvalidConfig {
                 field: "description",
                 message: "connector description must not be empty",
             });
-        }
-        match self.connector_type {
-            ConnectorType::Http => {
-                let base_url = self.base_url.as_deref().ok_or(DaemonError::InvalidConfig {
-                    field: "base_url",
-                    message: "HTTP connectors require base_url",
-                })?;
-                url::Url::parse(base_url).map_err(|error| {
-                    connector_error("connector.validate", format!("invalid base_url: {error}"))
-                })?;
-            }
         }
         if self.timeout_ms == 0 {
             return Err(DaemonError::InvalidConfig {
@@ -306,19 +548,6 @@ impl ArrobaConnectorDefinition {
                     format!("invalid JSON schema: {error}"),
                 )
             })?;
-            if operation.request.path.trim().is_empty() {
-                return Err(DaemonError::InvalidConfig {
-                    field: "operations.request.path",
-                    message: "HTTP operation path must not be empty",
-                });
-            }
-            validate_http_method(&operation.request.method)?;
-            if operation.request.body_json.is_some() && operation.request.body_text.is_some() {
-                return Err(DaemonError::InvalidConfig {
-                    field: "operations.request",
-                    message: "body_json and body_text are mutually exclusive",
-                });
-            }
         }
         Ok(())
     }
@@ -348,6 +577,53 @@ impl ArrobaConnectorDefinition {
     }
 }
 
+impl ArrobaConnectorAdapterDefinition {
+    pub fn validate(&self) -> Result<(), DaemonError> {
+        if self.kind != "connector_adapter" {
+            return Err(DaemonError::InvalidConfig {
+                field: "kind",
+                message: "connector adapter YAML kind must be `connector_adapter`",
+            });
+        }
+        validate_registry_name(&self.name, "connector adapter name")?;
+        if self.adapter_protocol != CONNECTOR_ADAPTER_PROTOCOL_VERSION {
+            return Err(DaemonError::InvalidConfig {
+                field: "adapter_protocol",
+                message: "unsupported connector adapter protocol",
+            });
+        }
+        if self.command.as_os_str().is_empty() {
+            return Err(DaemonError::InvalidConfig {
+                field: "command",
+                message: "connector adapter command must not be empty",
+            });
+        }
+        Ok(())
+    }
+
+    pub fn resolved_command(&self) -> Result<PathBuf, DaemonError> {
+        if self.command.is_absolute() {
+            return Ok(self.command.clone());
+        }
+        if self.command.components().count() == 1 {
+            return Ok(self.command.clone());
+        }
+        let manifest = self.manifest_path.as_ref().ok_or_else(|| {
+            connector_error(
+                "connector.adapter",
+                format!("connector adapter `{}` has no manifest path", self.name),
+            )
+        })?;
+        let parent = manifest.parent().ok_or_else(|| {
+            connector_error(
+                "connector.adapter",
+                format!("connector adapter `{}` manifest has no parent", self.name),
+            )
+        })?;
+        Ok(parent.join(&self.command))
+    }
+}
+
 impl ConnectorSafety {
     pub fn parse(value: Option<&str>) -> Result<Self, DaemonError> {
         match value.unwrap_or("read") {
@@ -370,99 +646,364 @@ impl ConnectorSafety {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RenderedHttpRequest {
-    method: String,
-    url: String,
-    headers: BTreeMap<String, String>,
-    body_text: Option<String>,
-    body_json: Option<Value>,
-    timeout_ms: u64,
-    max_response_bytes: u64,
+impl ConnectorAdapterProcessPool {
+    pub async fn execute(
+        &self,
+        run_id: &str,
+        prepared: PreparedConnectorCall,
+    ) -> Result<ConnectorExecution, DaemonError> {
+        let key = adapter_process_key(run_id, &prepared.connector, &prepared.adapter)?;
+        let process = {
+            let mut processes = self.processes.lock().await;
+            if let Some(process) = processes.get(&key) {
+                process.clone()
+            } else {
+                let process = Arc::new(Mutex::new(
+                    WarmConnectorAdapterProcess::spawn(&prepared.adapter).await?,
+                ));
+                processes.insert(key, process.clone());
+                process
+            }
+        };
+        let mut process = process.lock().await;
+        let response = process.call(prepared.request.clone()).await?;
+        adapter_response_to_execution(prepared, response)
+    }
+
+    pub async fn shutdown_run(&self, run_id: &str) {
+        let entries = {
+            let mut processes = self.processes.lock().await;
+            let prefix = format!("{run_id}:");
+            let keys = processes
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| processes.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        for process in entries {
+            let mut process = process.lock().await;
+            let _ = process.shutdown().await;
+        }
+    }
 }
 
-fn render_http_request(
-    definition: &ArrobaConnectorDefinition,
-    operation: &ConnectorOperation,
-    arguments: &Value,
-    credential_id: Option<&str>,
-) -> Result<RenderedHttpRequest, DaemonError> {
-    if definition
-        .credential
-        .as_ref()
-        .map(|credential| credential.required)
-        .unwrap_or(false)
-        && credential_id.is_none()
-    {
+impl WarmConnectorAdapterProcess {
+    async fn spawn(adapter: &ArrobaConnectorAdapterDefinition) -> Result<Self, DaemonError> {
+        let command = adapter.resolved_command()?;
+        let mut child = tokio::process::Command::new(&command)
+            .args(&adapter.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                connector_error(
+                    "connector.adapter.spawn",
+                    format!(
+                        "failed to launch adapter `{}` with `{}`: {error}",
+                        adapter.name,
+                        command.display()
+                    ),
+                )
+            })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            connector_error(
+                "connector.adapter.spawn",
+                format!("adapter `{}` did not expose stdin", adapter.name),
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            connector_error(
+                "connector.adapter.spawn",
+                format!("adapter `{}` did not expose stdout", adapter.name),
+            )
+        })?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout).lines(),
+            sequence: 0,
+        })
+    }
+
+    async fn call(
+        &mut self,
+        mut request: ConnectorAdapterRequest,
+    ) -> Result<ConnectorAdapterResponse, DaemonError> {
+        self.sequence += 1;
+        request.id = format!("call-{}", self.sequence);
+        let timeout = Duration::from_millis(request.timeout_ms);
+        let max_response_bytes = request.max_response_bytes as usize;
+        let payload = serde_json::to_string(&request).map_err(|error| {
+            connector_error(
+                "connector.adapter.call",
+                format!("failed to encode call: {error}"),
+            )
+        })?;
+        self.stdin
+            .write_all(payload.as_bytes())
+            .await
+            .map_err(io_error("connector.adapter.call"))?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .map_err(io_error("connector.adapter.call"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(io_error("connector.adapter.call"))?;
+        let line = tokio::time::timeout(timeout, self.stdout.next_line())
+            .await
+            .map_err(|_| {
+                connector_error(
+                    "connector.adapter.call",
+                    format!("adapter call timed out after {}ms", request.timeout_ms),
+                )
+            })?
+            .map_err(io_error("connector.adapter.call"))?
+            .ok_or_else(|| {
+                connector_error(
+                    "connector.adapter.call",
+                    "adapter exited without a response".to_string(),
+                )
+            })?;
+        if line.len() > max_response_bytes {
+            return Err(connector_error(
+                "connector.adapter.call",
+                format!(
+                    "adapter response exceeded {} bytes",
+                    request.max_response_bytes
+                ),
+            ));
+        }
+        let response =
+            serde_json::from_str::<ConnectorAdapterResponse>(&line).map_err(|error| {
+                connector_error(
+                    "connector.adapter.call",
+                    format!("adapter returned invalid JSON: {error}"),
+                )
+            })?;
+        if response.id != request.id {
+            return Err(connector_error(
+                "connector.adapter.call",
+                format!(
+                    "adapter response id `{}` did not match request id `{}`",
+                    response.id, request.id
+                ),
+            ));
+        }
+        Ok(response)
+    }
+
+    async fn shutdown(&mut self) -> Result<(), DaemonError> {
+        self.sequence += 1;
+        let request = ConnectorAdapterRequest {
+            id: format!("shutdown-{}", self.sequence),
+            request_type: ConnectorAdapterRequestType::Shutdown,
+            connector: String::new(),
+            operation: None,
+            arguments: None,
+            config: None,
+            operations: Vec::new(),
+            credential: None,
+            timeout_ms: 1000,
+            max_response_bytes: 4096,
+        };
+        if let Ok(payload) = serde_json::to_string(&request) {
+            let _ = self.stdin.write_all(payload.as_bytes()).await;
+            let _ = self.stdin.write_all(b"\n").await;
+            let _ = self.stdin.flush().await;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(1000), self.child.wait()).await;
+        if self.child.id().is_some() {
+            let _ = self.child.kill().await;
+        }
+        Ok(())
+    }
+}
+
+pub fn connector_tool_name(connector: &str, operation: &str) -> String {
+    format!("{connector}_{operation}")
+}
+
+pub fn adapter_response_to_execution(
+    prepared: PreparedConnectorCall,
+    response: ConnectorAdapterResponse,
+) -> Result<ConnectorExecution, DaemonError> {
+    if !response.ok {
         return Err(connector_error(
             "connector.execute",
+            response
+                .error
+                .unwrap_or_else(|| "connector adapter call failed".to_string()),
+        ));
+    }
+    Ok(ConnectorExecution {
+        connector: prepared.connector,
+        operation: prepared.operation,
+        safety: prepared.safety,
+        result: response.result.unwrap_or(Value::Null),
+    })
+}
+
+fn validate_connector_with_adapter(
+    definition: &ArrobaConnectorDefinition,
+    adapter: &ArrobaConnectorAdapterDefinition,
+) -> Result<(), DaemonError> {
+    let request = ConnectorAdapterRequest {
+        id: "validate-1".to_string(),
+        request_type: ConnectorAdapterRequestType::Validate,
+        connector: definition.name.clone(),
+        operation: None,
+        arguments: None,
+        config: None,
+        operations: definition
+            .operations
+            .iter()
+            .map(|operation| ConnectorAdapterOperationValidation {
+                name: operation.name.clone(),
+                config: operation.config.clone(),
+            })
+            .collect(),
+        credential: None,
+        timeout_ms: definition.timeout_ms,
+        max_response_bytes: definition.max_response_bytes.max(4096),
+    };
+    let response = run_adapter_request_once(adapter, &request)?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(connector_error(
+            "connector.register",
+            response
+                .error
+                .unwrap_or_else(|| "connector adapter validation failed".to_string()),
+        ))
+    }
+}
+
+fn run_adapter_request_once(
+    adapter: &ArrobaConnectorAdapterDefinition,
+    request: &ConnectorAdapterRequest,
+) -> Result<ConnectorAdapterResponse, DaemonError> {
+    let command = adapter.resolved_command()?;
+    let mut child = Command::new(&command)
+        .args(&adapter.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            connector_error(
+                "connector.adapter",
+                format!(
+                    "failed to launch adapter `{}` with `{}`: {error}",
+                    adapter.name,
+                    command.display()
+                ),
+            )
+        })?;
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        connector_error(
+            "connector.adapter",
+            format!("adapter `{}` did not expose stdin", adapter.name),
+        )
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        connector_error(
+            "connector.adapter",
+            format!("adapter `{}` did not expose stdout", adapter.name),
+        )
+    })?;
+    let payload = serde_json::to_string(request)
+        .map_err(|error| connector_error("connector.adapter", error.to_string()))?;
+    stdin
+        .write_all(payload.as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())
+        .map_err(io_error("connector.adapter"))?;
+    drop(stdin);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .map(|_| line);
+        let _ = sender.send(result);
+    });
+    let line = match receiver.recv_timeout(Duration::from_millis(request.timeout_ms)) {
+        Ok(Ok(line)) => line,
+        Ok(Err(error)) => return Err(io_error("connector.adapter")(error)),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(connector_error(
+                "connector.adapter",
+                format!("adapter request timed out after {}ms", request.timeout_ms),
+            ));
+        }
+    };
+    if line.len() > request.max_response_bytes as usize {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(connector_error(
+            "connector.adapter",
             format!(
-                "connector `{}` requires a credential grant",
-                definition.name
+                "adapter response exceeded {} bytes",
+                request.max_response_bytes
             ),
         ));
     }
-    let base_url = definition
-        .base_url
-        .as_deref()
-        .ok_or(DaemonError::InvalidConfig {
-            field: "base_url",
-            message: "HTTP connectors require base_url",
-        })?;
-    let path = render_template_string(&operation.request.path, arguments)?;
-    let mut base = base_url.to_string();
-    if !base.ends_with('/') {
-        base.push('/');
+    let _ = child.wait_timeout(Duration::from_millis(250));
+    let _ = child.kill();
+    let _ = child.wait();
+    let response = serde_json::from_str::<ConnectorAdapterResponse>(&line).map_err(|error| {
+        connector_error(
+            "connector.adapter",
+            format!("adapter returned invalid JSON: {error}"),
+        )
+    })?;
+    if response.id != request.id {
+        return Err(connector_error(
+            "connector.adapter",
+            format!(
+                "adapter response id `{}` did not match request id `{}`",
+                response.id, request.id
+            ),
+        ));
     }
-    let mut url = url::Url::parse(&base)
-        .map_err(|error| {
-            connector_error("connector.execute", format!("invalid base_url: {error}"))
-        })?
-        .join(path.trim_start_matches('/'))
-        .map_err(|error| {
-            connector_error(
+    Ok(response)
+}
+
+fn resolve_connector_credential(
+    credential_id: Option<&str>,
+    required: bool,
+    vault_service: impl Into<String>,
+) -> Result<Option<ConnectorAdapterCredential>, DaemonError> {
+    match (credential_id, required) {
+        (None, true) => {
+            return Err(connector_error(
                 "connector.execute",
-                format!("invalid request path: {error}"),
-            )
-        })?;
-    if !operation.request.query.is_empty() {
-        let mut pairs = url.query_pairs_mut();
-        for (name, value) in &operation.request.query {
-            pairs.append_pair(name, &render_template_string(value, arguments)?);
+                "connector requires a credential grant".to_string(),
+            ))
         }
+        (None, false) => return Ok(None),
+        (Some(_), _) => {}
     }
-    let mut headers = operation
-        .request
-        .headers
-        .iter()
-        .map(|(name, value)| Ok((name.clone(), render_template_string(value, arguments)?)))
-        .collect::<Result<BTreeMap<_, _>, DaemonError>>()?;
-    if operation.request.body_json.is_some()
-        && !headers
-            .keys()
-            .any(|name| name.eq_ignore_ascii_case("content-type"))
-    {
-        headers.insert("content-type".to_string(), "application/json".to_string());
-    }
-    Ok(RenderedHttpRequest {
-        method: operation.request.method.trim().to_ascii_uppercase(),
-        url: url.to_string(),
-        headers,
-        body_text: operation
-            .request
-            .body_text
-            .as_ref()
-            .map(|value| render_template_string(value, arguments))
-            .transpose()?,
-        body_json: operation
-            .request
-            .body_json
-            .as_ref()
-            .map(|value| render_json_template(value, arguments))
-            .transpose()?,
-        timeout_ms: definition.timeout_ms,
-        max_response_bytes: definition.max_response_bytes,
-    })
+    let credential_id = credential_id.unwrap();
+    let credentials = crate::credential::load_user_credentials()?;
+    let service =
+        crate::secret::RuntimeSecretService::with_vault_service(credentials, vault_service.into());
+    let (credential, secret) = service.resolve_connector_secret(credential_id)?;
+    Ok(Some(ConnectorAdapterCredential {
+        id: credential.id,
+        secret,
+        injection: credential.injection,
+        allowed_hosts: credential.allowed_hosts,
+    }))
 }
 
 fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), DaemonError> {
@@ -482,171 +1023,97 @@ fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), DaemonErr
     Ok(())
 }
 
-fn execute_plain_http_request(
-    request: RenderedHttpRequest,
-) -> Result<crate::secret::CredentialHttpResponse, DaemonError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_millis(request.timeout_ms))
-        .build();
-    let mut http_request = match request.method.as_str() {
-        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" => {
-            agent.request(&request.method, &request.url)
-        }
-        _ => {
-            return Err(connector_error(
-                "connector.execute",
-                format!("unsupported HTTP method `{}`", request.method),
-            ))
-        }
-    };
-    for (name, value) in request.headers {
-        http_request = http_request.set(&name, &value);
+fn read_adapter_root(
+    root: &Path,
+    source: ConnectorAdapterSource,
+    entries: &mut BTreeMap<String, ArrobaConnectorAdapterDefinition>,
+) -> Result<(), DaemonError> {
+    if !root.exists() {
+        return Ok(());
     }
-    let body = match (request.body_text, request.body_json) {
-        (Some(text), None) => Some(text),
-        (None, Some(json)) => serde_json::to_string(&json)
-            .map(Some)
-            .map_err(|error| connector_error("connector.execute", error.to_string()))?,
-        (None, None) => None,
-        (Some(_), Some(_)) => {
-            return Err(connector_error(
-                "connector.execute",
-                "body_text and body_json are mutually exclusive".to_string(),
-            ))
+    for entry in fs::read_dir(root).map_err(io_error("connector.adapter.list"))? {
+        let path = entry.map_err(io_error("connector.adapter.list"))?.path();
+        let manifest = path.join("adapter.yaml");
+        if !manifest.exists() {
+            continue;
         }
-    };
-    let response = if let Some(body) = body {
-        http_request.send_string(&body)
-    } else {
-        http_request.call()
+        let adapter = ArrobaConnectorAdapterRegistry::read_yaml(&manifest, source)?;
+        entries.entry(adapter.name.clone()).or_insert(adapter);
     }
-    .map_err(|error| http_error("connector.execute", error))?;
-    decode_http_response(response, request.max_response_bytes)
+    Ok(())
 }
 
-fn render_json_template(value: &Value, arguments: &Value) -> Result<Value, DaemonError> {
-    match value {
-        Value::String(text) if exact_template_key(text).is_some() => {
-            let key = exact_template_key(text).unwrap();
-            argument_value(arguments, key).cloned()
-        }
-        Value::String(text) => render_template_string(text, arguments).map(Value::String),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| render_json_template(item, arguments))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), render_json_template(value, arguments)?)))
-            .collect::<Result<serde_json::Map<_, _>, DaemonError>>()
-            .map(Value::Object),
-        other => Ok(other.clone()),
-    }
-}
-
-fn render_template_string(template: &str, arguments: &Value) -> Result<String, DaemonError> {
-    let mut rendered = template.to_string();
-    while let Some(start) = rendered.find("{{") {
-        let Some(end) = rendered[start + 2..]
-            .find("}}")
-            .map(|index| start + 2 + index)
-        else {
-            return Err(connector_error(
-                "connector.template",
-                format!("unclosed template in `{template}`"),
-            ));
-        };
-        let key = rendered[start + 2..end].trim();
-        let value = argument_value(arguments, key)?;
-        let replacement = match value {
-            Value::String(text) => text.clone(),
-            Value::Number(number) => number.to_string(),
-            Value::Bool(flag) => flag.to_string(),
-            Value::Null => String::new(),
-            other => serde_json::to_string(other).map_err(|error| {
-                connector_error(
-                    "connector.template",
-                    format!("failed to render `{key}`: {error}"),
-                )
-            })?,
-        };
-        rendered.replace_range(start..end + 2, &replacement);
-    }
-    Ok(rendered)
-}
-
-fn exact_template_key(template: &str) -> Option<&str> {
-    let trimmed = template.trim();
-    trimmed
-        .strip_prefix("{{")
-        .and_then(|rest| rest.strip_suffix("}}"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn argument_value<'a>(arguments: &'a Value, key: &str) -> Result<&'a Value, DaemonError> {
-    arguments.get(key).ok_or_else(|| {
+fn copy_adapter_package(source_manifest: &Path, destination: &Path) -> Result<(), DaemonError> {
+    let source_dir = source_manifest.parent().ok_or_else(|| {
         connector_error(
-            "connector.template",
-            format!("missing connector input field `{key}`"),
-        )
-    })
-}
-
-fn validate_http_method(method: &str) -> Result<(), DaemonError> {
-    match method.trim().to_ascii_uppercase().as_str() {
-        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" => Ok(()),
-        other => Err(connector_error(
-            "connector.validate",
-            format!("unsupported HTTP method `{other}`"),
-        )),
-    }
-}
-
-fn decode_http_response(
-    response: ureq::Response,
-    max_response_bytes: u64,
-) -> Result<crate::secret::CredentialHttpResponse, DaemonError> {
-    let status = response.status();
-    let mut body_text = String::new();
-    let mut reader = response
-        .into_reader()
-        .take(max_response_bytes.saturating_add(1));
-    reader.read_to_string(&mut body_text).map_err(|error| {
-        connector_error(
-            "connector.execute",
-            format!("failed to read response body: {error}"),
+            "connector.adapter.register",
+            "adapter manifest path has no parent".to_string(),
         )
     })?;
-    if body_text.len() as u64 > max_response_bytes {
-        return Err(connector_error(
-            "connector.execute",
-            format!("response exceeded max_response_bytes ({max_response_bytes})"),
-        ));
-    }
-    let body_json = serde_json::from_str::<Value>(&body_text).ok();
-    Ok(crate::secret::CredentialHttpResponse {
-        status,
-        body_text: body_json.is_none().then_some(body_text),
-        body_json,
-    })
-}
-
-fn http_error(operation: &'static str, error: ureq::Error) -> DaemonError {
-    match error {
-        ureq::Error::Status(code, response) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|error| format!("failed to read error response: {error}"));
-            connector_error(operation, format!("HTTP {code}: {body}"))
+    for entry in fs::read_dir(source_dir).map_err(io_error("connector.adapter.register"))? {
+        let entry = entry.map_err(io_error("connector.adapter.register"))?;
+        let path = entry.path();
+        let dest = destination.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &dest)?;
+        } else {
+            fs::copy(&path, &dest).map_err(io_error("connector.adapter.register"))?;
+            set_private_file_permissions(&dest, "connector.adapter.register")?;
         }
-        ureq::Error::Transport(error) => connector_error(operation, error.to_string()),
     }
+    Ok(())
 }
 
-fn default_safety() -> ConnectorSafety {
-    ConnectorSafety::Read
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(destination).map_err(io_error("connector.adapter.register"))?;
+    set_private_dir_permissions(destination, "connector.adapter.register")?;
+    for entry in fs::read_dir(source).map_err(io_error("connector.adapter.register"))? {
+        let entry = entry.map_err(io_error("connector.adapter.register"))?;
+        let path = entry.path();
+        let dest = destination.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &dest)?;
+        } else {
+            fs::copy(&path, &dest).map_err(io_error("connector.adapter.register"))?;
+            set_private_file_permissions(&dest, "connector.adapter.register")?;
+        }
+    }
+    Ok(())
+}
+
+fn adapter_process_key(
+    run_id: &str,
+    connector: &str,
+    adapter: &ArrobaConnectorAdapterDefinition,
+) -> Result<String, DaemonError> {
+    Ok(format!(
+        "{}:{}:{}:{}",
+        run_id,
+        connector,
+        adapter.name,
+        adapter.resolved_command()?.display()
+    ))
+}
+
+fn bundled_adapter_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(path) = std::env::var_os("ARROBA_CONNECTOR_ADAPTER_BUNDLED_DIR") {
+        roots.push(PathBuf::from(path));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.join("connector-adapters"));
+            roots.push(parent.join("connectors").join("adapters"));
+        }
+    }
+    roots
+}
+
+fn arroba_home() -> Option<PathBuf> {
+    std::env::var_os("ARROBA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
 }
 
 fn default_timeout_ms() -> u64 {
@@ -657,15 +1124,12 @@ fn default_max_response_bytes() -> u64 {
     1_048_576
 }
 
-pub fn connector_tool_name(connector: &str, operation: &str) -> String {
-    format!("{connector}_{operation}")
+fn default_safety() -> ConnectorSafety {
+    ConnectorSafety::Read
 }
 
-fn arroba_home() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+pub fn connector_error(operation: &'static str, message: String) -> DaemonError {
+    DaemonError::LocalTransport { operation, message }
 }
 
 fn ensure_private_dir(path: &Path, operation: &'static str) -> Result<(), DaemonError> {
@@ -678,9 +1142,10 @@ fn atomic_write_private(
     bytes: &[u8],
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| connector_error(operation, "registry path has no parent".to_string()))?;
+    let parent = path.parent().ok_or_else(|| DaemonError::LocalTransport {
+        operation,
+        message: "registry path has no parent".to_string(),
+    })?;
     ensure_private_dir(parent, operation)?;
     let tmp_path = parent.join(format!(
         ".{}.{}.tmp",
@@ -727,161 +1192,91 @@ fn set_private_file_permissions(_path: &Path, _operation: &'static str) -> Resul
 }
 
 fn io_error(operation: &'static str) -> impl Fn(std::io::Error) -> DaemonError {
-    move |error| connector_error(operation, error.to_string())
+    move |error| DaemonError::LocalTransport {
+        operation,
+        message: error.to_string(),
+    }
 }
 
-fn connector_error(operation: &'static str, message: String) -> DaemonError {
-    DaemonError::LocalTransport { operation, message }
-}
+#[allow(dead_code)]
+fn _assert_credential_use_connector_exists(_: UserCredentialUse) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-    use std::thread;
 
-    fn connector_fixture() -> ArrobaConnectorDefinition {
-        ArrobaConnectorDefinition {
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-connector-adapter-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn connector_validation_requires_adapter_name() {
+        let definition = ArrobaConnectorDefinition {
             kind: "connector".to_string(),
-            name: "demo_api".to_string(),
-            description: "Demo API".to_string(),
-            connector_type: ConnectorType::Http,
-            base_url: Some("http://127.0.0.1/base".to_string()),
+            name: "demo".to_string(),
+            description: "Demo connector".to_string(),
+            adapter: "".to_string(),
             credential: None,
-            timeout_ms: 500,
-            max_response_bytes: 128,
+            timeout_ms: 30_000,
+            max_response_bytes: 1024,
             operations: vec![ConnectorOperation {
                 name: "lookup".to_string(),
-                description: "Lookup a value".to_string(),
+                description: "Lookup".to_string(),
                 safety: ConnectorSafety::Read,
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["id", "payload"],
-                    "properties": {
-                        "id": {"type": "string"},
-                        "payload": {}
-                    },
-                    "additionalProperties": false
-                }),
-                request: HttpConnectorRequest {
-                    method: "POST".to_string(),
-                    path: "/items/{{id}}".to_string(),
-                    query: BTreeMap::new(),
-                    headers: BTreeMap::new(),
-                    body_json: Some(serde_json::json!({"payload": "{{payload}}"})),
-                    body_text: None,
-                },
+                input_schema: serde_json::json!({"type": "object"}),
+                config: serde_json::json!({}),
             }],
-        }
+        };
+        assert!(definition.validate().is_err());
     }
 
     #[test]
-    fn render_http_request_preserves_limits_and_sets_json_content_type() {
-        let connector = connector_fixture();
-        let operation = connector.operation("lookup").unwrap();
-        let request = render_http_request(
-            &connector,
-            operation,
-            &serde_json::json!({"id": "abc", "payload": [1, 2, 3]}),
-            None,
-        )
-        .expect("request should render");
-
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.url, "http://127.0.0.1/base/items/abc");
-        assert_eq!(request.timeout_ms, 500);
-        assert_eq!(request.max_response_bytes, 128);
-        assert_eq!(
-            request.headers.get("content-type").map(String::as_str),
-            Some("application/json")
-        );
-        assert_eq!(
-            request.body_json,
-            Some(serde_json::json!({"payload": [1, 2, 3]}))
-        );
-    }
-
-    #[test]
-    fn connector_validation_rejects_zero_limits() {
-        let mut connector = connector_fixture();
-        connector.timeout_ms = 0;
-        assert!(connector.validate().is_err());
-        connector.timeout_ms = 1;
-        connector.max_response_bytes = 0;
-        assert!(connector.validate().is_err());
-    }
-
-    #[test]
-    fn plain_http_enforces_response_cap() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let port = listener.local_addr().unwrap().port();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("request should arrive");
-            let mut request = [0_u8; 512];
-            let _ = stream.read(&mut request);
-            let body = "x".repeat(64);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("response should write");
-        });
-        let error = execute_plain_http_request(RenderedHttpRequest {
-            method: "GET".to_string(),
-            url: format!("http://127.0.0.1:{port}/large"),
-            headers: BTreeMap::new(),
-            body_text: None,
-            body_json: None,
-            timeout_ms: 500,
-            max_response_bytes: 8,
-        })
-        .expect_err("large response should fail");
-        server.join().expect("server should finish");
-        match error {
-            DaemonError::LocalTransport { message, .. } => {
-                assert!(message.contains("max_response_bytes"), "{message}");
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn registry_install_uses_private_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = std::env::temp_dir().join(format!(
-            "arroba-connector-registry-test-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        ));
-        let source = root.join("source.yaml");
-        fs::create_dir_all(&root).expect("root should create");
+    fn adapter_registry_reads_user_adapter() {
+        let root = temp_root("adapter-registry");
+        let adapter_dir = root.join("adapters").join("echo");
+        fs::create_dir_all(&adapter_dir).unwrap();
         fs::write(
-            &source,
-            serde_yaml::to_string(&connector_fixture()).unwrap(),
+            adapter_dir.join("adapter.yaml"),
+            r#"
+kind: connector_adapter
+name: echo
+adapter_protocol: arroba-connector-adapter-v1
+command: bin/echo-adapter
+"#,
         )
-        .expect("source should write");
-        let registry = ArrobaConnectorRegistry::new(root.join("registry"));
-        let (_connector, path) = registry
-            .install_from_file(&source)
-            .expect("connector should install");
+        .unwrap();
+        let registry = ArrobaConnectorAdapterRegistry::new(root.join("adapters"), Vec::new());
+        let adapter = registry.get("echo").unwrap().unwrap();
+        assert_eq!(adapter.name, "echo");
+        assert_eq!(adapter.source, Some(ConnectorAdapterSource::User));
+        assert_eq!(
+            adapter.resolved_command().unwrap(),
+            adapter_dir.join("bin/echo-adapter")
+        );
+    }
 
+    #[test]
+    fn adapter_command_without_path_uses_path_lookup() {
+        let adapter = ArrobaConnectorAdapterDefinition {
+            kind: "connector_adapter".to_string(),
+            name: "http".to_string(),
+            description: None,
+            version: None,
+            adapter_protocol: CONNECTOR_ADAPTER_PROTOCOL_VERSION.to_string(),
+            command: PathBuf::from("arroba-adapter-http"),
+            args: Vec::new(),
+            source: Some(ConnectorAdapterSource::Bundled),
+            manifest_path: Some(PathBuf::from("/opt/arroba/connector-adapters/http/adapter.yaml")),
+        };
         assert_eq!(
-            fs::metadata(root.join("registry"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
+            adapter.resolved_command().unwrap(),
+            PathBuf::from("arroba-adapter-http")
         );
-        assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        fs::remove_dir_all(&root).ok();
     }
 }

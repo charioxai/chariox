@@ -49,6 +49,11 @@ pub(super) fn connector_registry() -> Result<crate::connector::ArrobaConnectorRe
     crate::connector::ArrobaConnectorRegistry::user()
 }
 
+pub(super) fn connector_adapter_registry(
+) -> Result<crate::connector::ArrobaConnectorAdapterRegistry, DaemonError> {
+    crate::connector::ArrobaConnectorAdapterRegistry::user()
+}
+
 pub(super) fn required_remote_mcps(
     registry: &crate::mcp::ArrobaMcpRegistry,
     grants: &[String],

@@ -1,0 +1,6 @@
+kind: connector_adapter
+name: example_typescript
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: ./adapter.mjs
+description: Example TypeScript-style Node connector adapter.

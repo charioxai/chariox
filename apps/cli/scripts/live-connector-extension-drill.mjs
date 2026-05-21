@@ -36,7 +36,7 @@ async function run(command, args, options = {}) {
 
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel', '--bin', 'arroba-adapter-http'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -164,9 +164,98 @@ async function main() {
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     api = await startApiServer(secretValue)
     const credentialPath = path.join(root, 'credential.yaml')
+    const adapterDir = path.join(root, 'http-adapter')
+    const adapterPath = path.join(adapterDir, 'adapter.yaml')
+    const pyAdapterDir = path.join(root, 'python-adapter')
+    const pyAdapterPath = path.join(pyAdapterDir, 'adapter.yaml')
+    const tsAdapterDir = path.join(root, 'typescript-adapter')
+    const tsAdapterPath = path.join(tsAdapterDir, 'adapter.yaml')
     const connectorPath = path.join(root, 'connector.yaml')
+    const pyConnectorPath = path.join(root, 'python-connector.yaml')
+    const tsConnectorPath = path.join(root, 'typescript-connector.yaml')
     const wrongHostConnectorPath = path.join(root, 'wrong-host.yaml')
     const cappedConnectorPath = path.join(root, 'capped.yaml')
+    await mkdir(adapterDir, { recursive: true })
+    await writeFile(adapterPath, `
+kind: connector_adapter
+name: http
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: ${path.join(repoRoot, 'apps/kernel/target/debug/arroba-adapter-http')}
+description: HTTP adapter drill build.
+`, 'utf8')
+    await mkdir(pyAdapterDir, { recursive: true })
+    await writeFile(path.join(pyAdapterDir, 'adapter.py'), `#!/usr/bin/env python3
+import json
+import sys
+
+counter = 0
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    request = json.loads(line)
+    if request.get("type") == "shutdown":
+        break
+    if request.get("type") == "validate":
+        print(json.dumps({"id": request["id"], "ok": True, "result": {"validated": True}}), flush=True)
+        continue
+    counter += 1
+    credential = request.get("credential") or {}
+    print(json.dumps({"id": request["id"], "ok": True, "result": {
+        "language": "python",
+        "call_count": counter,
+        "operation": request.get("operation"),
+        "arguments": request.get("arguments"),
+        "config": request.get("config"),
+        "credential_id": credential.get("id"),
+        "has_secret": bool(credential.get("secret")),
+    }}), flush=True)
+`, 'utf8')
+    await writeFile(pyAdapterPath, `
+kind: connector_adapter
+name: python_echo
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: /usr/bin/python3
+args:
+  - ${path.join(pyAdapterDir, 'adapter.py')}
+description: Python adapter drill.
+`, 'utf8')
+    await mkdir(tsAdapterDir, { recursive: true })
+    await writeFile(tsAdapterPath, `
+kind: connector_adapter
+name: typescript_echo
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: ${process.execPath}
+args:
+  - ${path.join(tsAdapterDir, 'adapter.mjs')}
+description: TypeScript-style Node adapter drill.
+`, 'utf8')
+    await writeFile(path.join(tsAdapterDir, 'adapter.mjs'), `#!/usr/bin/env node
+import readline from 'node:readline'
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
+let counter = 0
+for await (const line of rl) {
+  if (!line.trim()) continue
+  const request = JSON.parse(line)
+  if (request.type === 'shutdown') break
+  if (request.type === 'validate') {
+    process.stdout.write(JSON.stringify({ id: request.id, ok: true, result: { validated: true } }) + '\\n')
+    continue
+  }
+  counter += 1
+  process.stdout.write(JSON.stringify({ id: request.id, ok: true, result: {
+    language: 'typescript',
+    call_count: counter,
+    operation: request.operation,
+    arguments: request.arguments,
+    config: request.config,
+    credential_id: request.credential?.id ?? null,
+    has_secret: Boolean(request.credential?.secret),
+  } }) + '\\n')
+}
+`, 'utf8')
     await writeFile(credentialPath, `
 id: local-api
 description: Local API drill key
@@ -176,7 +265,7 @@ source:
 allowed_hosts:
   - 127.0.0.1:${api.port}
 allowed_uses:
-  - http
+  - connector
 injection:
   kind: query
   name: key
@@ -185,8 +274,7 @@ injection:
 kind: connector
 name: local_api
 description: Local HTTP API connector drill.
-type: http
-base_url: http://127.0.0.1:${api.port}
+adapter: http
 credential:
   required: false
 timeout_ms: 30000
@@ -201,7 +289,8 @@ operations:
       properties:
         q: { type: string }
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${api.port}
       method: GET
       path: /public
       query:
@@ -213,7 +302,8 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${api.port}
       method: GET
       path: /secret
   - name: write_item
@@ -223,7 +313,8 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${api.port}
       method: POST
       path: /write
   - name: destroy_item
@@ -233,7 +324,8 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${api.port}
       method: DELETE
       path: /destroy
 `, 'utf8')
@@ -241,8 +333,7 @@ operations:
 kind: connector
 name: wrong_host
 description: Wrong host connector drill.
-type: http
-base_url: http://localhost:${api.port}
+adapter: http
 credential:
   required: true
 timeout_ms: 30000
@@ -255,7 +346,8 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://localhost:${api.port}
       method: GET
       path: /secret
 `, 'utf8')
@@ -263,8 +355,7 @@ operations:
 kind: connector
 name: capped_api
 description: Response cap connector drill.
-type: http
-base_url: http://127.0.0.1:${api.port}
+adapter: http
 timeout_ms: 30000
 max_response_bytes: 8
 operations:
@@ -275,9 +366,54 @@ operations:
       type: object
       properties: {}
       additionalProperties: false
-    request:
+    config:
+      base_url: http://127.0.0.1:${api.port}
       method: GET
       path: /large
+`, 'utf8')
+    await writeFile(pyConnectorPath, `
+kind: connector
+name: python_echo_connector
+description: Python adapter connector drill.
+adapter: python_echo
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: inspect
+    description: Inspect Python adapter inputs.
+    safety: read
+    input_schema:
+      type: object
+      required: [value]
+      properties:
+        value: { type: string }
+      additionalProperties: false
+    config:
+      adapter_kind: python
+`, 'utf8')
+    await writeFile(tsConnectorPath, `
+kind: connector
+name: typescript_echo_connector
+description: TypeScript adapter connector drill.
+adapter: typescript_echo
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: inspect
+    description: Inspect TypeScript adapter inputs.
+    safety: read
+    input_schema:
+      type: object
+      required: [value]
+      properties:
+        value: { type: string }
+      additionalProperties: false
+    config:
+      adapter_kind: typescript
 `, 'utf8')
 
     const kernelBinary = await buildKernel()
@@ -286,31 +422,44 @@ operations:
     client = new LocalIpcClient(kernelUrl)
 
     await client.send(requests.setCredentialSecretRequest(vaultKey, secretValue))
+    const adapter = unwrap(await client.send(requests.registerConnectorAdapterRequest(adapterPath)), 'ConnectorAdapterRegistered').adapter
+    const pyAdapter = unwrap(await client.send(requests.registerConnectorAdapterRequest(pyAdapterPath)), 'ConnectorAdapterRegistered').adapter
+    const tsAdapter = unwrap(await client.send(requests.registerConnectorAdapterRequest(tsAdapterPath)), 'ConnectorAdapterRegistered').adapter
     const credential = unwrap(await client.send(requests.registerCredentialRequest(credentialPath)), 'CredentialRegistered').credential
     const connector = unwrap(await client.send(requests.registerConnectorRequest(connectorPath)), 'ConnectorRegistered').connector
+    await client.send(requests.registerConnectorRequest(pyConnectorPath))
+    await client.send(requests.registerConnectorRequest(tsConnectorPath))
     await client.send(requests.registerConnectorRequest(wrongHostConnectorPath))
     await client.send(requests.registerConnectorRequest(cappedConnectorPath))
-    if (credential.id !== 'local-api' || connector.name !== 'local_api') throw new Error('registration returned wrong entries')
+    if (adapter.name !== 'http' || pyAdapter.name !== 'python_echo' || tsAdapter.name !== 'typescript_echo' || credential.id !== 'local-api' || connector.name !== 'local_api') throw new Error('registration returned wrong entries')
     const listedCredentials = unwrap(await client.send(requests.listCredentialsRequest()), 'CredentialsListed').credentials
     const listedConnectors = unwrap(await client.send(requests.listConnectorsRequest()), 'ConnectorsListed').connectors
+    const listedAdapters = unwrap(await client.send(requests.listConnectorAdaptersRequest()), 'ConnectorAdaptersListed').adapters
     if (!listedCredentials.some((entry) => entry.id === 'local-api')) throw new Error('registered credential missing from list')
     if (!listedConnectors.some((entry) => entry.name === 'local_api')) throw new Error('registered connector missing from list')
+    if (!listedAdapters.some((entry) => entry.name === 'http')) throw new Error('registered adapter missing from list')
+    if (!listedAdapters.some((entry) => entry.name === 'python_echo')) throw new Error('registered Python adapter missing from list')
+    if (!listedAdapters.some((entry) => entry.name === 'typescript_echo')) throw new Error('registered TypeScript adapter missing from list')
 
     const publicResult = unwrap(await client.send(requests.testConnectorRequest('local_api', 'public_echo', { q: 'alpha' })), 'ConnectorTested').execution
-    if (publicResult.response.body_json.echo !== 'alpha') throw new Error(`public connector result mismatch: ${JSON.stringify(publicResult)}`)
+    if (publicResult.result.body_json.echo !== 'alpha') throw new Error(`public connector result mismatch: ${JSON.stringify(publicResult)}`)
     const secretResult = unwrap(await client.send(requests.testConnectorRequest('local_api', 'secret_status', {}, 'local-api')), 'ConnectorTested').execution
-    if (secretResult.response.body_json.authorized !== true) throw new Error(`vault-backed connector was not authorized: ${JSON.stringify(secretResult)}`)
+    if (secretResult.result.body_json.authorized !== true) throw new Error(`vault-backed connector was not authorized: ${JSON.stringify(secretResult)}`)
     if (JSON.stringify(secretResult).includes(secretValue)) throw new Error('connector result leaked the vault secret')
     if (!api.seen.some((entry) => entry.pathname === '/secret' && entry.secret === secretValue)) throw new Error('API server did not receive injected secret')
+    const pyResult = unwrap(await client.send(requests.testConnectorRequest('python_echo_connector', 'inspect', { value: 'py-alpha' }, 'local-api')), 'ConnectorTested').execution
+    if (pyResult.result.language !== 'python' || pyResult.result.arguments.value !== 'py-alpha' || pyResult.result.has_secret !== true) throw new Error(`Python adapter result mismatch: ${JSON.stringify(pyResult)}`)
+    const tsResult = unwrap(await client.send(requests.testConnectorRequest('typescript_echo_connector', 'inspect', { value: 'ts-alpha' }, 'local-api')), 'ConnectorTested').execution
+    if (tsResult.result.language !== 'typescript' || tsResult.result.arguments.value !== 'ts-alpha' || tsResult.result.has_secret !== true) throw new Error(`TypeScript adapter result mismatch: ${JSON.stringify(tsResult)}`)
 
     await expectReject('wrong host credential policy', () => client.send(requests.testConnectorRequest('wrong_host', 'secret_status', {}, 'local-api')), 'not allowed for host')
-    await expectReject('response cap enforcement', () => client.send(requests.testConnectorRequest('capped_api', 'large_response', {})), 'max_response_bytes')
+    await expectReject('response cap enforcement', () => client.send(requests.testConnectorRequest('capped_api', 'large_response', {})), 'exceeded')
     await expectReject('write blocked by read max safety', () => client.send(requests.testConnectorRequest('local_api', 'write_item', {}, null, 'read')), 'requires Write')
     const writeResult = unwrap(await client.send(requests.testConnectorRequest('local_api', 'write_item', {}, null, 'write')), 'ConnectorTested').execution
-    if (writeResult.response.body_json.route !== 'write') throw new Error('write operation failed')
+    if (writeResult.result.body_json.route !== 'write') throw new Error('write operation failed')
     await expectReject('destructive blocked by write max safety', () => client.send(requests.testConnectorRequest('local_api', 'destroy_item', {}, null, 'write')), 'requires Destructive')
     const destroyResult = unwrap(await client.send(requests.testConnectorRequest('local_api', 'destroy_item', {}, null, 'destructive')), 'ConnectorTested').execution
-    if (destroyResult.response.body_json.route !== 'destroy') throw new Error('destructive operation failed')
+    if (destroyResult.result.body_json.route !== 'destroy') throw new Error('destructive operation failed')
 
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'connector-extension-drill')), 'SessionCreated').session
     const agent = unwrap(await client.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'connector-agent', 'connector-profile', workspace, 'low')), 'AgentSpawned').agent
@@ -325,7 +474,12 @@ operations:
     if (!grant || grant.credential !== 'local-api' || grant.max_safety !== 'write') throw new Error(`connector grant missing metadata: ${JSON.stringify(granted.extension_grants)}`)
 
     await client.send(requests.removeConnectorRequest('wrong_host'))
+    await client.send(requests.removeConnectorRequest('python_echo_connector'))
+    await client.send(requests.removeConnectorRequest('typescript_echo_connector'))
     await client.send(requests.removeConnectorRequest('local_api'))
+    await client.send(requests.removeConnectorAdapterRequest('http'))
+    await client.send(requests.removeConnectorAdapterRequest('python_echo'))
+    await client.send(requests.removeConnectorAdapterRequest('typescript_echo'))
     await client.send(requests.removeCredentialRequest('local-api'))
     await client.send(requests.deleteCredentialSecretRequest(vaultKey))
 

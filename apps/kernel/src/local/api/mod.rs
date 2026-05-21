@@ -10,7 +10,9 @@ use crate::capability::{
     ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::config::{ArrobaUserConfig, UserCredentialConfig};
-use crate::connector::{ArrobaConnectorDefinition, ConnectorExecution};
+use crate::connector::{
+    ArrobaConnectorAdapterDefinition, ArrobaConnectorDefinition, ConnectorExecution,
+};
 use crate::history::HistoryEvent;
 use crate::mcp::{ArrobaMcpServerConfig, McpImportOutcome};
 use crate::provider::{

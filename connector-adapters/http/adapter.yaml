@@ -1,0 +1,6 @@
+kind: connector_adapter
+name: http
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v1
+command: arroba-adapter-http
+description: Built-in HTTP connector adapter.

@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ArrobaConnectorAdapterDefinition,
   ArrobaConnectorDefinition,
   ArrobaCredentialConfig,
   ArrobaEnvironmentConfig,
@@ -56,6 +57,10 @@ export type CapabilityCommandHandlerDeps = {
   getConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
   registerConnector?: (sourcePath: string) => Promise<ArrobaConnectorDefinition>
   removeConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
+  listConnectorAdapters?: () => Promise<ArrobaConnectorAdapterDefinition[]>
+  getConnectorAdapter?: (name: string) => Promise<ArrobaConnectorAdapterDefinition>
+  registerConnectorAdapter?: (sourcePath: string) => Promise<ArrobaConnectorAdapterDefinition>
+  removeConnectorAdapter?: (name: string) => Promise<ArrobaConnectorAdapterDefinition>
   testConnector?: (name: string, operation: string, input: Record<string, unknown>, credential?: string | null, allow?: string | null) => Promise<Record<string, unknown>>
   grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
   revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -501,6 +506,40 @@ export async function handleConnectorSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "connector" }>,
 ): Promise<void> {
   const [action] = command.args
+  if (action === "adapter" || action === "adapters") {
+    const subaction = command.args[1]
+    if (!subaction || subaction === "list" || subaction === "ls") {
+      if (!deps.listConnectorAdapters) return deps.flashFooter("connector adapter registry is not available in this daemon", "error")
+      const adapters = await deps.listConnectorAdapters()
+      deps.appendNotice(adapters.length === 0 ? "No Arroba connector adapters registered." : adapters.map(formatConnectorAdapterSummary).join("\n"))
+      deps.flashFooter(`listed ${adapters.length} connector adapter${adapters.length === 1 ? "" : "s"}`, "info")
+      return
+    }
+    if (subaction === "show") {
+      const name = command.args[2]
+      if (!name || !deps.getConnectorAdapter) return deps.flashFooter("usage: /connector adapter show <name>", "error")
+      const adapter = await deps.getConnectorAdapter(name)
+      deps.appendNotice(JSON.stringify(adapter, null, 2))
+      deps.flashFooter(`showing connector adapter ${adapter.name}`, "info")
+      return
+    }
+    if (subaction === "register") {
+      const sourcePath = command.args[2]
+      if (!sourcePath || !deps.registerConnectorAdapter) return deps.flashFooter("usage: /connector adapter register <adapter.yaml>", "error")
+      const adapter = await deps.registerConnectorAdapter(sourcePath)
+      deps.flashFooter(`registered connector adapter ${adapter.name}`, "info")
+      return
+    }
+    if (subaction === "remove" || subaction === "unregister") {
+      const name = command.args[2]
+      if (!name || !deps.removeConnectorAdapter) return deps.flashFooter(`usage: /connector adapter ${subaction} <name>`, "error")
+      const adapter = await deps.removeConnectorAdapter(name)
+      deps.flashFooter(`removed connector adapter ${adapter.name}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /connector adapter list | /connector adapter show <name> | /connector adapter register <adapter.yaml> | /connector adapter remove <name>", "error")
+    return
+  }
   if (!action || action === "list" || action === "ls") {
     if (!deps.listConnectors) return deps.flashFooter("connector registry is not available in this daemon", "error")
     const connectors = await deps.listConnectors()
@@ -574,7 +613,7 @@ export async function handleConnectorSlashCommand(
     deps.flashFooter(`showing connector grants for ${agent.agent_ref}`, "info")
     return
   }
-  deps.flashFooter("usage: /connector list | /connector show <name> | /connector register <file.yaml> | /connector remove <name> | /connector doctor <name> [--credential <id>] | /connector test <name> <operation> --input '<json>' | /connector grant <agent-ref> <name> | /connector revoke <agent-ref> <name>", "error")
+  deps.flashFooter("usage: /connector list | /connector show <name> | /connector register <file.yaml> | /connector adapter list|register|show|remove | /connector remove <name> | /connector doctor <name> [--credential <id>] | /connector test <name> <operation> --input '<json>' | /connector grant <agent-ref> <name> | /connector revoke <agent-ref> <name>", "error")
 }
 
 export async function handleExtensionSlashCommand(
@@ -659,7 +698,12 @@ function formatCredentialSummary(credential: ArrobaCredentialConfig): string {
 
 function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
   const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
-  return `${connector.name} [${connector.type}, ${operationCount} op${operationCount === 1 ? "" : "s"}]: ${connector.description}`
+  return `${connector.name} [${connector.adapter}, ${operationCount} op${operationCount === 1 ? "" : "s"}]: ${connector.description}`
+}
+
+function formatConnectorAdapterSummary(adapter: ArrobaConnectorAdapterDefinition): string {
+  const source = adapter.source ?? "unknown"
+  return `${adapter.name} [${source}]: ${adapter.description ?? adapter.adapter_protocol}`
 }
 
 function formatConnectorDoctor(
@@ -671,7 +715,7 @@ function formatConnectorDoctor(
   const ok = (message: string) => findings.push(`ok: ${message}`)
   const warn = (message: string) => findings.push(`warn: ${message}`)
   if (connector.kind !== "connector") warn("kind is not connector")
-  if (connector.type !== "http") warn(`unsupported connector type ${connector.type}`)
+  if (connector.adapter) ok(`adapter ${connector.adapter}`)
   const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
   if (operationCount > 0) ok(`${operationCount} operation${operationCount === 1 ? "" : "s"} configured`)
   else warn("no operations configured")
@@ -682,32 +726,13 @@ function formatConnectorDoctor(
   if (credentialId && !credential) warn(`credential ${credentialId} could not be loaded`)
   if (credential) {
     const uses = credential.allowed_uses ?? []
-    if (uses.length === 0 || uses.includes("http")) ok(`credential ${credential.id} allows http`)
-    else warn(`credential ${credential.id} does not allow http`)
+    if (uses.length === 0 || uses.includes("connector")) ok(`credential ${credential.id} allows connector`)
+    else warn(`credential ${credential.id} does not allow connector`)
     const injectionKind = typeof credential.injection?.kind === "string" ? credential.injection.kind : "unknown"
     if (injectionKind === "pty") warn(`credential ${credential.id} is configured for terminal injection`)
     else ok(`credential ${credential.id} injection is ${injectionKind}`)
-    const host = connectorHost(connector.base_url)
-    if (host) {
-      const allowedHosts = credential.allowed_hosts ?? []
-      if (allowedHosts.length === 0 || allowedHosts.includes(host.host) || allowedHosts.includes(host.hostWithPort)) {
-        ok(`credential host policy allows ${host.hostWithPort}`)
-      } else {
-        warn(`credential host policy does not allow ${host.hostWithPort}`)
-      }
-    }
   }
   return [`${connector.name} connector doctor`, ...findings].join("\n")
-}
-
-function connectorHost(baseUrl?: string | null): { host: string; hostWithPort: string } | null {
-  if (!baseUrl) return null
-  try {
-    const url = new URL(baseUrl)
-    return { host: url.hostname, hostWithPort: url.port ? `${url.hostname}:${url.port}` : url.hostname }
-  } catch {
-    return null
-  }
 }
 
 function formatMcpDetails(mcp: ArrobaMcpServerConfig): string {

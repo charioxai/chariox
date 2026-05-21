@@ -22,6 +22,10 @@ impl KernelRuntimeState {
                 .await
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+            self.owned
+                .connector_adapter_processes
+                .shutdown_run(provider_run_id)
+                .await;
             return Ok(exit.already_ended);
         }
 
@@ -45,6 +49,10 @@ impl KernelRuntimeState {
             .await
             .unwrap_or((false, None));
         owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+        self.owned
+            .connector_adapter_processes
+            .shutdown_run(provider_run_id)
+            .await;
         if exit.already_ended {
             return Ok(true);
         }

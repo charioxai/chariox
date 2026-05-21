@@ -238,6 +238,16 @@ impl RuntimeSecretService {
         self.resolve_secret(credential)
     }
 
+    pub fn resolve_connector_secret(
+        &self,
+        credential_id: &str,
+    ) -> Result<(UserCredentialConfig, String), DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Connector)?;
+        let secret = self.resolve_secret(credential)?;
+        Ok((credential.clone(), secret))
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
         if value.is_empty() {

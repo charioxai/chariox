@@ -67,6 +67,7 @@ fn default_credential_vault_service() -> String {
 pub enum UserCredentialUse {
     Http,
     Pty,
+    Connector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
