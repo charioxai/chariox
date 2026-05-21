@@ -1,0 +1,63 @@
+kind: connector
+name: github
+description: GitHub REST API connector.
+adapter: http
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: viewer
+    description: Read the authenticated GitHub user.
+    safety: read
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    config:
+      base_url: https://api.github.com
+      method: GET
+      path: /user
+      headers:
+        accept: application/vnd.github+json
+        x-github-api-version: "2022-11-28"
+
+  - name: repo
+    description: Read repository metadata.
+    safety: read
+    input_schema:
+      type: object
+      required: [owner, repo]
+      properties:
+        owner:
+          type: string
+        repo:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://api.github.com
+      method: GET
+      path: /repos/{{owner}}/{{repo}}
+      headers:
+        accept: application/vnd.github+json
+        x-github-api-version: "2022-11-28"
+
+  - name: list_repo_issues
+    description: List open issues in a repository.
+    safety: read
+    input_schema:
+      type: object
+      required: [owner, repo]
+      properties:
+        owner:
+          type: string
+        repo:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://api.github.com
+      method: GET
+      path: /repos/{{owner}}/{{repo}}/issues
+      headers:
+        accept: application/vnd.github+json
+        x-github-api-version: "2022-11-28"
