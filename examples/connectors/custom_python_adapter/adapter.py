@@ -18,6 +18,12 @@ for line in sys.stdin:
     if request_type == "validate":
         respond(request_id, result={"validated": True})
         continue
+    if request_type == "prepare":
+        respond(request_id, result={
+            "credential_targets": [],
+            "prepared_config": request.get("config") or {},
+        })
+        continue
     if request_type != "call":
         respond(request_id, ok=False, error=f"unsupported request type {request_type}")
         continue

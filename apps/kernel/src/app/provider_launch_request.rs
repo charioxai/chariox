@@ -5,7 +5,8 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
 use super::provider_launch_policy::{
-    default_provider_env_remove, generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
+    default_provider_env_remove, generate_runtime_mcp_auth_token,
+    granted_mcp_servers_for_agent_launch, sanitize_resume_state_for_launch,
 };
 
 impl DaemonApp {
@@ -68,6 +69,13 @@ impl DaemonApp {
         }
         if request.provider_env_remove.is_empty() {
             request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
+        }
+        if request.mcp_servers.is_empty() {
+            if let Some(agent) = agent.as_ref() {
+                request = request.with_mcp_servers(granted_mcp_servers_for_agent_launch(
+                    operation, &session, agent,
+                )?);
+            }
         }
         Ok(request)
     }

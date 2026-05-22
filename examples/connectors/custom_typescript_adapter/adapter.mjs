@@ -15,6 +15,13 @@ for await (const line of rl) {
     respond(request.id, true, { validated: true })
     continue
   }
+  if (request.type === "prepare") {
+    respond(request.id, true, {
+      credential_targets: [],
+      prepared_config: request.config ?? {},
+    })
+    continue
+  }
   if (request.type !== "call") {
     respond(request.id, false, null, `unsupported request type ${request.type}`)
     continue

@@ -1,0 +1,23 @@
+kind: connector
+name: grpc_example
+description: Example gRPC connector.
+adapter: grpc
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: echo
+    description: Call an echo RPC.
+    safety: read
+    input_schema:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+      additionalProperties: false
+    config:
+      address: 127.0.0.1:50051
+      plaintext: true
+      method: example.EchoService/Echo
+      data:
+        message: "{{message}}"

@@ -3,7 +3,9 @@ use rand::distributions::{Alphanumeric, DistString};
 use crate::agent::AgentInstance;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
+use crate::session::RuntimeSession;
 
 pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
     let credentials = crate::credential::load_user_credentials().unwrap_or_default();
@@ -40,6 +42,44 @@ pub(crate) fn sanitize_resume_state_for_launch(
         "claude" => resume_state.without_claude_session_id(),
         _ => resume_state,
     }
+}
+
+pub(crate) fn granted_mcp_servers_for_agent_launch(
+    operation: &'static str,
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+    let mcp_grants = agent.mcp_grants();
+    if mcp_grants.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workspace = std::path::PathBuf::from(session.workspace_id());
+    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
+    if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(user_root);
+    }
+    let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
+    let mut servers = Vec::new();
+    for grant in mcp_grants {
+        let Some(server) = registry.get(&grant)? else {
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "skipping missing MCP extension grant during provider launch",
+                serde_json::json!({
+                    "operation": operation,
+                    "session_id": session.id(),
+                    "agent_id": agent.id(),
+                    "agent_ref": agent.agent_ref(),
+                    "mcp": grant,
+                }),
+            );
+            continue;
+        };
+        if server.enabled {
+            servers.push(server);
+        }
+    }
+    Ok(servers)
 }
 
 pub(crate) fn failed_codex_resume_state_replacement(

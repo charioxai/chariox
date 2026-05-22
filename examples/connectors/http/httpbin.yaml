@@ -1,0 +1,23 @@
+kind: connector
+name: httpbin
+description: Public HTTP test connector.
+adapter: http
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: get
+    description: Call httpbin GET with one query parameter.
+    safety: read
+    input_schema:
+      type: object
+      required: [topic]
+      properties:
+        topic:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://httpbin.org
+      method: GET
+      path: /get
+      query:
+        topic: "{{topic}}"

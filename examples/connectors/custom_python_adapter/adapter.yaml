@@ -1,6 +1,6 @@
 kind: connector_adapter
 name: example_python
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: ./adapter.py
 description: Example Python connector adapter.

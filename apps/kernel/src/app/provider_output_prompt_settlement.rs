@@ -71,9 +71,11 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             }
         } else if prompt_completed || settlement_pending {
             if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
-                self.note_prompt_settlement_requested(provider_run_id);
-                let _ = crate::app::KernelSessionReadService::new(self.app)
-                    .session_snapshot(session_id);
+                self.fail_for_missing_workflow_output(
+                    session_id,
+                    provider_run_id,
+                    "provider completed workflow turn without a validated workflow output",
+                )?;
                 return Ok(());
             }
             self.settle_prompt_by_status(session_id, provider_run_id)?;
@@ -144,6 +146,58 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                     workflow_run.id(),
                     message
                 ),
+            );
+            let _ =
+                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
+        }
+        let _ = self
+            .app
+            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        self.clear_active_turn(provider_run_id);
+        Ok(())
+    }
+
+    fn fail_for_missing_workflow_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            self.clear_prompt_activity(provider_run_id);
+            self.clear_active_turn(provider_run_id);
+            return Ok(());
+        };
+        let agent_id = self.provider_run_agent_id(provider_run_id)?;
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        {
+            let failure = crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                workflow_node_run_id,
+                Vec::new(),
+                message,
+            );
+            let _ = self.app.sessions_mut().record_workflow_failure_event(
+                session_id,
+                workflow_run_id,
+                failure,
+            );
+            let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            let _ = self.app.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            self.app.record_notice(
+                session_id,
+                Some(provider_run_id),
+                self.app.attachments.list_session_attachment_ids(session_id),
+                format!("Workflow run `{}` failed: {message}.", workflow_run.id()),
             );
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);

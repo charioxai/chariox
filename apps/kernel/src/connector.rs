@@ -14,11 +14,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use wait_timeout::ChildExt;
 
-use crate::config::{UserCredentialInjectionConfig, UserCredentialUse};
+use crate::config::{UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialUse};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
-pub const CONNECTOR_ADAPTER_PROTOCOL_VERSION: &str = "arroba-connector-adapter-v1";
+pub const CONNECTOR_ADAPTER_PROTOCOL_VERSION: &str = "arroba-connector-adapter-v2";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrobaConnectorRegistry {
@@ -128,6 +128,7 @@ pub struct ConnectorAdapterRequest {
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorAdapterRequestType {
     Validate,
+    Prepare,
     Call,
     Shutdown,
 }
@@ -145,6 +146,23 @@ pub struct ConnectorAdapterCredential {
     pub injection: UserCredentialInjectionConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorAdapterPrepareResult {
+    #[serde(default)]
+    pub credential_targets: Vec<ConnectorAdapterCredentialTarget>,
+    pub prepared_config: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectorAdapterCredentialTarget {
+    Host {
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,13 +322,31 @@ impl ArrobaConnectorRegistry {
                 ),
             )
         })?;
-        let credential = resolve_connector_credential(
+        let credential_metadata = connector_credential_metadata(
             credential_id,
             definition
                 .credential
                 .as_ref()
                 .map(|credential| credential.required)
                 .unwrap_or(false),
+        )?;
+        let prepare_request = ConnectorAdapterRequest {
+            id: "prepare-1".to_string(),
+            request_type: ConnectorAdapterRequestType::Prepare,
+            connector: definition.name.clone(),
+            operation: Some(operation.name.clone()),
+            arguments: Some(arguments),
+            config: Some(operation.config.clone()),
+            operations: Vec::new(),
+            credential: None,
+            timeout_ms: definition.timeout_ms,
+            max_response_bytes: definition.max_response_bytes,
+        };
+        let prepare_response = run_adapter_request_once(&adapter, &prepare_request)?;
+        let prepared = adapter_response_to_prepare_result(prepare_response)?;
+        let credential = resolve_connector_credential(
+            credential_metadata.as_ref(),
+            &prepared.credential_targets,
             vault_service,
         )?;
         let request = ConnectorAdapterRequest {
@@ -318,8 +354,8 @@ impl ArrobaConnectorRegistry {
             request_type: ConnectorAdapterRequestType::Call,
             connector: definition.name.clone(),
             operation: Some(operation.name.clone()),
-            arguments: Some(arguments),
-            config: Some(operation.config.clone()),
+            arguments: None,
+            config: Some(prepared.prepared_config),
             operations: Vec::new(),
             credential,
             timeout_ms: definition.timeout_ms,
@@ -849,6 +885,31 @@ pub fn adapter_response_to_execution(
     })
 }
 
+fn adapter_response_to_prepare_result(
+    response: ConnectorAdapterResponse,
+) -> Result<ConnectorAdapterPrepareResult, DaemonError> {
+    if !response.ok {
+        return Err(connector_error(
+            "connector.prepare",
+            response
+                .error
+                .unwrap_or_else(|| "connector adapter prepare failed".to_string()),
+        ));
+    }
+    let result = response.result.ok_or_else(|| {
+        connector_error(
+            "connector.prepare",
+            "connector adapter prepare returned no result".to_string(),
+        )
+    })?;
+    serde_json::from_value::<ConnectorAdapterPrepareResult>(result).map_err(|error| {
+        connector_error(
+            "connector.prepare",
+            format!("connector adapter prepare returned invalid result: {error}"),
+        )
+    })
+}
+
 fn validate_connector_with_adapter(
     definition: &ArrobaConnectorDefinition,
     adapter: &ArrobaConnectorAdapterDefinition,
@@ -978,11 +1039,10 @@ fn run_adapter_request_once(
     Ok(response)
 }
 
-fn resolve_connector_credential(
+fn connector_credential_metadata(
     credential_id: Option<&str>,
     required: bool,
-    vault_service: impl Into<String>,
-) -> Result<Option<ConnectorAdapterCredential>, DaemonError> {
+) -> Result<Option<UserCredentialConfig>, DaemonError> {
     match (credential_id, required) {
         (None, true) => {
             return Err(connector_error(
@@ -994,16 +1054,90 @@ fn resolve_connector_credential(
         (Some(_), _) => {}
     }
     let credential_id = credential_id.unwrap();
-    let credentials = crate::credential::load_user_credentials()?;
-    let service =
-        crate::secret::RuntimeSecretService::with_vault_service(credentials, vault_service.into());
-    let (credential, secret) = service.resolve_connector_secret(credential_id)?;
+    let credential = crate::credential::ArrobaCredentialRegistry::user()?
+        .get(credential_id)?
+        .ok_or_else(|| {
+            connector_error(
+                "connector.execute",
+                format!("unknown credential `{credential_id}`"),
+            )
+        })?;
+    if !(credential.allowed_uses.is_empty()
+        || credential
+            .allowed_uses
+            .contains(&UserCredentialUse::Connector))
+    {
+        return Err(connector_error(
+            "connector.execute",
+            format!("credential `{credential_id}` is not allowed for connector"),
+        ));
+    }
+    Ok(Some(credential))
+}
+
+fn resolve_connector_credential(
+    credential: Option<&UserCredentialConfig>,
+    targets: &[ConnectorAdapterCredentialTarget],
+    vault_service: impl Into<String>,
+) -> Result<Option<ConnectorAdapterCredential>, DaemonError> {
+    let Some(credential) = credential else {
+        return Ok(None);
+    };
+    enforce_connector_credential_targets(credential, targets)?;
+    let service = crate::secret::RuntimeSecretService::with_vault_service(
+        vec![credential.clone()],
+        vault_service.into(),
+    );
+    let (credential, secret) = service.resolve_connector_secret(&credential.id)?;
     Ok(Some(ConnectorAdapterCredential {
         id: credential.id,
         secret,
         injection: credential.injection,
         allowed_hosts: credential.allowed_hosts,
     }))
+}
+
+fn enforce_connector_credential_targets(
+    credential: &UserCredentialConfig,
+    targets: &[ConnectorAdapterCredentialTarget],
+) -> Result<(), DaemonError> {
+    if credential.allowed_hosts.is_empty() {
+        return Ok(());
+    }
+    let mut saw_host = false;
+    for target in targets {
+        match target {
+            ConnectorAdapterCredentialTarget::Host { host, port } => {
+                saw_host = true;
+                let host_with_port = port
+                    .map(|port| format!("{host}:{port}"))
+                    .unwrap_or_else(|| host.clone());
+                if !credential
+                    .allowed_hosts
+                    .iter()
+                    .any(|allowed| allowed == host || allowed == &host_with_port)
+                {
+                    return Err(connector_error(
+                        "connector.execute",
+                        format!(
+                            "credential `{}` is not allowed for adapter-declared target `{host_with_port}`",
+                            credential.id
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    if !saw_host {
+        return Err(connector_error(
+            "connector.execute",
+            format!(
+                "credential `{}` is host-restricted but adapter did not declare a credential host target",
+                credential.id
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), DaemonError> {
@@ -1246,7 +1380,7 @@ mod tests {
             r#"
 kind: connector_adapter
 name: echo
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: bin/echo-adapter
 "#,
         )
@@ -1265,18 +1399,113 @@ command: bin/echo-adapter
     fn adapter_command_without_path_uses_path_lookup() {
         let adapter = ArrobaConnectorAdapterDefinition {
             kind: "connector_adapter".to_string(),
-            name: "http".to_string(),
+            name: "path_lookup_adapter".to_string(),
             description: None,
             version: None,
             adapter_protocol: CONNECTOR_ADAPTER_PROTOCOL_VERSION.to_string(),
-            command: PathBuf::from("arroba-adapter-http"),
+            command: PathBuf::from("any-adapter-command"),
             args: Vec::new(),
             source: Some(ConnectorAdapterSource::Bundled),
-            manifest_path: Some(PathBuf::from("/opt/arroba/connector-adapters/http/adapter.yaml")),
+            manifest_path: Some(PathBuf::from(
+                "/opt/arroba/connector-adapters/path_lookup_adapter/adapter.yaml",
+            )),
         };
         assert_eq!(
             adapter.resolved_command().unwrap(),
-            PathBuf::from("arroba-adapter-http")
+            PathBuf::from("any-adapter-command")
         );
+    }
+
+    #[test]
+    fn adapter_registry_reads_bundled_adapter() {
+        let root = temp_root("bundled-adapters");
+        let adapter_dir = root.join("bundled").join("any_adapter");
+        fs::create_dir_all(&adapter_dir).unwrap();
+        fs::write(
+            adapter_dir.join("adapter.yaml"),
+            r#"
+kind: connector_adapter
+name: any_adapter
+adapter_protocol: arroba-connector-adapter-v2
+command: any-adapter-command
+"#,
+        )
+        .unwrap();
+        let registry =
+            ArrobaConnectorAdapterRegistry::new(root.join("user"), vec![root.join("bundled")]);
+        let adapters = registry.list().expect("bundled adapters should parse");
+        assert_eq!(adapters.len(), 1);
+        assert_eq!(adapters[0].name, "any_adapter");
+        assert_eq!(adapters[0].source, Some(ConnectorAdapterSource::Bundled));
+    }
+
+    #[test]
+    fn connector_credential_target_allows_matching_host() {
+        let credential = test_connector_credential(vec!["api.example.com:443".to_string()]);
+        enforce_connector_credential_targets(
+            &credential,
+            &[ConnectorAdapterCredentialTarget::Host {
+                host: "api.example.com".to_string(),
+                port: Some(443),
+            }],
+        )
+        .expect("matching host target should be allowed");
+    }
+
+    #[test]
+    fn connector_credential_target_requires_declared_host_for_restricted_credentials() {
+        let credential = test_connector_credential(vec!["api.example.com".to_string()]);
+        let error = enforce_connector_credential_targets(&credential, &[])
+            .expect_err("restricted credential should require a host target");
+        assert!(format!("{error}").contains("did not declare a credential host target"));
+    }
+
+    #[test]
+    fn connector_credential_target_rejects_unlisted_host() {
+        let credential = test_connector_credential(vec!["api.example.com".to_string()]);
+        let error = enforce_connector_credential_targets(
+            &credential,
+            &[ConnectorAdapterCredentialTarget::Host {
+                host: "other.example.com".to_string(),
+                port: None,
+            }],
+        )
+        .expect_err("unlisted host should be rejected");
+        assert!(format!("{error}").contains("is not allowed for adapter-declared target"));
+    }
+
+    #[test]
+    fn connector_credential_target_rejects_partially_allowed_targets() {
+        let credential = test_connector_credential(vec!["api.example.com".to_string()]);
+        let error = enforce_connector_credential_targets(
+            &credential,
+            &[
+                ConnectorAdapterCredentialTarget::Host {
+                    host: "api.example.com".to_string(),
+                    port: None,
+                },
+                ConnectorAdapterCredentialTarget::Host {
+                    host: "other.example.com".to_string(),
+                    port: None,
+                },
+            ],
+        )
+        .expect_err("every declared target should be allowed");
+        assert!(format!("{error}").contains("other.example.com"));
+    }
+
+    fn test_connector_credential(allowed_hosts: Vec<String>) -> UserCredentialConfig {
+        UserCredentialConfig {
+            id: "test-credential".to_string(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Env {
+                name: "TEST_CREDENTIAL".to_string(),
+            },
+            allowed_hosts,
+            allowed_uses: vec![UserCredentialUse::Connector],
+            injection: UserCredentialInjectionConfig::Basic {
+                username: "user".to_string(),
+            },
+        }
     }
 }

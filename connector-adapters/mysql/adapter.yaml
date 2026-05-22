@@ -1,0 +1,6 @@
+kind: connector_adapter
+name: mysql
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v2
+command: arroba-adapter-mysql
+description: Built-in MySQL connector adapter.

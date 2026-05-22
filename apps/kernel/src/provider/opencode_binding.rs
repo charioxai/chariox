@@ -59,6 +59,7 @@ pub(crate) fn initialize_opencode_runtime(
             "base_url": base_url.clone(),
         }),
     );
+    ensure_configured_mcp_servers_connected(run, &client)?;
 
     let selection = resolve_initial_selection(run, &client)?;
 
@@ -139,6 +140,31 @@ pub(crate) fn initialize_opencode_runtime(
         selection,
         resume_state: ProviderResumeState::from_opencode_session_id(session_id),
     })
+}
+
+fn ensure_configured_mcp_servers_connected(
+    run: &RuntimeProviderRun,
+    client: &OpenCodeClient,
+) -> Result<(), DaemonError> {
+    let mut names = Vec::new();
+    if run.runtime_mcp_server_url().is_some() {
+        names.push("arroba".to_string());
+    }
+    names.extend(run.mcp_servers().iter().map(|server| server.name.clone()));
+    names.sort();
+    names.dedup();
+    for name in names {
+        client.connect_mcp_server(&name)?;
+        crate::logging::info_with_fields(
+            "daemon.provider.opencode",
+            "connected opencode MCP server",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "mcp_server": name,
+            }),
+        );
+    }
+    Ok(())
 }
 
 fn opencode_managed_io_permission_rules(allow_native_bash: bool) -> serde_json::Value {

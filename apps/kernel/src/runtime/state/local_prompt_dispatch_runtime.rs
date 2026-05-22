@@ -153,6 +153,9 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        for provider_run_id in dispatches.starting_provider_runs {
+            self.spawn_detached_workflow_provider_launch(provider_run_id);
+        }
         for dispatch in dispatches.local {
             let state = self.clone();
             tokio::spawn(async move {
@@ -164,6 +167,52 @@ impl KernelRuntimeState {
         for dispatch in dispatches.remote {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
+    }
+
+    fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let run = match state.owned.provider_store.get_run(&provider_run_id) {
+                Ok(run) if run.state() == crate::provider::ProviderRunState::Starting => run,
+                _ => return,
+            };
+            let started = crate::app::StartedProviderLaunch {
+                run: run.clone(),
+                previous_active_run_id: None,
+            };
+            let spawn_result = state
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+                })
+                .await;
+            if let Err(error) = spawn_result {
+                state.fail_provider_launch(&started, &error).await;
+                return;
+            }
+            state.owned.provider_run_projection.update(run.clone());
+            let runtime_init_delay_ms = state
+                .owned
+                .config_projection
+                .snapshot()
+                .provider_runtime_init_delay_ms;
+            if runtime_init_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
+            }
+            let binding = tokio::task::spawn_blocking(move || {
+                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize workflow provider runtime",
+                message: error.to_string(),
+            });
+            match binding {
+                Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
+                Ok(Err(error)) | Err(error) => {
+                    state.fail_provider_launch(&started, &error).await;
+                }
+            }
+        });
     }
 
     pub(super) async fn enqueue_prompt_abort(

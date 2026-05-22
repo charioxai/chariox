@@ -1,0 +1,24 @@
+kind: connector
+name: postgres_example
+description: Example Postgres connector.
+adapter: postgres
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: find_user
+    description: Find a user by id.
+    safety: read
+    input_schema:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+      additionalProperties: false
+    config:
+      connection_url: postgres://127.0.0.1:5432/postgres
+      query: "select id, email from users where id = $1"
+      params:
+        - "{{id}}"

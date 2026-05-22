@@ -325,6 +325,7 @@ impl DaemonApp {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         let run = self.providers.launch_run_detached(request)?;
+        self.update_provider_run_projection(run.clone());
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {
                 let started = StartedProviderLaunch {

@@ -318,13 +318,14 @@ fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutp
     while let Some(start) = text[cursor..].find("```json") {
         let block_start = cursor + start + "```json".len();
         let remaining = &text[block_start..];
-        let Some(end) = remaining.find("```") else {
-            break;
-        };
-        let candidate = remaining[..end].trim();
+        let end = remaining.find("```");
+        let candidate = end.map_or(remaining, |end| &remaining[..end]).trim();
         if let Ok(value) = serde_json::from_str::<WorkflowStructuredOutputEnvelope>(candidate) {
             parsed = Some(value);
         }
+        let Some(end) = end else {
+            break;
+        };
         cursor = block_start + end + "```".len();
     }
     parsed
@@ -395,5 +396,24 @@ mod tests {
             .into_output_message()
             .expect("message should serialize");
         assert_eq!(output, r#"{"ok":true,"source":"mailbox-fixed"}"#);
+    }
+
+    #[test]
+    fn workflow_structured_output_accepts_trailing_unclosed_fence() {
+        let parsed = parse_workflow_structured_output(
+            r#"
+The provider forgot to close the fence.
+```json
+{"summary":"fixed","output":{"message":"{\"ok\":true}"}}
+"#,
+        )
+        .expect("trailing structured output should parse");
+
+        let output = parsed
+            .output
+            .expect("structured output should contain output")
+            .into_output_message()
+            .expect("message should serialize");
+        assert_eq!(output, r#"{"ok":true}"#);
     }
 }

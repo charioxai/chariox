@@ -167,46 +167,15 @@ impl KernelRuntimeOwnedState {
             request = request.with_provider_env_remove(credential_env_names.into_iter().collect());
         }
         if request.mcp_servers.is_empty() {
-            let granted_mcp_servers = self.granted_mcp_servers_for_launch(&request)?;
-            request = request.with_mcp_servers(granted_mcp_servers);
-        }
-        Ok(request)
-    }
-
-    fn granted_mcp_servers_for_launch(
-        &self,
-        request: &crate::provider::LaunchProviderRequest,
-    ) -> Result<Vec<crate::mcp::ArrobaMcpServerConfig>, DaemonError> {
-        let Some(agent_id) = request.agent_id.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let agent = self.agent_store.get_agent(agent_id)?;
-        let mcp_grants = agent.mcp_grants();
-        if mcp_grants.is_empty() {
-            return Ok(Vec::new());
-        }
-        let session = self.session_store.get_session(&request.session_id)?;
-        let workspace = std::path::PathBuf::from(session.workspace_id());
-        let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
-        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-            roots.push(user_root);
-        }
-        let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-        let mut servers = Vec::new();
-        for grant in mcp_grants {
-            let Some(server) = registry.get(&grant)? else {
-                return Err(DaemonError::LocalTransport {
-                    operation: "provider.launch.mcps",
-                    message: format!(
-                        "agent `{}` has missing MCP grant `{grant}`",
-                        agent.agent_ref()
-                    ),
-                });
-            };
-            if server.enabled {
-                servers.push(server);
+            if let Some(agent) = agent.as_ref() {
+                request =
+                    request.with_mcp_servers(crate::app::granted_mcp_servers_for_agent_launch(
+                        "provider.launch.mcps",
+                        &session,
+                        agent,
+                    )?);
             }
         }
-        Ok(servers)
+        Ok(request)
     }
 }

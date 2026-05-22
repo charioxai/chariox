@@ -152,6 +152,21 @@ impl KernelRuntimeOwnedState {
             }
             dispatches.remote.push(dispatch);
         }
+        if matches!(
+            submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ) {
+            if let Some(run) = self
+                .provider_store
+                .get_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
+            {
+                if run.state() == crate::provider::ProviderRunState::Starting {
+                    dispatches
+                        .starting_provider_runs
+                        .push(run.id().to_string());
+                }
+            }
+        }
         Ok(dispatches)
     }
 

@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Write};
 
-use arroba_kernel::config::UserCredentialInjectionConfig;
-use arroba_kernel::connector::{
-    ConnectorAdapterRequest, ConnectorAdapterRequestType, ConnectorAdapterResponse,
+use arroba_adapters::connector_adapter_util::run_adapter;
+use arroba_adapters::protocol::{
+    ConnectorAdapterCredentialTarget, ConnectorAdapterPrepareResult, ConnectorAdapterRequest,
+    UserCredentialInjectionConfig,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct HttpConfig {
     base_url: String,
     method: String,
@@ -24,58 +24,7 @@ struct HttpConfig {
 }
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => {
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    serde_json::json!({"id":"","ok":false,"error":error.to_string()})
-                );
-                break;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request = match serde_json::from_str::<ConnectorAdapterRequest>(&line) {
-            Ok(request) => request,
-            Err(error) => {
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    serde_json::json!({"id":"","ok":false,"error":format!("invalid request: {error}")})
-                );
-                let _ = stdout.flush();
-                continue;
-            }
-        };
-        let id = request.id.clone();
-        let response = match request.request_type {
-            ConnectorAdapterRequestType::Validate => validate_request(request),
-            ConnectorAdapterRequestType::Call => call_request(request),
-            ConnectorAdapterRequestType::Shutdown => break,
-        };
-        let response = match response {
-            Ok(result) => ConnectorAdapterResponse {
-                id,
-                ok: true,
-                result: Some(result),
-                error: None,
-            },
-            Err(error) => ConnectorAdapterResponse {
-                id,
-                ok: false,
-                result: None,
-                error: Some(error),
-            },
-        };
-        let _ = writeln!(stdout, "{}", serde_json::to_string(&response).unwrap());
-        let _ = stdout.flush();
-    }
+    run_adapter(validate_request, prepare_request, call_request);
 }
 
 fn validate_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
@@ -89,6 +38,23 @@ fn validate_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     Ok(serde_json::json!({"validated": true}))
 }
 
+fn prepare_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
+    let config = parse_config(
+        request
+            .config
+            .ok_or_else(|| "HTTP prepare is missing operation config".to_string())?,
+    )?;
+    validate_config(&config)?;
+    let arguments = request.arguments.unwrap_or_else(|| serde_json::json!({}));
+    let prepared = prepare_config(&config, &arguments)?;
+    let target = http_config_url(&prepared)?;
+    serde_json::to_value(ConnectorAdapterPrepareResult {
+        credential_targets: vec![host_target(&target)?],
+        prepared_config: serde_json::to_value(prepared).map_err(|error| error.to_string())?,
+    })
+    .map_err(|error| error.to_string())
+}
+
 fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     let config = parse_config(
         request
@@ -97,43 +63,11 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     )?;
     validate_config(&config)?;
     let arguments = request.arguments.unwrap_or_else(|| serde_json::json!({}));
-    let mut base = config.base_url.clone();
-    if !base.ends_with('/') {
-        base.push('/');
-    }
-    let path = render_template_string(&config.path, &arguments)?;
-    let mut url = url::Url::parse(&base)
-        .map_err(|error| format!("invalid base_url: {error}"))?
-        .join(path.trim_start_matches('/'))
-        .map_err(|error| format!("invalid request path: {error}"))?;
-    if !config.query.is_empty() {
-        let mut pairs = url.query_pairs_mut();
-        for (name, value) in &config.query {
-            pairs.append_pair(name, &render_template_string(value, &arguments)?);
-        }
-    }
-    let mut headers = config
-        .headers
-        .iter()
-        .map(|(name, value)| Ok((name.clone(), render_template_string(value, &arguments)?)))
-        .collect::<Result<BTreeMap<_, _>, String>>()?;
-    let body_json = config
-        .body_json
-        .as_ref()
-        .map(|value| render_json_template(value, &arguments))
-        .transpose()?;
-    let body_text = config
-        .body_text
-        .as_ref()
-        .map(|value| render_template_string(value, &arguments))
-        .transpose()?;
-    if body_json.is_some()
-        && !headers
-            .keys()
-            .any(|name| name.eq_ignore_ascii_case("content-type"))
-    {
-        headers.insert("content-type".to_string(), "application/json".to_string());
-    }
+    let prepared = prepare_config(&config, &arguments)?;
+    let mut url = http_config_url(&prepared)?;
+    let mut headers = prepared.headers;
+    let body_json = prepared.body_json;
+    let body_text = prepared.body_text;
     if let Some(credential) = request.credential {
         if !credential.allowed_hosts.is_empty() {
             let host = url
@@ -181,7 +115,7 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_millis(request.timeout_ms))
         .build();
-    let method = config.method.trim().to_ascii_uppercase();
+    let method = prepared.method.trim().to_ascii_uppercase();
     let mut http_request = agent.request(&method, url.as_str());
     for (name, value) in headers {
         http_request = http_request.set(&name, &value);
@@ -197,6 +131,73 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     }
     .map_err(|error| error.to_string())?;
     decode_response(response, request.max_response_bytes)
+}
+
+fn prepare_config(config: &HttpConfig, arguments: &Value) -> Result<HttpConfig, String> {
+    let body_json = config
+        .body_json
+        .as_ref()
+        .map(|value| render_json_template(value, arguments))
+        .transpose()?;
+    let body_text = config
+        .body_text
+        .as_ref()
+        .map(|value| render_template_string(value, arguments))
+        .transpose()?;
+    let mut headers = config
+        .headers
+        .iter()
+        .map(|(name, value)| Ok((name.clone(), render_template_string(value, arguments)?)))
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    if body_json.is_some()
+        && !headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-type"))
+    {
+        headers.insert("content-type".to_string(), "application/json".to_string());
+    }
+    Ok(HttpConfig {
+        base_url: render_template_string(&config.base_url, arguments)?,
+        method: render_template_string(&config.method, arguments)?,
+        path: render_template_string(&config.path, arguments)?,
+        query: config
+            .query
+            .iter()
+            .map(|(name, value)| Ok((name.clone(), render_template_string(value, arguments)?)))
+            .collect::<Result<BTreeMap<_, _>, String>>()?,
+        headers,
+        body_json,
+        body_text,
+    })
+}
+
+fn http_config_url(config: &HttpConfig) -> Result<url::Url, String> {
+    let mut base = config.base_url.clone();
+    if !base.ends_with('/') {
+        base.push('/');
+    }
+    let mut url = url::Url::parse(&base)
+        .map_err(|error| format!("invalid base_url: {error}"))?
+        .join(config.path.trim_start_matches('/'))
+        .map_err(|error| format!("invalid request path: {error}"))?;
+    if !config.query.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (name, value) in &config.query {
+            pairs.append_pair(name, value);
+        }
+    }
+    Ok(url)
+}
+
+fn host_target(url: &url::Url) -> Result<ConnectorAdapterCredentialTarget, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "credential target has no host".to_string())?
+        .to_string();
+    Ok(ConnectorAdapterCredentialTarget::Host {
+        host,
+        port: url.port(),
+    })
 }
 
 fn parse_config(value: Value) -> Result<HttpConfig, String> {

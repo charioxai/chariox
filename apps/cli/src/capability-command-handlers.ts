@@ -702,8 +702,7 @@ function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
 }
 
 function formatConnectorAdapterSummary(adapter: ArrobaConnectorAdapterDefinition): string {
-  const source = adapter.source ?? "unknown"
-  return `${adapter.name} [${source}]: ${adapter.description ?? adapter.adapter_protocol}`
+  return `${adapter.name}: ${adapter.description ?? adapter.adapter_protocol}`
 }
 
 function formatConnectorDoctor(

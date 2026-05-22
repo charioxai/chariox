@@ -130,39 +130,6 @@ impl KernelRuntimeState {
             });
         }
 
-        if (prompt_completed || settlement_pending)
-            && !force
-            && active_prompt.workflow_run_id().is_some()
-            && active_prompt.workflow_node_run_id().is_some()
-            && !owned.workflow_prompt_has_completion_output(
-                session_id,
-                active_prompt
-                    .workflow_run_id()
-                    .expect("workflow run id checked"),
-                active_prompt
-                    .workflow_node_run_id()
-                    .expect("workflow node run id checked"),
-                provider_run_id,
-            )
-        {
-            owned.note_prompt_settlement_requested(provider_run_id);
-            let _ = owned.session_snapshot(session_id);
-            crate::logging::debug_with_fields(
-                "daemon.provider",
-                "provider completed workflow prompt before workflow output",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "provider_run_id": provider_run_id,
-                    "agent_id": agent_id,
-                    "prompt_id": active_prompt.id(),
-                }),
-            );
-            return Ok(crate::app::ProviderRunExitSessionSummary {
-                had_active_prompt: true,
-                started_next_prompt: false,
-            });
-        }
-
         if !force && (prompt_completed || settlement_pending) {
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                 active_prompt.workflow_run_id(),

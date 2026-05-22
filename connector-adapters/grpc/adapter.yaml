@@ -1,0 +1,6 @@
+kind: connector_adapter
+name: grpc
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v2
+command: arroba-adapter-grpc
+description: Built-in gRPC connector adapter backed by grpcurl.

@@ -16,17 +16,19 @@ User-registered adapters are copied to:
 ~/.arroba/connectors/adapters/
 ```
 
-Package-managed Arroba installs can also ship bundled adapters from the install resource directory. Those appear in `/connector adapter list` with `source: bundled`.
+Package-managed Arroba installs can also ship adapters from the install resource directory. Those appear in `/connector adapter list` together with user-registered adapters.
+The adapter implementations live outside the kernel package. The kernel does not link adapter-specific code or dependencies; it only discovers adapter manifests and launches adapter commands.
+The shipped adapter package currently includes `http`, `graphql`, `grpc`, `postgres`, and `mysql`.
 
 ## 1. Register An Adapter
 
-An adapter is an executable that speaks `arroba-connector-adapter-v1` over JSON lines on stdin/stdout.
+An adapter is an executable that speaks `arroba-connector-adapter-v2` over JSON lines on stdin/stdout.
 
 ```yaml
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: /path/to/arroba-adapter-http
 description: HTTP adapter for Arroba connectors.
 ```
@@ -173,12 +175,14 @@ Validate request:
 }
 ```
 
-Call request:
+Prepare request:
+
+The kernel sends `prepare` before any secret is resolved. The adapter renders the call plan and declares the target that any credential would be used against.
 
 ```json
 {
-  "id": "call-1",
-  "type": "call",
+  "id": "prepare-1",
+  "type": "prepare",
   "connector": "google_maps",
   "operation": "geocode",
   "arguments": { "address": "1600 Amphitheatre Parkway" },
@@ -187,6 +191,48 @@ Call request:
     "method": "GET",
     "path": "/maps/api/geocode/json",
     "query": { "address": "{{address}}" }
+  },
+  "timeout_ms": 30000,
+  "max_response_bytes": 1048576
+}
+```
+
+Prepare response:
+
+```json
+{
+  "id": "prepare-1",
+  "ok": true,
+  "result": {
+    "credential_targets": [
+      { "kind": "host", "host": "maps.googleapis.com" }
+    ],
+    "prepared_config": {
+      "base_url": "https://maps.googleapis.com",
+      "method": "GET",
+      "path": "/maps/api/geocode/json",
+      "query": { "address": "1600 Amphitheatre Parkway" }
+    }
+  }
+}
+```
+
+Arroba checks the declared target against the credential policy. Only then does it resolve the secret and send the call request.
+
+Call request:
+
+```json
+{
+  "id": "call-1",
+  "type": "call",
+  "connector": "google_maps",
+  "operation": "geocode",
+  "arguments": null,
+  "config": {
+    "base_url": "https://maps.googleapis.com",
+    "method": "GET",
+    "path": "/maps/api/geocode/json",
+    "query": { "address": "1600 Amphitheatre Parkway" }
   },
   "credential": {
     "id": "google-maps",
@@ -222,4 +268,13 @@ Failure:
 }
 ```
 
-Adapters are trusted local code. If a connector is granted a credential, Arroba resolves the secret from the vault and passes it to the adapter process, never to the model.
+Adapters are trusted local code. If a connector is granted a credential, Arroba resolves the secret from the vault only after the adapter declares an allowed credential target, and passes the secret to the adapter process, never to the model.
+
+## Built-In Adapter Examples
+
+- HTTP: `examples/connectors/http/`
+- GitHub REST over HTTP: `examples/connectors/github/`
+- GitHub GraphQL: `examples/connectors/graphql/`
+- gRPC: `examples/connectors/grpc/`
+- Postgres: `examples/connectors/postgres/`
+- MySQL: `examples/connectors/mysql/`
