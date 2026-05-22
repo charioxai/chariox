@@ -97,7 +97,7 @@ pub fn on_workflow_prompt_completed(
             app.attachments().list_session_attachment_ids(session_id),
             notice_message,
         );
-        maybe_start_next_queued_workflow_launch(app, session_id);
+        maybe_start_next_queued_workflow_prompt(app, session_id);
         let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
         return Ok(());
     }
@@ -146,7 +146,7 @@ pub fn on_workflow_prompt_completed(
                     "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
                 ),
             );
-            maybe_start_next_queued_workflow_launch(app, session_id);
+            maybe_start_next_queued_workflow_prompt(app, session_id);
             return Ok(());
         }
         Err(error) => return Err(error),
@@ -267,7 +267,7 @@ pub fn on_workflow_prompt_completed(
         workflow_run.status(),
         WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
     ) {
-        maybe_start_next_queued_workflow_launch(app, session_id);
+        maybe_start_next_queued_workflow_prompt(app, session_id);
     }
     Ok(())
 }
@@ -303,7 +303,7 @@ pub fn on_workflow_provider_failure(
         app.attachments().list_session_attachment_ids(session_id),
         format!("Workflow run `{workflow_run_id}` failed after provider turn failure: {message}"),
     );
-    maybe_start_next_queued_workflow_launch(app, session_id);
+    maybe_start_next_queued_workflow_prompt(app, session_id);
     let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
     Ok(())
 }
@@ -340,7 +340,7 @@ pub fn on_workflow_prompt_cancelled(
         app.attachments().list_session_attachment_ids(session_id),
         format!("Workflow run `{}` was stopped.", workflow_run.id()),
     );
-    maybe_start_next_queued_workflow_launch(app, session_id);
+    maybe_start_next_queued_workflow_prompt(app, session_id);
     Ok(())
 }
 
@@ -367,8 +367,8 @@ fn workflow_node_run_has_valid_pending_final_output(
         .unwrap_or(false)
 }
 
-fn maybe_start_next_queued_workflow_launch(app: &mut DaemonApp, session_id: &str) {
-    match app.drain_session_workflow_launch_queue(session_id) {
+fn maybe_start_next_queued_workflow_prompt(app: &mut DaemonApp, session_id: &str) {
+    match app.start_next_queued_workflow_prompt(session_id) {
         Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
             workflow_run,
             workflow,
@@ -386,14 +386,14 @@ fn maybe_start_next_queued_workflow_launch(app: &mut DaemonApp, session_id: &str
                 ),
             );
         }
-        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Queued { .. })) => {}
+        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. })) => {}
         Ok(None) => {}
         Err(error) => {
             app.record_notice(
                 session_id,
                 None,
                 app.attachments().list_session_attachment_ids(session_id),
-                format!("Failed to start queued workflow launch: {error}"),
+                format!("Failed to start queued workflow prompt: {error}"),
             );
         }
     }

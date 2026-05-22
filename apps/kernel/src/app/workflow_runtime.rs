@@ -1,9 +1,8 @@
 use crate::app::{provider_runtime::ProviderProcessTracker, DaemonApp};
 use crate::error::DaemonError;
 use crate::session::{
-    unix_epoch_ms, PromptQueueItem, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource,
-    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun,
-    WorkflowWatchdogTickPlan,
+    unix_epoch_ms, PromptQueueItem, WorkflowDefinition, WorkflowEndpointDefinition,
+    WorkflowQueuedPrompt, WorkflowQueuedPromptSource, WorkflowRun, WorkflowWatchdogTickPlan,
 };
 use std::collections::BTreeSet;
 
@@ -80,20 +79,21 @@ pub enum WorkflowLaunchOutcome {
         workflow: WorkflowDefinition,
         endpoint: WorkflowEndpointDefinition,
     },
-    Queued {
-        queued_launch: QueuedWorkflowLaunch,
+    Enqueued {
+        queued_prompt: WorkflowQueuedPrompt,
         workflow: WorkflowDefinition,
         endpoint: WorkflowEndpointDefinition,
     },
 }
 
 impl DaemonApp {
-    pub fn invoke_workflow_endpoint_with_admission(
+    pub fn enqueue_workflow_prompt_and_maybe_start(
         &mut self,
         session_id: &str,
         workflow_ref: &str,
         endpoint_ref: &str,
         prompt: Option<String>,
+        queue_ref: Option<&str>,
     ) -> Result<WorkflowLaunchOutcome, DaemonError> {
         let workflow = self
             .sessions()
@@ -104,39 +104,34 @@ impl DaemonApp {
             endpoint_ref,
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
-        let admission = {
-            self.sessions_mut().admit_manual_workflow_launch(
-                session_id,
-                workflow.id(),
-                endpoint.id(),
-                prompt.clone(),
-            )?
-        };
-        match admission {
-            WorkflowLaunchAdmission::StartNow => {
-                self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
-                let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
-                    session_id,
-                    workflow.id(),
-                    endpoint.id(),
-                    prompt,
-                )?;
-                WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)?;
-                let workflow_run = self
-                    .sessions()
-                    .resolve_workflow_run_ref(session_id, workflow_run.id())?;
-                Ok(WorkflowLaunchOutcome::Started {
-                    workflow_run,
-                    workflow,
-                    endpoint,
-                })
-            }
-            WorkflowLaunchAdmission::Queued(queued_launch) => Ok(WorkflowLaunchOutcome::Queued {
-                queued_launch,
+        let queued_prompt = self.sessions_mut().enqueue_workflow_prompt(
+            session_id,
+            workflow.id(),
+            endpoint.id(),
+            prompt,
+            queue_ref,
+            WorkflowQueuedPromptSource::Manual,
+            None,
+        )?;
+        if self
+            .sessions()
+            .get_session(session_id)?
+            .has_active_workflow_run()
+        {
+            return Ok(WorkflowLaunchOutcome::Enqueued {
+                queued_prompt,
                 workflow,
                 endpoint,
-            }),
+            });
         }
+        self.start_next_queued_workflow_prompt(session_id)?
+            .ok_or_else(|| DaemonError::WorkflowLaunchRejected {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                message: "workflow prompt was enqueued but no dispatchable queue item was found"
+                    .to_string(),
+            })
     }
 
     pub fn invoke_workflow_endpoint_and_schedule(
@@ -146,18 +141,19 @@ impl DaemonApp {
         endpoint_ref: &str,
         prompt: Option<String>,
     ) -> Result<(WorkflowRun, WorkflowDefinition, WorkflowEndpointDefinition), DaemonError> {
-        match self.invoke_workflow_endpoint_with_admission(
+        match self.enqueue_workflow_prompt_and_maybe_start(
             session_id,
             workflow_ref,
             endpoint_ref,
             prompt,
+            None,
         )? {
             WorkflowLaunchOutcome::Started {
                 workflow_run,
                 workflow,
                 endpoint,
             } => Ok((workflow_run, workflow, endpoint)),
-            WorkflowLaunchOutcome::Queued {
+            WorkflowLaunchOutcome::Enqueued {
                 workflow, endpoint, ..
             } => Err(DaemonError::WorkflowLaunchRejected {
                 session_id: session_id.to_string(),
@@ -168,26 +164,26 @@ impl DaemonApp {
         }
     }
 
-    pub fn drain_session_workflow_launch_queue(
+    pub fn start_next_queued_workflow_prompt(
         &mut self,
         session_id: &str,
     ) -> Result<Option<WorkflowLaunchOutcome>, DaemonError> {
-        let Some(queued_launch) = self
+        let Some(queued_prompt) = self
             .sessions_mut()
-            .dequeue_next_workflow_launch(session_id)?
+            .dequeue_next_workflow_prompt(session_id)?
         else {
             return Ok(None);
         };
-        if let Some(watchdog_id) = queued_launch.watchdog_id() {
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
             let _ = self
                 .sessions_mut()
                 .mark_workflow_watchdog_pending_started(session_id, watchdog_id);
         }
-        let outcome = self.invoke_queued_workflow_launch(session_id, queued_launch.clone());
+        let outcome = self.invoke_queued_workflow_prompt(session_id, queued_prompt.clone());
         match outcome {
             Ok(outcome) => Ok(Some(outcome)),
             Err(error) => {
-                if let Some(watchdog_id) = queued_launch.watchdog_id() {
+                if let Some(watchdog_id) = queued_prompt.watchdog_id() {
                     let _ = self.sessions_mut().mark_workflow_watchdog_failed(
                         session_id,
                         watchdog_id,
@@ -199,8 +195,8 @@ impl DaemonApp {
                     None,
                     self.attachments().list_session_attachment_ids(session_id),
                     format!(
-                        "Queued workflow launch `{}` failed: {}",
-                        queued_launch.id(),
+                        "Queued workflow prompt `{}` failed: {}",
+                        queued_prompt.id(),
                         error
                     ),
                 );
@@ -209,18 +205,18 @@ impl DaemonApp {
         }
     }
 
-    fn invoke_queued_workflow_launch(
+    fn invoke_queued_workflow_prompt(
         &mut self,
         session_id: &str,
-        queued_launch: QueuedWorkflowLaunch,
+        queued_prompt: WorkflowQueuedPrompt,
     ) -> Result<WorkflowLaunchOutcome, DaemonError> {
         let workflow = self
             .sessions()
-            .resolve_workflow_ref(session_id, queued_launch.workflow_id())?;
+            .resolve_workflow_ref(session_id, queued_prompt.workflow_id())?;
         let endpoint = self.sessions().resolve_workflow_endpoint_ref(
             session_id,
-            queued_launch.workflow_id(),
-            queued_launch.endpoint_id(),
+            queued_prompt.workflow_id(),
+            queued_prompt.endpoint_id(),
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
         self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
@@ -228,13 +224,13 @@ impl DaemonApp {
             session_id,
             workflow.id(),
             endpoint.id(),
-            queued_launch.invocation_prompt().map(str::to_string),
+            queued_prompt.prompt().map(str::to_string),
         )?;
         WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)?;
         let workflow_run = self
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
-        if let Some(watchdog_id) = queued_launch.watchdog_id() {
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
             let _ = self.sessions_mut().mark_workflow_watchdog_invoked(
                 session_id,
                 watchdog_id,
@@ -334,19 +330,25 @@ fn invoke_watchdog_workflow_launch(
     app: &mut DaemonApp,
     plan: WorkflowWatchdogTickPlan,
 ) -> Result<(), DaemonError> {
-    match app.invoke_queued_workflow_launch(
+    let queued_prompt = app.sessions_mut().enqueue_workflow_prompt(
         &plan.session_id,
-        QueuedWorkflowLaunch::new(
-            format!("watchdog-launch-{}", plan.watchdog_id),
-            plan.workflow_id.clone(),
-            plan.endpoint_id.clone(),
-            Some(plan.invocation_prompt.clone()),
-            QueuedWorkflowLaunchSource::Watchdog,
-            Some(plan.watchdog_id.clone()),
-        ),
-    ) {
+        &plan.workflow_id,
+        &plan.endpoint_id,
+        Some(plan.invocation_prompt.clone()),
+        None,
+        WorkflowQueuedPromptSource::Watchdog,
+        Some(plan.watchdog_id.clone()),
+    )?;
+    if app
+        .sessions()
+        .get_session(&plan.session_id)?
+        .has_active_workflow_run()
+    {
+        return Ok(());
+    }
+    match app.invoke_queued_workflow_prompt(&plan.session_id, queued_prompt) {
         Ok(WorkflowLaunchOutcome::Started { .. }) => Ok(()),
-        Ok(WorkflowLaunchOutcome::Queued { .. }) => Ok(()),
+        Ok(WorkflowLaunchOutcome::Enqueued { .. }) => Ok(()),
         Err(error) => {
             let _ = app.sessions_mut().mark_workflow_watchdog_failed(
                 &plan.session_id,

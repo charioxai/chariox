@@ -1,8 +1,9 @@
 import type {
-  QueuedWorkflowLaunch,
   WorkflowDefinition,
+  WorkflowPromptQueueDefinition,
   WorkflowPublicationDefinition,
   WorkflowPublicationTrustedSender,
+  WorkflowQueuedPrompt,
   WorkflowRun,
   WorkflowWatchdogDefinition,
 } from "./kernel-types.js"
@@ -83,11 +84,24 @@ export function formatWorkflowWatchdogs(watchdogs: WorkflowWatchdogDefinition[])
   )).join("\n")
 }
 
-export function formatQueuedWorkflowLaunches(queuedLaunches: QueuedWorkflowLaunch[]): string {
-  if (queuedLaunches.length === 0) {
+export function formatWorkflowPromptQueues(
+  queues: WorkflowPromptQueueDefinition[],
+  queuedPrompts: WorkflowQueuedPrompt[] = [],
+): string {
+  if (queues.length === 0) {
+    return "workflow queues unavailable"
+  }
+  return queues.map((queue) => {
+    const depth = queuedPrompts.filter((prompt) => prompt.queue_id === queue.id).length
+    return `${queue.id} (${queue.alias}) priority=${queue.priority} enabled=${String(queue.enabled)} depth=${depth}`
+  }).join("\n")
+}
+
+export function formatWorkflowQueuedPrompts(queuedPrompts: WorkflowQueuedPrompt[]): string {
+  if (queuedPrompts.length === 0) {
     return "workflow queue is empty"
   }
-  return queuedLaunches.map((queued) => (
-    `${queued.id} workflow=${queued.workflow_id} endpoint=${queued.endpoint_id} source=${queued.source}`
+  return queuedPrompts.map((queued) => (
+    `${queued.id} queue=${queued.queue_id} endpoint=${queued.endpoint_id} source=${queued.source} status=${queued.status}`
   )).join("\n")
 }

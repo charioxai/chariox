@@ -19,7 +19,9 @@ impl SessionService {
             next_workflow_publication_number: 0,
             next_workflow_publication_pairing_code_number: 0,
             next_workflow_publication_sender_number: 0,
-            next_queued_workflow_launch_number: 0,
+            next_workflow_prompt_queue_number: 0,
+            next_workflow_queued_prompt_number: 0,
+            max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
             next_workspace_link_number: 0,
         }
     }
@@ -394,6 +396,18 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        if !session.workflows().is_empty() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: session
+                    .workflows()
+                    .first()
+                    .map(|workflow| workflow.id().to_string())
+                    .unwrap_or_else(|| "workflow".to_string()),
+                reference: "workflow".to_string(),
+                message: "sessions support exactly one workflow",
+            });
+        }
         Ok(session.create_workflow(workflow))
     }
 
@@ -1000,25 +1014,59 @@ impl SessionService {
         })
     }
 
-    pub fn resolve_queued_workflow_launch_ref(
+    pub fn resolve_workflow_prompt_queue_ref(
+        &self,
+        session_id: &str,
+        queue_ref: &str,
+    ) -> Result<String, DaemonError> {
+        let normalized_ref = queue_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        if let Some(queue) = session
+            .workflow_prompt_queues()
+            .iter()
+            .find(|queue| queue.id() == normalized_ref || queue.alias() == normalized_ref)
+        {
+            return Ok(queue.id().to_string());
+        }
+        let matches = session
+            .workflow_prompt_queues()
+            .iter()
+            .filter(|queue| {
+                queue.id().starts_with(&normalized_ref)
+                    || queue.alias().starts_with(&normalized_ref)
+            })
+            .map(|queue| queue.id().to_string())
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            return Ok(matches[0].clone());
+        }
+        Err(DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: normalized_ref.clone(),
+            reference: queue_ref.to_string(),
+            message: "workflow prompt queue was not found",
+        })
+    }
+
+    pub fn resolve_queued_workflow_prompt_ref(
         &self,
         session_id: &str,
         queue_item_ref: &str,
     ) -> Result<String, DaemonError> {
         let normalized_ref = queue_item_ref.trim().to_lowercase();
         let session = self.get_session(session_id)?;
-        if let Some(queued_launch) = session
-            .queued_workflow_launches()
+        if let Some(queued_prompt) = session
+            .workflow_queued_prompts()
             .iter()
-            .find(|queued_launch| queued_launch.id() == normalized_ref)
+            .find(|queued_prompt| queued_prompt.id() == normalized_ref)
         {
-            return Ok(queued_launch.id().to_string());
+            return Ok(queued_prompt.id().to_string());
         }
         let id_matches = session
-            .queued_workflow_launches()
+            .workflow_queued_prompts()
             .iter()
-            .filter(|queued_launch| queued_launch.id().starts_with(&normalized_ref))
-            .map(|queued_launch| queued_launch.id().to_string())
+            .filter(|queued_prompt| queued_prompt.id().starts_with(&normalized_ref))
+            .map(|queued_prompt| queued_prompt.id().to_string())
             .collect::<Vec<_>>();
         if id_matches.len() == 1 {
             return Ok(id_matches[0].clone());
@@ -1027,7 +1075,7 @@ impl SessionService {
             session_id: session_id.to_string(),
             workflow_id: normalized_ref.clone(),
             reference: queue_item_ref.to_string(),
-            message: "queued workflow launch was not found",
+            message: "queued workflow prompt was not found",
         })
     }
 }

@@ -117,11 +117,11 @@ export type RuntimeSession = {
   max_agents: number
   agents: AgentInstance[]
   config_state: SessionConfigState
-  workflow_launch_policy?: "reject" | "queue" | null
   workflows?: WorkflowDefinition[]
   workflow_publications?: WorkflowPublicationDefinition[]
   workflow_runs?: WorkflowRun[]
-  queued_workflow_launches?: QueuedWorkflowLaunch[]
+  workflow_prompt_queues?: WorkflowPromptQueueDefinition[]
+  workflow_queued_prompts?: WorkflowQueuedPrompt[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
@@ -828,7 +828,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 43
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 44
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -1285,14 +1285,28 @@ export type WorkflowWatchdogDefinition = {
   updated_at_ms: number
 }
 
-export type QueuedWorkflowLaunch = {
+export type WorkflowPromptQueueDefinition = {
   id: string
+  alias: string
+  priority: number
+  enabled: boolean
+  created_at_ms: number
+  updated_at_ms: number
+}
+
+export type WorkflowQueuedPrompt = {
+  id: string
+  queue_id: string
   workflow_id: string
   endpoint_id: string
-  invocation_prompt?: string | null
+  prompt?: string | null
   source: "manual" | "watchdog"
   watchdog_id?: string | null
-  queued_at_ms: number
+  status: "queued" | "dispatching" | "running" | "completed" | "cancelled"
+  created_at_ms: number
+  updated_at_ms: number
+  dispatched_at_ms?: number | null
+  workflow_run_id?: string | null
 }
 
 export type WorkflowNodeDefinition = {

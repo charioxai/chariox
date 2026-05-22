@@ -199,7 +199,6 @@ async function main() {
       'workflow flush-context $workflow true',
       'workflow run-output-schema $workflow none',
       'workflow intermediate-output-schema $workflow none',
-      'workflow launch-policy queue',
       'workflow max-turns off',
       'workflow watchdog list',
       'workflow watchdog add $workflow shell-entry-2 every 30s skip shell-drill-watchdog',

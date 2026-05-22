@@ -4,29 +4,6 @@ import test from "node:test"
 import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 import { createWorkflowSettingsController } from "./workflow-settings-controller.js"
 
-test("workflow settings controller updates launch policy", async () => {
-  const refreshedSessions: RuntimeSession[] = []
-  const nextSession = session("session-updated")
-  const harness = createHarness({
-    SetWorkflowLaunchPolicy: {
-      WorkflowLaunchPolicyUpdated: {
-        session: nextSession,
-      },
-    },
-  }, refreshedSessions)
-
-  const payload = await harness.controller.setWorkflowLaunchPolicy("queue")
-
-  assert.equal(payload.session, nextSession)
-  assert.deepEqual(refreshedSessions, [nextSession])
-  assert.deepEqual(harness.requests.at(-1), {
-    SetWorkflowLaunchPolicy: {
-      session_id: "session-1",
-      policy: "queue",
-    },
-  })
-})
-
 test("workflow settings controller updates workflow flush context", async () => {
   const refreshedSessions: RuntimeSession[] = []
   const nextSession = session("session-updated")

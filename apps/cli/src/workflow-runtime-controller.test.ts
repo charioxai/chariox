@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type {
-  QueuedWorkflowLaunch,
+  WorkflowQueuedPrompt,
   RuntimeSession,
   WorkflowDefinition,
   WorkflowEndpointDefinition,
@@ -34,33 +34,48 @@ test("workflow runtime controller invokes endpoints and refreshes returned sessi
       session_id: "session-1",
       workflow_ref: "workflow-1",
       endpoint_ref: "endpoint-1",
+      queue_ref: null,
       prompt: "ship it",
     },
   })
 })
 
-test("workflow runtime controller lists and removes queued launches", async () => {
+test("workflow runtime controller lists and removes queued prompts", async () => {
   const refreshedSessions: RuntimeSession[] = []
-  const queueItem = queuedLaunch("queue-1")
+  const queueItem = queuedPrompt("queue-1")
+  const queue = {
+    id: "default",
+    alias: "default",
+    priority: 0,
+    enabled: true,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  }
   const nextSession = session("session-updated")
   const harness = createHarness({
-    ListQueuedWorkflowLaunches: {
-      QueuedWorkflowLaunchesListed: {
-        queued_launches: [queueItem],
+    ListWorkflowPromptQueues: {
+      WorkflowPromptQueuesListed: {
+        queues: [queue],
       },
     },
-    RemoveQueuedWorkflowLaunch: {
-      QueuedWorkflowLaunchRemoved: {
-        queued_launch: queueItem,
+    ListQueuedWorkflowPrompts: {
+      QueuedWorkflowPromptsListed: {
+        queued_prompts: [queueItem],
+      },
+    },
+    RemoveQueuedWorkflowPrompt: {
+      QueuedWorkflowPromptRemoved: {
+        queued_prompt: queueItem,
         session: nextSession,
       },
     },
   }, refreshedSessions)
 
-  assert.deepEqual(await harness.controller.listQueuedWorkflowLaunches(), [queueItem])
-  const payload = await harness.controller.removeQueuedWorkflowLaunch("queue-1")
+  assert.deepEqual(await harness.controller.listWorkflowPromptQueues(), [queue])
+  assert.deepEqual(await harness.controller.listQueuedWorkflowPrompts(), [queueItem])
+  const payload = await harness.controller.removeQueuedWorkflowPrompt("queue-1")
 
-  assert.equal(payload.queued_launch.id, "queue-1")
+  assert.equal(payload.queued_prompt.id, "queue-1")
   assert.deepEqual(refreshedSessions, [nextSession])
 })
 
@@ -135,12 +150,16 @@ function workflowRun(id: string): WorkflowRun {
   } as unknown as WorkflowRun
 }
 
-function queuedLaunch(id: string): QueuedWorkflowLaunch {
+function queuedPrompt(id: string): WorkflowQueuedPrompt {
   return {
     id,
+    queue_id: "default",
     workflow_id: "workflow-1",
     endpoint_id: "endpoint-1",
+    prompt: "queued prompt",
     source: "manual",
-    queued_at_ms: 1,
+    status: "queued",
+    created_at_ms: 1,
+    updated_at_ms: 1,
   }
 }

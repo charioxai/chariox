@@ -350,7 +350,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Trimmed router-side session snapshots for non-state terminal control commands: `PollRuntimeNotices` and `ResizeTerminal` no longer perform post-response session projection snapshots, while `PumpTerminalOutput` still does because provider output pumping can settle prompt state.
 - Added a TTL-bound provider-catalog projection. Warmed `GetProviderCatalog` reads now return without taking the compatibility app lock, and provider logout/configuration changes invalidate the projection.
 - Fixed projection correctness gaps: provider-process projection now stores a canonical unfiltered snapshot and refreshes after teardown, warmed OpenCode `GetProviderRun` no longer bypasses selection-sync side effects, relay reconfiguration invalidates provider catalog projection state, and agent lanes are removed on agent/session cleanup.
-- Added warmed session-projection reads for agent and workflow inspection: `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowLaunches` can now return without taking the compatibility app lock once the session projection is warm.
+- Added warmed session-projection reads for agent and workflow inspection: `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowPrompts` can now return without taking the compatibility app lock once the session projection is warm.
 - Added transport health projection counters for kernel websocket pressure: active connections/subscriptions, incoming requests, emitted events, replay gaps, inbound overload rejections, outgoing queue overflows, and slow-consumer closes are now exposed through `GetDaemonHealth`.
 - Added a workspace coordination health baseline: active worktree claims and same-workspace worktree collisions are now reported from the warmed session projection through `GetDaemonHealth`.
 - Added initial `WorkspaceCoordinator` enforcement for explicit file-writing capabilities. `EditFile` and `StoreTransferredFile` now acquire scoped worktree write claims, reject overlapping same-workspace/worktree writes with a retryable workspace-claim conflict, publish active operation claims through daemon health, and release claims on operation completion.
@@ -798,7 +798,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 workflow command ownership update
 
-- Cut workflow command mutation over to the runtime-state owner: workflow definition, endpoint, graph, schema, launch-policy, watchdog, queued-launch, validation, and ack commands now mutate cloneable session/workflow stores directly from `CompatibilityRuntimeState`.
+- Cut workflow command mutation over to the runtime-state owner: workflow definition, endpoint, graph, schema, watchdog, queued-prompt, validation, and ack commands now mutate cloneable session/workflow stores directly from `CompatibilityRuntimeState`.
 - Deleted the transitional `KernelWorkflowService` module and removed `WorkflowRuntimeStore`'s per-method app-backed service delegation.
 - Kept invoke/cancel/resume workflow progression behind explicit runtime-state scheduler ports while the scheduler internals remain the remaining point-5 work before transport/relay cleanup.
 
@@ -810,7 +810,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 workflow progression ownership closure update
 
-- Moved workflow prompt completion scheduling, invoke admission/start, cancel cleanup, queued-launch start, provider-run ensure, and blocked-claim retry behavior onto owned runtime-state operations for the production local workflow path.
+- Moved workflow prompt completion scheduling, invoke admission/start, cancel cleanup, queued-prompt start, provider-run ensure, and blocked-claim retry behavior onto owned runtime-state operations for the production local workflow path.
 - Preserved workflow join-node readiness by preventing incomplete joins from being dispatched while still retrying the blocked sibling branch after workspace-claim release.
 - Left the old app workflow-runtime helpers only as compatibility/test-facing surfaces; router/workflow-lane invoke and cancel no longer use the app-backed workflow launch or cancellation helpers.
 

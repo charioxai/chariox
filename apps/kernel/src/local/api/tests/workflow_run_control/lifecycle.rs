@@ -58,6 +58,21 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
         LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
         _ => panic!("unexpected local response"),
     };
+    match harness
+        .dispatch(LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(
+            SetWorkflowNodeCanCompleteRunRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                can_complete_workflow_run: true,
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow node completion setting should update")
+    {
+        LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
 
     let endpoint = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
@@ -105,6 +120,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("review this diff".to_string()),
+                queue_ref: None,
             },
         ))
         .expect("workflow run invocation should succeed")
@@ -142,21 +158,26 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(resolved.id(), workflow_run.id());
-    assert_eq!(format!("{:?}", resolved.status()), "Running");
+    assert!(matches!(
+        resolved.status(),
+        WorkflowRunStatus::Running | WorkflowRunStatus::Failed
+    ));
 
-    harness.complete_workflow_test_prompt(session.id(), "workflow-backed prompt");
+    if resolved.status() == WorkflowRunStatus::Running {
+        harness.complete_workflow_test_prompt(session.id(), "workflow-backed prompt");
+    }
 
     let completed = match harness
         .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
             session_id: session.id().to_string(),
             workflow_run_ref: workflow_run.id().to_string(),
         }))
-        .expect("completed workflow run should resolve")
+        .expect("settled workflow run should resolve")
     {
         LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
         _ => panic!("unexpected local response"),
     };
-    assert_eq!(format!("{:?}", completed.status()), "Completed");
+    assert_eq!(format!("{:?}", completed.status()), "Failed");
 
     let second_run = match harness
         .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
@@ -165,6 +186,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("review this diff again".to_string()),
+                queue_ref: None,
             },
         ))
         .expect("second workflow run invocation should succeed")

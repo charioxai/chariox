@@ -78,44 +78,113 @@ impl KernelRuntimeOwnedState {
         Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
     }
 
-    pub(super) fn workflow_list_queued_launches(
+    pub(super) fn workflow_list_prompt_queues(
         &self,
-        request: crate::local::ListQueuedWorkflowLaunchesRequest,
+        request: crate::local::ListWorkflowPromptQueuesRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
-            queued_launches: self
+        Ok(LocalDaemonResponse::WorkflowPromptQueuesListed {
+            queues: self
                 .session_store
                 .read()
-                .list_queued_workflow_launches(&request.session_id)?,
+                .list_workflow_prompt_queues(&request.session_id)?,
         })
     }
 
-    pub(super) fn workflow_remove_queued_launch(
+    pub(super) fn workflow_create_prompt_queue(
         &self,
-        request: crate::local::RemoveQueuedWorkflowLaunchRequest,
+        request: crate::local::CreateWorkflowPromptQueueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let queued_launch = self
+        let queue = self.session_store.write().create_workflow_prompt_queue(
+            &request.session_id,
+            request.alias,
+            request.priority,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowPromptQueueCreated { queue, session })
+    }
+
+    pub(super) fn workflow_update_prompt_queue(
+        &self,
+        request: crate::local::UpdateWorkflowPromptQueueRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queue = self.session_store.write().update_workflow_prompt_queue(
+            &request.session_id,
+            &request.queue_ref,
+            request.alias,
+            request.priority,
+            request.enabled,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowPromptQueueUpdated { queue, session })
+    }
+
+    pub(super) fn workflow_remove_prompt_queue(
+        &self,
+        request: crate::local::RemoveWorkflowPromptQueueRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queue = self
             .session_store
             .write()
-            .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
+            .remove_workflow_prompt_queue(&request.session_id, &request.queue_ref)?;
         let session = self.workflow_session(&request.session_id)?;
-        Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
-            queued_launch,
+        Ok(LocalDaemonResponse::WorkflowPromptQueueRemoved { queue, session })
+    }
+
+    pub(super) fn workflow_list_queued_prompts(
+        &self,
+        request: crate::local::ListQueuedWorkflowPromptsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::QueuedWorkflowPromptsListed {
+            queued_prompts: self
+                .session_store
+                .read()
+                .list_queued_workflow_prompts(&request.session_id)?,
+        })
+    }
+
+    pub(super) fn workflow_update_queued_prompt(
+        &self,
+        request: crate::local::UpdateQueuedWorkflowPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_prompt = self.session_store.write().update_queued_workflow_prompt(
+            &request.session_id,
+            &request.queue_item_ref,
+            request.prompt,
+            request.queue_ref.as_deref(),
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::QueuedWorkflowPromptUpdated {
+            queued_prompt,
             session,
         })
     }
 
-    pub(super) fn workflow_clear_queued_launches(
+    pub(super) fn workflow_remove_queued_prompt(
         &self,
-        request: crate::local::ClearQueuedWorkflowLaunchesRequest,
+        request: crate::local::RemoveQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let queued_launches = self
+        let queued_prompt = self
             .session_store
             .write()
-            .clear_queued_workflow_launches(&request.session_id)?;
+            .remove_queued_workflow_prompt(&request.session_id, &request.queue_item_ref)?;
         let session = self.workflow_session(&request.session_id)?;
-        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
-            queued_launches,
+        Ok(LocalDaemonResponse::QueuedWorkflowPromptRemoved {
+            queued_prompt,
+            session,
+        })
+    }
+
+    pub(super) fn workflow_clear_prompt_queue(
+        &self,
+        request: crate::local::ClearWorkflowPromptQueueRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_prompts = self
+            .session_store
+            .write()
+            .clear_workflow_queue(&request.session_id, &request.queue_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowPromptQueueCleared {
+            queued_prompts,
             session,
         })
     }

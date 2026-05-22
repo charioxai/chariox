@@ -251,6 +251,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
             workflow_ref: workflow_id.clone(),
             endpoint_ref: endpoint_id,
             prompt: Some("stream workflow run update".to_string()),
+            queue_ref: None,
         }),
     )
     .await;

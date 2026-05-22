@@ -2,7 +2,6 @@ import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 import {
   setWorkflowFlushContextRequest,
   setWorkflowIntermediateOutputSchemaRequest,
-  setWorkflowLaunchPolicyRequest,
   setWorkflowRunOutputSchemaRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -14,18 +13,6 @@ type WorkflowSettingsControllerDeps = {
 }
 
 export function createWorkflowSettingsController(deps: WorkflowSettingsControllerDeps) {
-  const setWorkflowLaunchPolicy = async (policy: "reject" | "queue") => {
-    const response = await deps.sendRequest(
-      setWorkflowLaunchPolicyRequest(deps.sessionId(), policy),
-    )
-    const payload = expectVariant<{ session: RuntimeSession }>(
-      response,
-      "WorkflowLaunchPolicyUpdated",
-    )
-    deps.applyWorkflowSessionRefresh(payload.session)
-    return payload
-  }
-
   const setWorkflowFlushContext = async (
     workflowRef: string,
     flushAgentContextBeforeRun: boolean,
@@ -83,6 +70,5 @@ export function createWorkflowSettingsController(deps: WorkflowSettingsControlle
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     setWorkflowIntermediateOutputSchema,
-    setWorkflowLaunchPolicy,
   }
 }

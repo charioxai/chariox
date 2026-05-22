@@ -291,16 +291,28 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => Some(
+        LocalDaemonRequest::ListWorkflowPromptQueues(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => Some(
+        LocalDaemonRequest::CreateWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => Some(
+        LocalDaemonRequest::UpdateWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => Some(
+        LocalDaemonRequest::RemoveWorkflowPromptQueue(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListQueuedWorkflowPrompts(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateQueuedWorkflowPrompt(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveQueuedWorkflowPrompt(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         _ => None,

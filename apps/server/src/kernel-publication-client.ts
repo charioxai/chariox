@@ -36,8 +36,8 @@ export async function invokeKernelWorkflow(
       publication.endpoint_ref,
       prompt,
     ))
-    if ("WorkflowRunQueued" in response) {
-      return { accepted: true, queued: true, response: response.WorkflowRunQueued }
+    if ("WorkflowPromptEnqueued" in response) {
+      return { accepted: true, queued: true, response: response.WorkflowPromptEnqueued }
     }
     const invoked = response.WorkflowRunInvoked as { workflow_run: WorkflowRun } | undefined
     if (!invoked?.workflow_run) {

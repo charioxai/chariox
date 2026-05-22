@@ -14,15 +14,15 @@ use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
 };
 use super::{
-    unix_epoch_ms, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, QueuedWorkflowLaunch,
-    QueuedWorkflowLaunchSource, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
-    SessionStatus, SessionStore, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
-    WorkflowFailureKind, WorkflowHandoffPayload, WorkflowHandoffValidationPolicy,
-    WorkflowLaunchPolicy, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
-    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowPublicationDefinition,
-    WorkflowPublicationPairingCode, WorkflowPublicationSenderCredential,
-    WorkflowPublicationTrustedSender, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    unix_epoch_ms, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeSession,
+    SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
+    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
+    WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowPublicationPairingCode,
+    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowQueuedPrompt,
+    WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
     WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
     WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
     DEFAULT_LOCAL_USER_ID,
@@ -83,12 +83,6 @@ pub struct WorkflowWatchdogTickPlan {
     pub invocation_prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkflowLaunchAdmission {
-    StartNow,
-    Queued(QueuedWorkflowLaunch),
-}
-
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
@@ -106,7 +100,9 @@ pub struct SessionService {
     next_workflow_publication_number: u64,
     next_workflow_publication_pairing_code_number: u64,
     next_workflow_publication_sender_number: u64,
-    next_queued_workflow_launch_number: u64,
+    next_workflow_prompt_queue_number: u64,
+    next_workflow_queued_prompt_number: u64,
+    max_workflow_queues_per_workflow: Option<usize>,
     next_workspace_link_number: u64,
 }
 
@@ -124,5 +120,6 @@ pub use helpers::classify_workflow_failure_kind;
 use helpers::{
     collect_ready_workflow_dispatches, describe_session_match, normalize_session_alias,
     normalize_workflow_alias, normalize_workflow_endpoint_alias,
-    normalize_workflow_publication_alias, validate_workflow_edge_handoff,
+    normalize_workflow_publication_alias, normalize_workflow_queue_alias,
+    validate_workflow_edge_handoff,
 };

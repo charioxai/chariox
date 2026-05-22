@@ -54,13 +54,16 @@ test("workflow invoke command queues launch when the runtime reports an active r
         workflow: workflow({ id: workflowRef }),
         endpoint: endpoint({ id: endpointRef }),
         session: session({ id: "session-2" }),
-        queued_launch: {
+        queued_prompt: {
           id: "queue-1",
+          queue_id: "default",
           workflow_id: workflowRef,
           endpoint_id: endpointRef,
-          invocation_prompt: prompt ?? null,
+          prompt: prompt ?? null,
           source: "manual",
-          queued_at_ms: 1,
+          status: "queued",
+          created_at_ms: 1,
+          updated_at_ms: 1,
         },
       }
     },
@@ -74,7 +77,7 @@ test("workflow invoke command queues launch when the runtime reports an active r
     "upsert:selected-workflow",
     "select:selected-workflow",
     "show",
-    "footer:info:queued workflow launch queue-1; active workflow run in session",
+    "footer:info:queued workflow prompt queue-1",
   ])
 })
 

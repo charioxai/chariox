@@ -1,63 +1,57 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { QueuedWorkflowLaunch, RuntimeSession } from "./cli-types.js"
+import type { RuntimeSession, WorkflowPromptQueueDefinition, WorkflowQueuedPrompt } from "./cli-types.js"
 import {
-  formatQueuedWorkflowLaunch,
+  formatWorkflowQueuedPrompt,
   handleWorkflowQueueCommand,
   type WorkflowQueueCommandDeps,
 } from "./workflow-queue-command-handlers.js"
 
-test("workflow queue command lists queued launches", async () => {
+test("workflow queue command lists queues and queued prompts", async () => {
   const harness = createHarness({
-    listQueuedWorkflowLaunches: async () => [
-      queuedLaunch({
-        id: "queue-1",
-        invocation_prompt: "x".repeat(60),
-        watchdog_id: "watchdog-1",
-      }),
-    ],
+    listWorkflowPromptQueues: async () => [queue()],
+    listQueuedWorkflowPrompts: async () => [queuedPrompt({ prompt: "x".repeat(60) })],
   })
 
   await handleWorkflowQueueCommand(harness.deps, ["queue", "list"])
 
-  assert.deepEqual(harness.calls, [
-    'footer:info:workflow queue: queue-1 [manual] workflow=workflow-1 endpoint=endpoint-1 watchdog=watchdog-1 queued_at=10 prompt="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."',
-  ])
+  assert.match(harness.calls.at(-1) ?? "", /workflow queues: default\(default\) priority=0 depth=1/)
+  assert.match(harness.calls.at(-1) ?? "", /prompts: prompt-1/)
 })
 
-test("workflow queue command flushes and applies the returned session", async () => {
+test("workflow queue command clears and applies the returned session", async () => {
   const session = runtimeSession({ id: "session-next" })
   const harness = createHarness({
-    clearQueuedWorkflowLaunches: async () => ({
-      queued_launches: [queuedLaunch({ id: "queue-1" }), queuedLaunch({ id: "queue-2" })],
+    clearWorkflowPromptQueue: async () => ({
+      queued_prompts: [queuedPrompt({ id: "prompt-1" }), queuedPrompt({ id: "prompt-2" })],
       session,
     }),
   })
 
-  await handleWorkflowQueueCommand(harness.deps, ["queue", "flush"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "clear"])
 
   assert.deepEqual(harness.calls, [
     "session:session-next",
-    "footer:info:cleared 2 queued workflow launches",
+    "footer:info:cleared 2 queued workflow prompts from default",
   ])
 })
 
-test("workflow queue command removes a queued launch and reports missing runtime support", async () => {
+test("workflow queue command removes a queued prompt and reports missing runtime support", async () => {
   const session = runtimeSession({ id: "session-next" })
   const harness = createHarness({
-    removeQueuedWorkflowLaunch: async (queueItemRef) => ({
-      queued_launch: queuedLaunch({ id: queueItemRef }),
+    removeQueuedWorkflowPrompt: async (queueItemRef: string) => ({
+      queued_prompt: queuedPrompt({ id: queueItemRef }),
       session,
     }),
   })
 
-  await handleWorkflowQueueCommand(harness.deps, ["queue", "remove", "queue-1"])
-  await handleWorkflowQueueCommand(createHarness({}).deps, ["queue", "remove", "queue-1"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "remove", "prompt-1"])
+  await handleWorkflowQueueCommand(createHarness({}).deps, ["queue", "remove", "prompt-1"])
 
   assert.deepEqual(harness.calls, [
     "session:session-next",
-    "footer:info:removed queued workflow launch queue-1",
+    "footer:info:removed queued workflow prompt prompt-1",
   ])
 })
 
@@ -69,14 +63,14 @@ test("workflow queue command validates action usage", async () => {
 
   assert.deepEqual(harness.calls, [
     "footer:error:usage: /workflow queue remove <queue-item-ref>",
-    "footer:error:usage: /workflow queue [list|flush|remove <queue-item-ref>]",
+    "footer:error:usage: /workflow queue [list|create|rename|priority|edit|move|remove|clear]",
   ])
 })
 
-test("formatQueuedWorkflowLaunch omits empty optional fields", () => {
+test("formatWorkflowQueuedPrompt omits empty optional fields", () => {
   assert.equal(
-    formatQueuedWorkflowLaunch(queuedLaunch({ source: "watchdog", invocation_prompt: "", watchdog_id: null })),
-    "queue-1 [watchdog] workflow=workflow-1 endpoint=endpoint-1 queued_at=10",
+    formatWorkflowQueuedPrompt(queuedPrompt({ source: "watchdog", prompt: "", watchdog_id: null })),
+    "prompt-1 [watchdog] queue=default endpoint=endpoint-1 status=queued",
   )
 })
 
@@ -94,14 +88,29 @@ function createHarness(overrides: Partial<WorkflowQueueCommandDeps>) {
   return { calls, deps }
 }
 
-function queuedLaunch(overrides: Partial<QueuedWorkflowLaunch> = {}): QueuedWorkflowLaunch {
+function queue(overrides: Partial<WorkflowPromptQueueDefinition> = {}): WorkflowPromptQueueDefinition {
   return {
-    id: "queue-1",
+    id: "default",
+    alias: "default",
+    priority: 0,
+    enabled: true,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+    ...overrides,
+  }
+}
+
+function queuedPrompt(overrides: Partial<WorkflowQueuedPrompt> = {}): WorkflowQueuedPrompt {
+  return {
+    id: "prompt-1",
+    queue_id: "default",
     workflow_id: "workflow-1",
     endpoint_id: "endpoint-1",
-    invocation_prompt: null,
+    prompt: null,
     source: "manual",
-    queued_at_ms: 10,
+    status: "queued",
+    created_at_ms: 10,
+    updated_at_ms: 10,
     ...overrides,
   }
 }

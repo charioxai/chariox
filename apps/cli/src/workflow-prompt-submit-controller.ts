@@ -1,4 +1,4 @@
-import type { QueuedWorkflowLaunch, WorkflowRun } from "./cli-types.js"
+import type { WorkflowQueuedPrompt, WorkflowRun } from "./cli-types.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import {
@@ -9,7 +9,7 @@ import {
 
 type WorkflowEndpointInvokePayload =
   | { workflow_run: WorkflowRun }
-  | { queued_launch: QueuedWorkflowLaunch }
+  | { queued_prompt: WorkflowQueuedPrompt }
 
 export type WorkflowPromptSubmitControllerDeps = {
   getWorkflowPromptState: () => WorkflowPromptState
@@ -61,7 +61,7 @@ export function createWorkflowPromptSubmitController(
             "info",
           )
         } else {
-          deps.flashFooter(`queued workflow launch ${payload.queued_launch.id}`, "info")
+          deps.flashFooter(`queued workflow prompt ${payload.queued_prompt.id}`, "info")
         }
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       } catch (error) {

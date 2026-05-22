@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 43;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 44;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -254,10 +254,14 @@ pub enum LocalDaemonRequest {
     SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
     SetWorkflowRunOutputSchema(SetWorkflowRunOutputSchemaRequest),
     SetWorkflowIntermediateOutputSchema(SetWorkflowIntermediateOutputSchemaRequest),
-    SetWorkflowLaunchPolicy(SetWorkflowLaunchPolicyRequest),
-    ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
-    RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
-    ClearQueuedWorkflowLaunches(ClearQueuedWorkflowLaunchesRequest),
+    ListWorkflowPromptQueues(ListWorkflowPromptQueuesRequest),
+    CreateWorkflowPromptQueue(CreateWorkflowPromptQueueRequest),
+    UpdateWorkflowPromptQueue(UpdateWorkflowPromptQueueRequest),
+    RemoveWorkflowPromptQueue(RemoveWorkflowPromptQueueRequest),
+    ListQueuedWorkflowPrompts(ListQueuedWorkflowPromptsRequest),
+    UpdateQueuedWorkflowPrompt(UpdateQueuedWorkflowPromptRequest),
+    RemoveQueuedWorkflowPrompt(RemoveQueuedWorkflowPromptRequest),
+    ClearWorkflowPromptQueue(ClearWorkflowPromptQueueRequest),
     ValidateWorkflowHandoff(ValidateWorkflowHandoffRequest),
     AckWorkflowTurn(AckWorkflowTurnRequest),
 }
@@ -920,8 +924,8 @@ pub enum LocalDaemonResponse {
         endpoint: WorkflowEndpointDefinition,
         session: RuntimeSession,
     },
-    WorkflowRunQueued {
-        queued_launch: QueuedWorkflowLaunch,
+    WorkflowPromptEnqueued {
+        queued_prompt: WorkflowQueuedPrompt,
         workflow: WorkflowDefinition,
         endpoint: WorkflowEndpointDefinition,
         session: RuntimeSession,
@@ -969,18 +973,34 @@ pub enum LocalDaemonResponse {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
-    WorkflowLaunchPolicyUpdated {
+    WorkflowPromptQueuesListed {
+        queues: Vec<WorkflowPromptQueueDefinition>,
+    },
+    WorkflowPromptQueueCreated {
+        queue: WorkflowPromptQueueDefinition,
         session: RuntimeSession,
     },
-    QueuedWorkflowLaunchesListed {
-        queued_launches: Vec<QueuedWorkflowLaunch>,
-    },
-    QueuedWorkflowLaunchRemoved {
-        queued_launch: QueuedWorkflowLaunch,
+    WorkflowPromptQueueUpdated {
+        queue: WorkflowPromptQueueDefinition,
         session: RuntimeSession,
     },
-    QueuedWorkflowLaunchesCleared {
-        queued_launches: Vec<QueuedWorkflowLaunch>,
+    WorkflowPromptQueueRemoved {
+        queue: WorkflowPromptQueueDefinition,
+        session: RuntimeSession,
+    },
+    QueuedWorkflowPromptsListed {
+        queued_prompts: Vec<WorkflowQueuedPrompt>,
+    },
+    QueuedWorkflowPromptUpdated {
+        queued_prompt: WorkflowQueuedPrompt,
+        session: RuntimeSession,
+    },
+    QueuedWorkflowPromptRemoved {
+        queued_prompt: WorkflowQueuedPrompt,
+        session: RuntimeSession,
+    },
+    WorkflowPromptQueueCleared {
+        queued_prompts: Vec<WorkflowQueuedPrompt>,
         session: RuntimeSession,
     },
     WorkflowHandoffValidated {

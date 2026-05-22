@@ -244,7 +244,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
         | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
-        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
+        | LocalDaemonResponse::WorkflowPromptEnqueued { session, .. }
         | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
         | LocalDaemonResponse::WorkflowRunResumed { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
@@ -253,9 +253,12 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowPromptUpdated { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => vec![session.clone()],
         _ => Vec::new(),
     }

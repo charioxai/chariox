@@ -98,6 +98,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
         entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
         entry("kernel.runtime_mcp_port", "port", &[], true, true, "restart_required", "boot", "Runtime MCP bind port."),
+        entry("workflow.max_queues_per_workflow", "u32", &[], true, true, "restart_required", "boot", "Maximum number of prompt queues allowed for one workflow."),
         entry("credential_vault.service", "string", &[], true, false, "none", "live", "OS keychain service namespace for vault-backed credentials."),
         entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),
     ]

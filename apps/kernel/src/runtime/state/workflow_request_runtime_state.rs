@@ -164,11 +164,6 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
-                let result = owned.workflow_set_launch_policy(request);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
             LocalDaemonRequest::ListWorkflowRuns(request) => {
                 (owned.workflow_list_runs(request), None)
             }
@@ -191,16 +186,39 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
-                (owned.workflow_list_queued_launches(request), None)
+            LocalDaemonRequest::ListWorkflowPromptQueues(request) => {
+                (owned.workflow_list_prompt_queues(request), None)
             }
-            LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => {
-                let result = owned.workflow_remove_queued_launch(request);
+            LocalDaemonRequest::CreateWorkflowPromptQueue(request) => {
+                let result = owned.workflow_create_prompt_queue(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
-                let result = owned.workflow_clear_queued_launches(request);
+            LocalDaemonRequest::UpdateWorkflowPromptQueue(request) => {
+                let result = owned.workflow_update_prompt_queue(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveWorkflowPromptQueue(request) => {
+                let result = owned.workflow_remove_prompt_queue(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListQueuedWorkflowPrompts(request) => {
+                (owned.workflow_list_queued_prompts(request), None)
+            }
+            LocalDaemonRequest::UpdateQueuedWorkflowPrompt(request) => {
+                let result = owned.workflow_update_queued_prompt(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveQueuedWorkflowPrompt(request) => {
+                let result = owned.workflow_remove_queued_prompt(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ClearWorkflowPromptQueue(request) => {
+                let result = owned.workflow_clear_prompt_queue(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -271,7 +289,7 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
         | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
-        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
+        | LocalDaemonResponse::WorkflowPromptEnqueued { session, .. }
         | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
         | LocalDaemonResponse::WorkflowRunResumed { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
@@ -280,9 +298,12 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
         | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowPromptUpdated { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
         _ => None,
     }

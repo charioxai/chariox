@@ -164,8 +164,8 @@ impl SessionService {
             .map(|s| s.id().to_string())
             .collect::<Vec<_>>();
         for session_id in session_ids {
-            let queued_launch_specs = {
-                let mut queued_launch_specs = Vec::new();
+            let queued_prompt_specs = {
+                let mut queued_prompt_specs = Vec::new();
                 let session = match self.store.get_mut(&session_id) {
                     Some(session) => session,
                     None => continue,
@@ -243,7 +243,7 @@ impl SessionService {
                             }
                             WorkflowWatchdogPolicy::Queue => {
                                 if !watchdog.pending_run() {
-                                    queued_launch_specs.push((
+                                    queued_prompt_specs.push((
                                         watchdog.workflow_id().to_string(),
                                         watchdog.endpoint_id().to_string(),
                                         watchdog.invocation_prompt().to_string(),
@@ -267,22 +267,18 @@ impl SessionService {
                         invocation_prompt: watchdog.invocation_prompt().to_string(),
                     });
                 }
-                queued_launch_specs
+                queued_prompt_specs
             };
-            for (workflow_id, endpoint_id, invocation_prompt, watchdog_id) in queued_launch_specs {
-                let queued = QueuedWorkflowLaunch::new(
-                    self.next_queued_workflow_launch_id(),
-                    workflow_id,
-                    endpoint_id,
+            for (workflow_id, endpoint_id, invocation_prompt, watchdog_id) in queued_prompt_specs {
+                let _ = self.enqueue_workflow_prompt(
+                    &session_id,
+                    &workflow_id,
+                    &endpoint_id,
                     Some(invocation_prompt),
-                    QueuedWorkflowLaunchSource::Watchdog,
+                    None,
+                    WorkflowQueuedPromptSource::Watchdog,
                     Some(watchdog_id),
                 );
-                let session = match self.store.get_mut(&session_id) {
-                    Some(session) => session,
-                    None => continue,
-                };
-                session.enqueue_workflow_launch(queued);
             }
         }
         Ok(plans)

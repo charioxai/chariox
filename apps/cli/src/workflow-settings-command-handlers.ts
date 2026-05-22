@@ -6,10 +6,8 @@ import type {
 } from "./cli-types.js"
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
-const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 
 const WORKFLOW_SETTINGS_COMMANDS = [
-  "launch-policy",
   "flush-context",
   "run-output-schema",
   "intermediate-output-schema",
@@ -46,7 +44,6 @@ export type WorkflowSettingsCommandDeps = {
     workflowRef: string,
     flushAgentContextBeforeRun: boolean,
   ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
-  setWorkflowLaunchPolicy?: (policy: "reject" | "queue") => Promise<{ session: RuntimeSession }>
   setWorkflowRunOutputSchema?: (
     workflowRef: string,
     runOutputSchemaRef: string | null,
@@ -67,10 +64,6 @@ export async function handleWorkflowSettingsCommand(
   args: readonly string[],
 ): Promise<void> {
   const subcommand = args[0]
-  if (subcommand === "launch-policy") {
-    await handleWorkflowLaunchPolicyCommand(deps, args)
-    return
-  }
   if (subcommand === "flush-context") {
     await handleWorkflowFlushContextCommand(deps, context, args)
     return
@@ -96,28 +89,6 @@ export async function handleWorkflowSettingsCommand(
   if (subcommand === "max-turns") {
     await handleWorkflowMaxTurnsCommand(deps, args)
   }
-}
-
-async function handleWorkflowLaunchPolicyCommand(
-  deps: WorkflowSettingsCommandDeps,
-  args: readonly string[],
-): Promise<void> {
-  const value = args[1]?.trim().toLowerCase()
-  if (!value) {
-    deps.flashFooter(`workflow launch policy: ${currentWorkflowLaunchPolicy(deps.sessionState())}`, "info")
-    return
-  }
-  if (value !== "reject" && value !== "queue") {
-    deps.flashFooter("usage: /workflow launch-policy <reject|queue>", "error")
-    return
-  }
-  if (!deps.setWorkflowLaunchPolicy) {
-    deps.flashFooter("workflow runtime commands unavailable", "error")
-    return
-  }
-  const payload = await deps.setWorkflowLaunchPolicy(value)
-  deps.applySessionState(payload.session)
-  deps.flashFooter(`workflow launch policy set to ${value}`, "info")
 }
 
 async function handleWorkflowFlushContextCommand(
@@ -248,12 +219,4 @@ async function handleWorkflowMaxTurnsCommand(
       : `workflow max turns set to ${nextValue}`,
     "info",
   )
-}
-
-function currentWorkflowLaunchPolicy(session: RuntimeSession): "reject" | "queue" {
-  const policy =
-    session.workflow_launch_policy ??
-    session.config_state?.values?.[WORKFLOW_LAUNCH_POLICY_CONFIG_KEY] ??
-    "reject"
-  return policy === "queue" ? "queue" : "reject"
 }

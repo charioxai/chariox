@@ -278,6 +278,13 @@ pub(super) fn normalize_workflow_alias(
     Ok(Some(normalized))
 }
 
+pub(super) fn normalize_workflow_queue_alias(alias: String) -> Result<String, DaemonError> {
+    normalize_workflow_alias(Some(alias))?.ok_or_else(|| DaemonError::InvalidWorkflowAlias {
+        alias: String::new(),
+        message: "alias cannot be empty",
+    })
+}
+
 pub(super) fn normalize_workflow_endpoint_alias(
     alias: Option<String>,
 ) -> Result<Option<String>, DaemonError> {
@@ -434,12 +441,21 @@ impl SessionService {
         )
     }
 
-    pub(super) fn next_queued_workflow_launch_id(&mut self) -> String {
-        self.next_queued_workflow_launch_number =
-            self.next_queued_workflow_launch_number.wrapping_add(1);
+    pub(super) fn next_workflow_prompt_queue_id(&mut self) -> String {
+        self.next_workflow_prompt_queue_number =
+            self.next_workflow_prompt_queue_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_queued_workflow_launch_number.rotate_left(17)
+            unix_epoch_ms() ^ self.next_workflow_prompt_queue_number.rotate_left(17)
+        )
+    }
+
+    pub(super) fn next_workflow_queued_prompt_id(&mut self) -> String {
+        self.next_workflow_queued_prompt_number =
+            self.next_workflow_queued_prompt_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_queued_prompt_number.rotate_left(19)
         )
     }
 }

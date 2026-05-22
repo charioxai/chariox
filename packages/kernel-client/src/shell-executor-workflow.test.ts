@@ -94,7 +94,7 @@ test("executeShellCommand runs and controls workflow runs", async () => {
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const runResult = await executeShellCommand(parseShellCommand("workflow run workflow-1 endpoint-1 Run QA"), context, { client: fake.client })
+  const runResult = await executeShellCommand(parseShellCommand("workflow run workflow-1 endpoint-1 Run QA --queue priority"), context, { client: fake.client })
   const runsResult = await executeShellCommand(parseShellCommand("workflow runs workflow-1"), context, { client: fake.client })
   const showRunResult = await executeShellCommand(parseShellCommand("workflow run-show run-1"), context, { client: fake.client })
   const cancelResult = await executeShellCommand(parseShellCommand("workflow cancel run-1"), context, { client: fake.client })
@@ -111,7 +111,7 @@ test("executeShellCommand runs and controls workflow runs", async () => {
   assert.equal(resumeResult.ok, true)
   assert.match(resumeResult.message ?? "", /resumed workflow run run-1 \[running\]/)
   assert.deepEqual(requests, [
-    { InvokeWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", prompt: "Run QA" } },
+    { InvokeWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: "priority", prompt: "Run QA" } },
     { ListWorkflowRuns: { session_id: "session-1", workflow_ref: "workflow-1" } },
     { GetWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
     { CancelWorkflowRun: { session_id: "session-1", workflow_run_ref: "run-1" } },
@@ -484,10 +484,11 @@ test("executeShellCommand exports a workflow publication gateway package", async
 
 test("executeShellCommand manages advanced workflow settings, watchdogs, and queue", async () => {
   const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final", intermediate_output_schema_ref: "progress" })
-  const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow], workflow_launch_policy: "queue" })
+  const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
   const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
   const watchdog = makeWorkflowWatchdog()
-  const queued = { id: "queue-1", workflow_id: "workflow-1", endpoint_id: "endpoint-1", source: "manual" as const, queued_at_ms: 0 }
+  const queue = { id: "default", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
+  const queued = { id: "prompt-1", queue_id: "default", workflow_id: "workflow-1", endpoint_id: "endpoint-1", source: "manual" as const, status: "queued" as const, created_at_ms: 0, updated_at_ms: 0 }
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
@@ -495,9 +496,6 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
         requests.push(request)
         if ("GetSessionState" in request) {
           return { SessionState: { session } }
-        }
-        if ("SetWorkflowLaunchPolicy" in request) {
-          return { WorkflowLaunchPolicyUpdated: { session } }
         }
         if ("SetWorkflowFlushContext" in request) {
           return { WorkflowFlushContextUpdated: { workflow, session } }
@@ -520,21 +518,23 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
         if ("RemoveWorkflowWatchdog" in request) {
           return { WorkflowWatchdogRemoved: { watchdog, session } }
         }
-        if ("ListQueuedWorkflowLaunches" in request) {
-          return { QueuedWorkflowLaunchesListed: { queued_launches: [queued] } }
+        if ("ListWorkflowPromptQueues" in request) {
+          return { WorkflowPromptQueuesListed: { queues: [queue] } }
         }
-        if ("RemoveQueuedWorkflowLaunch" in request) {
-          return { QueuedWorkflowLaunchRemoved: { queued_launch: queued, session } }
+        if ("ListQueuedWorkflowPrompts" in request) {
+          return { QueuedWorkflowPromptsListed: { queued_prompts: [queued] } }
         }
-        if ("ClearQueuedWorkflowLaunches" in request) {
-          return { QueuedWorkflowLaunchesCleared: { queued_launches: [queued], session } }
+        if ("RemoveQueuedWorkflowPrompt" in request) {
+          return { QueuedWorkflowPromptRemoved: { queued_prompt: queued, session } }
+        }
+        if ("ClearWorkflowPromptQueue" in request) {
+          return { WorkflowPromptQueueCleared: { queued_prompts: [queued], session } }
         }
         return { SessionConfigUpdated: { session, config: { version: 1, values: { "workflow.max_turns": "4" } } } }
       },
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId: "workflow-1" })
-  const launchPolicy = await executeShellCommand(parseShellCommand("workflow launch-policy queue"), context, { client: fake.client })
   const flush = await executeShellCommand(parseShellCommand("workflow flush-context false"), context, { client: fake.client })
   const schema = await executeShellCommand(parseShellCommand("workflow run-output-schema final"), context, { client: fake.client })
   const maxTurns = await executeShellCommand(parseShellCommand("workflow max-turns 4"), context, { client: fake.client })
@@ -544,10 +544,8 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   const watchdogDisable = await executeShellCommand(parseShellCommand("workflow watchdog disable watchdog-1"), context, { client: fake.client })
   const watchdogRemove = await executeShellCommand(parseShellCommand("workflow watchdog remove watchdog-1"), context, { client: fake.client })
   const queueList = await executeShellCommand(parseShellCommand("workflow queue list"), context, { client: fake.client })
-  const queueRemove = await executeShellCommand(parseShellCommand("workflow queue remove queue-1"), context, { client: fake.client })
+  const queueRemove = await executeShellCommand(parseShellCommand("workflow queue remove prompt-1"), context, { client: fake.client })
   const queueFlush = await executeShellCommand(parseShellCommand("workflow queue flush"), context, { client: fake.client })
-  assert.equal(launchPolicy.ok, true)
-  assert.match(launchPolicy.message ?? "", /launch policy set to queue/)
   assert.equal(flush.ok, true)
   assert.equal(schema.ok, true)
   assert.equal(maxTurns.ok, true)
@@ -559,11 +557,10 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   assert.equal(watchdogDisable.ok, true)
   assert.equal(watchdogRemove.ok, true)
   assert.equal(queueList.ok, true)
-  assert.match(queueList.message ?? "", /queue-1 workflow=workflow-1/)
+  assert.match(queueList.message ?? "", /prompt-1 queue=default/)
   assert.equal(queueRemove.ok, true)
   assert.equal(queueFlush.ok, true)
   assert.deepEqual(requests, [
-    { SetWorkflowLaunchPolicy: { session_id: "session-1", policy: "queue" } },
     { SetWorkflowFlushContext: { session_id: "session-1", workflow_ref: "workflow-1", flush_agent_context_before_run: false } },
     { SetWorkflowRunOutputSchema: { session_id: "session-1", workflow_ref: "workflow-1", run_output_schema_ref: "final" } },
     { GetSessionState: { session_id: "session-1" } },
@@ -573,9 +570,10 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
     { ListWorkflowWatchdogs: { session_id: "session-1", workflow_ref: "workflow-1" } },
     { SetWorkflowWatchdogEnabled: { session_id: "session-1", watchdog_ref: "watchdog-1", enabled: false } },
     { RemoveWorkflowWatchdog: { session_id: "session-1", watchdog_ref: "watchdog-1" } },
-    { ListQueuedWorkflowLaunches: { session_id: "session-1" } },
-    { RemoveQueuedWorkflowLaunch: { session_id: "session-1", queue_item_ref: "queue-1" } },
-    { ClearQueuedWorkflowLaunches: { session_id: "session-1" } },
+    { ListWorkflowPromptQueues: { session_id: "session-1" } },
+    { ListQueuedWorkflowPrompts: { session_id: "session-1" } },
+    { RemoveQueuedWorkflowPrompt: { session_id: "session-1", queue_item_ref: "prompt-1" } },
+    { ClearWorkflowPromptQueue: { session_id: "session-1", queue_ref: "default" } },
   ])
 })
 

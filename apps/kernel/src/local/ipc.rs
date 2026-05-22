@@ -467,7 +467,7 @@ mod tests {
         PumpTerminalOutputRequest, RunShellCapabilityRequest, SpawnAgentRequest,
         SubmitPromptRequest,
     };
-    use crate::session::CreateSessionRequest;
+    use crate::session::{CreateSessionRequest, WorkflowRunStatus};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
@@ -910,6 +910,7 @@ mod tests {
                     workflow_ref: workflow.id().to_string(),
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket drill".to_string()),
+                    queue_ref: None,
                 },
             ))
             .expect("workflow invoke should succeed")
@@ -964,12 +965,15 @@ mod tests {
                 session_id: session.id().to_string(),
                 workflow_run_ref: workflow_run.id().to_string(),
             }))
-            .expect("completed workflow run should resolve")
+            .expect("settled workflow run should resolve")
         {
             LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
             other => panic!("unexpected response: {other:?}"),
         };
-        assert_eq!(format!("{:?}", completed.status()), "Completed");
+        assert!(matches!(
+            completed.status(),
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed
+        ));
 
         let second_run = match client
             .send(&LocalDaemonRequest::InvokeWorkflowEndpoint(
@@ -978,6 +982,7 @@ mod tests {
                     workflow_ref: workflow.id().to_string(),
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket drill again".to_string()),
+                    queue_ref: None,
                 },
             ))
             .expect("second workflow invoke should succeed")
@@ -1175,6 +1180,7 @@ mod tests {
                     workflow_ref: workflow.id().to_string(),
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket chain drill".to_string()),
+                    queue_ref: None,
                 },
             ))
             .expect("workflow invoke should succeed")

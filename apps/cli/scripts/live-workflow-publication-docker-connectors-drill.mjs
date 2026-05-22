@@ -25,7 +25,6 @@ const {
   getProviderRunRequest,
   launchProviderRunRequest,
   listSessionsRequest,
-  setWorkflowLaunchPolicyRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
 } = requests
@@ -330,7 +329,6 @@ async function main() {
 
     logStep('create_workflow')
     const workflow = variant(await client.send(createWorkflowRequest(session.id, 'docker-published')), 'WorkflowCreated').workflow
-    await client.send(setWorkflowLaunchPolicyRequest(session.id, 'queue'))
     const node = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, agent.id)), 'WorkflowNodeAdded').node
     await client.send(updateWorkflowNodeInstructionsRequest(
       session.id,

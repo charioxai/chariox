@@ -289,7 +289,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Implemented config mutation coverage in the shared executor:
   - `config path|set|unset|managed-io`
 - Implemented workflow advanced coverage in the shared executor:
-  - `workflow launch-policy|flush-context|max-turns|run-output-schema|intermediate-output-schema`
+  - `workflow flush-context|max-turns|run-output-schema|intermediate-output-schema`
   - `workflow node can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns`
   - `workflow watchdog add|list|enable|disable|remove`
   - `workflow queue list|flush|remove`

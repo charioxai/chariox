@@ -308,13 +308,13 @@ pub(crate) fn redact_response_for_user(
             endpoint,
             session: session.redacted_for_user(caller_user_id),
         },
-        LocalDaemonResponse::WorkflowRunQueued {
-            queued_launch,
+        LocalDaemonResponse::WorkflowPromptEnqueued {
+            queued_prompt,
             workflow,
             endpoint,
             session,
-        } => LocalDaemonResponse::WorkflowRunQueued {
-            queued_launch,
+        } => LocalDaemonResponse::WorkflowPromptEnqueued {
+            queued_prompt,
             workflow: workflow.redacted_for_user(caller_user_id),
             endpoint,
             session: session.redacted_for_user(caller_user_id),
@@ -380,23 +380,43 @@ pub(crate) fn redact_response_for_user(
                 session: session.redacted_for_user(caller_user_id),
             }
         }
-        LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session } => {
-            LocalDaemonResponse::WorkflowLaunchPolicyUpdated {
+        LocalDaemonResponse::WorkflowPromptQueueCreated { queue, session } => {
+            LocalDaemonResponse::WorkflowPromptQueueCreated {
+                queue,
                 session: session.redacted_for_user(caller_user_id),
             }
         }
-        LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
-            queued_launch,
+        LocalDaemonResponse::WorkflowPromptQueueUpdated { queue, session } => {
+            LocalDaemonResponse::WorkflowPromptQueueUpdated {
+                queue,
+                session: session.redacted_for_user(caller_user_id),
+            }
+        }
+        LocalDaemonResponse::WorkflowPromptQueueRemoved { queue, session } => {
+            LocalDaemonResponse::WorkflowPromptQueueRemoved {
+                queue,
+                session: session.redacted_for_user(caller_user_id),
+            }
+        }
+        LocalDaemonResponse::QueuedWorkflowPromptUpdated {
+            queued_prompt,
             session,
-        } => LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
-            queued_launch,
+        } => LocalDaemonResponse::QueuedWorkflowPromptUpdated {
+            queued_prompt,
             session: session.redacted_for_user(caller_user_id),
         },
-        LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
-            queued_launches,
+        LocalDaemonResponse::QueuedWorkflowPromptRemoved {
+            queued_prompt,
             session,
-        } => LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
-            queued_launches,
+        } => LocalDaemonResponse::QueuedWorkflowPromptRemoved {
+            queued_prompt,
+            session: session.redacted_for_user(caller_user_id),
+        },
+        LocalDaemonResponse::WorkflowPromptQueueCleared {
+            queued_prompts,
+            session,
+        } => LocalDaemonResponse::WorkflowPromptQueueCleared {
+            queued_prompts,
             session: session.redacted_for_user(caller_user_id),
         },
         LocalDaemonResponse::WorkflowTurnAcknowledged {

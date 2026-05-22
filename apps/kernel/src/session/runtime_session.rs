@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
 
-use super::prompt_queue::{AgentPromptState, PromptQueueItem, PromptSubmissionOutcome};
+use super::prompt_queue::{AgentPromptState, PromptQueueItem};
 use super::prompt_runtime::PromptRuntimeState;
 use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
@@ -24,8 +24,8 @@ use super::workflow_publication::WorkflowPublicationDefinition;
 use super::workflow_run_records::WorkflowNodeRun;
 use super::workflow_runs::WorkflowRun;
 use super::workflow_scheduling::{
-    QueuedWorkflowLaunch, WorkflowLaunchPolicy, WorkflowWatchdogDefinition,
-    DEFAULT_WORKFLOW_LAUNCH_POLICY,
+    WorkflowPromptQueueDefinition, WorkflowQueuedPrompt, WorkflowQueuedPromptStatus,
+    WorkflowWatchdogDefinition,
 };
 use super::workflow_turns::{WorkflowNodeRunStatus, WorkflowRunStatus};
 use super::workspace_links::WorkspaceLinkDefinition;
@@ -65,10 +65,10 @@ pub struct RuntimeSession {
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workflow_launch_policy: Option<WorkflowLaunchPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
-    queued_workflow_launches: VecDeque<QueuedWorkflowLaunch>,
+    workflow_queued_prompts: VecDeque<WorkflowQueuedPrompt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -124,8 +124,8 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
-            workflow_launch_policy: None,
-            queued_workflow_launches: VecDeque::new(),
+            workflow_prompt_queues: vec![WorkflowPromptQueueDefinition::default_queue()],
+            workflow_queued_prompts: VecDeque::new(),
             workflow_watchdogs: Vec::new(),
             workflow_consoles: Vec::new(),
             workflow_publications: Vec::new(),
@@ -425,13 +425,12 @@ impl RuntimeSession {
         &self.workflow_runs
     }
 
-    pub fn workflow_launch_policy(&self) -> WorkflowLaunchPolicy {
-        self.workflow_launch_policy
-            .unwrap_or(DEFAULT_WORKFLOW_LAUNCH_POLICY)
+    pub fn workflow_prompt_queues(&self) -> &[WorkflowPromptQueueDefinition] {
+        &self.workflow_prompt_queues
     }
 
-    pub fn queued_workflow_launches(&self) -> &VecDeque<QueuedWorkflowLaunch> {
-        &self.queued_workflow_launches
+    pub fn workflow_queued_prompts(&self) -> &VecDeque<WorkflowQueuedPrompt> {
+        &self.workflow_queued_prompts
     }
 
     pub fn workflow_watchdogs(&self) -> &[WorkflowWatchdogDefinition] {
@@ -655,36 +654,115 @@ impl RuntimeSession {
         reconciliation
     }
 
-    pub fn set_workflow_launch_policy(&mut self, policy: WorkflowLaunchPolicy) {
-        self.workflow_launch_policy = Some(policy);
-    }
-
-    pub fn enqueue_workflow_launch(
+    pub fn add_workflow_prompt_queue(
         &mut self,
-        queued_launch: QueuedWorkflowLaunch,
-    ) -> QueuedWorkflowLaunch {
-        self.queued_workflow_launches
-            .push_back(queued_launch.clone());
-        queued_launch
+        queue: WorkflowPromptQueueDefinition,
+    ) -> WorkflowPromptQueueDefinition {
+        self.workflow_prompt_queues.push(queue.clone());
+        queue
     }
 
-    pub fn dequeue_workflow_launch(&mut self) -> Option<QueuedWorkflowLaunch> {
-        self.queued_workflow_launches.pop_front()
+    pub fn workflow_prompt_queue(&self, queue_id: &str) -> Option<&WorkflowPromptQueueDefinition> {
+        self.workflow_prompt_queues
+            .iter()
+            .find(|queue| queue.id() == queue_id || queue.alias() == queue_id)
     }
 
-    pub fn remove_queued_workflow_launch(
+    pub fn workflow_prompt_queue_mut(
+        &mut self,
+        queue_id: &str,
+    ) -> Option<&mut WorkflowPromptQueueDefinition> {
+        self.workflow_prompt_queues
+            .iter_mut()
+            .find(|queue| queue.id() == queue_id || queue.alias() == queue_id)
+    }
+
+    pub fn remove_workflow_prompt_queue(
+        &mut self,
+        queue_id: &str,
+    ) -> Option<WorkflowPromptQueueDefinition> {
+        let index = self
+            .workflow_prompt_queues
+            .iter()
+            .position(|queue| queue.id() == queue_id || queue.alias() == queue_id)?;
+        Some(self.workflow_prompt_queues.remove(index))
+    }
+
+    pub fn enqueue_workflow_prompt(
+        &mut self,
+        queued_prompt: WorkflowQueuedPrompt,
+    ) -> WorkflowQueuedPrompt {
+        self.workflow_queued_prompts
+            .push_back(queued_prompt.clone());
+        queued_prompt
+    }
+
+    pub fn update_queued_workflow_prompt(
         &mut self,
         queue_item_id: &str,
-    ) -> Option<QueuedWorkflowLaunch> {
-        let index = self
-            .queued_workflow_launches
-            .iter()
-            .position(|queued_launch| queued_launch.id() == queue_item_id)?;
-        self.queued_workflow_launches.remove(index)
+        prompt: Option<String>,
+        queue_id: Option<String>,
+    ) -> Option<WorkflowQueuedPrompt> {
+        let queued_prompt = self
+            .workflow_queued_prompts
+            .iter_mut()
+            .find(|item| item.id() == queue_item_id)?;
+        if queued_prompt.status() != WorkflowQueuedPromptStatus::Queued {
+            return None;
+        }
+        if let Some(queue_id) = queue_id {
+            queued_prompt.set_queue_id(queue_id);
+        }
+        queued_prompt.set_prompt(prompt);
+        Some(queued_prompt.clone())
     }
 
-    pub fn clear_queued_workflow_launches(&mut self) -> Vec<QueuedWorkflowLaunch> {
-        self.queued_workflow_launches.drain(..).collect()
+    pub fn remove_queued_workflow_prompt(
+        &mut self,
+        queue_item_id: &str,
+    ) -> Option<WorkflowQueuedPrompt> {
+        let index = self
+            .workflow_queued_prompts
+            .iter()
+            .position(|queued_prompt| queued_prompt.id() == queue_item_id)?;
+        if self.workflow_queued_prompts[index].status() != WorkflowQueuedPromptStatus::Queued {
+            return None;
+        }
+        self.workflow_queued_prompts.remove(index)
+    }
+
+    pub fn clear_workflow_queue(&mut self, queue_id: &str) -> Vec<WorkflowQueuedPrompt> {
+        let mut removed = Vec::new();
+        let mut kept = VecDeque::new();
+        while let Some(item) = self.workflow_queued_prompts.pop_front() {
+            if item.queue_id() == queue_id && item.status() == WorkflowQueuedPromptStatus::Queued {
+                removed.push(item);
+            } else {
+                kept.push_back(item);
+            }
+        }
+        self.workflow_queued_prompts = kept;
+        removed
+    }
+
+    pub fn pop_next_workflow_queued_prompt(&mut self) -> Option<WorkflowQueuedPrompt> {
+        let best = self
+            .workflow_queued_prompts
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter_map(|(index, item)| {
+                let queue = self.workflow_prompt_queue(item.queue_id())?;
+                if !queue.enabled() {
+                    return None;
+                }
+                Some((index, queue.priority(), item.created_at_ms()))
+            })
+            .min_by_key(|(_, priority, created_at_ms)| (*priority, *created_at_ms))
+            .map(|(index, _, _)| index)?;
+        let mut item = self.workflow_queued_prompts.remove(best)?;
+        item.mark_dispatching();
+        Some(item)
     }
 
     pub fn workflow_run(&self, workflow_run_id: &str) -> Option<&WorkflowRun> {

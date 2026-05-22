@@ -14,7 +14,8 @@ use crate::provider::{
 };
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload,
-    WorkflowHandoffValidationPolicy, WorkflowNodeRunStatus, WorkflowTurnRuntimeState,
+    WorkflowHandoffValidationPolicy, WorkflowNodeRunStatus, WorkflowRunStatus,
+    WorkflowTurnRuntimeState,
 };
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -45,9 +46,10 @@ use super::{
     ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
     ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
     SemanticHistoryMatch, SemanticSearchHistoryRequest, SendTerminalInputRequest,
-    ShowWorkspaceLinkRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, TerminalType, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
-    UpdateAgentSubstitutesRequest, UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
+    SetWorkflowNodeCanCompleteRunRequest, ShowWorkspaceLinkRequest, SpawnAgentRequest,
+    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, TerminalType,
+    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest, WorkflowDesignNode,
     WorkflowDesignOp, WorkflowDesignPoint, WorkspaceFileContent, WorkspacePullRequestRecord,
     WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,

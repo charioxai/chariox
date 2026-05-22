@@ -385,12 +385,14 @@ export function invokeWorkflowEndpointRequest(
   workflowRef: string,
   endpointRef: string,
   prompt?: string | null,
+  queueRef?: string | null,
 ) {
   return {
     InvokeWorkflowEndpoint: {
       session_id: sessionId,
       workflow_ref: workflowRef,
       endpoint_ref: endpointRef,
+      queue_ref: queueRef ?? null,
       prompt: prompt ?? null,
     },
   }
@@ -493,39 +495,86 @@ export function removeWorkflowWatchdogRequest(sessionId: string, watchdogRef: st
   }
 }
 
-export function setWorkflowLaunchPolicyRequest(
+export function listWorkflowPromptQueuesRequest(sessionId: string) {
+  return {
+    ListWorkflowPromptQueues: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function createWorkflowPromptQueueRequest(sessionId: string, alias: string, priority: number) {
+  return {
+    CreateWorkflowPromptQueue: {
+      session_id: sessionId,
+      alias,
+      priority,
+    },
+  }
+}
+
+export function updateWorkflowPromptQueueRequest(
   sessionId: string,
-  policy: "reject" | "queue",
+  queueRef: string,
+  patch: { alias?: string | null; priority?: number | null; enabled?: boolean | null },
 ) {
   return {
-    SetWorkflowLaunchPolicy: {
+    UpdateWorkflowPromptQueue: {
       session_id: sessionId,
-      policy,
+      queue_ref: queueRef,
+      alias: patch.alias ?? null,
+      priority: patch.priority ?? null,
+      enabled: patch.enabled ?? null,
     },
   }
 }
 
-export function listQueuedWorkflowLaunchesRequest(sessionId: string) {
+export function removeWorkflowPromptQueueRequest(sessionId: string, queueRef: string) {
   return {
-    ListQueuedWorkflowLaunches: {
+    RemoveWorkflowPromptQueue: {
+      session_id: sessionId,
+      queue_ref: queueRef,
+    },
+  }
+}
+
+export function listQueuedWorkflowPromptsRequest(sessionId: string) {
+  return {
+    ListQueuedWorkflowPrompts: {
       session_id: sessionId,
     },
   }
 }
 
-export function removeQueuedWorkflowLaunchRequest(sessionId: string, queueItemRef: string) {
+export function updateQueuedWorkflowPromptRequest(
+  sessionId: string,
+  queueItemRef: string,
+  patch: { prompt?: string | null; queueRef?: string | null },
+) {
   return {
-    RemoveQueuedWorkflowLaunch: {
+    UpdateQueuedWorkflowPrompt: {
+      session_id: sessionId,
+      queue_item_ref: queueItemRef,
+      prompt: patch.prompt ?? null,
+      queue_ref: patch.queueRef ?? null,
+    },
+  }
+}
+
+export function removeQueuedWorkflowPromptRequest(sessionId: string, queueItemRef: string) {
+  return {
+    RemoveQueuedWorkflowPrompt: {
       session_id: sessionId,
       queue_item_ref: queueItemRef,
     },
   }
 }
 
-export function clearQueuedWorkflowLaunchesRequest(sessionId: string) {
+export function clearWorkflowPromptQueueRequest(sessionId: string, queueRef: string) {
   return {
-    ClearQueuedWorkflowLaunches: {
+    ClearWorkflowPromptQueue: {
       session_id: sessionId,
+      queue_ref: queueRef,
     },
   }
 }

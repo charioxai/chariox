@@ -1,8 +1,8 @@
 import type {
-  QueuedWorkflowLaunch,
   RuntimeSession,
   WorkflowDefinition,
   WorkflowEndpointDefinition,
+  WorkflowQueuedPrompt,
   WorkflowRun,
 } from "./cli-types.js"
 
@@ -12,7 +12,7 @@ export type WorkflowRunInvokePayload = {
   workflow: WorkflowDefinition
   endpoint: WorkflowEndpointDefinition
   session: RuntimeSession
-} & ({ workflow_run: WorkflowRun } | { queued_launch: QueuedWorkflowLaunch })
+} & ({ workflow_run: WorkflowRun } | { queued_prompt: WorkflowQueuedPrompt })
 
 export type WorkflowInvokeCommandContext = {
   firstWorkflowArgIsExplicit: (workflowRef: string | undefined) => boolean
@@ -24,6 +24,7 @@ export type WorkflowInvokeCommandDeps = {
     workflowRef: string,
     endpointRef: string,
     prompt?: string | null,
+    queueRef?: string | null,
   ) => Promise<WorkflowRunInvokePayload>
   applySessionState: (session: RuntimeSession) => void
   upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
@@ -41,7 +42,13 @@ export async function handleWorkflowInvokeCommand(
   const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(firstArg) ? firstArg : null
   const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
   const endpointRef = explicitWorkflowRef ? args[2] : firstArg
-  const prompt = args.slice(explicitWorkflowRef ? 3 : 2).join(" ").trim()
+  const promptArgs = args.slice(explicitWorkflowRef ? 3 : 2)
+  const queueFlagIndex = promptArgs.findIndex((arg) => arg === "--queue")
+  const queueRef = queueFlagIndex >= 0 ? promptArgs[queueFlagIndex + 1] : null
+  const prompt = promptArgs
+    .filter((_, index) => queueFlagIndex < 0 || (index !== queueFlagIndex && index !== queueFlagIndex + 1))
+    .join(" ")
+    .trim()
   if (!workflowRef || !endpointRef) {
     deps.flashFooter("usage: /workflow run|start [workflow-ref] <endpoint-ref> [prompt]", "error")
     return
@@ -50,7 +57,7 @@ export async function handleWorkflowInvokeCommand(
     deps.flashFooter("workflow runtime commands unavailable", "error")
     return
   }
-  const payload = await deps.invokeWorkflowEndpoint(workflowRef, endpointRef, prompt || null)
+  const payload = await deps.invokeWorkflowEndpoint(workflowRef, endpointRef, prompt || null, queueRef)
   deps.applySessionState(payload.session)
   deps.upsertWorkflowDefinition(payload.workflow)
   deps.selectWorkflowCanvas(payload.workflow.id)
@@ -62,7 +69,7 @@ export async function handleWorkflowInvokeCommand(
     )
   } else {
     deps.flashFooter(
-      `queued workflow launch ${payload.queued_launch.id}; active workflow run in session`,
+      `queued workflow prompt ${payload.queued_prompt.id}`,
       "info",
     )
   }

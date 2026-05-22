@@ -23,12 +23,12 @@ use crate::runtime::projection::DaemonHealthProjection;
 use crate::script::{ArrobaEnvironmentConfig, ArrobaScriptMetadata};
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
-    PromptSubmissionOutcome, QueuedWorkflowLaunch, RuntimeSession, SessionConfigState,
-    SessionInvite, SessionMember, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowLaunchPolicy,
-    WorkflowNodeDefinition, WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
-    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowRun,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
+    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowQueuedPrompt,
+    WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition,
 };
 use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};

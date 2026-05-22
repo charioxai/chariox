@@ -354,7 +354,6 @@ async function main() {
 
     const workflowResult = await runShell('workflow new semantic-url-renderer as workflow')
     const workflow = workflowResult.data.workflow
-    await runShell('workflow launch-policy queue')
     const nodeResult = await runShell('workflow node add $workflow $renderer as node')
     const node = nodeResult.data.node
     await runShell('workflow node can-complete-run $workflow $node true')

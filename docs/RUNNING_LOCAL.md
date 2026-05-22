@@ -498,6 +498,17 @@ managed_io = "unrestricted"
 
 Remote leased agents use the same managed I/O policy as local agents.
 
+## 14. Workflow Queues
+
+Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML:
+
+```toml
+[workflow]
+max_queues_per_workflow = 10
+```
+
+The kernel rejects workflow queue creation if this setting is missing or if a workflow already has the configured number of queues.
+
 You can also modify the same TOML through the CLI:
 
 ```text

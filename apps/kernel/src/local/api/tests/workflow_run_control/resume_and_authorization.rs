@@ -59,6 +59,7 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("resume prompt".to_string()),
+                queue_ref: None,
             },
         ))
         .expect("workflow invoke should succeed")
@@ -229,6 +230,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("hello".to_string()),
+                queue_ref: None,
             },
         ))
         .expect_err("workflow invoke should fail when controls are unsupported");

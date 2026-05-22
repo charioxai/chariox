@@ -26,13 +26,15 @@ impl KernelRuntimeState {
                 let workflow_ref = request.workflow_ref.clone();
                 let endpoint_ref = request.endpoint_ref.clone();
                 let prompt = request.prompt.clone();
+                let queue_ref = request.queue_ref.clone();
                 let outcome = self
                     .with_app_side_effect(move |app| {
-                        app.invoke_workflow_endpoint_with_admission(
+                        app.enqueue_workflow_prompt_and_maybe_start(
                             &invoke_session_id,
                             &workflow_ref,
                             &endpoint_ref,
                             prompt,
+                            queue_ref.as_deref(),
                         )
                     })
                     .await;
@@ -55,12 +57,12 @@ impl KernelRuntimeState {
                         endpoint,
                         session,
                     }),
-                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Queued {
-                        queued_launch,
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
                         workflow,
                         endpoint,
-                    } => Ok(LocalDaemonResponse::WorkflowRunQueued {
-                        queued_launch,
+                    } => Ok(LocalDaemonResponse::WorkflowPromptEnqueued {
+                        queued_prompt,
                         workflow,
                         endpoint,
                         session,
@@ -152,7 +154,7 @@ impl KernelRuntimeState {
                     queued_prompts,
                 );
             }
-            owned.workflow_maybe_start_next_queued_launch(&request.session_id);
+            owned.workflow_maybe_start_next_queued_prompt(&request.session_id);
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             let session = owned.session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowRunCancelled {

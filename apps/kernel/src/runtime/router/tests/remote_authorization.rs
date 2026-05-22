@@ -420,6 +420,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         workflow_ref: workflow_id.clone(),
         endpoint_ref: endpoint.id().to_string(),
         prompt: Some("should be denied".to_string()),
+        queue_ref: None,
     });
     assert_ownership_denied(
         router

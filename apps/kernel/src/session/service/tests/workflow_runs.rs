@@ -165,160 +165,153 @@ fn node_turn_budget_exhaustion_stops_the_whole_run() {
 }
 
 #[test]
-fn manual_workflow_launch_rejects_while_any_session_workflow_run_is_active() {
+fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
 
-    let first_workflow = service
-        .create_workflow(session.id(), Some("first".to_string()))
-        .expect("first workflow should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("queued".to_string()))
+        .expect("workflow should be created");
     let first_node = service
-        .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
         .expect("first node should be added");
     let first_endpoint = service
         .create_workflow_endpoint(
             session.id(),
-            first_workflow.id(),
+            workflow.id(),
             first_node.id(),
-            Some("entry".to_string()),
+            Some("first".to_string()),
         )
         .expect("first endpoint should be created");
-
-    let second_workflow = service
-        .create_workflow(session.id(), Some("second".to_string()))
-        .expect("second workflow should be created");
     let second_node = service
-        .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
         .expect("second node should be added");
     let second_endpoint = service
         .create_workflow_endpoint(
             session.id(),
-            second_workflow.id(),
+            workflow.id(),
             second_node.id(),
-            Some("entry".to_string()),
+            Some("second".to_string()),
         )
         .expect("second endpoint should be created");
 
     let workflow_run = service
         .invoke_workflow_endpoint(
             session.id(),
-            first_workflow.id(),
+            workflow.id(),
             first_endpoint.id(),
             Some("go".to_string()),
         )
         .expect("first workflow run should be created");
     assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
 
-    let error = service
-        .admit_manual_workflow_launch(
+    let queued = service
+        .enqueue_workflow_prompt(
             session.id(),
-            second_workflow.id(),
+            workflow.id(),
             second_endpoint.id(),
             Some("later".to_string()),
+            Some("default"),
+            WorkflowQueuedPromptSource::Manual,
+            None,
         )
-        .expect_err("launch should reject while a session workflow run is active");
-    assert!(matches!(error, DaemonError::WorkflowLaunchRejected { .. }));
+        .expect("prompt should queue while a run is active");
+    assert_eq!(queued.prompt(), Some("later"));
+    assert!(service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queue should be readable")
+        .is_none());
 }
 
 #[test]
-fn manual_workflow_launch_queue_is_fifo_across_workflows() {
+fn workflow_prompt_queue_dispatches_by_queue_priority_then_fifo() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
 
-    let first_workflow = service
-        .create_workflow(session.id(), Some("first".to_string()))
-        .expect("first workflow should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("queued".to_string()))
+        .expect("workflow should be created");
     let first_node = service
-        .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
         .expect("first node should be added");
     let first_endpoint = service
         .create_workflow_endpoint(
             session.id(),
-            first_workflow.id(),
+            workflow.id(),
             first_node.id(),
-            Some("entry".to_string()),
+            Some("first".to_string()),
         )
         .expect("first endpoint should be created");
-
-    let second_workflow = service
-        .create_workflow(session.id(), Some("second".to_string()))
-        .expect("second workflow should be created");
     let second_node = service
-        .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
         .expect("second node should be added");
     let second_endpoint = service
         .create_workflow_endpoint(
             session.id(),
-            second_workflow.id(),
+            workflow.id(),
             second_node.id(),
-            Some("entry".to_string()),
+            Some("second".to_string()),
         )
         .expect("second endpoint should be created");
-
-    service
-        .set_workflow_launch_policy(session.id(), WorkflowLaunchPolicy::Queue)
-        .expect("queue policy should be set");
+    let urgent_queue = service
+        .create_workflow_prompt_queue(session.id(), "urgent".to_string(), -10)
+        .expect("urgent queue should be created");
     let active = service
         .invoke_workflow_endpoint(
             session.id(),
-            first_workflow.id(),
+            workflow.id(),
             first_endpoint.id(),
             Some("go".to_string()),
         )
         .expect("active workflow run should be created");
     assert_eq!(active.status(), WorkflowRunStatus::Created);
 
-    let first_queued = service
-        .admit_manual_workflow_launch(
+    let default_queued = service
+        .enqueue_workflow_prompt(
             session.id(),
-            second_workflow.id(),
+            workflow.id(),
             second_endpoint.id(),
             Some("second".to_string()),
+            Some("default"),
+            WorkflowQueuedPromptSource::Manual,
+            None,
         )
-        .expect("second workflow should queue");
-    let second_queued = service
-        .admit_manual_workflow_launch(
+        .expect("default prompt should queue");
+    let urgent_queued = service
+        .enqueue_workflow_prompt(
             session.id(),
-            first_workflow.id(),
+            workflow.id(),
             first_endpoint.id(),
             Some("third".to_string()),
+            Some(urgent_queue.id()),
+            WorkflowQueuedPromptSource::Manual,
+            None,
         )
-        .expect("third launch should queue");
+        .expect("urgent prompt should queue");
 
     let queued = service
-        .list_queued_workflow_launches(session.id())
-        .expect("queued launches should list");
+        .list_queued_workflow_prompts(session.id())
+        .expect("queued prompts should list");
     assert_eq!(queued.len(), 2);
-    assert_eq!(queued[0].source(), QueuedWorkflowLaunchSource::Manual);
-    assert_eq!(queued[1].source(), QueuedWorkflowLaunchSource::Manual);
-
-    match first_queued {
-        WorkflowLaunchAdmission::Queued(ref queued_launch) => {
-            assert_eq!(queued[0].id(), queued_launch.id())
-        }
-        WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
-    }
-    match second_queued {
-        WorkflowLaunchAdmission::Queued(ref queued_launch) => {
-            assert_eq!(queued[1].id(), queued_launch.id())
-        }
-        WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
-    }
+    assert_eq!(queued[0].id(), default_queued.id());
+    assert_eq!(queued[1].id(), urgent_queued.id());
+    assert_eq!(queued[0].source(), WorkflowQueuedPromptSource::Manual);
+    assert_eq!(queued[1].source(), WorkflowQueuedPromptSource::Manual);
 
     service
         .cancel_workflow_run(session.id(), active.id())
         .expect("active workflow run should stop");
     let dequeued = service
-        .dequeue_next_workflow_launch(session.id())
-        .expect("queued workflow launch should dequeue")
-        .expect("expected queued workflow launch");
-    assert_eq!(dequeued.id(), queued[0].id());
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queued workflow prompt should dequeue")
+        .expect("expected queued workflow prompt");
+    assert_eq!(dequeued.id(), urgent_queued.id());
 }
 
 #[test]

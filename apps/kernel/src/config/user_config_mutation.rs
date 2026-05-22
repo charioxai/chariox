@@ -248,6 +248,13 @@ impl ArrobaUserConfig {
                 self.kernel.runtime_mcp_port =
                     Some(parse_config_port("kernel.runtime_mcp_port", &value)?)
             }
+            "workflow.max_queues_per_workflow" => {
+                self.workflow.max_queues_per_workflow = Some(parse_config_u32(
+                    "workflow.max_queues_per_workflow",
+                    &value,
+                    true,
+                )?)
+            }
             "credential_vault.service" => {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
@@ -357,6 +364,7 @@ impl ArrobaUserConfig {
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
+            "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
             "providers.managed_io" => self.providers.managed_io = ManagedIoConfig::default(),
             "version" => {
                 return Err(DaemonError::InvalidConfig {

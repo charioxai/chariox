@@ -297,14 +297,24 @@ pub(crate) fn projected_session_inspection_response(
                 ),
             )
         }
-        LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+        LocalDaemonRequest::ListWorkflowPromptQueues(request) => {
             let session =
                 match projected_session_or_absence(session_projection, &request.session_id)? {
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
-            Some(Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
-                queued_launches: session.queued_workflow_launches().iter().cloned().collect(),
+            Some(Ok(LocalDaemonResponse::WorkflowPromptQueuesListed {
+                queues: session.workflow_prompt_queues().to_vec(),
+            }))
+        }
+        LocalDaemonRequest::ListQueuedWorkflowPrompts(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            Some(Ok(LocalDaemonResponse::QueuedWorkflowPromptsListed {
+                queued_prompts: session.workflow_queued_prompts().iter().cloned().collect(),
             }))
         }
         _ => None,

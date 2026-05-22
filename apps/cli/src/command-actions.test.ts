@@ -5,7 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
 test("parseRequestedViewLayout handles summary, invalid, and set cases", () => {

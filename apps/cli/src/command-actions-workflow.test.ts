@@ -5,7 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
 test("workflow add node all adds only agents missing from the selected workflow", async () => {
@@ -189,28 +189,31 @@ test("workflow command opens the workflow screen and manages local workflows", a
     maxWakeups?: number | null | undefined
   } | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
-  let workflowLaunchPolicy: "reject" | "queue" = "reject"
   let workflowFlushContext = true
   let workflowRunOutputSchema: string | null = null
   let workflowNodeCanCompleteRun = false
   let workflowNodeMaxTurns: number | null = null
-  let removedQueuedLaunchRef: string | null = null
+  let removedQueuedPromptRef: string | null = null
   let cancelledWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
   let openedWorkflowTerminalId: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const workflowRuns: WorkflowRun[] = []
-  const queuedWorkflowLaunches: QueuedWorkflowLaunch[] = [
+  const queuedWorkflowPrompts: WorkflowQueuedPrompt[] = [
     {
       id: "queued-1",
+      queue_id: "default",
       workflow_id: "workflow-1",
       endpoint_id: "entry",
-      invocation_prompt: "later prompt from endpoint invocation",
+      prompt: "later prompt from endpoint invocation",
       source: "manual",
-      queued_at_ms: 1,
+      status: "queued",
+      created_at_ms: 1,
+      updated_at_ms: 1,
     },
   ]
+  const workflowPromptQueues = [{ id: "default", alias: "default", priority: 0, enabled: true, created_at_ms: 1, updated_at_ms: 1 }]
   const resolvedWorkflowAgent = makeAgent({
     id: "agent-instance-1",
     agent_ref: "5f26c340",
@@ -350,8 +353,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
         workflow,
         session: makeSession({
           workflows: [...workflows.values()],
-          workflow_launch_policy: workflowLaunchPolicy,
-          queued_workflow_launches: queuedWorkflowLaunches,
+          
+          workflow_queued_prompts: queuedWorkflowPrompts,
         }),
       }
     },
@@ -366,8 +369,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
         workflow,
         session: makeSession({
           workflows: [...workflows.values()],
-          workflow_launch_policy: workflowLaunchPolicy,
-          queued_workflow_launches: queuedWorkflowLaunches,
+          
+          workflow_queued_prompts: queuedWorkflowPrompts,
         }),
       }
     },
@@ -498,36 +501,28 @@ test("workflow command opens the workflow screen and manages local workflows", a
         session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
       }
     },
-    setWorkflowLaunchPolicy: async (policy) => {
-      workflowLaunchPolicy = policy
+    listWorkflowPromptQueues: async () => workflowPromptQueues,
+    listQueuedWorkflowPrompts: async () => queuedWorkflowPrompts,
+    removeQueuedWorkflowPrompt: async (queueItemRef: string) => {
+      removedQueuedPromptRef = queueItemRef
+      const index = queuedWorkflowPrompts.findIndex((item) => item.id === queueItemRef)
+      const queued_prompt =
+        index >= 0 ? queuedWorkflowPrompts.splice(index, 1)[0]! : queuedWorkflowPrompts[0]!
       return {
+        queued_prompt,
         session: makeSession({
-          workflow_launch_policy: workflowLaunchPolicy,
-          queued_workflow_launches: queuedWorkflowLaunches,
+          
+          workflow_queued_prompts: queuedWorkflowPrompts,
         }),
       }
     },
-    listQueuedWorkflowLaunches: async () => queuedWorkflowLaunches,
-    removeQueuedWorkflowLaunch: async (queueItemRef) => {
-      removedQueuedLaunchRef = queueItemRef
-      const index = queuedWorkflowLaunches.findIndex((item) => item.id === queueItemRef)
-      const queued_launch =
-        index >= 0 ? queuedWorkflowLaunches.splice(index, 1)[0]! : queuedWorkflowLaunches[0]!
+    clearWorkflowPromptQueue: async () => {
+      const queued_prompts = queuedWorkflowPrompts.splice(0, queuedWorkflowPrompts.length)
       return {
-        queued_launch,
+        queued_prompts,
         session: makeSession({
-          workflow_launch_policy: workflowLaunchPolicy,
-          queued_workflow_launches: queuedWorkflowLaunches,
-        }),
-      }
-    },
-    clearQueuedWorkflowLaunches: async () => {
-      const queued_launches = queuedWorkflowLaunches.splice(0, queuedWorkflowLaunches.length)
-      return {
-        queued_launches,
-        session: makeSession({
-          workflow_launch_policy: workflowLaunchPolicy,
-          queued_workflow_launches: queuedWorkflowLaunches,
+          
+          workflow_queued_prompts: queuedWorkflowPrompts,
         }),
       }
     },
@@ -865,13 +860,6 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow launch-policy",
-    args: ["launch-policy"],
-  })
-  assert.equal(flashedMessage, "workflow launch policy: reject")
-
-  await handlers.handleWorkflowCommand({
-    kind: "workflow",
     raw: "/workflow flush-context workflow-1",
     args: ["flush-context", "workflow-1"],
   })
@@ -914,19 +902,12 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow launch-policy queue",
-    args: ["launch-policy", "queue"],
-  })
-  assert.equal(flashedMessage, "workflow launch policy set to queue")
-
-  await handlers.handleWorkflowCommand({
-    kind: "workflow",
     raw: "/workflow queue",
     args: ["queue"],
   })
   assert.equal(
     flashedMessage,
-    'workflow queue: queued-1 [manual] workflow=workflow-1 endpoint=entry queued_at=1 prompt="later prompt from endpoint invocation"',
+    'workflow queues: default(default) priority=0 depth=1; prompts: queued-1 [manual] queue=default endpoint=entry status=queued prompt="later prompt from endpoint invocation"',
   )
 
   await handlers.handleWorkflowCommand({
@@ -934,8 +915,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
     raw: "/workflow queue remove queued-1",
     args: ["queue", "remove", "queued-1"],
   })
-  assert.equal(removedQueuedLaunchRef, "queued-1")
-  assert.equal(flashedMessage, "removed queued workflow launch queued-1")
+  assert.equal(removedQueuedPromptRef, "queued-1")
+  assert.equal(flashedMessage, "removed queued workflow prompt queued-1")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
@@ -958,20 +939,23 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(flashedMessage, "workflow node node-1 can-complete-run set to false")
 
-  queuedWorkflowLaunches.push({
+  queuedWorkflowPrompts.push({
     id: "queued-2",
+    queue_id: "default",
     workflow_id: "workflow-1",
     endpoint_id: "entry",
-    invocation_prompt: "later",
+    prompt: "later",
     source: "manual",
-    queued_at_ms: 2,
+    status: "queued",
+    created_at_ms: 2,
+    updated_at_ms: 2,
   })
   await handlers.handleWorkflowCommand({
     kind: "workflow",
     raw: "/workflow queue flush",
     args: ["queue", "flush"],
   })
-  assert.equal(flashedMessage, "cleared 1 queued workflow launch")
+  assert.equal(flashedMessage, "cleared 1 queued workflow prompt from default")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

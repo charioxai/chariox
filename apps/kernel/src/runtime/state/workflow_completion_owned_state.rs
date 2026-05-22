@@ -78,7 +78,7 @@ impl KernelRuntimeOwnedState {
                     .list_session_attachment_ids(session_id),
                 notice_message,
             );
-            self.workflow_maybe_start_next_queued_launch(session_id);
+            self.workflow_maybe_start_next_queued_prompt(session_id);
             let _ = self.session_snapshot(session_id)?;
             return Ok(WorkflowPromptDispatches::default());
         }
@@ -125,7 +125,7 @@ impl KernelRuntimeOwnedState {
                         "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
                     ),
                 );
-                self.workflow_maybe_start_next_queued_launch(session_id);
+                self.workflow_maybe_start_next_queued_prompt(session_id);
                 let _ = self.session_snapshot(session_id)?;
                 return Ok(WorkflowPromptDispatches::default());
             }
@@ -237,7 +237,7 @@ impl KernelRuntimeOwnedState {
                 | crate::session::WorkflowRunStatus::Failed
                 | crate::session::WorkflowRunStatus::Stopped
         ) {
-            self.workflow_maybe_start_next_queued_launch(session_id);
+            self.workflow_maybe_start_next_queued_prompt(session_id);
         }
         let _ = self.session_snapshot(session_id)?;
         Ok(dispatches)

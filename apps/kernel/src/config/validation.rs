@@ -52,6 +52,17 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        if self
+            .user_config
+            .workflow
+            .max_queues_per_workflow
+            .is_some_and(|value| value == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "workflow.max_queues_per_workflow",
+                message: "value must not be zero",
+            });
+        }
         validate_non_empty("relay_public_key", &self.relay_public_key)?;
         validate_non_empty("relay_private_key", &self.relay_private_key)?;
         if self.relay_heartbeat_ms == 0 {

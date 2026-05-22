@@ -40,7 +40,7 @@ impl KernelRuntimeOwnedState {
                 .list_session_attachment_ids(session_id),
             format!("Workflow run `{}` was stopped.", workflow_run.id()),
         );
-        self.workflow_maybe_start_next_queued_launch(session_id);
+        self.workflow_maybe_start_next_queued_prompt(session_id);
         let _ = self.session_snapshot(session_id)?;
         Ok(())
     }
@@ -88,7 +88,7 @@ impl KernelRuntimeOwnedState {
                 message
             ),
         );
-        self.workflow_maybe_start_next_queued_launch(session_id);
+        self.workflow_maybe_start_next_queued_prompt(session_id);
         let _ = self.session_snapshot(session_id)?;
         Ok(())
     }

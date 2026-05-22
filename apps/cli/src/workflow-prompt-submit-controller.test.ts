@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { QueuedWorkflowLaunch, WorkflowRun } from "./cli-types.js"
+import type { WorkflowQueuedPrompt, WorkflowRun } from "./cli-types.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 import type { WorkflowPromptState } from "./workflow-prompt-state.js"
@@ -48,15 +48,15 @@ test("workflow prompt submit invokes endpoint runs and records prompt history", 
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello" }])
 })
 
-test("workflow prompt submit reports queued launches", async () => {
+test("workflow prompt submit reports queued prompts", async () => {
   const harness = createHarness({
-    invokeWorkflowEndpoint: async () => ({ queued_launch: queuedLaunch("queue-1") }),
+    invokeWorkflowEndpoint: async () => ({ queued_prompt: queuedPrompt("queue-1") }),
   })
 
   await harness.controller.submit("hello\n")
 
   assert.equal(harness.invocations().at(-1)?.prompt, "hello\n")
-  assert.equal(harness.footerMessages().at(-1)?.message, "queued workflow launch queue-1")
+  assert.equal(harness.footerMessages().at(-1)?.message, "queued workflow prompt queue-1")
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello\n" }])
 })
 
@@ -81,7 +81,7 @@ function createHarness(options: {
     workflowId: string,
     endpointId: string,
     prompt: string,
-  ) => Promise<{ workflow_run: WorkflowRun } | { queued_launch: QueuedWorkflowLaunch }>
+  ) => Promise<{ workflow_run: WorkflowRun } | { queued_prompt: WorkflowQueuedPrompt }>
 } = {}) {
   const invocations: Array<{ workflowId: string; endpointId: string; prompt: string }> = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
@@ -162,12 +162,16 @@ function workflowRun(id: string, status: string): WorkflowRun {
   }
 }
 
-function queuedLaunch(id: string): QueuedWorkflowLaunch {
+function queuedPrompt(id: string): WorkflowQueuedPrompt {
   return {
     id,
+    queue_id: "default",
     workflow_id: "workflow-1",
     endpoint_id: "endpoint-1",
+    prompt: "hello",
     source: "manual",
-    queued_at_ms: 1,
+    status: "queued",
+    created_at_ms: 1,
+    updated_at_ms: 1,
   }
 }

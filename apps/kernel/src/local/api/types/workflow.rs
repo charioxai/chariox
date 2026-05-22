@@ -266,6 +266,8 @@ pub struct InvokeWorkflowEndpointRequest {
     pub session_id: String,
     pub workflow_ref: String,
     pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
     pub prompt: Option<String>,
 }
 
@@ -354,25 +356,60 @@ pub struct SetWorkflowIntermediateOutputSchemaRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetWorkflowLaunchPolicyRequest {
-    pub session_id: String,
-    pub policy: WorkflowLaunchPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListQueuedWorkflowLaunchesRequest {
+pub struct ListWorkflowPromptQueuesRequest {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveQueuedWorkflowLaunchRequest {
+pub struct CreateWorkflowPromptQueueRequest {
+    pub session_id: String,
+    pub alias: String,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowPromptQueueRequest {
+    pub session_id: String,
+    pub queue_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowPromptQueueRequest {
+    pub session_id: String,
+    pub queue_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListQueuedWorkflowPromptsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateQueuedWorkflowPromptRequest {
+    pub session_id: String,
+    pub queue_item_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveQueuedWorkflowPromptRequest {
     pub session_id: String,
     pub queue_item_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClearQueuedWorkflowLaunchesRequest {
+pub struct ClearWorkflowPromptQueueRequest {
     pub session_id: String,
+    pub queue_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

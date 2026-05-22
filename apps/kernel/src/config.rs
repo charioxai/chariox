@@ -172,6 +172,7 @@ impl DaemonConfig {
                 .display()
                 .to_string(),
         );
+        config.user_config.workflow.max_queues_per_workflow = Some(10);
         config
     }
 
@@ -205,6 +206,13 @@ impl DaemonConfig {
 
     pub fn provider_requires_managed_io(&self, _provider: &str) -> bool {
         self.user_config.providers.managed_io.requires_managed_io()
+    }
+
+    pub fn max_workflow_queues_per_workflow(&self) -> Option<usize> {
+        self.user_config
+            .workflow
+            .max_queues_per_workflow
+            .map(|value| value as usize)
     }
 
     pub fn set_user_config_value(
@@ -253,6 +261,8 @@ pub struct ArrobaUserConfig {
     #[serde(default)]
     pub kernel: UserKernelConfig,
     #[serde(default)]
+    pub workflow: UserWorkflowConfig,
+    #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
 }
 
@@ -268,6 +278,7 @@ impl Default for ArrobaUserConfig {
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
+            workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
         }
     }
@@ -303,6 +314,12 @@ pub struct UserKernelConfig {
     pub runtime_mcp_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_mcp_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserWorkflowConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_queues_per_workflow: Option<u32>,
 }
 
 fn default_user_config_version() -> u32 {

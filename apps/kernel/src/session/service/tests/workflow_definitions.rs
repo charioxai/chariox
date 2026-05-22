@@ -11,16 +11,19 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
     let first = service
         .create_workflow(session.id(), Some("review_loop".to_string()))
         .expect("workflow should be created");
-    let second = service
+    let second_error = service
         .create_workflow(session.id(), Some("deploy".to_string()))
-        .expect("workflow should be created");
+        .expect_err("sessions support exactly one workflow");
+    assert!(matches!(
+        second_error,
+        DaemonError::InvalidWorkflowGraphReference { .. }
+    ));
 
     let workflows = service
         .list_workflows(session.id())
         .expect("workflow list should succeed");
-    assert_eq!(workflows.len(), 2);
+    assert_eq!(workflows.len(), 1);
     assert_eq!(workflows[0], first);
-    assert_eq!(workflows[1], second);
 
     let unique_prefix_len = (1..=first.id().len())
         .find(|length| {

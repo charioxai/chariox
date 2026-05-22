@@ -40,8 +40,8 @@ pub use super::workflow_publication::{
 pub use super::workflow_run_records::{WorkflowMessage, WorkflowNodeRun};
 pub use super::workflow_runs::WorkflowRun;
 pub use super::workflow_scheduling::{
-    QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, WorkflowLaunchPolicy,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, DEFAULT_WORKFLOW_LAUNCH_POLICY,
+    WorkflowPromptQueueDefinition, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
+    WorkflowQueuedPromptStatus, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub use super::workflow_turns::{

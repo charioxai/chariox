@@ -111,6 +111,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("kick off the ack flow".to_string()),
+                queue_ref: None,
             },
         ))
         .expect("workflow invoke should succeed")
@@ -396,6 +397,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("start loop".to_string()),
+                queue_ref: None,
             },
         ))
         .expect("workflow invoke should succeed")

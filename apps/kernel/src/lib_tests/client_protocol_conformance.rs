@@ -156,7 +156,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "packages/kernel-client/src/kernel-types.ts",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 43"],
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 44"],
                         ),
                     ],
                 ),
@@ -277,7 +277,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "version_rules",
                     vec![evidence(
                         "packages/kernel-client/src/kernel-types.ts",
-                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 43"],
+                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 44"],
                     )],
                 ),
                 (
@@ -330,7 +330,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "version_rules",
                     vec![evidence(
                         "packages/kernel-client/src/kernel-types.ts",
-                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 43"],
+                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 44"],
                     )],
                 ),
                 (
@@ -385,7 +385,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "packages/kernel-client/src/kernel-types.ts",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 43"],
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 44"],
                         ),
                     ],
                 ),

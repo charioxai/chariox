@@ -67,19 +67,4 @@ impl KernelRuntimeOwnedState {
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
     }
-
-    pub(super) fn workflow_set_launch_policy(
-        &self,
-        request: crate::local::SetWorkflowLaunchPolicyRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session = self
-            .session_store
-            .write()
-            .set_workflow_launch_policy(&request.session_id, request.policy)?;
-        let mut session = session;
-        session.set_agents(self.agent_store.get_session_agents(&request.session_id));
-        self.project_session_runtime_view(&mut session);
-        self.session_projection.update(session.clone());
-        Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
-    }
 }

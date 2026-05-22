@@ -1,16 +1,15 @@
 import type {
-  QueuedWorkflowLaunch,
   RuntimeSession,
   SessionConfigState,
   WorkflowDefinition,
   WorkflowEndpointDefinition,
+  WorkflowQueuedPrompt,
   WorkflowRun,
 } from "./kernel-types.js"
 import {
   aliasWorkflowRequest,
   cancelWorkflowRunRequest,
   createWorkflowRequest,
-  getSessionStateRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
   listWorkflowRunsRequest,
@@ -19,7 +18,6 @@ import {
   resumeWorkflowRunRequest,
   setWorkflowFlushContextRequest,
   setWorkflowIntermediateOutputSchemaRequest,
-  setWorkflowLaunchPolicyRequest,
   setWorkflowRunOutputSchemaRequest,
   updateSessionConfigRequest,
 } from "./ipc-requests.js"
@@ -103,10 +101,15 @@ export async function executeWorkflowCommand(
     case "start": {
       const [workflowRef, endpointRef, ...promptParts] = args
       if (!workflowRef || !endpointRef) {
-        return { ok: false, message: `usage: workflow ${action} <workflow-ref> <endpoint-ref> [prompt]` }
+        return { ok: false, message: `usage: workflow ${action} <workflow-ref> <endpoint-ref> [prompt] [--queue <queue-ref>]` }
       }
-      const prompt = promptParts.join(" ").trim() || null
-      const response = await deps.client.send(invokeWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, prompt))
+      const queueFlagIndex = promptParts.findIndex((part) => part === "--queue")
+      const queueRef = queueFlagIndex >= 0 ? promptParts[queueFlagIndex + 1] ?? null : null
+      const prompt = promptParts
+        .filter((_, index) => queueFlagIndex < 0 || (index !== queueFlagIndex && index !== queueFlagIndex + 1))
+        .join(" ")
+        .trim() || null
+      const response = await deps.client.send(invokeWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, prompt, queueRef))
       if ("WorkflowRunInvoked" in response) {
         const payload = response.WorkflowRunInvoked as {
           workflow_run: WorkflowRun
@@ -122,31 +125,17 @@ export async function executeWorkflowCommand(
         }
       }
       const payload = expectVariant<{
-        queued_launch: QueuedWorkflowLaunch
+        queued_prompt: WorkflowQueuedPrompt
         workflow: WorkflowDefinition
         endpoint: WorkflowEndpointDefinition
         session: RuntimeSession
-      }>(response, "WorkflowRunQueued")
+      }>(response, "WorkflowPromptEnqueued")
       return {
         ok: true,
-        message: `queued workflow launch ${payload.queued_launch.id}; active workflow run in session`,
+        message: `queued workflow prompt ${payload.queued_prompt.id}`,
         data: payload,
         contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
       }
-    }
-    case "launch-policy": {
-      const value = args[0]?.trim().toLowerCase()
-      if (!value) {
-        const response = await deps.client.send(getSessionStateRequest(sessionId))
-        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
-        return { ok: true, message: `workflow launch policy: ${session.workflow_launch_policy ?? "reject"}`, data: { session } }
-      }
-      if (value !== "reject" && value !== "queue") {
-        return { ok: false, message: "usage: workflow launch-policy <reject|queue>" }
-      }
-      const response = await deps.client.send(setWorkflowLaunchPolicyRequest(sessionId, value))
-      const payload = expectVariant<{ session: RuntimeSession }>(response, "WorkflowLaunchPolicyUpdated")
-      return { ok: true, message: `workflow launch policy set to ${value}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
     }
     case "flush-context": {
       const first = args[0]?.trim().toLowerCase()

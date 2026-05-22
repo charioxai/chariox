@@ -60,125 +60,166 @@ impl SessionService {
         Ok(session.create_workflow_run(workflow_run))
     }
 
-    pub fn set_workflow_launch_policy(
+    pub fn list_workflow_prompt_queues(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<WorkflowPromptQueueDefinition>, DaemonError> {
+        Ok(self
+            .get_session(session_id)?
+            .workflow_prompt_queues()
+            .to_vec())
+    }
+
+    pub fn create_workflow_prompt_queue(
         &mut self,
         session_id: &str,
-        policy: WorkflowLaunchPolicy,
-    ) -> Result<RuntimeSession, DaemonError> {
+        alias: String,
+        priority: i32,
+    ) -> Result<WorkflowPromptQueueDefinition, DaemonError> {
+        let max_queues =
+            self.max_workflow_queues_per_workflow
+                .ok_or_else(|| DaemonError::InvalidConfig {
+                    field: "workflow.max_queues_per_workflow",
+                    message: "value must be configured in the user config file",
+                })?;
+        let alias = normalize_workflow_queue_alias(alias)?;
+        let queue_id = self.next_workflow_prompt_queue_id();
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        session.set_workflow_launch_policy(policy);
-        Ok(session.clone())
+        if session.workflow_prompt_queues().len() >= max_queues {
+            return Err(DaemonError::InvalidConfig {
+                field: "workflow.max_queues_per_workflow",
+                message: "workflow prompt queue limit reached",
+            });
+        }
+        if session.workflow_prompt_queue(&alias).is_some() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: alias,
+                message: "workflow prompt queue alias already exists",
+            });
+        }
+        let queue = WorkflowPromptQueueDefinition::new(queue_id, alias, priority);
+        Ok(session.add_workflow_prompt_queue(queue))
     }
 
-    pub fn list_queued_workflow_launches(
+    pub fn update_workflow_prompt_queue(
+        &mut self,
+        session_id: &str,
+        queue_ref: &str,
+        alias: Option<String>,
+        priority: Option<i32>,
+        enabled: Option<bool>,
+    ) -> Result<WorkflowPromptQueueDefinition, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let queue = session
+            .workflow_prompt_queue_mut(queue_ref)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_ref.to_string(),
+                message: "workflow prompt queue was not found",
+            })?;
+        if let Some(alias) = alias {
+            queue.set_alias(normalize_workflow_queue_alias(alias)?);
+        }
+        if let Some(priority) = priority {
+            queue.set_priority(priority);
+        }
+        if let Some(enabled) = enabled {
+            queue.set_enabled(enabled);
+        }
+        Ok(queue.clone())
+    }
+
+    pub fn remove_workflow_prompt_queue(
+        &mut self,
+        session_id: &str,
+        queue_ref: &str,
+    ) -> Result<WorkflowPromptQueueDefinition, DaemonError> {
+        if queue_ref == "default" {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_ref.to_string(),
+                message: "default workflow prompt queue cannot be removed",
+            });
+        }
+        let queue_id = self.resolve_workflow_prompt_queue_ref(session_id, queue_ref)?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        if session
+            .workflow_queued_prompts()
+            .iter()
+            .any(|item| item.queue_id() == queue_id)
+        {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_ref.to_string(),
+                message: "workflow prompt queue has queued prompts",
+            });
+        }
+        session
+            .remove_workflow_prompt_queue(&queue_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_ref.to_string(),
+                message: "workflow prompt queue was not found",
+            })
+    }
+
+    pub fn list_queued_workflow_prompts(
         &self,
         session_id: &str,
-    ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
+    ) -> Result<Vec<WorkflowQueuedPrompt>, DaemonError> {
         Ok(self
             .get_session(session_id)?
-            .queued_workflow_launches()
+            .workflow_queued_prompts()
             .iter()
             .cloned()
             .collect())
     }
 
-    pub fn remove_queued_workflow_launch(
-        &mut self,
-        session_id: &str,
-        queue_item_ref: &str,
-    ) -> Result<QueuedWorkflowLaunch, DaemonError> {
-        let queue_item_id = self.resolve_queued_workflow_launch_ref(session_id, queue_item_ref)?;
-        let session =
-            self.store
-                .get_mut(session_id)
-                .ok_or_else(|| DaemonError::SessionNotFound {
-                    session_id: session_id.to_string(),
-                })?;
-        session
-            .remove_queued_workflow_launch(&queue_item_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-                session_id: session_id.to_string(),
-                workflow_id: queue_item_id.clone(),
-                reference: queue_item_id,
-                message: "queued workflow launch was not found",
-            })
-    }
-
-    pub fn clear_queued_workflow_launches(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
-        let session =
-            self.store
-                .get_mut(session_id)
-                .ok_or_else(|| DaemonError::SessionNotFound {
-                    session_id: session_id.to_string(),
-                })?;
-        Ok(session.clear_queued_workflow_launches())
-    }
-
-    pub fn admit_manual_workflow_launch(
+    pub fn enqueue_workflow_prompt(
         &mut self,
         session_id: &str,
         workflow_id: &str,
         endpoint_id: &str,
         prompt: Option<String>,
-    ) -> Result<WorkflowLaunchAdmission, DaemonError> {
-        let session = self.get_session(session_id)?;
-        if !session.has_active_workflow_run() {
-            return Ok(WorkflowLaunchAdmission::StartNow);
-        }
-        match session.workflow_launch_policy() {
-            WorkflowLaunchPolicy::Reject => Err(DaemonError::WorkflowLaunchRejected {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.to_string(),
-                endpoint_id: endpoint_id.to_string(),
-                message:
-                    "another workflow run is already active in this session; change `/workflow launch-policy queue` to queue workflow launches"
-                        .to_string(),
-            }),
-            WorkflowLaunchPolicy::Queue => {
-                let queued = QueuedWorkflowLaunch::new(
-                    self.next_queued_workflow_launch_id(),
-                    workflow_id.to_string(),
-                    endpoint_id.to_string(),
-                    prompt,
-                    QueuedWorkflowLaunchSource::Manual,
-                    None,
-                );
-                let session = self
-                    .store
-                    .get_mut(session_id)
-                    .ok_or_else(|| DaemonError::SessionNotFound {
-                        session_id: session_id.to_string(),
-                    })?;
-                Ok(WorkflowLaunchAdmission::Queued(
-                    session.enqueue_workflow_launch(queued),
-                ))
-            }
-        }
-    }
-
-    pub fn queue_watchdog_workflow_launch(
-        &mut self,
-        session_id: &str,
-        workflow_id: &str,
-        endpoint_id: &str,
-        prompt: Option<String>,
-        watchdog_id: &str,
-    ) -> Result<QueuedWorkflowLaunch, DaemonError> {
-        let queued = QueuedWorkflowLaunch::new(
-            self.next_queued_workflow_launch_id(),
-            workflow_id.to_string(),
-            endpoint_id.to_string(),
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        let queue_ref = queue_ref.unwrap_or("default");
+        let queue_id = self.resolve_workflow_prompt_queue_ref(session_id, queue_ref)?;
+        let workflow = self.resolve_workflow_ref(session_id, workflow_id)?;
+        let endpoint =
+            self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_id)?;
+        self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
+        let queued = WorkflowQueuedPrompt::new(
+            self.next_workflow_queued_prompt_id(),
+            queue_id,
+            workflow.id().to_string(),
+            endpoint.id().to_string(),
             prompt,
-            QueuedWorkflowLaunchSource::Watchdog,
-            Some(watchdog_id.to_string()),
+            source,
+            watchdog_id,
         );
         let session =
             self.store
@@ -186,13 +227,78 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.enqueue_workflow_launch(queued))
+        Ok(session.enqueue_workflow_prompt(queued))
     }
 
-    pub fn dequeue_next_workflow_launch(
+    pub fn update_queued_workflow_prompt(
         &mut self,
         session_id: &str,
-    ) -> Result<Option<QueuedWorkflowLaunch>, DaemonError> {
+        queue_item_ref: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        let queue_item_id = self.resolve_queued_workflow_prompt_ref(session_id, queue_item_ref)?;
+        let queue_id = match queue_ref {
+            Some(queue_ref) => Some(self.resolve_workflow_prompt_queue_ref(session_id, queue_ref)?),
+            None => None,
+        };
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session
+            .update_queued_workflow_prompt(&queue_item_id, prompt, queue_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_item_ref.to_string(),
+                message: "queued workflow prompt was not found or was already dispatched",
+            })
+    }
+
+    pub fn remove_queued_workflow_prompt(
+        &mut self,
+        session_id: &str,
+        queue_item_ref: &str,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        let queue_item_id = self.resolve_queued_workflow_prompt_ref(session_id, queue_item_ref)?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session
+            .remove_queued_workflow_prompt(&queue_item_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: queue_item_ref.to_string(),
+                message: "queued workflow prompt was not found or was already dispatched",
+            })
+    }
+
+    pub fn clear_workflow_queue(
+        &mut self,
+        session_id: &str,
+        queue_ref: &str,
+    ) -> Result<Vec<WorkflowQueuedPrompt>, DaemonError> {
+        let queue_id = self.resolve_workflow_prompt_queue_ref(session_id, queue_ref)?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.clear_workflow_queue(&queue_id))
+    }
+
+    pub fn dequeue_next_workflow_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<WorkflowQueuedPrompt>, DaemonError> {
         let session =
             self.store
                 .get_mut(session_id)
@@ -202,7 +308,7 @@ impl SessionService {
         if session.has_active_workflow_run() {
             return Ok(None);
         }
-        Ok(session.dequeue_workflow_launch())
+        Ok(session.pop_next_workflow_queued_prompt())
     }
 
     fn validate_workflow_runnable(

@@ -14,30 +14,9 @@ import {
 } from "./workflow-settings-command-handlers.js"
 
 test("workflow settings command predicate recognizes settings subcommands", () => {
-  assert.equal(isWorkflowSettingsCommand("launch-policy"), true)
   assert.equal(isWorkflowSettingsCommand("flush-context"), true)
   assert.equal(isWorkflowSettingsCommand("run"), false)
   assert.equal(isWorkflowSettingsCommand(undefined), false)
-})
-
-test("workflow launch-policy command reads and updates the session policy", async () => {
-  const harness = createHarness({
-    session: session({ workflow_launch_policy: "queue" }),
-    setWorkflowLaunchPolicy: async (policy) => {
-      harness.calls.push(`set-policy:${policy}`)
-      return { session: session({ id: "session-policy", workflow_launch_policy: policy }) }
-    },
-  })
-
-  await handleWorkflowSettingsCommand(harness.deps, harness.context, ["launch-policy"])
-  await handleWorkflowSettingsCommand(harness.deps, harness.context, ["launch-policy", "reject"])
-
-  assert.deepEqual(harness.calls, [
-    "footer:info:workflow launch policy: queue",
-    "set-policy:reject",
-    "apply:session-policy",
-    "footer:info:workflow launch policy set to reject",
-  ])
 })
 
 test("workflow flush-context command reads and updates the selected workflow", async () => {
@@ -168,9 +147,6 @@ function createHarness(overrides: HarnessOptions) {
     setWorkflowFlushContext: async (workflowRef, value) => ({
       workflow: workflow({ id: workflowRef, flush_agent_context_before_run: value }),
       session: session({ id: "session-flush" }),
-    }),
-    setWorkflowLaunchPolicy: async (policy) => ({
-      session: session({ id: "session-policy", workflow_launch_policy: policy }),
     }),
     setWorkflowRunOutputSchema: async (workflowRef, schemaRef) => ({
       workflow: workflow({ id: workflowRef, run_output_schema_ref: schemaRef }),
