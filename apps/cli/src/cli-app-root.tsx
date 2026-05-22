@@ -1288,6 +1288,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setProviderRunState,
     resolveSessionAgent,
     selectedWorkflowId,
+    setSelectedWorkflowId,
+    setSelectedWorkflowNodeId,
     refreshSplitPaneFocusRepaint,
     recordPromptAreaHistoryEntry,
     promptTextController,
