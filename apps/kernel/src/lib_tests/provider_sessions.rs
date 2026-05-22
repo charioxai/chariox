@@ -47,6 +47,16 @@ fn workflow_runs_flush_participating_agent_provider_runs_by_default() {
             .with_agent_id(agent.id()),
         )
         .expect("provider run should launch");
+    let _ = app
+        .agents_mut()
+        .set_agent_runtime_profile(
+            agent.id(),
+            agent.provider(),
+            agent.model().map(str::to_string),
+            agent.effort().map(str::to_string),
+            crate::provider::ProviderResumeState::from_codex_thread_id("thread-to-flush"),
+        )
+        .expect("agent profile should update");
 
     let workflow = app
         .sessions_mut()
@@ -82,6 +92,11 @@ fn workflow_runs_flush_participating_agent_provider_runs_by_default() {
         flushed_run.state(),
         crate::provider::ProviderRunState::Ended
     );
+    let flushed_agent = app
+        .agents()
+        .get_agent(agent.id())
+        .expect("agent should still exist");
+    assert!(flushed_agent.provider_resume_state().is_empty());
 }
 
 #[test]

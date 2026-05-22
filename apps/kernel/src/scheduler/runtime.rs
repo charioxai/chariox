@@ -127,6 +127,13 @@ pub fn schedule_workflow_dispatches(
                     error
                 ),
             );
+            fail_workflow_node_after_schedule_error(
+                app,
+                session_id,
+                workflow_run_id,
+                dispatch.node_run.id(),
+                &error,
+            );
         }
     }
 }
@@ -480,6 +487,61 @@ fn handle_workflow_prompt_submission_outcome(
         }
     }
     Ok(())
+}
+
+fn fail_workflow_node_after_schedule_error(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    error: &DaemonError,
+) {
+    record_and_route_workflow_failure(
+        app,
+        session_id,
+        workflow_run_id,
+        &WorkflowFailureEvent::new(
+            WorkflowFailureKind::TransportFailure,
+            workflow_node_run_id,
+            Vec::new(),
+            error.to_string(),
+        ),
+    );
+    let _ = app.sessions_mut().fail_workflow_node_run(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    );
+    match app.start_next_queued_workflow_prompt(session_id) {
+        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+            workflow_run,
+            workflow,
+            endpoint,
+        })) => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Started queued workflow run `{}` for workflow `{}` endpoint `{}`.",
+                    workflow_run.id(),
+                    workflow.id(),
+                    endpoint.id()
+                ),
+            );
+        }
+        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. })) => {}
+        Ok(None) => {}
+        Err(error) => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!("Failed to start queued workflow prompt: {error}"),
+            );
+        }
+    }
+    let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
 }
 
 pub fn workflow_max_turns(app: &DaemonApp, session_id: &str) -> Option<usize> {

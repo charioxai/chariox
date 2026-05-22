@@ -1,6 +1,6 @@
 //! Minimal HTTP response parsing for the OpenCode local app-server client.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -11,6 +11,9 @@ use crate::error::DaemonError;
 use super::OpenCodeClient;
 
 impl OpenCodeClient {
+    const REQUEST_RETRY_ATTEMPTS: usize = 5;
+    const REQUEST_RETRY_DELAY: Duration = Duration::from_millis(100);
+
     pub(super) fn send_json_request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &'static str,
@@ -68,6 +71,33 @@ impl OpenCodeClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(u16, Vec<u8>), DaemonError> {
+        let mut last_error = None;
+        for attempt in 0..Self::REQUEST_RETRY_ATTEMPTS {
+            match self.send_request_once(method, path, body) {
+                Ok(response) => return Ok(response),
+                Err(error) if is_retryable_opencode_http_error(&error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < Self::REQUEST_RETRY_ATTEMPTS {
+                        std::thread::sleep(Self::REQUEST_RETRY_DELAY);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            self.protocol_error(
+                method_to_operation(method, path),
+                "OpenCode request failed".to_string(),
+            )
+        }))
+    }
+
+    fn send_request_once(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(u16, Vec<u8>), DaemonError> {
         let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
             self.protocol_error(
                 "base_url_parse",
@@ -110,6 +140,40 @@ impl OpenCodeClient {
         read_http_response(&mut stream)
             .map_err(|error| self.protocol_error(method_to_operation(method, path), error))
     }
+}
+
+fn is_retryable_opencode_http_error(error: &DaemonError) -> bool {
+    let DaemonError::ProviderProtocol {
+        operation, message, ..
+    } = error
+    else {
+        return false;
+    };
+    if *operation != "opencode_http" {
+        return false;
+    }
+    matches!(
+        message.as_str(),
+        "Resource temporarily unavailable (os error 35)"
+            | "Connection refused (os error 61)"
+            | "Connection reset by peer (os error 54)"
+    ) || message.contains("timed out")
+        || message.contains("connection closed before response header")
+        || message.contains("Broken pipe")
+        || retryable_io_error_kind(message).is_some()
+}
+
+fn retryable_io_error_kind(message: &str) -> Option<ErrorKind> {
+    [
+        ErrorKind::WouldBlock,
+        ErrorKind::Interrupted,
+        ErrorKind::TimedOut,
+        ErrorKind::ConnectionRefused,
+        ErrorKind::ConnectionReset,
+        ErrorKind::BrokenPipe,
+    ]
+    .into_iter()
+    .find(|kind| message == kind.to_string())
 }
 
 fn method_to_operation(method: &str, path: &str) -> &'static str {

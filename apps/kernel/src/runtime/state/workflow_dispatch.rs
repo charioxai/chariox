@@ -167,10 +167,42 @@ impl KernelRuntimeOwnedState {
                             error
                         ),
                     );
+                    self.workflow_fail_node_after_dispatch_error(
+                        session_id,
+                        workflow_run_id,
+                        dispatch.node_run.id(),
+                        &error,
+                    );
                 }
             }
         }
         prepared
+    }
+
+    fn workflow_fail_node_after_dispatch_error(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        error: &DaemonError,
+    ) {
+        self.workflow_record_failure(
+            session_id,
+            workflow_run_id,
+            &crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::TransportFailure,
+                workflow_node_run_id,
+                Vec::new(),
+                error.to_string(),
+            ),
+        );
+        let _ = self.session_store.write().fail_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        self.workflow_maybe_start_next_queued_prompt(session_id);
+        let _ = self.session_snapshot(session_id);
     }
 
     pub(super) fn workflow_dispatch_has_all_inputs(

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
 
+#[cfg(test)]
+use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, PromptQueueItem};
 use super::prompt_runtime::PromptRuntimeState;
 use super::runtime_interactions::RuntimeInteraction;

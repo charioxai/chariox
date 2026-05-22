@@ -226,7 +226,18 @@ impl DaemonApp {
             endpoint.id(),
             queued_prompt.prompt().map(str::to_string),
         )?;
-        WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)?;
+        if let Err(error) =
+            WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
+        {
+            if let Some(node_run) = workflow_run.node_runs().first() {
+                let _ = self.sessions_mut().fail_workflow_node_run(
+                    session_id,
+                    workflow_run.id(),
+                    node_run.id(),
+                );
+            }
+            return Err(error);
+        }
         let workflow_run = self
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
@@ -260,6 +271,7 @@ impl DaemonApp {
         if workflow_agent_ids.is_empty() {
             return Ok(());
         }
+        self.clear_workflow_agent_resume_state(session_id, &workflow_agent_ids)?;
         let should_cancel_active_prompt = self
             .sessions()
             .get_session(session_id)?
@@ -288,6 +300,44 @@ impl DaemonApp {
                 }
                 let _ = ProviderProcessTracker::new(self).remove_run(run.id());
             }
+        }
+        Ok(())
+    }
+
+    fn clear_workflow_agent_resume_state(
+        &mut self,
+        session_id: &str,
+        workflow_agent_ids: &BTreeSet<String>,
+    ) -> Result<(), DaemonError> {
+        for agent_id in workflow_agent_ids {
+            let agent = self.agents().get_agent(agent_id)?;
+            if agent.provider_resume_state().is_empty() {
+                continue;
+            }
+            let updated = self.agents.set_agent_runtime_profile(
+                agent_id,
+                agent.provider(),
+                agent.model().map(str::to_string),
+                agent.effort().map(str::to_string),
+                crate::provider::ProviderResumeState::default(),
+            )?;
+            let _ = self.durable_state_store().append_event(
+                "agent.runtime_profile_updated",
+                Some(updated.id().to_string()),
+                serde_json::json!({
+                    "agent": &updated,
+                    "reason": "workflow_context_flushed",
+                }),
+            );
+            self.record_notice(
+                session_id,
+                None,
+                self.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow context flush cleared provider resume state for agent `{}`.",
+                    updated.id()
+                ),
+            );
         }
         Ok(())
     }

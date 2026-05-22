@@ -31,7 +31,19 @@ impl KernelRuntimeOwnedState {
             endpoint.id(),
             queued_prompt.prompt().map(str::to_string),
         )?;
-        let dispatches = self.workflow_schedule_entry_node(session_id, &workflow_run)?;
+        let dispatches = match self.workflow_schedule_entry_node(session_id, &workflow_run) {
+            Ok(dispatches) => dispatches,
+            Err(error) => {
+                if let Some(node_run) = workflow_run.node_runs().first() {
+                    let _ = self.session_store.write().fail_workflow_node_run(
+                        session_id,
+                        workflow_run.id(),
+                        node_run.id(),
+                    );
+                }
+                return Err(error);
+            }
+        };
         let workflow_run = self
             .session_store
             .read()
