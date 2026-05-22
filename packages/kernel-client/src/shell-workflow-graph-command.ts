@@ -22,7 +22,10 @@ import {
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
   applyWorkflowDesignOpRequest,
+  getSessionStateRequest,
+  grantAgentExtensionRequest,
   resolveWorkflowRequest,
+  revokeAgentExtensionRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
@@ -178,7 +181,59 @@ export async function executeWorkflowNodeCommand(
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
     return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
-  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | instructions show|set ... | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns ..." }
+  if (action === "extensions") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const nodeId = explicitWorkflowRef ? args[2] : args[1]
+    if (!workflowRef || !nodeId) {
+      return { ok: false, message: "usage: workflow node extensions [workflow-ref] <node-id>" }
+    }
+    const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
+    if (!resolved.ok) return resolved
+    const sessionResponse = await deps.client.send(getSessionStateRequest(sessionId))
+    const session = expectAnyVariant<{ session: RuntimeSession }>(sessionResponse, ["SessionState", "SessionStateLoaded"]).session
+    const agent = session.agents.find((candidate) => candidate.id === resolved.node.agent_id)
+    const grants = agent?.extension_grants ?? []
+    return {
+      ok: true,
+      message: grants.length
+        ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
+        : `node ${resolved.node.id} agent ${resolved.agentRef} has no extensions`,
+      data: { workflow: resolved.workflow, node: resolved.node, agent },
+      contextUpdates: { workflowId: resolved.workflow.id, sessionId },
+    }
+  }
+  if (action === "extension") {
+    const extensionAction = args[1]
+    const hasExplicitWorkflow = args.length >= 6
+    const workflowRef = (hasExplicitWorkflow ? args[2] : context.workflowId) ?? null
+    const nodeId = hasExplicitWorkflow ? args[3] : args[2]
+    const kind = hasExplicitWorkflow ? args[4] : args[3]
+    const name = hasExplicitWorkflow ? args[5] : args[4]
+    if ((extensionAction !== "grant" && extensionAction !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
+      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
+    }
+    const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
+    if (!resolved.ok) return resolved
+    const response = extensionAction === "grant"
+      ? await deps.client.send(grantAgentExtensionRequest(
+        context.workspace,
+        resolved.agentRef,
+        kind,
+        name,
+        readOption(args, "--environment"),
+        { credential: readOption(args, "--credential"), maxSafety: readOption(args, "--allow") },
+      ))
+      : await deps.client.send(revokeAgentExtensionRequest(resolved.agentRef, kind, name))
+    const payload = expectVariant<{ agent: unknown }>(response, extensionAction === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked")
+    return {
+      ok: true,
+      message: `${extensionAction === "grant" ? "granted" : "revoked"} ${kind} ${name} ${extensionAction === "grant" ? "to" : "from"} workflow node ${resolved.node.id}`,
+      data: payload,
+      contextUpdates: { workflowId: resolved.workflow.id, sessionId },
+    }
+  }
+  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | instructions show|set ... | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns|extensions|extension ..." }
 }
 
 export async function executeWorkflowEdgeCommand(
@@ -276,9 +331,41 @@ function resourceResult(
   }
 }
 
+async function resolveWorkflowNodeAgent(
+  deps: ShellWorkflowGraphCommandDeps,
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+): Promise<
+  | { ok: true; workflow: WorkflowDefinition; node: WorkflowNodeDefinition; agentRef: string }
+  | { ok: false; message: string }
+> {
+  const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+  const payload = expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
+  const node = payload.workflow.nodes?.find((entry) => entry.id === nodeId)
+  if (!node) return { ok: false, message: `workflow node ${nodeId} not found` }
+  return { ok: true, workflow: payload.workflow, node, agentRef: node.agent_id }
+}
+
+function readOption(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? null : null
+}
+
+function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" {
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector"
+}
+
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
   if (!(variant in response)) {
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function expectAnyVariant<T>(response: Record<string, unknown>, variants: readonly string[]): T {
+  for (const variant of variants) {
+    if (variant in response) return response[variant] as T
+  }
+  throw new Error(`unexpected response variant: expected ${variants.join(" or ")}`)
 }

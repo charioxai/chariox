@@ -158,7 +158,7 @@ async function registerConnector(client, root, port, vaultKey) {
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: ${path.join(repoRoot, 'apps/kernel/target/debug/arroba-adapter-http')}
 description: HTTP adapter agent drill build.
 `, 'utf8')

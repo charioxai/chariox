@@ -180,7 +180,7 @@ async function main() {
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: ${path.join(repoRoot, 'apps/kernel/target/debug/arroba-adapter-http')}
 description: HTTP adapter drill build.
 `, 'utf8')
@@ -215,7 +215,7 @@ for line in sys.stdin:
 kind: connector_adapter
 name: python_echo
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: /usr/bin/python3
 args:
   - ${path.join(pyAdapterDir, 'adapter.py')}
@@ -226,7 +226,7 @@ description: Python adapter drill.
 kind: connector_adapter
 name: typescript_echo
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v1
+adapter_protocol: arroba-connector-adapter-v2
 command: ${process.execPath}
 args:
   - ${path.join(tsAdapterDir, 'adapter.mjs')}
