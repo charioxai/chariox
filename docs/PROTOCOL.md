@@ -691,7 +691,7 @@ Behavior rules:
 - provider-facing extension files or config are generated projections, not the canonical source of truth
 - MCP servers are daemon-managed runtime components and SHOULD be exposed only to the top-level provider runs they are bound to
 - provider-native subagents are not separate extension-binding targets in v1
-- workflow runtime tools such as `ack_workflow_turn` and `validate_workflow_output` SHOULD be exposed through an Arroba-managed MCP surface rather than direct daemon/kernel APIs
+- workflow runtime tools such as `ack_workflow_turn` and `validate_workflow_handoff` SHOULD be exposed through an Arroba-managed MCP surface rather than direct daemon/kernel APIs
 - for managed provider runs, MCP attachment SHOULD be automated by Arroba at launch time rather than delegated to end-user provider setup
 - day-1 implementation MAY statically advertise the workflow runtime tools and enforce turn/schema scope at call time; dynamic per-turn tool advertisement is a later hardening step
 - workflow-console MCP tools SHOULD use the same split:
@@ -822,10 +822,10 @@ Required rules:
 - the daemon MUST provide a stable reference so nodes can reload instructions after compaction
 - workflow prompt injection MUST be rendered by the scheduler-owned prompt injection layer, not by provider adapters, transport handlers, CLI scripts, or per-dispatch ad hoc string assembly
 - local workflow dispatch, remote workflow dispatch, retry/replay dispatch, and tests MUST enter the same prompt renderer so turn index, last-turn guidance, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content stay consistent
-- the daemon MUST expose a kernel-owned output validation tool to workflow nodes
+- the daemon MUST expose a kernel-owned handoff validation tool to workflow nodes
 - the runtime MUST expose a dedicated workflow-turn acknowledgment operation separate from output validation
-- node completion output SHOULD be validated against per-edge schema constraints before routing
-- invalid output MUST be rejected or flagged and surfaced back to the node as a validation error
+- node-to-node handoff payloads SHOULD be validated against per-edge schema constraints before routing
+- invalid handoffs MUST be rejected or flagged and surfaced back to the node as a validation error
 - validation failures SHOULD follow daemon policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
 
 Workflow turn durability rules:
@@ -886,7 +886,7 @@ Suggested payload fields:
 - `summary`
 - `output`
 - `artifacts`
-- `output_schema_ref`
+- `handoff_schema_ref`
 - `handoff_payload`
 - `meta`
 

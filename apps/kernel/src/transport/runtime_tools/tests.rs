@@ -1,0 +1,288 @@
+use super::*;
+
+#[cfg(test)]
+mod managed_io_tests {
+    use super::*;
+
+    #[test]
+    fn managed_io_specs_expose_read_and_edit_tools() {
+        let specs = managed_io_runtime_tool_specs();
+        assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == READ_ARTIFACT_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == EDIT_ARTIFACT_TOOL_ALIAS));
+        assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PATCH_ARTIFACT_TOOL_ALIAS));
+        assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == WRITE_ARTIFACT_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == DELETE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == DELETE_ARTIFACT_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == MOVE_ARTIFACT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == MOVE_ARTIFACT_TOOL_ALIAS));
+    }
+
+    #[test]
+    fn extension_specs_expose_discovery_and_request_tools() {
+        let specs = extension_runtime_tool_specs();
+        assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == LIST_EXTENSIONS_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REQUEST_EXTENSION_TOOL_ALIAS));
+    }
+
+    #[test]
+    fn slice_specs_expose_screen_input_and_ocr_tools() {
+        let specs = slice_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_SCREENSHOT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_SCREENSHOT_TOOL_ALIAS));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_OCR_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
+    }
+
+    #[test]
+    fn canonical_extension_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_extension_tool_name("mcp__arroba__list_extensions"),
+            Some(LIST_EXTENSIONS_TOOL)
+        );
+        assert_eq!(
+            canonical_extension_tool_name("mcp__arroba__arroba_request_extension"),
+            Some(REQUEST_EXTENSION_TOOL)
+        );
+        assert_eq!(canonical_extension_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn canonical_slice_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__slice_screenshot"),
+            Some(SLICE_SCREENSHOT_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__arroba_slice_mouse"),
+            Some(SLICE_MOUSE_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_open_url"),
+            Some(SLICE_OPEN_URL_TOOL)
+        );
+        assert_eq!(canonical_slice_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn canonical_managed_io_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_managed_io_tool_name("mcp__arroba__read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("mcp__arroba__arroba_read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("read_artifact"),
+            Some(READ_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("edit_artifact"),
+            Some(EDIT_ARTIFACT_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("patch_artifact"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("arroba_apply_patch"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(
+            canonical_managed_io_tool_name("arroba_patch_artifact"),
+            Some(APPLY_PATCH_TOOL)
+        );
+        assert_eq!(canonical_managed_io_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn managed_edit_args_accept_text_replace_shape() {
+        let args = serde_json::from_value::<ManagedEditArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs",
+            "snapshot_id": "snap:1",
+            "old_text": "before",
+            "new_text": "after"
+        }))
+        .expect("managed edit args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+        assert_eq!(args.old_text.as_deref(), Some("before"));
+        assert_eq!(args.new_text, "after");
+    }
+
+    #[test]
+    fn managed_write_args_accept_text_content_shape() {
+        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs",
+            "content_text": "hello"
+        }))
+        .expect("managed write args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+        assert_eq!(args.content_text.as_deref(), Some("hello"));
+        assert_eq!(args.content_base64, None);
+    }
+
+    #[test]
+    fn managed_write_args_accept_opaque_content_shape() {
+        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+            "path": "assets/blob.bin",
+            "content_base64": "AAEC",
+            "domain": "opaque"
+        }))
+        .expect("managed opaque write args should parse");
+
+        assert_eq!(args.path, "assets/blob.bin");
+        assert_eq!(args.content_text, None);
+        assert_eq!(args.content_base64.as_deref(), Some("AAEC"));
+    }
+
+    #[test]
+    fn managed_apply_patch_args_accept_patch_text_shape() {
+        let args = serde_json::from_value::<ManagedApplyPatchArgs>(serde_json::json!({
+            "patch_text": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch",
+            "domain": "text"
+        }))
+        .expect("managed apply patch args should parse");
+
+        assert!(args.patch_text.contains("*** Begin Patch"));
+        assert_eq!(args.domain.as_deref(), Some("text"));
+    }
+
+    #[test]
+    fn managed_delete_args_accept_path_shape() {
+        let args = serde_json::from_value::<ManagedDeleteArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs"
+        }))
+        .expect("managed delete args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn managed_move_args_accept_path_shape() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "src/old.rs",
+            "to_path": "src/new.rs",
+            "old_text": "old",
+            "new_text": "new"
+        }))
+        .expect("managed move args should parse");
+
+        assert_eq!(args.from_path, "src/old.rs");
+        assert_eq!(args.to_path, "src/new.rs");
+        assert_eq!(args.old_text.as_deref(), Some("old"));
+        assert_eq!(args.new_text.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn managed_move_args_treat_empty_transform_fields_as_absent_for_non_text() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "from.bin",
+            "to_path": "to.bin",
+            "old_text": "",
+            "new_text": "",
+            "domain": "opaque"
+        }))
+        .expect("managed move args should parse");
+
+        assert!(!args.has_non_text_transform_fields());
+    }
+
+    #[test]
+    fn managed_move_args_treat_empty_transform_pair_as_absent_for_text() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "from.txt",
+            "to_path": "to.txt",
+            "old_text": "",
+            "new_text": "",
+            "domain": "text"
+        }))
+        .expect("managed move args should parse");
+
+        assert_eq!(args.normalized_text_transform_fields(), (None, None));
+    }
+
+    #[test]
+    fn generic_json_output_schema_validator_accepts_valid_output() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["answer"],
+            "additionalProperties": false,
+            "properties": {
+                "answer": {"type": "string"}
+            }
+        });
+        validate_json_output_schema("test_schema", &schema, r#"{"answer":"ok"}"#)
+            .expect("valid output should pass schema validation");
+    }
+
+    #[test]
+    fn generic_json_output_schema_validator_reports_invalid_output() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["answer"],
+            "additionalProperties": false,
+            "properties": {
+                "answer": {"type": "string"}
+            }
+        });
+        let error = validate_json_output_schema("test_schema", &schema, r#"{"extra":true}"#)
+            .expect_err("invalid output should fail schema validation");
+        assert!(error.contains("required") || error.contains("Additional properties"));
+    }
+
+    #[test]
+    fn workflow_handoff_schema_validator_keeps_schema_ref_contract() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-workflow-schema-{}.json",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"type":"object","required":["status"],"properties":{"status":{"type":"string"}},"additionalProperties":false}"#,
+        )
+        .expect("schema file should be writable");
+        validate_workflow_handoff_schema(
+            path.to_str().expect("schema path should be utf8"),
+            r#"{"status":"ok"}"#,
+        )
+        .expect("workflow handoff schema-ref validation should still pass");
+        let _ = std::fs::remove_file(path);
+    }
+}

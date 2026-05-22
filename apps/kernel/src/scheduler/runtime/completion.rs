@@ -257,10 +257,11 @@ fn workflow_completion_snapshot_from_validated_tool_output(
                     .and_then(|value| value.get("valid").and_then(|valid| valid.as_bool()))
                     == Some(true)
         })?;
-    let args = serde_json::from_str::<crate::transport::runtime_tools::ValidateWorkflowHandoffArgs>(
-        call.arguments_json(),
-    )
-    .ok()?;
+    let args =
+        serde_json::from_str::<crate::transport::runtime_tools::ValidateWorkflowHandoffArgs>(
+            call.arguments_json(),
+        )
+        .ok()?;
     let summary = workflow_completion_summary(provider_output);
     Some(WorkflowCompletionSnapshot::new(
         summary,

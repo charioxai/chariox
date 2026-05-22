@@ -30,7 +30,7 @@ pub use agent_config::{
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowLaunchAdmission, WorkflowHandoffValidationWarning, WorkflowWatchdogTickPlan,
+    WorkflowHandoffValidationWarning, WorkflowLaunchAdmission, WorkflowWatchdogTickPlan,
 };
 pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;

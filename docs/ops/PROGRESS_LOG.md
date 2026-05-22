@@ -854,7 +854,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M4.5 remote workflow relay live drill closure
 
 - Closed live-drill point 4: the remote workflow catalog passes through relay with `opencode,codex`, a home daemon, a worker daemon, worker-machine leased agents, forwarded workflow runtime tools, cyclic progression, validated intermediate output, final workflow output, and clean final workflow projections.
-- Fixed the remote workflow hard center found by the drills: remote entry turns now start and settle leased prompts, forwarded worker runtime-tool calls complete worker-side leased workflow prompts after validated output/final-output submission, and workflow completion can fall back to the last successful `validate_workflow_output` tool payload when a live provider validates but does not emit the final fenced block.
+- Fixed the remote workflow hard center found by the drills: remote entry turns now start and settle leased prompts, forwarded worker runtime-tool calls complete worker-side leased workflow prompts after validated handoff/final-output submission, and workflow completion can fall back to the last successful validation tool payload when a live provider validates but does not emit the final fenced block.
 - Tightened the live cyclic drill scenarios to exercise one deterministic cycle rather than long model-dependent loops, keeping coverage for cyclic handoff, turn budget, intermediate output, and final workflow-output submission without making the gate depend on repeated live-provider instruction compliance.
 
 ### M7.5 embedded shell scriptability update

@@ -1,6 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{WorkflowMessage, WorkflowHandoffValidationPolicy};
+use crate::session::{WorkflowHandoffValidationPolicy, WorkflowMessage};
 use std::path::PathBuf;
 
 pub(crate) struct WorkflowPromptInjectionContext {

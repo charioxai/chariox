@@ -161,9 +161,7 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
             {
                 if run.state() == crate::provider::ProviderRunState::Starting {
-                    dispatches
-                        .starting_provider_runs
-                        .push(run.id().to_string());
+                    dispatches.starting_provider_runs.push(run.id().to_string());
                 }
             }
         }
@@ -260,10 +258,9 @@ impl KernelRuntimeOwnedState {
                     operation: "ack_workflow_turn",
                 });
             }
-            let requires_validation = workflow
-                .edges()
-                .iter()
-                .any(|edge| edge.from_node_id() == node.id() && edge.handoff_schema_ref().is_some());
+            let requires_validation = workflow.edges().iter().any(|edge| {
+                edge.from_node_id() == node.id() && edge.handoff_schema_ref().is_some()
+            });
             if requires_validation
                 && !capabilities.supports_control_operation(
                     crate::provider::ControlOperation::ValidateWorkflowHandoff,

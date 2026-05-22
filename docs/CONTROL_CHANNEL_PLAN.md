@@ -64,7 +64,7 @@ These are runtime-owned operations exposed to agents through MCP.
 Examples:
 
 - `ack_workflow_turn`
-- `validate_workflow_output`
+- `validate_workflow_handoff`
 
 These are already first-class in behavior and are the most mature part of the current control surface.
 
@@ -124,7 +124,7 @@ because support may vary by:
 Workflow implication:
 
 - workflow preflight should reject runs whose node agents do not support required control operations such as `ack_workflow_turn`
-- per-edge schema validation should only be considered runnable when the producing node supports `validate_workflow_output`
+- per-edge handoff schema validation should only be considered runnable when the producing node supports `validate_workflow_handoff`
 
 ## Boundaries
 
@@ -242,7 +242,7 @@ Consequence:
 
 ### Gap 3. Runtime tools and provider control are separate universes
 
-`ack_workflow_turn` and `validate_workflow_output` are structured and first-class, but they do not live in the same abstraction as cancel/interrupt.
+`ack_workflow_turn` and `validate_workflow_handoff` are structured and first-class, but they do not live in the same abstraction as cancel/interrupt.
 
 Consequence:
 
@@ -264,7 +264,7 @@ Suggested internal operation enum:
   - `InterruptTurn`
   - `CancelPrompt`
   - `AckWorkflowTurn`
-  - `ValidateWorkflowOutput`
+  - `ValidateWorkflowHandoff`
   - `AttachFile`
   - `RequestMemoryUpdate`
   - `RequestCompactionSummary`

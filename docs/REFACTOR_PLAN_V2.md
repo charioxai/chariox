@@ -105,7 +105,7 @@ Shipped:
 - automated managed-run MCP attachment for supported Codex and OpenCode runs
 - live-managed MCP path verified for:
   - `ack_workflow_turn`
-  - `validate_workflow_output`
+  - `validate_workflow_handoff`
   - OpenCode workflow turns
   - Codex workflow turns
   - mixed-provider workflow runs

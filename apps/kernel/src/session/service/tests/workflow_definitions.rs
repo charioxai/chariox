@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowHandoffValidationPolicy;
 
 #[test]
 fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
@@ -323,6 +324,60 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
         .set_workflow_node_max_turns(session.id(), workflow.id(), node.id(), Some(3))
         .expect("node max turns should update");
     assert_eq!(updated_node.max_turns(), Some(3));
+}
+
+#[test]
+fn workflow_design_edge_update_applies_handoff_schema_patch() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let planner = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("planner node should be added");
+    let reviewer = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
+        .expect("reviewer node should be added");
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            None,
+            None,
+        )
+        .expect("edge should be added");
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EdgeUpdate {
+                workflow_id: workflow.id().to_string(),
+                edge_id: edge.id().to_string(),
+                patch: crate::local::WorkflowDesignEdgePatch {
+                    handoff_schema_ref: Some(Some("/tmp/handoff-schema.json".to_string())),
+                    validation_policy: Some(Some(WorkflowHandoffValidationPolicy::Warn)),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("edge update design op should apply");
+
+    let updated_edge = updated
+        .edge(edge.id())
+        .expect("updated workflow should keep the edge");
+    assert_eq!(
+        updated_edge.handoff_schema_ref(),
+        Some("/tmp/handoff-schema.json")
+    );
+    assert_eq!(
+        updated_edge.validation_policy(),
+        Some(WorkflowHandoffValidationPolicy::Warn)
+    );
 }
 
 #[test]
