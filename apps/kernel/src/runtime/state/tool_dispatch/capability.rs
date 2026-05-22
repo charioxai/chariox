@@ -1,5 +1,6 @@
 use super::capability_registry::{
-    mcp_registry_for_workspace, script_registry_for_workspace, skill_registry_for_workspace,
+    connector_registry, mcp_registry_for_workspace, script_registry_for_workspace,
+    skill_registry_for_workspace,
 };
 use super::*;
 
@@ -182,12 +183,12 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let kind = args.kind.as_deref().unwrap_or("all");
-                if !matches!(kind, "all" | "mcp" | "skill" | "script") {
+                if !matches!(kind, "all" | "mcp" | "skill" | "script" | "connector") {
                     return Ok((
                         crate::transport::runtime_tools::RuntimeToolResult {
                             ok: false,
                             payload: serde_json::json!({
-                                "error": "kind must be one of: all, mcp, skill, script"
+                                "error": "kind must be one of: all, mcp, skill, script, connector"
                             }),
                         },
                         None,
@@ -261,6 +262,53 @@ impl KernelRuntimeState {
                 } else {
                     Vec::new()
                 };
+                let connector_registry = connector_registry()?;
+                let connectors = if matches!(kind, "all" | "connector") {
+                    connector_registry
+                        .list()?
+                        .into_iter()
+                        .map(|connector| {
+                            let grant = agent
+                                .connector_grants()
+                                .into_iter()
+                                .find(|grant| grant.name == connector.name);
+                            let max_safety = grant
+                                .as_ref()
+                                .and_then(|grant| {
+                                    crate::connector::ConnectorSafety::parse(
+                                        grant.max_safety.as_deref(),
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or(crate::connector::ConnectorSafety::Read);
+                            let operations = connector
+                                .operations
+                                .iter()
+                                .filter(|operation| operation.safety <= max_safety)
+                                .map(|operation| {
+                                    serde_json::json!({
+                                        "name": operation.name,
+                                        "tool_name": crate::connector::connector_tool_name(&connector.name, &operation.name),
+                                        "description": operation.description,
+                                        "safety": operation.safety.as_str()
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            serde_json::json!({
+                                "kind": "connector",
+                                "name": connector.name,
+                                "description": connector.description,
+                                "adapter": connector.adapter,
+                                "granted": grant.is_some(),
+                                "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
+                                "operations": operations,
+                                "effective_when_requested": "current_or_next_turn"
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 Ok((
                     crate::transport::runtime_tools::RuntimeToolResult {
                         ok: true,
@@ -269,7 +317,8 @@ impl KernelRuntimeState {
                             "extensions": {
                                 "mcps": mcps,
                                 "skills": skills,
-                                "scripts": scripts
+                                "scripts": scripts,
+                                "connectors": connectors
                             }
                         }),
                     },
@@ -435,12 +484,46 @@ impl KernelRuntimeState {
                         .await?;
                         (granted_agent, "now", false)
                     }
+                    "connector" => {
+                        let connector_registry = connector_registry()?;
+                        if connector_registry.get(&args.name)?.is_none() {
+                            return Ok((
+                                crate::transport::runtime_tools::RuntimeToolResult {
+                                    ok: false,
+                                    payload: serde_json::json!({
+                                        "error": format!("connector `{}` is not registered", args.name),
+                                        "kind": "connector",
+                                        "name": args.name,
+                                    }),
+                                },
+                                None,
+                            ));
+                        }
+                        let max_safety =
+                            crate::connector::ConnectorSafety::parse(args.allow.as_deref())?;
+                        let granted_agent = self.owned.grant_agent_extension(
+                            agent.id(),
+                            crate::extension::ExtensionGrant::connector(
+                                args.name.clone(),
+                                args.credential.clone(),
+                                max_safety.as_str(),
+                            ),
+                            agent.owner_user_id(),
+                        )?;
+                        self.append_agent_durable_event(
+                            "agent.extension_granted",
+                            &granted_agent,
+                            Some(&format!("connector:{}", args.name)),
+                        )
+                        .await?;
+                        (granted_agent, "now", false)
+                    }
                     _ => {
                         return Ok((
                             crate::transport::runtime_tools::RuntimeToolResult {
                                 ok: false,
                                 payload: serde_json::json!({
-                                    "error": "kind must be one of: mcp, skill, script"
+                                    "error": "kind must be one of: mcp, skill, script, connector"
                                 }),
                             },
                             None,

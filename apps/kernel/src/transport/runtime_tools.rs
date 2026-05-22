@@ -190,6 +190,10 @@ pub struct RequestExtensionArgs {
     pub return_body: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +353,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "all"]
+                        "enum": ["mcp", "skill", "script", "connector", "all"]
                     }
                 },
                 "additionalProperties": false
@@ -357,19 +361,24 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_EXTENSION_TOOL.to_string(),
-            description: "Request access to an Arroba-managed MCP, skill, or script for the current agent. V1 grants valid MCP and skill requests automatically. Script requests require an existing environment grant and are usually granted by the user.".to_string(),
+            description: "Request access to an Arroba-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script"]
+                        "enum": ["mcp", "skill", "script", "connector"]
                     },
                     "name": {"type": "string"},
                     "reason": {"type": "string"},
                     "return_body": {"type": "boolean"},
-                    "environment": {"type": "string"}
+                    "environment": {"type": "string"},
+                    "allow": {
+                        "type": "string",
+                        "enum": ["read", "write", "admin"]
+                    },
+                    "credential": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
