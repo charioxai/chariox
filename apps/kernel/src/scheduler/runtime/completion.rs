@@ -250,21 +250,21 @@ fn workflow_completion_snapshot_from_validated_tool_output(
         .find(|call| {
             call.ok()
                 && call.tool_name()
-                    == crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL
+                    == crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL
                 && call
                     .result_json()
                     .and_then(|result| serde_json::from_str::<serde_json::Value>(result).ok())
                     .and_then(|value| value.get("valid").and_then(|valid| valid.as_bool()))
                     == Some(true)
         })?;
-    let args = serde_json::from_str::<crate::transport::runtime_tools::ValidateWorkflowOutputArgs>(
+    let args = serde_json::from_str::<crate::transport::runtime_tools::ValidateWorkflowHandoffArgs>(
         call.arguments_json(),
     )
     .ok()?;
     let summary = workflow_completion_summary(provider_output);
     Some(WorkflowCompletionSnapshot::new(
         summary,
-        Some(WorkflowOutputPayload::new(args.output_json, Vec::new())),
+        Some(WorkflowOutputPayload::new(args.handoff_json, Vec::new())),
     ))
 }
 

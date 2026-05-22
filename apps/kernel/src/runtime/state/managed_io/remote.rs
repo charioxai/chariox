@@ -207,7 +207,7 @@ pub(in crate::runtime::state) fn leased_workflow_tool_result_should_complete_tur
         return false;
     }
     match tool_name {
-        crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
+        crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL => {
             result
                 .payload
                 .get("valid")

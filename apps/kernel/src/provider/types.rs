@@ -15,7 +15,7 @@ pub enum ControlOperation {
     InterruptTurn,
     CancelPrompt,
     AckWorkflowTurn,
-    ValidateWorkflowOutput,
+    ValidateWorkflowHandoff,
     AttachFile,
     RequestMemoryUpdate,
     RequestCompactionSummary,

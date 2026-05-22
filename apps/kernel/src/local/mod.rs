@@ -84,7 +84,7 @@ pub use api::{
     UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest, UpdateSkillRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest,
     UserConfigMutationEffect, UserConfigProviderReloadSummary, ValidateScriptRequest,
-    ValidateWorkflowOutputRequest, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
+    ValidateWorkflowHandoffRequest, WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget,
     WaitingRoomPublicAgentSummary, WaitingRoomPublicItemActivitySummary,
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,

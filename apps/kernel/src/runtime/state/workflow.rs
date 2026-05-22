@@ -263,10 +263,10 @@ impl KernelRuntimeOwnedState {
             let requires_validation = workflow
                 .edges()
                 .iter()
-                .any(|edge| edge.from_node_id() == node.id() && edge.output_schema_ref().is_some());
+                .any(|edge| edge.from_node_id() == node.id() && edge.handoff_schema_ref().is_some());
             if requires_validation
                 && !capabilities.supports_control_operation(
-                    crate::provider::ControlOperation::ValidateWorkflowOutput,
+                    crate::provider::ControlOperation::ValidateWorkflowHandoff,
                 )
             {
                 return Err(DaemonError::WorkflowNodeControlUnsupported {
@@ -274,7 +274,7 @@ impl KernelRuntimeOwnedState {
                     workflow_id: workflow.id().to_string(),
                     node_id: node.id().to_string(),
                     agent_id: node.agent_id().to_string(),
-                    operation: "validate_workflow_output",
+                    operation: "validate_workflow_handoff",
                 });
             }
         }

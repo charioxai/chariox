@@ -30,11 +30,11 @@ pub use agent_config::{
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowLaunchAdmission, WorkflowOutputValidationWarning, WorkflowWatchdogTickPlan,
+    WorkflowLaunchAdmission, WorkflowHandoffValidationWarning, WorkflowWatchdogTickPlan,
 };
 pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;
-pub use types::WorkflowOutputValidationPolicy;
+pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,

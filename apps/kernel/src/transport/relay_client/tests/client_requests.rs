@@ -145,10 +145,10 @@ async fn proxied_session_requests_are_handled_through_relay() {
         "validate-1",
         &config.daemon_id,
         &daemon_public_key,
-        LocalDaemonRequest::ValidateWorkflowOutput(ValidateWorkflowOutputRequest {
+        LocalDaemonRequest::ValidateWorkflowHandoff(ValidateWorkflowHandoffRequest {
             session_id: created_session_id.clone(),
-            output_schema_ref: schema_path.display().to_string(),
-            output_json: r#"{"ok":true}"#.to_string(),
+            handoff_schema_ref: schema_path.display().to_string(),
+            handoff_json: r#"{"ok":true}"#.to_string(),
             validation_policy: None,
         }),
     )
@@ -161,7 +161,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     .await;
     assert!(matches!(
         validate_response,
-        LocalDaemonResponse::WorkflowOutputValidated {
+        LocalDaemonResponse::WorkflowHandoffValidated {
             valid: true,
             warning: None
         }

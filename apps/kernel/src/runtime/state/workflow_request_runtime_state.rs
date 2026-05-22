@@ -214,8 +214,8 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ResumeWorkflowRun(request) => {
                 self.execute_workflow_resume_run_request(request)
             }
-            LocalDaemonRequest::ValidateWorkflowOutput(request) => {
-                let result = owned.workflow_validate_output(request);
+            LocalDaemonRequest::ValidateWorkflowHandoff(request) => {
+                let result = owned.workflow_validate_handoff(request);
                 (result, None)
             }
             LocalDaemonRequest::AckWorkflowTurn(request) => {

@@ -423,7 +423,7 @@ fn default_control_capabilities(
             ControlCapabilityMode::AdapterEmulated,
         ));
         capabilities.push(ControlCapability::new(
-            ControlOperation::ValidateWorkflowOutput,
+            ControlOperation::ValidateWorkflowHandoff,
             ControlCapabilityMode::AdapterEmulated,
         ));
     } else if has_runtime_mcp_binding {
@@ -432,7 +432,7 @@ fn default_control_capabilities(
             ControlCapabilityMode::Mcp,
         ));
         capabilities.push(ControlCapability::new(
-            ControlOperation::ValidateWorkflowOutput,
+            ControlOperation::ValidateWorkflowHandoff,
             ControlCapabilityMode::Mcp,
         ));
     }

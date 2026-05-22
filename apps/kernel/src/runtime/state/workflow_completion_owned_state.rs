@@ -92,7 +92,7 @@ impl KernelRuntimeOwnedState {
         );
         let update = match completion_result {
             Ok(update) => update,
-            Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
+            Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
                 edge_id,
                 message,
                 ..
@@ -148,7 +148,7 @@ impl KernelRuntimeOwnedState {
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
                 format!(
-                    "Workflow output validation warning on edge `{}`: {}",
+                    "Workflow handoff validation warning on edge `{}`: {}",
                     warning.edge_id, warning.message
                 ),
             );

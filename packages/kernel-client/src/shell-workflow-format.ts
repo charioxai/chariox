@@ -22,12 +22,18 @@ export function formatWorkflowList(workflows: WorkflowDefinition[], currentWorkf
 }
 
 export function formatWorkflowDetails(workflow: WorkflowDefinition): string {
+  const edgeLines = (workflow.edges ?? []).map((edge) => {
+    const handoffSchema = edge.handoff_schema_ref ? ` handoff_schema=${edge.handoff_schema_ref}` : ""
+    const validationPolicy = edge.validation_policy ? ` validation_policy=${edge.validation_policy}` : ""
+    return `edge ${edge.id} ${edge.from_node_id}->${edge.to_node_id}${handoffSchema}${validationPolicy}`
+  })
   return [
     `workflow ${formatWorkflowLabel(workflow)}`,
     `nodes=${workflow.nodes?.length ?? 0} edges=${workflow.edges?.length ?? 0} endpoints=${workflow.endpoints?.length ?? 0}`,
     `flush_context=${String(workflow.flush_agent_context_before_run ?? true)}`,
     workflow.run_output_schema_ref ? `run_output_schema=${workflow.run_output_schema_ref}` : null,
     workflow.intermediate_output_schema_ref ? `intermediate_output_schema=${workflow.intermediate_output_schema_ref}` : null,
+    ...edgeLines,
   ].filter(Boolean).join("\n")
 }
 

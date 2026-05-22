@@ -166,7 +166,7 @@ impl LocalRouterTestHarness {
                     workflow_ref: workflow_id.to_string(),
                     from_node_id: from_node_id.to_string(),
                     to_node_id: to_node_id.to_string(),
-                    output_schema_ref: None,
+                    handoff_schema_ref: None,
                     validation_policy: None,
                     expected_workflow_revision: None,
                 },

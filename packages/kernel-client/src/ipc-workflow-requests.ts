@@ -336,6 +336,7 @@ export function addWorkflowEdgeRequest(
   workflowRef: string,
   fromNodeId: string,
   toNodeId: string,
+  handoffSchemaRef?: string | null,
 ) {
   return {
     AddWorkflowEdge: {
@@ -343,6 +344,7 @@ export function addWorkflowEdgeRequest(
       workflow_ref: workflowRef,
       from_node_id: fromNodeId,
       to_node_id: toNodeId,
+      ...(handoffSchemaRef ? { handoff_schema_ref: handoffSchemaRef } : {}),
     },
   }
 }

@@ -1,37 +1,37 @@
-//! Workflow output validation and submission runtime-tool handlers.
+//! Workflow handoff validation and submission runtime-tool handlers.
 
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn workflow_validate_output_tool_result(
+    pub(super) fn workflow_validate_handoff_tool_result(
         &self,
         arguments: &serde_json::Value,
         context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<
-            crate::transport::runtime_tools::ValidateWorkflowOutputArgs,
+            crate::transport::runtime_tools::ValidateWorkflowHandoffArgs,
         >(arguments.clone())
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "runtime_tool_validate_workflow_output",
+            operation: "runtime_tool_validate_workflow_handoff",
             message: format!("invalid tool arguments: {error}"),
         })?;
-        if !context.allowed_output_schema_refs.is_empty()
+        if !context.allowed_handoff_schema_refs.is_empty()
             && !context
-                .allowed_output_schema_refs
+                .allowed_handoff_schema_refs
                 .iter()
-                .any(|schema_ref| schema_ref == &args.output_schema_ref)
+                .any(|schema_ref| schema_ref == &args.handoff_schema_ref)
         {
             return Err(DaemonError::LocalTransport {
-                operation: "runtime_tool_validate_workflow_output",
+                operation: "runtime_tool_validate_workflow_handoff",
                 message: format!(
                     "schema ref `{}` is not allowed for workflow node run `{}`",
-                    args.output_schema_ref, context.workflow_node_run_id
+                    args.handoff_schema_ref, context.workflow_node_run_id
                 ),
             });
         }
-        let warning = crate::transport::runtime_tools::validate_workflow_output_schema(
-            &args.output_schema_ref,
-            &args.output_json,
+        let warning = crate::transport::runtime_tools::validate_workflow_handoff_schema(
+            &args.handoff_schema_ref,
+            &args.handoff_json,
         )
         .err();
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -42,7 +42,7 @@ impl KernelRuntimeOwnedState {
                 "next_action": if warning.is_none() {
                     "Validation passed. Now finish this same workflow turn by emitting exactly one final fenced json block and then stop."
                 } else {
-                    "Validation failed or warned. Revise the output and call validate_workflow_output again before finalizing."
+                    "Validation failed or warned. Revise the output and call validate_workflow_handoff again before finalizing."
                 },
             }),
         })
@@ -98,7 +98,7 @@ impl KernelRuntimeOwnedState {
             context.workflow_intermediate_output_schema_ref.as_deref()
         };
         let warning = schema_ref.and_then(|schema_ref| {
-            crate::transport::runtime_tools::validate_workflow_output_schema(
+            crate::transport::runtime_tools::validate_workflow_handoff_schema(
                 schema_ref,
                 &args.workflow_output_json,
             )
@@ -158,7 +158,7 @@ impl KernelRuntimeOwnedState {
                     self.attachment_store
                         .list_session_attachment_ids(&context.session_id),
                     format!(
-                        "Workflow output validation warning on edge `{}`: {}",
+                        "Workflow handoff validation warning on edge `{}`: {}",
                         warning.edge_id, warning.message
                     ),
                 );

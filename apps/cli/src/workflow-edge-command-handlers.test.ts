@@ -62,7 +62,7 @@ test("workflow edge add rejects duplicate and ambiguous selected-workflow syntax
     "footer:error:workflow edge already exists between those nodes",
   ])
   assert.deepEqual(ambiguous.calls, [
-    "footer:error:usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>",
+    "footer:error:usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref> [--handoff-schema <schema-ref>]",
   ])
 })
 
@@ -130,8 +130,8 @@ function createHarness(overrides: HarnessOptions = {}) {
     upsertWorkflowDefinition: (nextWorkflow) => {
       calls.push(`upsert:${nextWorkflow.id}`)
     },
-    addWorkflowEdge: async (workflowRef, fromNodeId, toNodeId) => {
-      calls.push(`add:${workflowRef}:${fromNodeId}:${toNodeId}`)
+    addWorkflowEdge: async (workflowRef, fromNodeId, toNodeId, handoffSchemaRef) => {
+      calls.push(`add:${workflowRef}:${fromNodeId}:${toNodeId}${handoffSchemaRef ? `:${handoffSchemaRef}` : ""}`)
       return {
         edge: edge({ from_node_id: fromNodeId, to_node_id: toNodeId }),
         workflow: workflow({ id: workflowRef }),

@@ -643,7 +643,7 @@ pub fn on_workflow_prompt_completed(
         validation_warnings,
     } = match completion_result {
         Ok(update) => update,
-        Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
+        Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
             edge_id, message, ..
         }) => {
             record_and_route_workflow_failure(
@@ -692,7 +692,7 @@ pub fn on_workflow_prompt_completed(
                 None,
                 app.attachments().list_session_attachment_ids(session_id),
                 format!(
-                    "Workflow output validation warning on edge `{}`: {}",
+                    "Workflow handoff validation warning on edge `{}`: {}",
                     warning.edge_id, warning.message
                 ),
             );
@@ -1297,16 +1297,16 @@ pub fn validate_workflow_agents(
         let requires_validation = workflow
             .edges()
             .iter()
-            .any(|edge| edge.from_node_id() == node.id() && edge.output_schema_ref().is_some());
+            .any(|edge| edge.from_node_id() == node.id() && edge.handoff_schema_ref().is_some());
         if requires_validation
-            && !capabilities.supports_control_operation(ControlOperation::ValidateWorkflowOutput)
+            && !capabilities.supports_control_operation(ControlOperation::ValidateWorkflowHandoff)
         {
             return Err(DaemonError::WorkflowNodeControlUnsupported {
                 session_id: session_id.to_string(),
                 workflow_id: workflow.id().to_string(),
                 node_id: node.id().to_string(),
                 agent_id: node.agent_id().to_string(),
-                operation: "validate_workflow_output",
+                operation: "validate_workflow_handoff",
             });
         }
     }

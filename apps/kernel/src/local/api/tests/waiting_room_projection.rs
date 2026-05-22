@@ -271,7 +271,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
                 workflow_ref: workflow.id().to_string(),
                 from_node_id: first_node.id().to_string(),
                 to_node_id: second_node.id().to_string(),
-                output_schema_ref: None,
+                handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
             },

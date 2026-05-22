@@ -207,7 +207,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 workflow_ref: workflow.id().to_string(),
                 from_node_id: node_a.id().to_string(),
                 to_node_id: node_b.id().to_string(),
-                output_schema_ref: None,
+                handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
             },

@@ -20,7 +20,7 @@ use super::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
     WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowOutputValidationPolicy, WorkflowPublicationDefinition, WorkflowPublicationPairingCode,
+    WorkflowHandoffValidationPolicy, WorkflowPublicationDefinition, WorkflowPublicationPairingCode,
     WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowRun,
     WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,
     WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
@@ -51,11 +51,11 @@ pub struct WorkflowDispatch {
 pub struct WorkflowCompletionUpdate {
     pub workflow_run: WorkflowRun,
     pub dispatches: Vec<WorkflowDispatch>,
-    pub validation_warnings: Vec<WorkflowOutputValidationWarning>,
+    pub validation_warnings: Vec<WorkflowHandoffValidationWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowOutputValidationWarning {
+pub struct WorkflowHandoffValidationWarning {
     pub edge_id: String,
     pub message: String,
 }
@@ -123,5 +123,5 @@ pub use helpers::classify_workflow_failure_kind;
 use helpers::{
     collect_ready_workflow_dispatches, describe_session_match, normalize_session_alias,
     normalize_workflow_alias, normalize_workflow_endpoint_alias,
-    normalize_workflow_publication_alias, validate_workflow_edge_output,
+    normalize_workflow_publication_alias, validate_workflow_edge_handoff,
 };

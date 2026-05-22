@@ -165,9 +165,14 @@ export function createWorkflowTopologyController(deps: WorkflowTopologyControlle
     )
   }
 
-  const addWorkflowEdge = async (workflowRef: string, fromNodeId: string, toNodeId: string) => {
+  const addWorkflowEdge = async (
+    workflowRef: string,
+    fromNodeId: string,
+    toNodeId: string,
+    handoffSchemaRef?: string | null,
+  ) => {
     const response = await deps.sendRequest(
-      addWorkflowEdgeRequest(deps.sessionId(), workflowRef, fromNodeId, toNodeId),
+      addWorkflowEdgeRequest(deps.sessionId(), workflowRef, fromNodeId, toNodeId, handoffSchemaRef),
     )
     return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
       response,

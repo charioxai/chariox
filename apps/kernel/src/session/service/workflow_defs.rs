@@ -256,7 +256,7 @@ impl SessionService {
                     edge.id,
                     edge.from_node_id,
                     edge.to_node_id,
-                    edge.output_schema_ref,
+                    edge.handoff_schema_ref,
                     edge.validation_policy,
                 );
                 definition.set_created_by_user_id(owner_user_id);
@@ -706,8 +706,8 @@ impl SessionService {
         workflow_ref: &str,
         from_node_id: &str,
         to_node_id: &str,
-        output_schema_ref: Option<String>,
-        validation_policy: Option<WorkflowOutputValidationPolicy>,
+        handoff_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         self.add_workflow_edge_owned(
             session_id,
@@ -715,7 +715,7 @@ impl SessionService {
             from_node_id,
             to_node_id,
             DEFAULT_LOCAL_USER_ID.to_string(),
-            output_schema_ref,
+            handoff_schema_ref,
             validation_policy,
         )
     }
@@ -727,8 +727,8 @@ impl SessionService {
         from_node_id: &str,
         to_node_id: &str,
         created_by_user_id: String,
-        output_schema_ref: Option<String>,
-        validation_policy: Option<WorkflowOutputValidationPolicy>,
+        handoff_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
@@ -738,7 +738,7 @@ impl SessionService {
             self.next_workflow_edge_id(),
             from_node_id.to_string(),
             to_node_id.to_string(),
-            output_schema_ref,
+            handoff_schema_ref,
             validation_policy,
         );
         edge.set_created_by_user_id(created_by_user_id);

@@ -235,7 +235,7 @@ pub struct WorkflowHandoffPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<WorkflowCompletionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    output_schema_ref: Option<String>,
+    handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     validation_warning: Option<String>,
 }
@@ -250,7 +250,7 @@ impl WorkflowHandoffPayload {
         target_node_id: impl Into<String>,
         invocation_prompt: Option<String>,
         completion: Option<WorkflowCompletionSnapshot>,
-        output_schema_ref: Option<String>,
+        handoff_schema_ref: Option<String>,
         validation_warning: Option<String>,
     ) -> Self {
         Self {
@@ -262,7 +262,7 @@ impl WorkflowHandoffPayload {
             target_node_id: target_node_id.into(),
             invocation_prompt,
             completion,
-            output_schema_ref,
+            handoff_schema_ref,
             validation_warning,
         }
     }

@@ -131,24 +131,24 @@ fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String 
     format!("workflow-node-run-{}", next_workflow_node_run_number)
 }
 
-pub(super) fn validate_workflow_edge_output(
+pub(super) fn validate_workflow_edge_handoff(
     session_id: &str,
     workflow: &WorkflowDefinition,
     edge: &WorkflowEdgeDefinition,
     completion: &Option<WorkflowCompletionSnapshot>,
 ) -> Result<Option<String>, DaemonError> {
-    let Some(schema_ref) = edge.output_schema_ref() else {
+    let Some(schema_ref) = edge.handoff_schema_ref() else {
         return Ok(None);
     };
     let policy = edge
         .validation_policy()
-        .unwrap_or(WorkflowOutputValidationPolicy::Warn);
+        .unwrap_or(WorkflowHandoffValidationPolicy::Warn);
 
     let failure = |message: String| -> Result<Option<String>, DaemonError> {
         match policy {
-            WorkflowOutputValidationPolicy::Warn => Ok(Some(message)),
-            WorkflowOutputValidationPolicy::Halt => {
-                Err(DaemonError::WorkflowOutputValidationFailed {
+            WorkflowHandoffValidationPolicy::Warn => Ok(Some(message)),
+            WorkflowHandoffValidationPolicy::Halt => {
+                Err(DaemonError::WorkflowHandoffValidationFailed {
                     session_id: session_id.to_string(),
                     workflow_id: workflow.id().to_string(),
                     edge_id: edge.id().to_string(),
@@ -161,7 +161,7 @@ pub(super) fn validate_workflow_edge_output(
     let output = completion
         .as_ref()
         .and_then(|value| value.output())
-        .ok_or_else(|| "missing workflow output payload".to_string())
+        .ok_or_else(|| "missing workflow handoff payload".to_string())
         .and_then(|output| {
             serde_json::from_str::<Value>(output.message())
                 .map_err(|error| format!("output.message is not valid JSON: {error}"))
@@ -212,7 +212,7 @@ pub fn classify_workflow_failure_kind(
     if completion.is_none() {
         return WorkflowFailureKind::MissingStructuredOutput;
     }
-    if message.contains("missing workflow output payload") {
+    if message.contains("missing workflow handoff payload") {
         return WorkflowFailureKind::MissingStructuredOutput;
     }
     WorkflowFailureKind::OutputValidationFailed

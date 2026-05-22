@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
-pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
+pub const VALIDATE_WORKFLOW_HANDOFF_TOOL: &str = "validate_workflow_handoff";
 pub const VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL: &str =
     "validate_and_submit_workflow_run_output";
 pub const VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL: &str =
@@ -70,7 +70,7 @@ pub struct WorkflowRuntimeToolContext {
     pub workflow_run_ref: String,
     pub workflow_node_run_id: String,
     pub delivery_token: Option<String>,
-    pub allowed_output_schema_refs: Vec<String>,
+    pub allowed_handoff_schema_refs: Vec<String>,
     pub workflow_run_output_schema_ref: Option<String>,
     pub workflow_intermediate_output_schema_ref: Option<String>,
     pub can_complete_workflow_run: bool,
@@ -89,9 +89,9 @@ pub struct AckWorkflowTurnArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ValidateWorkflowOutputArgs {
-    pub output_schema_ref: String,
-    pub output_json: String,
+pub struct ValidateWorkflowHandoffArgs {
+    pub handoff_schema_ref: String,
+    pub handoff_json: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_token: Option<String>,
 }
@@ -959,14 +959,14 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
-            name: VALIDATE_WORKFLOW_OUTPUT_TOOL.to_string(),
-            description: "Validate workflow output JSON against an allowed schema ref for the current workflow turn.".to_string(),
+            name: VALIDATE_WORKFLOW_HANDOFF_TOOL.to_string(),
+            description: "Validate workflow handoff JSON against an allowed handoff schema ref for the current workflow turn.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "required": ["output_schema_ref", "output_json"],
+                "required": ["handoff_schema_ref", "handoff_json"],
                 "properties": {
-                    "output_schema_ref": {"type": "string"},
-                    "output_json": {"type": "string"},
+                    "handoff_schema_ref": {"type": "string"},
+                    "handoff_json": {"type": "string"},
                     "delivery_token": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -1034,9 +1034,9 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 pub fn validate_json_output_schema(
     schema_label: &str,
     schema_value: &Value,
-    output_json: &str,
+    handoff_json: &str,
 ) -> Result<(), String> {
-    let output_value = serde_json::from_str::<Value>(output_json)
+    let output_value = serde_json::from_str::<Value>(handoff_json)
         .map_err(|error| format!("output is not valid JSON: {error}"))?;
     let compiled = JSONSchema::options()
         .with_draft(jsonschema::Draft::Draft7)
@@ -1053,12 +1053,12 @@ pub fn validate_json_output_schema(
     Ok(())
 }
 
-pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
+pub fn validate_workflow_handoff_schema(schema_ref: &str, handoff_json: &str) -> Result<(), String> {
     let schema_source = std::fs::read_to_string(schema_ref)
         .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
     let schema_value = serde_json::from_str::<Value>(&schema_source)
         .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
-    validate_json_output_schema(schema_ref, &schema_value, output_json)
+    validate_json_output_schema(schema_ref, &schema_value, handoff_json)
 }
 
 #[cfg(test)]
@@ -1339,7 +1339,7 @@ mod managed_io_tests {
             r#"{"type":"object","required":["status"],"properties":{"status":{"type":"string"}},"additionalProperties":false}"#,
         )
         .expect("schema file should be writable");
-        validate_workflow_output_schema(
+        validate_workflow_handoff_schema(
             path.to_str().expect("schema path should be utf8"),
             r#"{"status":"ok"}"#,
         )

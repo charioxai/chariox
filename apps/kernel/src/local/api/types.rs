@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 42;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 43;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -258,7 +258,7 @@ pub enum LocalDaemonRequest {
     ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
     RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
     ClearQueuedWorkflowLaunches(ClearQueuedWorkflowLaunchesRequest),
-    ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
+    ValidateWorkflowHandoff(ValidateWorkflowHandoffRequest),
     AckWorkflowTurn(AckWorkflowTurnRequest),
 }
 
@@ -983,7 +983,7 @@ pub enum LocalDaemonResponse {
         queued_launches: Vec<QueuedWorkflowLaunch>,
         session: RuntimeSession,
     },
-    WorkflowOutputValidated {
+    WorkflowHandoffValidated {
         valid: bool,
         warning: Option<String>,
     },

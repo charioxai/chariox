@@ -75,7 +75,7 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "validate_workflow_output"));
+        .any(|tool| tool["name"] == "validate_workflow_handoff"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "workflow_console_read"));

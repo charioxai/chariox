@@ -971,7 +971,7 @@ impl SessionService {
         session_id: &str,
         context: &WorkflowCompletionContext,
         completion: Option<&WorkflowCompletionSnapshot>,
-    ) -> Result<(Vec<WorkflowMessage>, Vec<WorkflowOutputValidationWarning>), DaemonError> {
+    ) -> Result<(Vec<WorkflowMessage>, Vec<WorkflowHandoffValidationWarning>), DaemonError> {
         if context.workflow_run.completed_by_node_run_id() == Some(context.source_node_run.id()) {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -998,14 +998,14 @@ impl SessionService {
             else {
                 continue;
             };
-            let warning = validate_workflow_edge_output(
+            let warning = validate_workflow_edge_handoff(
                 session_id,
                 &context.workflow,
                 edge,
                 &edge_completion,
             )?;
             if let Some(message) = warning.as_ref() {
-                validation_warnings.push(WorkflowOutputValidationWarning {
+                validation_warnings.push(WorkflowHandoffValidationWarning {
                     edge_id: edge.id().to_string(),
                     message: message.clone(),
                 });
@@ -1027,7 +1027,7 @@ impl SessionService {
                 target_node.id().to_string(),
                 context.workflow_run.invocation_prompt().map(str::to_string),
                 edge_completion.clone(),
-                edge.output_schema_ref().map(str::to_string),
+                edge.handoff_schema_ref().map(str::to_string),
                 warning.clone(),
             );
             let message = WorkflowMessage::new(
@@ -1150,7 +1150,7 @@ impl SessionService {
             .workflow
             .run_output_schema_ref()
             .and_then(|schema_ref| {
-                crate::transport::runtime_tools::validate_workflow_output_schema(
+                crate::transport::runtime_tools::validate_workflow_handoff_schema(
                     schema_ref,
                     output.message(),
                 )

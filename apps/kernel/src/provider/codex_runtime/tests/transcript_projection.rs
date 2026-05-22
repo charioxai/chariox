@@ -496,7 +496,7 @@ fn mcp_tool_progress_is_projected_into_tool_text() {
             "type": "mcpToolCall",
             "id": "tool-1",
             "server": "arroba-runtime",
-            "tool": "validate_workflow_output",
+            "tool": "validate_workflow_handoff",
             "status": "inProgress",
             "arguments": { "value": 1 },
             "result": null,
@@ -510,7 +510,7 @@ fn mcp_tool_progress_is_projected_into_tool_text() {
     .expect("payload should render");
 
     let parsed = serde_json::from_str::<Value>(&rendered).expect("payload should deserialize");
-    assert_eq!(parsed["tool"], "validate_workflow_output");
+    assert_eq!(parsed["tool"], "validate_workflow_handoff");
     assert_eq!(parsed["title"], "arroba-runtime");
     assert_eq!(parsed["text"], "checking schema");
 }

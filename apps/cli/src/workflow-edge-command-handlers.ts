@@ -31,6 +31,7 @@ export type WorkflowEdgeCommandDeps = {
     workflowRef: string,
     fromNodeId: string,
     toNodeId: string,
+    handoffSchemaRef?: string | null,
   ) => Promise<WorkflowEdgePayload>
   removeWorkflowEdge: (workflowRef: string, edgeId: string) => Promise<WorkflowEdgePayload>
   applySessionState: (session: RuntimeSession) => void
@@ -50,19 +51,17 @@ export async function handleWorkflowEdgeCommand(
 ): Promise<void> {
   const action = args[1]
   if (action === "add") {
-    const explicitWorkflowRef = args.length >= 5 ? args[2] : null
-    const workflowRef = explicitWorkflowRef ?? context.selectedWorkflowRef()
-    const fromRef = explicitWorkflowRef ? args[3] : args[2]
-    const toRef = explicitWorkflowRef ? args[4] : args[3]
+    const parsedArgs = parseWorkflowEdgeAddArgs(args.slice(2), context.selectedWorkflowRef())
+    const { workflowRef, fromRef, toRef, handoffSchemaRef } = parsedArgs
     if (!workflowRef || !fromRef || !toRef) {
       deps.flashFooter(workflowEdgeAddUsage, "error")
       return
     }
-    if (!explicitWorkflowRef && context.isKnownWorkflowReference(fromRef)) {
+    if (!parsedArgs.explicitWorkflowRef && context.isKnownWorkflowReference(fromRef)) {
       deps.flashFooter(workflowEdgeAddUsage, "error")
       return
     }
-    await createWorkflowEdge(deps, workflowRef, fromRef, toRef, false)
+    await createWorkflowEdge(deps, workflowRef, fromRef, toRef, false, handoffSchemaRef)
     return
   }
   if (action === "remove") {
@@ -101,6 +100,7 @@ async function createWorkflowEdge(
   fromRef: string,
   toRef: string,
   showWorkflowAfterCreate: boolean,
+  handoffSchemaRef: string | null = null,
 ): Promise<void> {
   const resolvedWorkflow = await deps.resolveWorkflow(workflowRef)
   deps.upsertWorkflowDefinition(resolvedWorkflow.workflow)
@@ -122,7 +122,7 @@ async function createWorkflowEdge(
     deps.flashFooter("workflow edge already exists between those nodes", "error")
     return
   }
-  const payload = await deps.addWorkflowEdge(workflowRef, fromNode.nodeId, toNode.nodeId)
+  const payload = await deps.addWorkflowEdge(workflowRef, fromNode.nodeId, toNode.nodeId, handoffSchemaRef)
   deps.applySessionState(payload.session)
   deps.selectWorkflowCanvas(payload.workflow.id)
   if (showWorkflowAfterCreate) {
@@ -141,7 +141,30 @@ function hasDuplicateWorkflowEdge(
   ))
 }
 
-const workflowEdgeAddUsage = "usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>"
+const workflowEdgeAddUsage = "usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref> [--handoff-schema <schema-ref>]"
+
+function parseWorkflowEdgeAddArgs(args: readonly string[], selectedWorkflowRef: string | null) {
+  let handoffSchemaRef: string | null = null
+  const positional: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (!value) continue
+    if (value === "--handoff-schema") {
+      handoffSchemaRef = args[index + 1] ?? null
+      index += 1
+      continue
+    }
+    positional.push(value)
+  }
+  const explicitWorkflowRef = positional.length >= 3 ? positional[0] ?? null : null
+  return {
+    explicitWorkflowRef,
+    workflowRef: explicitWorkflowRef ?? selectedWorkflowRef,
+    fromRef: explicitWorkflowRef ? positional[1] : positional[0],
+    toRef: explicitWorkflowRef ? positional[2] : positional[1],
+    handoffSchemaRef,
+  }
+}
 
 function resolveWorkflowNodeReference(
   deps: WorkflowEdgeCommandDeps,

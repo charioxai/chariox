@@ -428,7 +428,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkflowRuns(_) => "workflow_run.list",
         LocalDaemonRequest::GetWorkflowRun(_) => "workflow_run.get",
         LocalDaemonRequest::AckWorkflowTurn(_) => "workflow_turn.ack",
-        LocalDaemonRequest::ValidateWorkflowOutput(_) => "workflow_output.validate",
+        LocalDaemonRequest::ValidateWorkflowHandoff(_) => "workflow_handoff.validate",
         LocalDaemonRequest::CancelWorkflowRun(_) => "workflow_run.cancel",
         LocalDaemonRequest::ResumeWorkflowRun(_) => "workflow_run.resume",
         LocalDaemonRequest::ClearQueuedWorkflowLaunches(_) => "workflow_launch_queue.clear",

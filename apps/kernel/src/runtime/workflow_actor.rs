@@ -355,7 +355,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ListWorkflowRuns(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowRun(request) => request.session_id.clone(),
         LocalDaemonRequest::AckWorkflowTurn(request) => request.session_id.clone(),
-        LocalDaemonRequest::ValidateWorkflowOutput(request) => request.session_id.clone(),
+        LocalDaemonRequest::ValidateWorkflowHandoff(request) => request.session_id.clone(),
         LocalDaemonRequest::CancelWorkflowRun(request) => request.session_id.clone(),
         LocalDaemonRequest::ResumeWorkflowRun(request) => request.session_id.clone(),
         LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => request.session_id.clone(),

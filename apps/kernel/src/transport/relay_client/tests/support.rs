@@ -13,7 +13,7 @@ pub(super) use crate::local::{
     AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest, GetSessionStateRequest,
     ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, ResizeTerminalRequest,
     ResolveSessionRequest, RespondToInteractionRequest, UpdateSessionConfigRequest,
-    ValidateWorkflowOutputRequest,
+    ValidateWorkflowHandoffRequest,
 };
 pub(super) use crate::runtime::command::KernelCommand;
 pub(super) use crate::session::CreateSessionRequest;

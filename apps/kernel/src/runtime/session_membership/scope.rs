@@ -243,7 +243,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AddWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ValidateWorkflowOutput(request) => Some(
+        LocalDaemonRequest::ValidateWorkflowHandoff(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::AckWorkflowTurn(request) => Some(SessionMembershipScope::SessionId(

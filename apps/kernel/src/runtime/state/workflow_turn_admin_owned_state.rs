@@ -3,16 +3,16 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn workflow_validate_output(
+    pub(super) fn workflow_validate_handoff(
         &self,
-        request: crate::local::ValidateWorkflowOutputRequest,
+        request: crate::local::ValidateWorkflowHandoffRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let warning = crate::transport::runtime_tools::validate_workflow_output_schema(
-            &request.output_schema_ref,
-            &request.output_json,
+        let warning = crate::transport::runtime_tools::validate_workflow_handoff_schema(
+            &request.handoff_schema_ref,
+            &request.handoff_json,
         )
         .err();
-        Ok(LocalDaemonResponse::WorkflowOutputValidated {
+        Ok(LocalDaemonResponse::WorkflowHandoffValidated {
             valid: warning.is_none(),
             warning,
         })

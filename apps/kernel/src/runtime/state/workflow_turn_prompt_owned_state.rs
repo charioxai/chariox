@@ -54,8 +54,8 @@ impl KernelRuntimeOwnedState {
             .filter(|edge| edge.from_node_id() == node_id)
             .map(|edge| {
                 let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
-                if let Some(schema_ref) = edge.output_schema_ref() {
-                    line.push_str(&format!(", output_schema_ref: {schema_ref}"));
+                if let Some(schema_ref) = edge.handoff_schema_ref() {
+                    line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
                 }
                 if let Some(validation_policy) = edge.validation_policy() {
                     line.push_str(&format!(", validation_policy: {validation_policy:?}"));

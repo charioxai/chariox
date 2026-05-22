@@ -1,6 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{WorkflowMessage, WorkflowOutputValidationPolicy};
+use crate::session::{WorkflowMessage, WorkflowHandoffValidationPolicy};
 use std::path::PathBuf;
 
 pub(crate) struct WorkflowPromptInjectionContext {
@@ -369,7 +369,7 @@ fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> O
         return None;
     }
     Some(format!(
-        "System node-level prompt:\nThis is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_output`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
+        "System node-level prompt:\nThis is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
         turn_index = context.turn_index
     ))
 }
@@ -401,13 +401,13 @@ fn workflow_outgoing_edge_contracts_block(
         .filter(|edge| edge.from_node_id() == node_id)
         .map(|edge| {
             let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
-            if let Some(schema_ref) = edge.output_schema_ref() {
-                line.push_str(&format!(", output_schema_ref: {schema_ref}"));
+            if let Some(schema_ref) = edge.handoff_schema_ref() {
+                line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
             }
             if let Some(validation_policy) = edge.validation_policy() {
                 let validation_policy = match validation_policy {
-                    WorkflowOutputValidationPolicy::Warn => "warn",
-                    WorkflowOutputValidationPolicy::Halt => "halt",
+                    WorkflowHandoffValidationPolicy::Warn => "warn",
+                    WorkflowHandoffValidationPolicy::Halt => "halt",
                 };
                 line.push_str(&format!(", validation_policy: {validation_policy}"));
             }
@@ -572,11 +572,11 @@ fn workflow_turn_delivery_token(workflow_node_run_id: &str) -> String {
 }
 
 fn default_workflow_system_prompt_template() -> &'static str {
-    "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes an `output_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_output` with the delivery token above, that `output_schema_ref`, and your proposed `output.message` JSON. If no `output_schema_ref` is present for this turn, do not call `validate_workflow_output`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes an `output_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
+    "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes a `handoff_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above, that `handoff_schema_ref`, and your proposed `output.message` JSON. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
 }
 
 fn default_workflow_run_completion_prompt_template() -> &'static str {
-    "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_output`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n"
+    "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n"
 }
 
 fn default_workflow_run_intermediate_output_prompt_template() -> &'static str {

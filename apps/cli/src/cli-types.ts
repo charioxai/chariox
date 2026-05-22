@@ -748,7 +748,7 @@ export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
-  output_schema_ref?: string | null
+  handoff_schema_ref?: string | null
   validation_policy?: "warn" | "halt" | null
 }
 

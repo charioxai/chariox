@@ -187,9 +187,9 @@ pub struct WorkflowEdgeDefinition {
     #[serde(default = "default_workflow_owner_user_id")]
     created_by_user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    output_schema_ref: Option<String>,
+    handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    validation_policy: Option<WorkflowOutputValidationPolicy>,
+    validation_policy: Option<WorkflowHandoffValidationPolicy>,
 }
 
 impl WorkflowEdgeDefinition {
@@ -197,15 +197,15 @@ impl WorkflowEdgeDefinition {
         id: impl Into<String>,
         from_node_id: impl Into<String>,
         to_node_id: impl Into<String>,
-        output_schema_ref: Option<String>,
-        validation_policy: Option<WorkflowOutputValidationPolicy>,
+        handoff_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Self {
         Self {
             id: id.into(),
             from_node_id: from_node_id.into(),
             to_node_id: to_node_id.into(),
             created_by_user_id: default_workflow_owner_user_id(),
-            output_schema_ref,
+            handoff_schema_ref,
             validation_policy,
         }
     }
@@ -230,18 +230,18 @@ impl WorkflowEdgeDefinition {
         self.created_by_user_id = created_by_user_id.into();
     }
 
-    pub fn output_schema_ref(&self) -> Option<&str> {
-        self.output_schema_ref.as_deref()
+    pub fn handoff_schema_ref(&self) -> Option<&str> {
+        self.handoff_schema_ref.as_deref()
     }
 
-    pub fn validation_policy(&self) -> Option<WorkflowOutputValidationPolicy> {
+    pub fn validation_policy(&self) -> Option<WorkflowHandoffValidationPolicy> {
         self.validation_policy
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowOutputValidationPolicy {
+pub enum WorkflowHandoffValidationPolicy {
     Warn,
     Halt,
 }

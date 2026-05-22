@@ -79,8 +79,8 @@ impl KernelRuntimeState {
                 .ok()
                 .map(|args| args.delivery_token)
             }
-            crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
-                serde_json::from_value::<crate::transport::runtime_tools::ValidateWorkflowOutputArgs>(
+            crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL => {
+                serde_json::from_value::<crate::transport::runtime_tools::ValidateWorkflowHandoffArgs>(
                     arguments.clone(),
                 )
                 .ok()

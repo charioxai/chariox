@@ -53,7 +53,7 @@ impl KernelRuntimeOwnedState {
             &request.from_node_id,
             &request.to_node_id,
             caller_user_id.to_string(),
-            request.output_schema_ref,
+            request.handoff_schema_ref,
             request.validation_policy,
         )?;
         let workflow = self

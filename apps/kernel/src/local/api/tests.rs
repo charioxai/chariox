@@ -14,7 +14,7 @@ use crate::provider::{
 };
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
-    WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
+    WorkflowHandoffValidationPolicy, WorkflowTurnRuntimeState,
 };
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};

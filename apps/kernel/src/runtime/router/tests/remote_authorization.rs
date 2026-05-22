@@ -257,7 +257,7 @@ async fn remote_owned_session_objects_record_caller_user() {
         workflow_ref: workflow_id,
         from_node_id: first_node.id().to_string(),
         to_node_id: second_node.id().to_string(),
-        output_schema_ref: None,
+        handoff_schema_ref: None,
         validation_policy: None,
         expected_workflow_revision: None,
     });
@@ -477,7 +477,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         workflow_ref: workflow_id.clone(),
         from_node_id: local_node.id().to_string(),
         to_node_id: user_two_node.id().to_string(),
-        output_schema_ref: None,
+        handoff_schema_ref: None,
         validation_policy: None,
         expected_workflow_revision: None,
     });

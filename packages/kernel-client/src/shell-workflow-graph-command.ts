@@ -244,14 +244,12 @@ export async function executeWorkflowEdgeCommand(
   const sessionId = context.sessionId!
   const [action] = args
   if (action === "add") {
-    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
-    const workflowRef = explicitWorkflowRef ?? context.workflowId
-    const fromNodeId = explicitWorkflowRef ? args[2] : args[1]
-    const toNodeId = explicitWorkflowRef ? args[3] : args[2]
+    const parsedAdd = parseWorkflowEdgeAddArgs(args.slice(1), context.workflowId ?? null)
+    const { workflowRef, fromNodeId, toNodeId, handoffSchemaRef } = parsedAdd
     if (!workflowRef || !fromNodeId || !toNodeId) {
-      return { ok: false, message: "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id>" }
+      return { ok: false, message: workflowEdgeAddUsage }
     }
-    const response = await deps.client.send(addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId))
+    const response = await deps.client.send(addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId, handoffSchemaRef))
     const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeAdded")
     return { ok: true, message: `added workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
@@ -266,7 +264,31 @@ export async function executeWorkflowEdgeCommand(
     const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeRemoved")
     return { ok: true, message: `removed workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
-  return { ok: false, message: "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id> | remove [workflow-ref] <edge-id>" }
+  return { ok: false, message: `${workflowEdgeAddUsage} | remove [workflow-ref] <edge-id>` }
+}
+
+const workflowEdgeAddUsage = "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id> [--handoff-schema <schema-ref>]"
+
+function parseWorkflowEdgeAddArgs(args: string[], selectedWorkflowRef: string | null) {
+  let handoffSchemaRef: string | null = null
+  const positional: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (!value) continue
+    if (value === "--handoff-schema") {
+      handoffSchemaRef = args[index + 1] ?? null
+      index += 1
+      continue
+    }
+    positional.push(value)
+  }
+  const explicitWorkflowRef = positional.length >= 3 ? positional[0] : null
+  return {
+    workflowRef: explicitWorkflowRef ?? selectedWorkflowRef,
+    fromNodeId: explicitWorkflowRef ? positional[1] : positional[0],
+    toNodeId: explicitWorkflowRef ? positional[2] : positional[1],
+    handoffSchemaRef,
+  }
 }
 
 export async function executeWorkflowEndpointCommand(

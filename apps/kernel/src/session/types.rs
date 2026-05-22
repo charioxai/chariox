@@ -25,7 +25,7 @@ pub use super::workflow_diagnostics::{
 };
 pub use super::workflow_graph::{
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
-    WorkflowOutputValidationPolicy,
+    WorkflowHandoffValidationPolicy,
 };
 pub use super::workflow_outputs::{
     WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowHandoffPayload,

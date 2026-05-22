@@ -56,8 +56,8 @@ impl KernelRuntimeOwnedState {
                     }),
                 })
             }
-            crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
-                self.workflow_validate_output_tool_result(&arguments, &context)
+            crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL => {
+                self.workflow_validate_handoff_tool_result(&arguments, &context)
             }
             crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
             | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL =>
@@ -135,11 +135,11 @@ impl KernelRuntimeOwnedState {
                 reference: workflow_node_run_id.clone(),
                 message: "workflow node run was not found while resolving runtime tool scope",
             })?;
-        let allowed_output_schema_refs = workflow
+        let allowed_handoff_schema_refs = workflow
             .edges()
             .iter()
             .filter(|edge| edge.from_node_id() == node_id)
-            .filter_map(|edge| edge.output_schema_ref().map(str::to_string))
+            .filter_map(|edge| edge.handoff_schema_ref().map(str::to_string))
             .collect();
         let node = workflow.node(&node_id);
         let can_complete_workflow_run = node.is_some_and(|node| node.can_complete_workflow_run());
@@ -159,7 +159,7 @@ impl KernelRuntimeOwnedState {
                 workflow_run_ref,
                 workflow_node_run_id,
                 delivery_token,
-                allowed_output_schema_refs,
+                allowed_handoff_schema_refs,
                 workflow_run_output_schema_ref: workflow
                     .run_output_schema_ref()
                     .map(str::to_string),

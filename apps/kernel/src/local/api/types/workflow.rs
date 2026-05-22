@@ -218,20 +218,20 @@ pub struct AddWorkflowEdgeRequest {
     pub from_node_id: String,
     pub to_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema_ref: Option<String>,
+    pub handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_workflow_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ValidateWorkflowOutputRequest {
+pub struct ValidateWorkflowHandoffRequest {
     pub session_id: String,
-    pub output_schema_ref: String,
-    pub output_json: String,
+    pub handoff_schema_ref: String,
+    pub handoff_json: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -454,17 +454,17 @@ pub struct WorkflowDesignEdge {
     pub from_node_id: String,
     pub to_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema_ref: Option<String>,
+    pub handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDesignEdgePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema_ref: Option<Option<String>>,
+    pub handoff_schema_ref: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation_policy: Option<Option<crate::session::WorkflowOutputValidationPolicy>>,
+    pub validation_policy: Option<Option<crate::session::WorkflowHandoffValidationPolicy>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
