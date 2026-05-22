@@ -263,12 +263,42 @@ impl SessionService {
                 workflow.add_edge(definition);
                 Ok(workflow.clone())
             }
-            crate::local::WorkflowDesignOp::EdgeUpdate { workflow_id, .. } => {
+            crate::local::WorkflowDesignOp::EdgeUpdate {
+                workflow_id,
+                edge_id,
+                patch,
+            } => {
                 let workflow_id = self
                     .resolve_workflow_ref(session_id, &workflow_id)?
                     .id()
                     .to_string();
-                self.resolve_workflow_ref(session_id, &workflow_id)
+                let session =
+                    self.store
+                        .get_mut(session_id)
+                        .ok_or_else(|| DaemonError::SessionNotFound {
+                            session_id: session_id.to_string(),
+                        })?;
+                let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+                    DaemonError::WorkflowNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                    }
+                })?;
+                let edge = workflow.edge_mut(&edge_id).ok_or_else(|| {
+                    DaemonError::WorkflowEdgeNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        edge_id: edge_id.clone(),
+                    }
+                })?;
+                if let Some(value) = patch.handoff_schema_ref {
+                    edge.set_handoff_schema_ref(value);
+                }
+                if let Some(value) = patch.validation_policy {
+                    edge.set_validation_policy(value);
+                }
+                workflow.bump_revision();
+                Ok(workflow.clone())
             }
             crate::local::WorkflowDesignOp::EdgeRemove {
                 workflow_id,

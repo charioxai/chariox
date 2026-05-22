@@ -234,8 +234,16 @@ impl WorkflowEdgeDefinition {
         self.handoff_schema_ref.as_deref()
     }
 
+    pub fn set_handoff_schema_ref(&mut self, value: Option<String>) {
+        self.handoff_schema_ref = value;
+    }
+
     pub fn validation_policy(&self) -> Option<WorkflowHandoffValidationPolicy> {
         self.validation_policy
+    }
+
+    pub fn set_validation_policy(&mut self, value: Option<WorkflowHandoffValidationPolicy>) {
+        self.validation_policy = value;
     }
 }
 

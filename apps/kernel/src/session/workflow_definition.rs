@@ -186,6 +186,10 @@ impl WorkflowDefinition {
         self.edges.iter().find(|edge| edge.id() == edge_id)
     }
 
+    pub fn edge_mut(&mut self, edge_id: &str) -> Option<&mut WorkflowEdgeDefinition> {
+        self.edges.iter_mut().find(|edge| edge.id() == edge_id)
+    }
+
     pub fn has_edge(&self, from_node_id: &str, to_node_id: &str) -> bool {
         self.edges
             .iter()
