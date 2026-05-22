@@ -216,7 +216,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
 function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
   const options: NativeClaudeOptions = {
     clientId: `arroba-claude-native-${process.pid}`,
-    model: "sonnet",
+    model: "claude-sonnet-4-6",
     effort: "low",
     mode: "build",
     permissions: "required",
@@ -345,7 +345,7 @@ function printNativeClaudeUsage() {
     "  --slice <ref>                    Run the Arroba agent/provider on a home-managed slice worker",
     "  --alias <name>                   Alias for a newly-created session",
     "  --agent-alias <name>             Alias for the Claude native agent",
-    "  --model <model>                  Claude model argument (default sonnet)",
+    "  --model <model>                  Claude model argument (default claude-sonnet-4-6)",
     "  --effort <effort>                Claude effort argument (default low)",
     "  --mode <build|plan>              Arroba agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",

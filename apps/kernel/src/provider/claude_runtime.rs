@@ -71,7 +71,7 @@ pub(crate) fn initialize_claude_runtime(
             exit_reported: false,
         },
         selection: ClaudeRunSelection {
-            model: Some(format!("claude/{}", run.model())),
+            model: Some(run.model().to_string()),
             variant: run.variant().map(str::to_string),
         },
     })

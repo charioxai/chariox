@@ -70,17 +70,17 @@ test("buildCommandCenterItems exposes Claude provider and models", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "claude",
     focusedProvider: "claude",
-    currentModel: "claude/sonnet",
+    currentModel: "claude/claude-sonnet-4-6",
     currentVariant: "high",
   })
-  assert.deepEqual(modelItems.map((item) => item.value), ["claude/sonnet"])
+  assert.deepEqual(modelItems.map((item) => item.value), ["claude/claude-sonnet-4-6"])
 
   const rootItems = buildCommandCenterItems("/", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "claude",
     focusedProvider: "claude",
-    currentModel: "claude/sonnet",
+    currentModel: "claude/claude-sonnet-4-6",
     currentVariant: "high",
   })
   assert.equal(rootItems.some((item) => item.kind === "group" && item.label === "/claude"), false)

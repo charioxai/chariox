@@ -60,7 +60,7 @@ test("waiting room cycles Claude Code as a provider backend", () => {
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude Code")
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Sonnet")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Claude Sonnet 4.6")
 
   state = moveWaitingRoomFocus(state, [], 2)
   state = cycleWaitingRoomValue(state, [], catalog, 1)

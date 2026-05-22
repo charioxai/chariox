@@ -57,8 +57,8 @@ test("fallback catalog exposes Claude Code as an isolated backend", () => {
   assert.equal(normalizeBackendProviderId("claude"), "claude")
 
   const claudeOptions = catalogModelOptions(catalog, "claude")
-  assert.deepEqual(claudeOptions.map((option) => option.providerId), ["claude", "claude"])
-  assert.deepEqual(claudeOptions.map((option) => option.id), ["claude/opus", "claude/sonnet"])
+  assert.deepEqual(claudeOptions.map((option) => option.providerId), ["claude"])
+  assert.deepEqual(claudeOptions.map((option) => option.id), ["claude/claude-sonnet-4-6"])
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
   assert.equal(opencodeOptions.some((option) => option.providerId === "claude"), false)

@@ -214,7 +214,8 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let models = &catalog.all[0].models;
-        assert!(models.contains_key("sonnet"));
+        assert!(!models.contains_key("sonnet"));
+        assert!(models.contains_key("claude-sonnet-4-6"));
         assert_eq!(
             models
                 .get("claude-sonnet-4-8")
@@ -237,11 +238,16 @@ mod tests {
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
         std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-arroba");
 
-        let request =
-            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "claude/sonnet")
-                .with_variant(Some("high".to_string()))
-                .with_execution_mode(AgentExecutionMode::Plan)
-                .with_permission_level(AgentPermissionLevel::Yolo);
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "claude/claude-sonnet-4-6",
+        )
+        .with_variant(Some("high".to_string()))
+        .with_execution_mode(AgentExecutionMode::Plan)
+        .with_permission_level(AgentPermissionLevel::Yolo);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("ARROBA_CLAUDE_BIN");
@@ -256,7 +262,7 @@ mod tests {
         assert!(launch
             .pty_args
             .windows(2)
-            .any(|pair| pair == ["--model", "sonnet"]));
+            .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
         assert!(launch
             .pty_args
             .windows(2)
@@ -281,8 +287,13 @@ mod tests {
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
-        let request =
-            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet");
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        );
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("ARROBA_CLAUDE_BIN");
@@ -308,12 +319,17 @@ mod tests {
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
-        let request =
-            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
-                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
-                    "http://127.0.0.1:43120/mcp",
-                    "token-123",
-                ));
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        ));
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("ARROBA_CLAUDE_BIN");
@@ -354,18 +370,23 @@ mod tests {
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
-        let request =
-            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
-                .with_client_interface(ProviderClientInterface::NativeTui)
-                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
-                    "http://127.0.0.1:43120/mcp",
-                    "token-123",
-                ))
-                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
-                    "browser",
-                    "npx",
-                    vec!["@playwright/mcp@latest".to_string()],
-                )]);
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_client_interface(ProviderClientInterface::NativeTui)
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        ))
+        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+            "browser",
+            "npx",
+            vec!["@playwright/mcp@latest".to_string()],
+        )]);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("ARROBA_CLAUDE_BIN");

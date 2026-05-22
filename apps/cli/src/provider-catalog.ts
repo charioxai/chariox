@@ -97,21 +97,9 @@ export function fallbackProviderCatalog() {
         name: "Claude Code",
         remote_machine_aliases: [],
         models: {
-          sonnet: {
-            id: "sonnet",
-            name: "Sonnet",
-            status: "active",
-            variants: {
-              low: {},
-              medium: {},
-              high: {},
-              xhigh: {},
-              max: {},
-            },
-          },
-          opus: {
-            id: "opus",
-            name: "Opus",
+          "claude-sonnet-4-6": {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
             status: "active",
             variants: {
               low: {},
@@ -127,7 +115,7 @@ export function fallbackProviderCatalog() {
     default: {
       codex: "gpt-5.4",
       opencode: "gpt-5.4",
-      claude: "sonnet",
+      claude: "claude-sonnet-4-6",
     },
     connected: ["codex", "opencode", "claude"],
   } satisfies ProviderCatalog

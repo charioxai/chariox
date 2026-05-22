@@ -11,9 +11,6 @@ use super::launch_args::normalized_claude_model;
 use super::resolve_claude_executable;
 
 const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
-    ("sonnet", "Claude Sonnet"),
-    ("opus", "Claude Opus"),
-    ("haiku", "Claude Haiku"),
     ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
     ("claude-opus-4-7", "Claude Opus 4.7"),
 ];
@@ -30,7 +27,7 @@ pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
             remote_machine_aliases: Vec::new(),
             models,
         }],
-        default: BTreeMap::from([("claude".to_string(), "sonnet".to_string())]),
+        default: BTreeMap::from([("claude".to_string(), "claude-sonnet-4-6".to_string())]),
         connected: if resolve_claude_executable().is_ok() {
             vec!["claude".to_string()]
         } else {
@@ -138,7 +135,7 @@ fn push_claude_model_entry(entries: &mut Vec<(String, String)>, id: &str, name: 
 }
 
 fn is_supported_claude_model_ref(id: &str) -> bool {
-    matches!(id, "sonnet" | "opus" | "haiku") || id.starts_with("claude-")
+    id.starts_with("claude-")
 }
 
 fn display_name_for_claude_model(id: &str) -> String {

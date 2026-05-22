@@ -290,12 +290,18 @@ impl ProviderProcessService {
             return Ok(());
         }
         let run = self.get_run_mut(provider_run_id)?;
+        let adapter_key = run.adapter_key().to_string();
         if let Some(message) = batch.terminal_failure.as_deref() {
             if !message.trim().is_empty() {
                 run.set_terminal_diagnostic(message.to_string());
             }
         }
         if let Some(model) = batch.resolved_model.as_deref() {
+            let model = if adapter_key == "claude" {
+                normalize_claude_selection_model(model)
+            } else {
+                model.to_string()
+            };
             crate::logging::debug_with_fields(
                 "daemon.provider.opencode",
                 "resolved provider run model from opencode metadata",
@@ -307,7 +313,7 @@ impl ProviderProcessService {
                 }),
             );
             if run.model() != model {
-                run.set_model(model.to_string());
+                run.set_model(model);
             }
         }
         if let Some(variant) = batch.resolved_variant.as_deref() {
@@ -415,6 +421,7 @@ impl ProviderProcessService {
     ) -> Result<(), DaemonError> {
         let run = self.get_run_mut(provider_run_id)?;
         if let Some(model) = selection.model {
+            let model = normalize_claude_selection_model(&model);
             if run.model() != model {
                 run.set_model(model);
             }
@@ -456,5 +463,36 @@ impl ProviderProcessService {
                 .variant
                 .or_else(|| run.variant().map(str::to_string)),
         }
+    }
+}
+
+fn normalize_claude_selection_model(model: &str) -> String {
+    model
+        .trim()
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .next_back()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_claude_selection_model;
+
+    #[test]
+    fn claude_selection_models_stay_provider_native() {
+        assert_eq!(
+            normalize_claude_selection_model("claude/claude-sonnet-4-6"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            normalize_claude_selection_model("claude/claude/claude-sonnet-4-6"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            normalize_claude_selection_model("claude-sonnet-4-6"),
+            "claude-sonnet-4-6"
+        );
     }
 }
