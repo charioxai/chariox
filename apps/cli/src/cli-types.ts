@@ -189,6 +189,7 @@ export type WaitingRoomPublicAgentSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  extension_grants?: ExtensionGrant[]
   activity?: WaitingRoomPublicItemActivitySummary
 }
 

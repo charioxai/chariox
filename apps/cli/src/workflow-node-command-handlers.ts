@@ -52,12 +52,21 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
     nodeId: string,
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
+  grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
+  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
+  revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
+  revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
   updateWorkflowNodeInstructions?: (
     workflowRef: string,
     nodeId: string,
     instructions: string | null,
   ) => Promise<WorkflowNodeInstructionsPayload>
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
+  appendNotice?: (message: string) => void
   flashFooter: (message: string, tone: FooterTone) => void
 }
 
@@ -124,8 +133,16 @@ export async function handleWorkflowNodeCommand(
     await handleWorkflowNodeMaxTurnsCommand(deps, context, args)
     return
   }
+  if (action === "extensions") {
+    await handleWorkflowNodeExtensionsCommand(deps, context, args)
+    return
+  }
+  if (action === "extension") {
+    await handleWorkflowNodeExtensionCommand(deps, context, args)
+    return
+  }
   deps.flashFooter(
-    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
+    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none> | extensions [workflow-ref] <node-id> | extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name>",
     "error",
   )
 }
@@ -271,6 +288,121 @@ function parseMaxTurns(value: string): number | null | undefined {
     return undefined
   }
   return parsed
+}
+
+async function handleWorkflowNodeExtensionsCommand(
+  deps: WorkflowNodeCommandDeps,
+  context: Pick<WorkflowNodeCommandContext, "workflowRefOrSelected">,
+  args: readonly string[],
+): Promise<void> {
+  const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+  const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
+  const nodeId = explicitWorkflowRef ? args[3] : args[2]
+  if (!workflowRef || !nodeId) {
+    deps.flashFooter("usage: /workflow node extensions [workflow-ref] <node-id>", "error")
+    return
+  }
+  const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
+  if (!node || !agent) return
+  const grants = agent.extension_grants ?? []
+  deps.appendNotice?.(grants.length
+    ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
+    : `node ${node.id} agent ${agent.agent_ref} has no extensions`)
+  deps.flashFooter(`showing ${grants.length} extension${grants.length === 1 ? "" : "s"} for node ${node.id}`, "info")
+}
+
+async function handleWorkflowNodeExtensionCommand(
+  deps: WorkflowNodeCommandDeps,
+  context: Pick<WorkflowNodeCommandContext, "workflowRefOrSelected">,
+  args: readonly string[],
+): Promise<void> {
+  const action = args[2]
+  const hasExplicitWorkflow = args.length >= 7
+  const workflowRef = context.workflowRefOrSelected(hasExplicitWorkflow ? args[3] : null)
+  const nodeId = hasExplicitWorkflow ? args[4] : args[3]
+  const kind = (hasExplicitWorkflow ? args[5] : args[4]) as "mcp" | "skill" | "script" | "connector" | undefined
+  const name = hasExplicitWorkflow ? args[6] : args[5]
+  if ((action !== "grant" && action !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
+    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
+    return
+  }
+  const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
+  if (!node || !agent) return
+  const updated = action === "grant"
+    ? await grantNodeExtension(deps, agent.agent_ref, kind, name, args)
+    : await revokeNodeExtension(deps, agent.agent_ref, kind, name)
+  applyUpdatedAgent(deps, updated)
+  deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} ${kind} ${name} ${action === "grant" ? "to" : "from"} workflow node ${node.id}`, "info")
+}
+
+async function resolveWorkflowNodeAgent(
+  deps: WorkflowNodeCommandDeps,
+  workflowRef: string,
+  nodeId: string,
+): Promise<{ node: WorkflowNodeDefinition | null; agent: AgentInstance | null }> {
+  const resolved = await deps.resolveWorkflow(workflowRef)
+  deps.upsertWorkflowDefinition(resolved.workflow)
+  const node = (resolved.workflow.nodes ?? []).find((candidate) => candidate.id === nodeId) ?? null
+  if (!node) {
+    deps.flashFooter(`workflow node '${nodeId}' not found`, "error")
+    return { node: null, agent: null }
+  }
+  const agent = deps.sessionState().agents.find((candidate) => candidate.id === node.agent_id) ?? null
+  if (!agent) {
+    deps.flashFooter(`agent '${node.agent_id}' for workflow node '${nodeId}' not found`, "error")
+    return { node: null, agent: null }
+  }
+  return { node, agent }
+}
+
+async function grantNodeExtension(
+  deps: WorkflowNodeCommandDeps,
+  agentRef: string,
+  kind: "mcp" | "skill" | "script" | "connector",
+  name: string,
+  args: readonly string[],
+): Promise<AgentInstance> {
+  if (kind === "mcp" && deps.grantAgentMcp) return deps.grantAgentMcp(agentRef, name)
+  if (kind === "skill" && deps.grantAgentSkill) return deps.grantAgentSkill(agentRef, name)
+  if (kind === "script" && deps.grantAgentScript) {
+    const environment = readOption(args, "--environment")
+    if (!environment) throw new Error("script grants require --environment <name>")
+    return deps.grantAgentScript(agentRef, name, environment)
+  }
+  if (kind === "connector" && deps.grantAgentConnector) {
+    return deps.grantAgentConnector(agentRef, name, readOption(args, "--credential"), readOption(args, "--allow"))
+  }
+  throw new Error(`${kind} extension grant command unavailable`)
+}
+
+async function revokeNodeExtension(
+  deps: WorkflowNodeCommandDeps,
+  agentRef: string,
+  kind: "mcp" | "skill" | "script" | "connector",
+  name: string,
+): Promise<AgentInstance> {
+  if (kind === "mcp" && deps.revokeAgentMcp) return deps.revokeAgentMcp(agentRef, name)
+  if (kind === "skill" && deps.revokeAgentSkill) return deps.revokeAgentSkill(agentRef, name)
+  if (kind === "script" && deps.revokeAgentScript) return deps.revokeAgentScript(agentRef, name)
+  if (kind === "connector" && deps.revokeAgentConnector) return deps.revokeAgentConnector(agentRef, name)
+  throw new Error(`${kind} extension revoke command unavailable`)
+}
+
+function applyUpdatedAgent(deps: WorkflowNodeCommandDeps, updated: AgentInstance): void {
+  const session = deps.sessionState()
+  deps.applySessionState({
+    ...session,
+    agents: session.agents.map((agent) => agent.id === updated.id ? updated : agent),
+  })
+}
+
+function readOption(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? null : null
+}
+
+function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" {
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector"
 }
 
 async function addAllRemainingWorkflowNodes(

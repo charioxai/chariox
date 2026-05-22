@@ -104,6 +104,7 @@ export function buildWorkflowGraphLayout(options: {
             model,
             effort,
             runStatus: nodeRunStatusByNodeId.get(node.id) ?? null,
+            extensionCount: agent?.extension_grants?.length ?? 0,
           }, metrics.nodeWidth),
         } satisfies WorkflowGraphNodeLayout
         nodeLayoutById.set(node.id, layoutNode)
@@ -371,6 +372,7 @@ function formatNodeLines(
     model: string | null
     effort: string | null
     runStatus: string | null
+    extensionCount: number
   },
   width: number,
 ) {
@@ -381,6 +383,7 @@ function formatNodeLines(
     truncateLine(options.model ? `model ${options.model}` : "model -", innerWidth),
     truncateLine(options.effort ? `effort ${options.effort}` : "effort -", innerWidth),
     truncateLine(options.runStatus ? `status ${String(options.runStatus).toLowerCase()}` : "status idle", innerWidth),
+    truncateLine(options.extensionCount === 0 ? "no extensions" : `${options.extensionCount} extension${options.extensionCount === 1 ? "" : "s"}`, innerWidth),
   ]
 }
 

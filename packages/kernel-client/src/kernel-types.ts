@@ -182,6 +182,7 @@ export type WaitingRoomPublicAgentSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  extension_grants?: ExtensionGrant[]
   activity?: WaitingRoomPublicItemActivitySummary
 }
 
@@ -827,7 +828,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 41
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 42
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

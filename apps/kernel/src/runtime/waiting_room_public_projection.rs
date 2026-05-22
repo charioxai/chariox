@@ -188,6 +188,7 @@ fn waiting_room_public_agent_summaries(
                 workspace_label: workspace_label.clone(),
                 directory: Some(workspace_id.clone()),
                 worktree_label,
+                extension_grants: agent.extension_grants().to_vec(),
                 activity: waiting_room_agent_activity_summary(session, agent),
             }
         })

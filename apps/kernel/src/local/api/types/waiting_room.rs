@@ -101,6 +101,8 @@ pub struct WaitingRoomPublicAgentSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_label: Option<String>,
     #[serde(default)]
+    pub extension_grants: Vec<crate::extension::ExtensionGrant>,
+    #[serde(default)]
     pub activity: WaitingRoomPublicItemActivitySummary,
 }
 
