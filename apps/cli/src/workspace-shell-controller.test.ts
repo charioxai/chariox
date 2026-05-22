@@ -71,9 +71,11 @@ test("submitWorkspaceShellCommand records shell output and refreshes selected wo
 
   const result = await submitWorkspaceShellCommand("@ workflow list", {
     client: {} as LocalIpcClient,
-    executeShellLine: async (line, context, _deps, write) => {
+    clientId: "cli-1",
+    executeShellLine: async (line, context, deps, write) => {
       assert.equal(line, "workflow list")
       assert.equal(context, initialContext)
+      assert.equal(deps.clientId, "cli-1")
       write?.("Workflow list\n")
       return { ok: true, context: nextContext }
     },

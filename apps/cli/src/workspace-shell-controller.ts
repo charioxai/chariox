@@ -34,6 +34,7 @@ export function deriveWorkspaceShellContextForSession(
 
 type WorkspaceShellSubmitDeps = {
   client: LocalIpcClient
+  clientId?: string | undefined
   executeShellLine?: typeof executeShellLine
   workspaceShellContext: () => ShellContext
   setWorkspaceShellContext: (context: ShellContext) => void
@@ -74,7 +75,7 @@ export async function submitWorkspaceShellCommand(
   const context = deps.workspaceShellContext()
   const output: string[] = []
   const runShellLine = deps.executeShellLine ?? executeShellLine
-  const result = await runShellLine(command, context, { client: deps.client }, (text) => output.push(text))
+  const result = await runShellLine(command, context, { client: deps.client, clientId: deps.clientId }, (text) => output.push(text))
   const rendered = output.join("").trimEnd()
   const nextContext = result.context
   deps.setWorkspaceShellContext(nextContext)

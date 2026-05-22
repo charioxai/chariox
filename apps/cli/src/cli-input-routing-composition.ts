@@ -212,6 +212,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
+    clientId: deps.options.clientId,
     workspaceShellContext: deps.workspaceShellContext,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)
