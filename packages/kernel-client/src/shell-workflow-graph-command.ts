@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve as resolvePath } from "node:path"
 
@@ -20,6 +21,7 @@ import {
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
+  applyWorkflowDesignOpRequest,
   resolveWorkflowRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
@@ -32,6 +34,7 @@ type ShellKernelClient = {
 
 export type ShellWorkflowGraphCommandDeps = {
   client: ShellKernelClient
+  clientId?: string | undefined
 }
 
 export async function executeWorkflowNodeCommand(
@@ -102,6 +105,27 @@ export async function executeWorkflowNodeCommand(
       }
       const instructionsPath = isAbsolute(fileRef) ? fileRef : resolvePath(context.worktree, fileRef)
       const instructions = await readFile(instructionsPath, "utf8")
+      if (deps.clientId) {
+        const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+        const resolvedPayload = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved")
+        const node = resolvedPayload.workflow.nodes?.find((entry) => entry.id === nodeId)
+        if (!node) {
+          return { ok: false, message: `workflow node ${nodeId} not found` }
+        }
+        const response = await deps.client.send(applyWorkflowDesignOpRequest(
+          sessionId,
+          deps.clientId,
+          `shell-${randomUUID()}`,
+          { kind: "node_update", workflow_id: resolvedPayload.workflow.id, node_id: nodeId, patch: { instructions } },
+        ))
+        const payload = expectVariant<{ event: { op?: unknown }; session: RuntimeSession }>(response, "WorkflowDesignOpAccepted")
+        return {
+          ok: true,
+          message: `updated workflow node ${nodeId} instructions`,
+          data: payload,
+          contextUpdates: { workflowId: resolvedPayload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        }
+      }
       const response = await deps.client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflowRef, nodeId, instructions))
       const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeInstructionsUpdated")
       return { ok: true, message: `updated workflow node ${payload.node.id} instructions`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }

@@ -246,6 +246,75 @@ test("executeShellCommand manages workflow node instructions from shell", async 
   }
 })
 
+test("executeShellCommand forwards workflow node instruction edits as design ops for TUI clients", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-design-instructions-"))
+  try {
+    await writeFile(join(root, "instructions.md"), "Collaborative node prompt.", "utf8")
+    const workflow = makeWorkflow({
+      nodes: [
+        { id: "node-1", agent_id: "agent-1", instructions: null },
+      ],
+    })
+    const session = makeSession({ workflows: [workflow] })
+    const requests: Record<string, unknown>[] = []
+    const fake = {
+      client: {
+        send: async (request: Record<string, unknown>) => {
+          requests.push(request)
+          if ("ResolveWorkflow" in request) {
+            return { WorkflowResolved: { workflow } }
+          }
+          return {
+            WorkflowDesignOpAccepted: {
+              event: {
+                session_id: "session-1",
+                origin_client_id: "cli-1",
+                op_id: "shell-test",
+                kernel_sequence: 1,
+                op: { kind: "node_update", workflow_id: "workflow-1", node_id: "node-1", patch: { instructions: "Collaborative node prompt." } },
+              },
+              session,
+            },
+          }
+        },
+      },
+    }
+    const context = createDefaultShellContext({
+      workspace: root,
+      worktree: root,
+      sessionId: "session-1",
+      workflowId: "workflow-1",
+    })
+
+    const result = await executeShellCommand(parseShellCommand("workflow node instructions set node-1 instructions.md"), context, { client: fake.client, clientId: "cli-1" })
+
+    assert.equal(result.ok, true)
+    assert.match(result.message ?? "", /updated workflow node node-1 instructions/)
+    assert.deepEqual(result.contextUpdates, { workflowId: "workflow-1", sessionId: "session-1", agentId: "agent-1" })
+    assert.equal(requests.length, 2)
+    assert.deepEqual(requests[0], { ResolveWorkflow: { session_id: "session-1", workflow_ref: "workflow-1" } })
+    const designRequest = requests[1] as {
+      ApplyWorkflowDesignOp?: {
+        session_id?: string
+        origin_client_id?: string
+        op_id?: string
+        op?: unknown
+      }
+    }
+    assert.equal(designRequest.ApplyWorkflowDesignOp?.session_id, "session-1")
+    assert.equal(designRequest.ApplyWorkflowDesignOp?.origin_client_id, "cli-1")
+    assert.match(designRequest.ApplyWorkflowDesignOp?.op_id ?? "", /^shell-/)
+    assert.deepEqual(designRequest.ApplyWorkflowDesignOp?.op, {
+      kind: "node_update",
+      workflow_id: "workflow-1",
+      node_id: "node-1",
+      patch: { instructions: "Collaborative node prompt." },
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("executeShellCommand manages workflow publications", async () => {
   const publication = makeWorkflowPublication()
   const sender: WorkflowPublicationTrustedSender = {
