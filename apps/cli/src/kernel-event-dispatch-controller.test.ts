@@ -68,6 +68,34 @@ test("kernel event dispatch resyncs after workflow design events", async () => {
   ])
 })
 
+test("kernel event dispatch resyncs after workflow run updates", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "workflow_run_updated",
+    session_id: "session-1",
+    workflow_run: {
+      id: "run-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      entry_node_id: "node-1",
+      status: "Running",
+      invocation_prompt: null,
+      active_node_run_id: null,
+      node_runs: [],
+      messages: [],
+      created_at_ms: 1,
+      started_at_ms: null,
+      completed_at_ms: null,
+    },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_workflow_run_updated",
+    "resync:workflow_run_updated",
+  ])
+})
+
 test("kernel event dispatch handles replay gaps through notice, footer, and resync", async () => {
   const harness = createHarness()
 

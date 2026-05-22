@@ -78,6 +78,10 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_workflow_design_op")
         void deps.resyncAttachedKernelState("workflow_design_op")
         return
+      case "workflow_run_updated":
+        deps.recordDaemonActivity("kernel_workflow_run_updated")
+        void deps.resyncAttachedKernelState("workflow_run_updated")
+        return
       case "transport_resumed":
         deps.applyTransportResumed()
         deps.scheduleSharedPromptInputHistoryRefresh()

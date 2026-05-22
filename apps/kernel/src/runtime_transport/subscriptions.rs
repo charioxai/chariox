@@ -10,6 +10,7 @@ use crate::local::{RelayStatus, RemoteMachineRecord};
 use crate::runtime::event_log::{ReplayGap, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::CommandRouter;
+use crate::session::WorkflowRun;
 use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
@@ -147,6 +148,27 @@ pub(super) async fn run_subscription_loop(
                     }
                 }
                 if let Some(snapshot) = *snapshot {
+                    let workflow_run_updates =
+                        changed_workflow_runs(previous_snapshot.as_ref(), &snapshot);
+                    for workflow_run in workflow_run_updates {
+                        if !emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelEvent::WorkflowRunUpdated {
+                                session_id: snapshot.session.id().to_string(),
+                                workflow_run,
+                            },
+                            Some(&event_stream_id),
+                            Some(&subscription.session_id),
+                            Some(&subscription.attachment_id),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
                     previous_snapshot = Some(snapshot.clone());
                     if !emit_kernel_event(
                         &runtime,
@@ -281,6 +303,28 @@ pub(super) async fn run_subscription_loop(
         tick = tick.wrapping_add(1);
         sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
     }
+}
+
+fn changed_workflow_runs(
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+    snapshot: &SessionSnapshotProjection,
+) -> Vec<WorkflowRun> {
+    let Some(previous_snapshot) = previous_snapshot else {
+        return snapshot.session.workflow_runs().to_vec();
+    };
+    let previous_runs = previous_snapshot
+        .session
+        .workflow_runs()
+        .iter()
+        .map(|run| (run.id(), run))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    snapshot
+        .session
+        .workflow_runs()
+        .iter()
+        .filter(|run| previous_runs.get(run.id()).copied() != Some(*run))
+        .cloned()
+        .collect()
 }
 
 fn build_session_snapshot(

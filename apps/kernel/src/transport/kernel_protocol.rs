@@ -9,7 +9,7 @@ use crate::local::{
 };
 use crate::provider::RuntimeProviderRun;
 use crate::runtime::projection::AgentRuntimeActivity;
-use crate::session::RuntimeSession;
+use crate::session::{RuntimeSession, WorkflowRun};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
 pub(crate) const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
@@ -100,6 +100,10 @@ pub(crate) enum KernelEvent {
     },
     WorkflowDesignOp {
         design_op: WorkflowDesignOpForwarded,
+    },
+    WorkflowRunUpdated {
+        session_id: String,
+        workflow_run: WorkflowRun,
     },
     Heartbeat {
         session_id: String,
@@ -193,6 +197,18 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
                 })
             }).collect::<Vec<_>>(),
         }),
+        KernelEvent::WorkflowRunUpdated {
+            session_id,
+            workflow_run,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "workflow_run_updated",
+            "session_id": session_id,
+            "workflow_run_id": workflow_run.id(),
+            "workflow_id": workflow_run.workflow_id(),
+            "status": workflow_run.status(),
+            "active_node_run_id": workflow_run.active_node_run_id(),
+        }),
         other => serde_json::json!({
             "event_id": event_id,
             "event": kernel_event_name(other),
@@ -211,6 +227,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
         KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
+        KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
         KernelEvent::Heartbeat { .. } => "heartbeat",
         KernelEvent::TransportResumed { .. } => "transport_resumed",
         KernelEvent::ReplayGap { .. } => "replay_gap",
@@ -232,6 +249,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
+        KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
@@ -283,6 +301,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
+        | KernelEvent::WorkflowRunUpdated { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,

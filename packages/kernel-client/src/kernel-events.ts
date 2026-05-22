@@ -1,4 +1,4 @@
-import type { WorkflowDesignOpForwarded } from "./kernel-types.js"
+import type { WorkflowDesignOpForwarded, WorkflowRun } from "./kernel-types.js"
 
 export type KernelEvent =
   | {
@@ -61,6 +61,11 @@ export type KernelEvent =
   | {
     event: "workflow_design_op"
     design_op: WorkflowDesignOpForwarded
+  }
+  | {
+    event: "workflow_run_updated"
+    session_id: string
+    workflow_run: WorkflowRun
   }
   | {
     event: "heartbeat"
