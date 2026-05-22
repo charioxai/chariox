@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises"
+import { isAbsolute, resolve as resolvePath } from "node:path"
+
 import type {
   RuntimeSession,
   WorkflowDefinition,
@@ -17,6 +20,8 @@ import {
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
+  resolveWorkflowRequest,
+  updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
@@ -65,6 +70,44 @@ export async function executeWorkflowNodeCommand(
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeRemoved")
     return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
+  if (action === "instructions") {
+    const instructionsAction = args[1]
+    if (instructionsAction === "show") {
+      const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+      const workflowRef = explicitWorkflowRef ?? context.workflowId
+      const nodeId = explicitWorkflowRef ? args[3] : args[2]
+      if (!workflowRef || !nodeId) {
+        return { ok: false, message: "usage: workflow node instructions show [workflow-ref] <node-id>" }
+      }
+      const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+      const payload = expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
+      const node = payload.workflow.nodes?.find((entry) => entry.id === nodeId)
+      if (!node) {
+        return { ok: false, message: `workflow node ${nodeId} not found` }
+      }
+      return {
+        ok: true,
+        message: node.instructions?.trim() ? node.instructions : "(no instructions)",
+        data: { workflow: payload.workflow, node },
+        contextUpdates: { workflowId: payload.workflow.id },
+      }
+    }
+    if (instructionsAction === "set") {
+      const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+      const workflowRef = explicitWorkflowRef ?? context.workflowId
+      const nodeId = explicitWorkflowRef ? args[3] : args[2]
+      const fileRef = explicitWorkflowRef ? args[4] : args[3]
+      if (!workflowRef || !nodeId || !fileRef) {
+        return { ok: false, message: "usage: workflow node instructions set [workflow-ref] <node-id> <file>" }
+      }
+      const instructionsPath = isAbsolute(fileRef) ? fileRef : resolvePath(context.worktree, fileRef)
+      const instructions = await readFile(instructionsPath, "utf8")
+      const response = await deps.client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflowRef, nodeId, instructions))
+      const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeInstructionsUpdated")
+      return { ok: true, message: `updated workflow node ${payload.node.id} instructions`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    }
+    return { ok: false, message: "usage: workflow node instructions show|set [workflow-ref] <node-id> [file]" }
+  }
   if (
     action === "can-complete-run"
     || action === "can-emit-intermediate-output"
@@ -111,7 +154,7 @@ export async function executeWorkflowNodeCommand(
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
     return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
-  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns ..." }
+  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | instructions show|set ... | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns ..." }
 }
 
 export async function executeWorkflowEdgeCommand(

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -192,6 +192,58 @@ test("executeShellCommand manages workflow graph and endpoints", async () => {
     { AliasWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", alias: "smoke" } },
     { BindWorkflowEndpoint: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", entry_node_id: "node-1" } },
   ])
+})
+
+test("executeShellCommand manages workflow node instructions from shell", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-instructions-"))
+  try {
+    await writeFile(join(root, "instructions.md"), "Review the handoff and return JSON.", "utf8")
+    const workflow = makeWorkflow({
+      nodes: [
+        { id: "node-1", agent_id: "agent-1", instructions: "Old instructions" },
+      ],
+    })
+    const updatedWorkflow = makeWorkflow({
+      nodes: [
+        { id: "node-1", agent_id: "agent-1", instructions: "Review the handoff and return JSON." },
+      ],
+    })
+    const session = makeSession({ workflows: [updatedWorkflow] })
+    const requests: Record<string, unknown>[] = []
+    const fake = {
+      client: {
+        send: async (request: Record<string, unknown>) => {
+          requests.push(request)
+          if ("ResolveWorkflow" in request) {
+            return { WorkflowResolved: { workflow } }
+          }
+          return { WorkflowNodeInstructionsUpdated: { node: updatedWorkflow.nodes![0], workflow: updatedWorkflow, session } }
+        },
+      },
+    }
+    const context = createDefaultShellContext({
+      workspace: root,
+      worktree: root,
+      sessionId: "session-1",
+      workflowId: "workflow-1",
+    })
+
+    const showResult = await executeShellCommand(parseShellCommand("workflow node instructions show node-1"), context, { client: fake.client })
+    const setResult = await executeShellCommand(parseShellCommand("workflow node instructions set workflow-1 node-1 instructions.md"), context, { client: fake.client })
+
+    assert.equal(showResult.ok, true)
+    assert.equal(showResult.message, "Old instructions")
+    assert.deepEqual(showResult.contextUpdates, { workflowId: "workflow-1" })
+    assert.equal(setResult.ok, true)
+    assert.match(setResult.message ?? "", /updated workflow node node-1 instructions/)
+    assert.deepEqual(setResult.contextUpdates, { workflowId: "workflow-1", sessionId: "session-1", agentId: "agent-1" })
+    assert.deepEqual(requests, [
+      { ResolveWorkflow: { session_id: "session-1", workflow_ref: "workflow-1" } },
+      { UpdateWorkflowNodeInstructions: { session_id: "session-1", workflow_ref: "workflow-1", node_id: "node-1", instructions: "Review the handoff and return JSON." } },
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("executeShellCommand manages workflow publications", async () => {
