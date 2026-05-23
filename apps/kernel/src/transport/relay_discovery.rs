@@ -13,6 +13,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RELAY_METADATA_ATTEMPTS: usize = 3;
+const RELAY_METADATA_RETRY_BASE_DELAY_MS: u64 = 250;
 
 pub async fn list_live_machines(
     config: &DaemonConfig,
@@ -102,6 +104,42 @@ async fn query_relay(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
+    let mut last_error = None;
+    for attempt in 0..RELAY_METADATA_ATTEMPTS {
+        match query_relay_once(config, query.clone()).await {
+            Ok(response) => return Ok(response),
+            Err(error) if relay_metadata_error_is_retryable(&error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_discovery",
+                    "relay metadata query attempt failed",
+                    serde_json::json!({
+                        "attempt": attempt + 1,
+                        "max_attempts": RELAY_METADATA_ATTEMPTS,
+                        "error": error.to_string(),
+                    }),
+                );
+                last_error = Some(error);
+                if attempt + 1 < RELAY_METADATA_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(
+                        RELAY_METADATA_RETRY_BASE_DELAY_MS
+                            * u64::try_from(attempt + 1).unwrap_or(1),
+                    ))
+                    .await;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
+        operation: "relay_metadata_query",
+        message: "relay metadata query failed without an error".to_string(),
+    }))
+}
+
+async fn query_relay_once(
+    config: &DaemonConfig,
+    query: RelayMetadataQuery,
+) -> Result<RelayEnvelope, DaemonError> {
     let relay_url = config
         .relay_url
         .clone()
@@ -182,5 +220,23 @@ async fn query_relay(
             operation: "read relay metadata response",
             message: error.to_string(),
         }),
+    }
+}
+
+fn relay_metadata_error_is_retryable(error: &DaemonError) -> bool {
+    match error {
+        DaemonError::LocalTransport { operation, message } => {
+            matches!(
+                *operation,
+                "connect relay metadata socket"
+                    | "write relay metadata request"
+                    | "read relay metadata response"
+            ) && (message.contains("timed out")
+                || message.contains("Operation timed out")
+                || message.contains("Connection reset")
+                || message.contains("connection closed")
+                || message.contains("relay closed metadata connection"))
+        }
+        _ => false,
     }
 }
