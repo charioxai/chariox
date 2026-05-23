@@ -63,6 +63,25 @@ impl ArrobaCredentialRegistry {
         Ok((credential, path))
     }
 
+    pub fn upsert(
+        &self,
+        credential: UserCredentialConfig,
+    ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        validate_credentials(std::slice::from_ref(&credential))?;
+        ensure_private_dir(&self.root, "credential.upsert")?;
+        let path = self.path_for(&credential.id)?;
+        let payload =
+            serde_yaml::to_string(&credential).map_err(|error| DaemonError::LocalTransport {
+                operation: "credential.upsert",
+                message: format!(
+                    "failed to serialize credential `{}`: {error}",
+                    credential.id
+                ),
+            })?;
+        atomic_write_private(&path, payload.as_bytes(), "credential.upsert")?;
+        Ok((credential, path))
+    }
+
     pub fn remove(&self, id: &str) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
         let path = self
             .find_path(id)?
@@ -196,5 +215,61 @@ fn io_error(operation: &'static str) -> impl Fn(std::io::Error) -> DaemonError {
     move |error| DaemonError::LocalTransport {
         operation,
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        UserCredentialInjectionConfig, UserCredentialSourceConfig, UserCredentialUse,
+    };
+
+    #[test]
+    fn upsert_writes_and_replaces_credential_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-credential-upsert-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let registry = ArrobaCredentialRegistry::new(root.clone());
+
+        let first = UserCredentialConfig {
+            id: "demo-token".to_string(),
+            description: Some("first".to_string()),
+            source: UserCredentialSourceConfig::Vault {
+                key: "demo-token".to_string(),
+            },
+            allowed_hosts: vec!["api.example.com".to_string()],
+            allowed_uses: vec![UserCredentialUse::Http],
+            injection: UserCredentialInjectionConfig::Header {
+                name: "authorization".to_string(),
+                value: "Bearer ${secret}".to_string(),
+            },
+        };
+        registry.upsert(first).expect("first upsert should write");
+
+        let second = UserCredentialConfig {
+            id: "demo-token".to_string(),
+            description: Some("second".to_string()),
+            source: UserCredentialSourceConfig::Vault {
+                key: "demo-token".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+        };
+        registry
+            .upsert(second.clone())
+            .expect("second upsert should replace");
+
+        assert_eq!(
+            registry
+                .get("demo-token")
+                .expect("credential should read")
+                .expect("credential should exist"),
+            second
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

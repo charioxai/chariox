@@ -132,6 +132,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetScript(_)
             | LocalDaemonRequest::ListScripts(_)
             | LocalDaemonRequest::RegisterCredential(_)
+            | LocalDaemonRequest::UpsertCredential(_)
             | LocalDaemonRequest::RemoveCredential(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::ListCredentials(_)

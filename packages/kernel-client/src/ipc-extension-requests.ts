@@ -125,6 +125,10 @@ export function registerCredentialRequest(sourcePath: string) {
   return { RegisterCredential: { source_path: sourcePath } }
 }
 
+export function upsertCredentialRequest(credential: Record<string, unknown>) {
+  return { UpsertCredential: { credential } }
+}
+
 export function removeCredentialRequest(id: string) {
   return { RemoveCredential: { id } }
 }

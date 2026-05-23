@@ -287,6 +287,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
+        LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",
         LocalDaemonRequest::RemoveCredential(_) => "credential.remove",
         LocalDaemonRequest::GetCredential(_) => "credential.get",
         LocalDaemonRequest::ListCredentials(_) => "credential.list",

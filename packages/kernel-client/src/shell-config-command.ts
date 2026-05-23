@@ -13,6 +13,7 @@ import {
   setCredentialSecretRequest,
   setUserConfigValueRequest,
   unsetUserConfigValueRequest,
+  upsertCredentialRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult } from "./shell-core.js"
 import {
@@ -137,6 +138,21 @@ export async function executeCredentialCommand(
     const credential = expectVariant<{ credential: { id: string } }>(response, "CredentialRegistered").credential
     return { ok: true, message: `registered credential ${credential.id}`, data: { credential } }
   }
+  if (action === "upsert-json") {
+    const json = [key, ...rest].filter(Boolean).join(" ").trim()
+    if (!json) {
+      return { ok: false, message: "usage: credential upsert-json <credential-json>" }
+    }
+    let credential: Record<string, unknown>
+    try {
+      credential = JSON.parse(json) as Record<string, unknown>
+    } catch (error) {
+      return { ok: false, message: `invalid credential json: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    const response = await deps.client.send(upsertCredentialRequest(credential))
+    const payload = expectVariant<{ credential: { id: string } }>(response, "CredentialUpserted")
+    return { ok: true, message: `upserted credential ${payload.credential.id}`, data: payload }
+  }
   if (action === "set") {
     if (!key || rest.length > 0) {
       return { ok: false, message: "usage: credential set <key>" }
@@ -166,7 +182,7 @@ export async function executeCredentialCommand(
     await deps.client.send(deleteCredentialSecretRequest(key))
     return { ok: true, message: `credential ${key} deleted from OS keychain` }
   }
-  return { ok: false, message: "usage: credential list|show|register|remove|set|delete" }
+  return { ok: false, message: "usage: credential list|show|register|upsert-json|remove|set|delete" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

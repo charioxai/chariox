@@ -68,6 +68,17 @@ mod managed_io_tests {
     }
 
     #[test]
+    fn credential_specs_expose_browser_secret_paste_tool() {
+        let specs = credential_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS));
+    }
+
+    #[test]
     fn canonical_extension_tool_name_accepts_provider_aliases() {
         assert_eq!(
             canonical_extension_tool_name("mcp__arroba__list_extensions"),
@@ -95,6 +106,19 @@ mod managed_io_tests {
             Some(SLICE_OPEN_URL_TOOL)
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn canonical_credential_tool_name_accepts_browser_paste_aliases() {
+        assert_eq!(
+            canonical_credential_tool_name("paste_secret_to_slice"),
+            Some(PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("mcp__arroba__paste_secret_to_slice"),
+            Some(PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert_eq!(canonical_credential_tool_name("unknown"), None);
     }
 
     #[test]

@@ -162,6 +162,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::SLICE_FIND_TEXT_TOOL
                     | crate::transport::runtime_tools::SLICE_MOUSE_TOOL
                     | crate::transport::runtime_tools::SLICE_KEYBOARD_TOOL
+                    | crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
                     | crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL
             ) {
                 return self

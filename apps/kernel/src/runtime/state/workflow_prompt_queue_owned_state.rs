@@ -35,6 +35,16 @@ impl KernelRuntimeOwnedState {
             Ok(dispatches) => dispatches,
             Err(error) => {
                 if let Some(node_run) = workflow_run.node_runs().first() {
+                    let _ = self.session_store.write().record_workflow_failure_event(
+                        session_id,
+                        workflow_run.id(),
+                        crate::session::WorkflowFailureEvent::new(
+                            crate::session::WorkflowFailureKind::TransportFailure,
+                            node_run.id(),
+                            Vec::new(),
+                            error.to_string(),
+                        ),
+                    );
                     let _ = self.session_store.write().fail_workflow_node_run(
                         session_id,
                         workflow_run.id(),

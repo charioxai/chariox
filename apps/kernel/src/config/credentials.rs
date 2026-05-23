@@ -68,6 +68,7 @@ pub enum UserCredentialUse {
     Http,
     Pty,
     Connector,
+    Browser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +92,7 @@ pub enum UserCredentialInjectionConfig {
         signature_header: String,
     },
     Pty,
+    Browser,
 }
 
 fn default_hmac_timestamp_header() -> String {
@@ -142,6 +144,7 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
                 validate_non_empty("credentials.injection.signature_header", signature_header)?;
             }
             UserCredentialInjectionConfig::Pty => {}
+            UserCredentialInjectionConfig::Browser => {}
         }
     }
     Ok(())

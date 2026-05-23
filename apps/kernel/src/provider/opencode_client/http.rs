@@ -75,21 +75,25 @@ impl OpenCodeClient {
         for attempt in 0..Self::REQUEST_RETRY_ATTEMPTS {
             match self.send_request_once(method, path, body) {
                 Ok(response) => return Ok(response),
-                Err(error) if is_retryable_opencode_http_error(&error) => {
-                    last_error = Some(error);
+                Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
+                    last_error = Some(error.into_daemon_error(self, method, path));
                     if attempt + 1 < Self::REQUEST_RETRY_ATTEMPTS {
-                        std::thread::sleep(Self::REQUEST_RETRY_DELAY);
+                        std::thread::sleep(retry_delay_for_attempt(attempt));
                     }
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into_daemon_error(self, method, path)),
             }
         }
-        Err(last_error.unwrap_or_else(|| {
-            self.protocol_error(
-                method_to_operation(method, path),
-                "OpenCode request failed".to_string(),
-            )
-        }))
+        let operation = method_to_operation(method, path);
+        let message = last_error
+            .map(|error| {
+                format!(
+                    "OpenCode request failed after {} attempts: {error}",
+                    Self::REQUEST_RETRY_ATTEMPTS
+                )
+            })
+            .unwrap_or_else(|| "OpenCode request failed".to_string());
+        Err(self.protocol_error(operation, message))
     }
 
     fn send_request_once(
@@ -97,33 +101,25 @@ impl OpenCodeClient {
         method: &'static str,
         path: &str,
         body: Option<&serde_json::Value>,
-    ) -> Result<(u16, Vec<u8>), DaemonError> {
+    ) -> Result<(u16, Vec<u8>), OpenCodeHttpFailure> {
         let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
-            self.protocol_error(
-                "base_url_parse",
-                format!("unsupported OpenCode base URL `{}`", self.base_url),
-            )
+            OpenCodeHttpFailure::protocol(format!(
+                "unsupported OpenCode base URL `{}`",
+                self.base_url
+            ))
         })?;
-        let mut stream = TcpStream::connect(address).map_err(|error| {
-            self.protocol_error(method_to_operation(method, path), error.to_string())
-        })?;
+        let mut stream = TcpStream::connect(address).map_err(OpenCodeHttpFailure::io)?;
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| {
-                self.protocol_error(method_to_operation(method, path), error.to_string())
-            })?;
+            .map_err(OpenCodeHttpFailure::io)?;
         stream
             .set_write_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| {
-                self.protocol_error(method_to_operation(method, path), error.to_string())
-            })?;
+            .map_err(OpenCodeHttpFailure::io)?;
 
         let body_bytes = body
             .map(serde_json::to_vec)
             .transpose()
-            .map_err(|error| {
-                self.protocol_error(method_to_operation(method, path), error.to_string())
-            })?
+            .map_err(|error| OpenCodeHttpFailure::protocol(error.to_string()))?
             .unwrap_or_default();
         let request = format!(
             "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Arroba-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -133,47 +129,115 @@ impl OpenCodeClient {
             .write_all(request.as_bytes())
             .and_then(|_| stream.write_all(&body_bytes))
             .and_then(|_| stream.flush())
-            .map_err(|error| {
-                self.protocol_error(method_to_operation(method, path), error.to_string())
-            })?;
+            .map_err(OpenCodeHttpFailure::io)?;
 
-        read_http_response(&mut stream)
-            .map_err(|error| self.protocol_error(method_to_operation(method, path), error))
+        read_http_response(&mut stream).map_err(OpenCodeHttpFailure::from)
     }
 }
 
-fn is_retryable_opencode_http_error(error: &DaemonError) -> bool {
-    let DaemonError::ProviderProtocol {
-        operation, message, ..
-    } = error
-    else {
-        return false;
-    };
-    if *operation != "opencode_http" {
+#[derive(Debug)]
+struct OpenCodeHttpFailure {
+    message: String,
+    io_kind: Option<ErrorKind>,
+}
+
+impl OpenCodeHttpFailure {
+    fn io(error: std::io::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    fn protocol(message: String) -> Self {
+        Self {
+            message,
+            io_kind: None,
+        }
+    }
+
+    fn into_daemon_error(
+        self,
+        client: &OpenCodeClient,
+        method: &'static str,
+        path: &str,
+    ) -> DaemonError {
+        client.protocol_error(method_to_operation(method, path), self.message)
+    }
+}
+
+impl std::fmt::Display for OpenCodeHttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl From<HttpResponseReadError> for OpenCodeHttpFailure {
+    fn from(error: HttpResponseReadError) -> Self {
+        Self {
+            message: error.message,
+            io_kind: error.io_kind,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct HttpResponseReadError {
+    message: String,
+    io_kind: Option<ErrorKind>,
+}
+
+impl HttpResponseReadError {
+    fn io(error: std::io::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    fn protocol(message: String) -> Self {
+        Self {
+            message,
+            io_kind: None,
+        }
+    }
+}
+
+fn is_retryable_opencode_http_error(
+    method: &'static str,
+    path: &str,
+    error: &OpenCodeHttpFailure,
+) -> bool {
+    if !is_retryable_request(method, path) {
         return false;
     }
+    error.io_kind.is_some_and(is_retryable_io_error_kind)
+        || error
+            .message
+            .contains("connection closed before response header")
+}
+
+fn is_retryable_request(method: &'static str, path: &str) -> bool {
+    method == "GET"
+        // OpenCode prompt submission is retried because the body carries Arroba's stable
+        // messageID, so a retry can be deduplicated by the provider side.
+        || (method == "POST" && path.ends_with("/prompt_async"))
+}
+
+fn is_retryable_io_error_kind(kind: ErrorKind) -> bool {
     matches!(
-        message.as_str(),
-        "Resource temporarily unavailable (os error 35)"
-            | "Connection refused (os error 61)"
-            | "Connection reset by peer (os error 54)"
-    ) || message.contains("timed out")
-        || message.contains("connection closed before response header")
-        || message.contains("Broken pipe")
-        || retryable_io_error_kind(message).is_some()
+        kind,
+        ErrorKind::WouldBlock
+            | ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::BrokenPipe
+    )
 }
 
-fn retryable_io_error_kind(message: &str) -> Option<ErrorKind> {
-    [
-        ErrorKind::WouldBlock,
-        ErrorKind::Interrupted,
-        ErrorKind::TimedOut,
-        ErrorKind::ConnectionRefused,
-        ErrorKind::ConnectionReset,
-        ErrorKind::BrokenPipe,
-    ]
-    .into_iter()
-    .find(|kind| message == kind.to_string())
+fn retry_delay_for_attempt(attempt: usize) -> Duration {
+    OpenCodeClient::REQUEST_RETRY_DELAY * (attempt as u32 + 1)
 }
 
 fn method_to_operation(method: &str, path: &str) -> &'static str {
@@ -230,14 +294,18 @@ pub(super) fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>)
     }
 }
 
-pub(super) fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
+pub(super) fn read_http_response(
+    stream: &mut TcpStream,
+) -> Result<(u16, Vec<u8>), HttpResponseReadError> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];
     let header_end;
     loop {
-        let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
         if size == 0 {
-            return Err("connection closed before response header".to_string());
+            return Err(HttpResponseReadError::protocol(
+                "connection closed before response header".to_string(),
+            ));
         }
         buffer.extend_from_slice(&chunk[..size]);
         if let Some(index) = find_double_crlf(&buffer) {
@@ -250,13 +318,13 @@ pub(super) fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>
     let mut lines = header_text.lines();
     let status_line = lines
         .next()
-        .ok_or_else(|| "missing HTTP status line".to_string())?;
+        .ok_or_else(|| HttpResponseReadError::protocol("missing HTTP status line".to_string()))?;
     let status_code = status_line
         .split_whitespace()
         .nth(1)
-        .ok_or_else(|| "missing HTTP status code".to_string())?
+        .ok_or_else(|| HttpResponseReadError::protocol("missing HTTP status code".to_string()))?
         .parse::<u16>()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| HttpResponseReadError::protocol(error.to_string()))?;
     let mut content_length = None;
     let mut is_chunked = false;
     for line in lines {
@@ -284,7 +352,7 @@ pub(super) fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>
         let mut body = buffer[header_end..].to_vec();
         let content_length = content_length.unwrap_or(0);
         while body.len() < content_length {
-            let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
             if size == 0 {
                 break;
             }
@@ -302,7 +370,7 @@ fn find_double_crlf(buffer: &[u8]) -> Option<usize> {
 fn read_chunked_http_body(
     mut buffered: Vec<u8>,
     stream: &mut TcpStream,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, HttpResponseReadError> {
     let mut decoded = Vec::new();
     let mut chunk = [0_u8; 1024];
 
@@ -311,9 +379,11 @@ fn read_chunked_http_body(
             if let Some(index) = buffered.windows(2).position(|window| window == b"\r\n") {
                 break index;
             }
-            let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
             if size == 0 {
-                return Err("unexpected EOF while reading chunk header".to_string());
+                return Err(HttpResponseReadError::protocol(
+                    "unexpected EOF while reading chunk header".to_string(),
+                ));
             }
             buffered.extend_from_slice(&chunk[..size]);
         };
@@ -324,8 +394,9 @@ fn read_chunked_http_body(
             .next()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "missing chunk size".to_string())?;
-        let size = usize::from_str_radix(size_hex, 16).map_err(|error| error.to_string())?;
+            .ok_or_else(|| HttpResponseReadError::protocol("missing chunk size".to_string()))?;
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|error| HttpResponseReadError::protocol(error.to_string()))?;
         buffered.drain(..header_end + 2);
 
         if size == 0 {
@@ -334,7 +405,7 @@ fn read_chunked_http_body(
                     buffered.drain(..2);
                     break;
                 }
-                let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+                let read = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
                 if read == 0 {
                     break;
                 }
@@ -344,9 +415,11 @@ fn read_chunked_http_body(
         }
 
         while buffered.len() < size + 2 {
-            let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            let read = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
             if read == 0 {
-                return Err("unexpected EOF while reading chunk body".to_string());
+                return Err(HttpResponseReadError::protocol(
+                    "unexpected EOF while reading chunk body".to_string(),
+                ));
             }
             buffered.extend_from_slice(&chunk[..read]);
         }

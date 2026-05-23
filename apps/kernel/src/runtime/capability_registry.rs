@@ -12,7 +12,7 @@ use crate::local::{
     RegisterScriptRequest, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    ValidateScriptRequest,
+    UpsertCredentialRequest, ValidateScriptRequest,
 };
 
 pub(crate) fn execute_capability_registry_request(
@@ -48,6 +48,7 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::RegisterCredential(request) => {
             execute_register_credential_request(request)
         }
+        LocalDaemonRequest::UpsertCredential(request) => execute_upsert_credential_request(request),
         LocalDaemonRequest::RemoveCredential(request) => execute_remove_credential_request(request),
         LocalDaemonRequest::GetCredential(request) => execute_get_credential_request(request),
         LocalDaemonRequest::ListCredentials(request) => execute_list_credentials_request(request),
@@ -91,6 +92,14 @@ pub(crate) fn execute_register_credential_request(
     let registry = crate::credential::ArrobaCredentialRegistry::user()?;
     let (credential, path) = registry.install_from_file(&request.source_path)?;
     Ok(LocalDaemonResponse::CredentialRegistered { credential, path })
+}
+
+pub(crate) fn execute_upsert_credential_request(
+    request: UpsertCredentialRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let (credential, path) = registry.upsert(request.credential)?;
+    Ok(LocalDaemonResponse::CredentialUpserted { credential, path })
 }
 
 pub(crate) fn execute_remove_credential_request(

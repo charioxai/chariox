@@ -129,6 +129,37 @@ impl KernelRuntimeState {
                 })?;
                 run_slice_screen_command(slice_keyboard_command_args(args)?).await?
             }
+            crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::PasteSecretToSliceArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_paste_secret_to_slice",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let user_config = self.owned.config_projection.snapshot().user_config;
+                let credentials = crate::credential::load_user_credentials()?;
+                let service = crate::secret::RuntimeSecretService::with_vault_service(
+                    credentials,
+                    user_config.credential_vault.service,
+                );
+                let secret = service.browser_secret_input(&args.credential_id)?;
+                let mut output =
+                    run_slice_screen_command_with_stdin(vec!["paste-stdin".to_string()], secret)
+                        .await?;
+                if output.success && args.submit {
+                    output =
+                        run_slice_screen_command(vec!["key".to_string(), "Return".to_string()])
+                            .await?;
+                }
+                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
+                payload["credential_id"] = serde_json::Value::String(args.credential_id.clone());
+                payload["submitted"] = serde_json::Value::Bool(args.submit && output.success);
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: output.success,
+                    payload,
+                });
+            }
             crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SliceOpenUrlArgs,
@@ -164,15 +195,57 @@ struct SliceScreenCommandOutput {
 async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner(args, None).await
+}
+
+async fn run_slice_screen_command_with_stdin(
+    args: Vec<String>,
+    stdin: String,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
+    run_slice_screen_command_inner(args, Some(stdin)).await
+}
+
+async fn run_slice_screen_command_inner(
+    args: Vec<String>,
+    stdin: Option<String>,
+) -> Result<SliceScreenCommandOutput, DaemonError> {
     let tool_path = std::env::var("ARROBA_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/arroba-slice/slice-screen.sh".to_string());
     tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new(&tool_path)
+        let mut command = std::process::Command::new(&tool_path);
+        command
             .args(&args)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if stdin.is_some() {
+            command.stdin(std::process::Stdio::piped());
+        }
+        let mut child = command
+            .spawn()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to run `{tool_path}`: {error}"),
+            })?;
+        if let Some(stdin) = stdin {
+            use std::io::Write;
+            let Some(mut child_stdin) = child.stdin.take() else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: "slice screen command did not expose stdin".to_string(),
+                });
+            };
+            child_stdin.write_all(stdin.as_bytes()).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: format!("failed to write slice screen stdin: {error}"),
+                }
+            })?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: format!("failed to wait for `{tool_path}`: {error}"),
             })?;
         Ok(SliceScreenCommandOutput {
             success: output.status.success(),

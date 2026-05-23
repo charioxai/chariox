@@ -145,6 +145,11 @@ pub struct RegisterCredentialRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertCredentialRequest {
+    pub credential: UserCredentialConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveCredentialRequest {
     pub id: String,
 }

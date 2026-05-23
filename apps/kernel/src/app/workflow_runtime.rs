@@ -2,7 +2,8 @@ use crate::app::{provider_runtime::ProviderProcessTracker, DaemonApp};
 use crate::error::DaemonError;
 use crate::session::{
     unix_epoch_ms, PromptQueueItem, WorkflowDefinition, WorkflowEndpointDefinition,
-    WorkflowQueuedPrompt, WorkflowQueuedPromptSource, WorkflowRun, WorkflowWatchdogTickPlan,
+    WorkflowFailureEvent, WorkflowFailureKind, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
+    WorkflowRun, WorkflowWatchdogTickPlan,
 };
 use std::collections::BTreeSet;
 
@@ -230,6 +231,16 @@ impl DaemonApp {
             WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
         {
             if let Some(node_run) = workflow_run.node_runs().first() {
+                let _ = self.sessions_mut().record_workflow_failure_event(
+                    session_id,
+                    workflow_run.id(),
+                    WorkflowFailureEvent::new(
+                        WorkflowFailureKind::TransportFailure,
+                        node_run.id(),
+                        Vec::new(),
+                        error.to_string(),
+                    ),
+                );
                 let _ = self.sessions_mut().fail_workflow_node_run(
                     session_id,
                     workflow_run.id(),

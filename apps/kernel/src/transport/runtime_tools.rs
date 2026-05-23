@@ -47,6 +47,8 @@ pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_cr
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS: &str = "http_request_with_credential";
 pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
 pub const SEND_SECRET_TO_TERMINAL_TOOL_ALIAS: &str = "send_secret_to_terminal";
+pub const PASTE_SECRET_TO_SLICE_TOOL: &str = "arroba.paste_secret_to_slice";
+pub const PASTE_SECRET_TO_SLICE_TOOL_ALIAS: &str = "paste_secret_to_slice";
 pub const REQUEST_POPUP_TOOL: &str = "arroba.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
 pub const SLICE_SCREEN_STATUS_TOOL: &str = "arroba.slice_screen_status";
@@ -226,6 +228,13 @@ pub struct SendSecretToTerminalArgs {
     pub credential_id: String,
     #[serde(default = "default_append_newline")]
     pub append_newline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasteSecretToSliceArgs {
+    pub credential_id: String,
+    #[serde(default)]
+    pub submit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,6 +467,19 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
+            description: "Paste a browser credential into the focused Arroba slice field. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential_id"],
+                "properties": {
+                    "credential_id": {"type": "string"},
+                    "submit": {"type": "boolean", "description": "Press Enter after pasting. Defaults to false."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
             description: "Request a synchronous Arroba popup in the current agent pane. The tool call blocks until the user answers or a timeout/default resolves it, then returns the selected reply.".to_string(),
             input_schema: serde_json::json!({
@@ -521,6 +543,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
+        PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
         REQUEST_POPUP_TOOL => REQUEST_POPUP_TOOL_ALIAS,
         _ => return None,
     };
@@ -549,6 +572,11 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_send_secret_to_terminal"
         | "mcp__arroba__send_secret_to_terminal"
         | "mcp__arroba__arroba_send_secret_to_terminal" => Some(SEND_SECRET_TO_TERMINAL_TOOL),
+        PASTE_SECRET_TO_SLICE_TOOL
+        | PASTE_SECRET_TO_SLICE_TOOL_ALIAS
+        | "arroba_paste_secret_to_slice"
+        | "mcp__arroba__paste_secret_to_slice"
+        | "mcp__arroba__arroba_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
         REQUEST_POPUP_TOOL
         | REQUEST_POPUP_TOOL_ALIAS
         | "arroba_request_popup"

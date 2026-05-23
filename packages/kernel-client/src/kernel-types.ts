@@ -69,7 +69,7 @@ export type ArrobaCredentialConfig = {
   description?: string | null
   source: Record<string, unknown>
   allowed_hosts?: string[]
-  allowed_uses?: string[]
+  allowed_uses?: ("http" | "pty" | "connector" | "browser" | string)[]
   injection: Record<string, unknown>
 }
 
@@ -828,7 +828,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 44
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 45
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

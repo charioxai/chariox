@@ -156,6 +156,16 @@ clipboard_clear() {
   printf '' | xclip -selection clipboard -in
 }
 
+paste_stdin() {
+  focus_chromium
+  local previous
+  previous="$(clipboard_get || true)"
+  xclip -selection clipboard -in >/dev/null
+  xdotool key --clearmodifiers ctrl+v
+  sleep 0.1
+  printf '%s' "$previous" | xclip -selection clipboard -in
+}
+
 ocr() {
   local image="${1:-/tmp/arroba-slice-screenshot.png}"
   if [[ ! -f "$image" ]]; then
@@ -246,12 +256,13 @@ case "${1:-status}" in
   clipboard-get|clipboard_get) clipboard_get ;;
   clipboard-set|clipboard_set) shift; clipboard_set "$@" ;;
   clipboard-clear|clipboard_clear) clipboard_clear ;;
+  paste-stdin|paste_stdin) paste_stdin ;;
   ocr) shift; ocr "$@" ;;
   find-text|find_text) shift; find_text "$@" ;;
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|ocr|find-text|open-url
 EOF
     exit 2
     ;;

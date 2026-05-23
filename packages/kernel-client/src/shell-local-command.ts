@@ -16,7 +16,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "slice list|create|status|start|stop|delete|auth import|screen",
           "relay status",
           "config show|path|keys|schema|set|unset|managed-io",
-          "credential list|set|delete",
+          "credential list|show|register|upsert-json|set|delete",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workspace link create|list|show|attach|detach",

@@ -329,7 +329,7 @@ impl SessionService {
             return Err(DaemonError::LocalTransport {
                 operation: "activate expected queued prompt",
                 message: format!(
-                    "expected queued prompt `{}` but compatibility queue front was `{}`",
+                    "expected queued prompt `{}` but prompt queue front was `{}`",
                     expected_prompt_id,
                     peeked.id()
                 ),

@@ -20,6 +20,9 @@ Prove these v1 claims:
 - A generic signing adapter can sign requests without exposing the signing key.
 - A terminal/console password prompt can receive a secret directly from the
   runtime without passing that value through the agent.
+- A browser password/API-key field can receive a secret from a slice agent
+  through a runtime tool without returning the value to the agent or recording
+  it in transcripts.
 
 ## Non-Goals
 
@@ -162,6 +165,12 @@ Success:
   worker-side provider env scrubbing. Remote agents discover/resolve credential
   handles through the worker runtime MCP binding; users must configure
   credentials on the machine where the agent runs.
+- M10.12 browser/vault UX: in progress. Web CLI exposes kernel credential
+  metadata and vault secret set/delete controls through the terminal side
+  panel. Slice agents can request browser-field paste through a browser-scoped
+  credential handle; the kernel resolves the secret and the slice helper
+  pastes through the focused browser field without returning the value to the
+  model.
 
 Validated commands:
 
@@ -237,6 +246,7 @@ Supported v1 injections:
 - `basic`
 - `hmac`
 - `pty`
+- `browser`
 
 Local vault config:
 
@@ -333,6 +343,7 @@ V1 tools:
 - `list_credential_handles`
 - `http_request_with_credential`
 - `send_secret_to_terminal`
+- `paste_secret_to_slice`
 
 Acceptance:
 
@@ -428,9 +439,51 @@ Run end-to-end drills after each production slice:
 - wrong-host denial from an agent
 - secret env absence inside provider environment
 - local terminal password prompt handoff
+- browser password-field handoff in a slice using a `browser` credential
 - remote provider env scrub
 - remote HTTP credential request through a worker-local credential handle
 - remote missing-handle/use-denied drill with a clear worker-side error
+
+### M10.12 Web Vault And Browser Secret Handoff
+
+Add first-class credential management to the Web CLI side panel without making
+Cloud a credential owner. The browser talks to the kernel through the existing
+local daemon request path; secret values remain local to the kernel vault.
+
+Scope:
+
+- add a Vault side panel tab for listing, creating, editing, and deleting
+  credential metadata
+- support hidden browser-side secret set/delete calls for vault-backed
+  credentials
+- add `UpsertCredential` to the local daemon protocol so Web and TUI surfaces
+  can create or update credential metadata through the same kernel API
+- add `allowed_uses = ["browser"]` and `injection = { kind = "browser" }`
+  for credentials that may be pasted into browser fields
+- add `paste_secret_to_slice` as a runtime MCP tool for slice agents
+- paste into the focused slice browser field by temporarily using the slice
+  clipboard, then restoring the previous clipboard contents
+
+Non-goals:
+
+- no Cloud-side secret storage or proxying
+- no protocol path that returns a secret value to the browser, model, relay, or
+  transcript
+- no automatic browser-form detection in this slice; the agent/user must focus
+  the intended field before invoking the paste tool
+
+Acceptance:
+
+- local daemon protocol version is bumped and protocol shape tests cover the
+  new request/response
+- Web Vault panel can upsert metadata and set/delete vault values through the
+  kernel
+- TUI shell exposes the same metadata upsert path
+- runtime tool rejects handles missing `browser` allowed use or `browser`
+  injection before resolving the secret
+- runtime tool result contains handle/submission metadata only
+- browser field drill proves the password appears in the focused browser input
+  while the agent response and kernel logs do not contain the value
 
 Current dedicated drill:
 

@@ -185,6 +185,15 @@ impl RuntimeSecretService {
                     ),
                 ));
             }
+            UserCredentialInjectionConfig::Browser => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "credential `{}` is configured for browser input",
+                        credential.id
+                    ),
+                ));
+            }
         }
 
         if request.timeout_ms == 0 {
@@ -233,6 +242,18 @@ impl RuntimeSecretService {
             return Err(secret_error(
                 "credential_policy",
                 format!("credential `{credential_id}` is not configured for terminal input"),
+            ));
+        }
+        self.resolve_secret(credential)
+    }
+
+    pub fn browser_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
+        if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for browser input"),
             ));
         }
         self.resolve_secret(credential)
@@ -515,6 +536,7 @@ fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
         UserCredentialInjectionConfig::Basic { .. } => "basic",
         UserCredentialInjectionConfig::Hmac { .. } => "hmac",
         UserCredentialInjectionConfig::Pty => "pty",
+        UserCredentialInjectionConfig::Browser => "browser",
     }
 }
 
@@ -768,6 +790,57 @@ mod tests {
             "terminal-secret"
         );
         std::env::remove_var("ARROBA_TEST_TERMINAL_PASSWORD");
+    }
+
+    #[test]
+    fn browser_secret_input_requires_browser_use() {
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("ARROBA_TEST_BROWSER_PASSWORD", "browser-secret");
+        let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "browser_password".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "ARROBA_TEST_BROWSER_PASSWORD".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+        }]);
+
+        assert_eq!(
+            service
+                .browser_secret_input("browser_password")
+                .expect("browser secret should resolve"),
+            "browser-secret"
+        );
+        std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
+    }
+
+    #[test]
+    fn browser_secret_input_requires_browser_injection() {
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("ARROBA_TEST_BROWSER_PASSWORD", "browser-secret");
+        let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "browser_password".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "ARROBA_TEST_BROWSER_PASSWORD".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Header {
+                name: "authorization".to_string(),
+                value: "Bearer ${secret}".to_string(),
+            },
+        }]);
+
+        let error = service
+            .browser_secret_input("browser_password")
+            .expect_err("browser input should require browser injection");
+        assert!(error
+            .to_string()
+            .contains("not configured for browser input"));
+        std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
     }
 
     #[test]
