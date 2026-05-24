@@ -25,10 +25,12 @@ pub(crate) fn provider_facing_mcp_proxy_config(
         transport: ArrobaMcpTransportConfig::StreamableHttp {
             url: provider_facing_mcp_proxy_url(runtime_mcp_url, &backing.name)?,
             bearer_token_env_var: None,
+            bearer_token_credential: None,
             http_headers: BTreeMap::from([(
                 "Authorization".to_string(),
                 format!("Bearer {runtime_mcp_auth_token}"),
             )]),
+            credential_http_headers: BTreeMap::new(),
             env_http_headers: BTreeMap::new(),
         },
         enabled: backing.enabled,
@@ -113,7 +115,9 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
         ArrobaMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
+            bearer_token_credential: _,
             http_headers,
+            credential_http_headers: _,
             env_http_headers,
         } => forward_streamable_http_mcp_request(
             url,
@@ -240,6 +244,7 @@ mod tests {
             transport: ArrobaMcpTransportConfig::StreamableHttp {
                 url: format!("http://{address}/mcp"),
                 bearer_token_env_var: None,
+                bearer_token_credential: None,
                 http_headers: BTreeMap::from([
                     (
                         "Authorization".to_string(),
@@ -247,6 +252,7 @@ mod tests {
                     ),
                     ("X-Test".to_string(), "yes".to_string()),
                 ]),
+                credential_http_headers: BTreeMap::new(),
                 env_http_headers: BTreeMap::new(),
             },
             enabled: true,

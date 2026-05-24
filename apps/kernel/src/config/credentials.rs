@@ -69,6 +69,7 @@ pub enum UserCredentialUse {
     Pty,
     Connector,
     Browser,
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

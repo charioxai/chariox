@@ -269,6 +269,12 @@ impl RuntimeSecretService {
         Ok((credential.clone(), secret))
     }
 
+    pub fn resolve_mcp_secret(&self, credential_id: &str) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
+        self.resolve_secret(credential)
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
         if value.is_empty() {

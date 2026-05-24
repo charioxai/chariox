@@ -168,6 +168,11 @@ pub struct RegisterConnectorRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertConnectorRequest {
+    pub connector: ArrobaConnectorDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterConnectorAdapterRequest {
     pub source_path: PathBuf,
 }
@@ -208,6 +213,19 @@ pub struct TestConnectorRequest {
     pub input: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertSkillRequest {
+    pub workspace_id: Option<String>,
+    pub source: SkillInstallSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SkillInstallSource {
+    Content { skill_md: String },
+    Url { url: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

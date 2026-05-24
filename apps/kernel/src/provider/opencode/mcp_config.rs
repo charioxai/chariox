@@ -61,6 +61,7 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
             command,
             args,
             env: static_env,
+            credential_env: _,
             env_vars,
             cwd,
         } => {
@@ -87,7 +88,9 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
         ArrobaMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
+            bearer_token_credential: _,
             http_headers,
+            credential_http_headers: _,
             env_http_headers,
         } => {
             let mut headers = http_headers.clone();

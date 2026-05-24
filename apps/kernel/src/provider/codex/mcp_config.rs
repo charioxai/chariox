@@ -98,6 +98,7 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfi
             command,
             args: server_args,
             env,
+            credential_env: _,
             env_vars,
             cwd,
         } => {
@@ -121,7 +122,9 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfi
         ArrobaMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
+            bearer_token_credential: _,
             http_headers,
+            credential_http_headers: _,
             env_http_headers,
         } => {
             let mut fields = vec![format!("url={url:?}")];

@@ -54,6 +54,36 @@ impl ArrobaConnectorRegistry {
         Ok((definition, path))
     }
 
+    pub fn upsert_definition(
+        &self,
+        definition: &ArrobaConnectorDefinition,
+        adapters: &ArrobaConnectorAdapterRegistry,
+    ) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
+        definition.validate()?;
+        let adapter = adapters.get(&definition.adapter)?.ok_or_else(|| {
+            connector_error(
+                "connector.upsert",
+                format!(
+                    "connector adapter `{}` is not registered",
+                    definition.adapter
+                ),
+            )
+        })?;
+        validate_connector_with_adapter(definition, &adapter)?;
+        ensure_private_dir(&self.root, "connector.upsert")?;
+        let path = self.path_for(&definition.name)?;
+        let payload =
+            serde_yaml::to_string(definition).map_err(|error| DaemonError::LocalTransport {
+                operation: "connector.upsert",
+                message: format!(
+                    "failed to serialize connector `{}`: {error}",
+                    definition.name
+                ),
+            })?;
+        atomic_write_private(&path, payload.as_bytes(), "connector.upsert")?;
+        Ok((definition.clone(), path))
+    }
+
     pub fn remove(&self, name: &str) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
         let path = self
             .find_path(name)?

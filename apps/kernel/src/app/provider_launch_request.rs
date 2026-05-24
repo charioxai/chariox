@@ -6,7 +6,8 @@ use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
 use super::provider_launch_policy::{
     default_provider_env_remove, generate_runtime_mcp_auth_token,
-    granted_mcp_servers_for_agent_launch, sanitize_resume_state_for_launch,
+    granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
+    sanitize_resume_state_for_launch,
 };
 
 impl DaemonApp {
@@ -77,6 +78,11 @@ impl DaemonApp {
                 )?);
             }
         }
+        let mcp_servers = std::mem::take(&mut request.mcp_servers);
+        request = request.with_mcp_servers(resolve_mcp_credentials_for_launch(
+            &self.config,
+            mcp_servers,
+        )?);
         Ok(request)
     }
 }

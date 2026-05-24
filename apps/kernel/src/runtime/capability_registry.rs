@@ -12,7 +12,7 @@ use crate::local::{
     RegisterScriptRequest, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
     UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    UpsertCredentialRequest, ValidateScriptRequest,
+    UpsertConnectorRequest, UpsertCredentialRequest, UpsertSkillRequest, ValidateScriptRequest,
 };
 
 pub(crate) fn execute_capability_registry_request(
@@ -55,6 +55,7 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::RegisterConnector(request) => {
             execute_register_connector_request(request)
         }
+        LocalDaemonRequest::UpsertConnector(request) => execute_upsert_connector_request(request),
         LocalDaemonRequest::RegisterConnectorAdapter(request) => {
             execute_register_connector_adapter_request(request)
         }
@@ -73,6 +74,7 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::TestConnector(request) => {
             execute_test_connector_request(request, vault_service)
         }
+        LocalDaemonRequest::UpsertSkill(request) => execute_upsert_skill_request(request),
         LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
         LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
         LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
@@ -139,6 +141,15 @@ pub(crate) fn execute_register_connector_request(
     let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
     let (connector, path) = registry.install_from_file(&request.source_path, &adapters)?;
     Ok(LocalDaemonResponse::ConnectorRegistered { connector, path })
+}
+
+pub(crate) fn execute_upsert_connector_request(
+    request: UpsertConnectorRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let (connector, path) = registry.upsert_definition(&request.connector, &adapters)?;
+    Ok(LocalDaemonResponse::ConnectorUpserted { connector, path })
 }
 
 pub(crate) fn execute_register_connector_adapter_request(
@@ -435,6 +446,21 @@ pub(crate) fn execute_install_skill_request(
     )?);
     let (skill, path) = registry.install_from_path(&source_path)?;
     Ok(LocalDaemonResponse::SkillInstalled { skill, path })
+}
+
+pub(crate) fn execute_upsert_skill_request(
+    request: UpsertSkillRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+        request.workspace_id.as_deref(),
+    )?);
+    let (skill, path) = match request.source {
+        crate::local::SkillInstallSource::Content { skill_md } => {
+            registry.upsert_from_content(&skill_md)?
+        }
+        crate::local::SkillInstallSource::Url { url } => registry.upsert_from_url(&url)?,
+    };
+    Ok(LocalDaemonResponse::SkillUpserted { skill, path })
 }
 
 pub(crate) fn execute_update_skill_request(

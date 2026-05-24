@@ -176,6 +176,12 @@ impl KernelRuntimeOwnedState {
                     )?);
             }
         }
+        let config = self.config_projection.snapshot();
+        let mcp_servers = std::mem::take(&mut request.mcp_servers);
+        request = request.with_mcp_servers(crate::app::resolve_mcp_credentials_for_launch(
+            &config,
+            mcp_servers,
+        )?);
         Ok(request)
     }
 }

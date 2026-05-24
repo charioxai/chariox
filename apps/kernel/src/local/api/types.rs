@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 45;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 46;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -98,6 +98,7 @@ pub enum LocalDaemonRequest {
     GetCredential(GetCredentialRequest),
     ListCredentials(ListCredentialsRequest),
     RegisterConnector(RegisterConnectorRequest),
+    UpsertConnector(UpsertConnectorRequest),
     RegisterConnectorAdapter(RegisterConnectorAdapterRequest),
     RemoveConnectorAdapter(RemoveConnectorAdapterRequest),
     GetConnectorAdapter(GetConnectorAdapterRequest),
@@ -106,6 +107,7 @@ pub enum LocalDaemonRequest {
     GetConnector(GetConnectorRequest),
     ListConnectors(ListConnectorsRequest),
     TestConnector(TestConnectorRequest),
+    UpsertSkill(UpsertSkillRequest),
     InstallSkill(InstallSkillRequest),
     UpdateSkill(UpdateSkillRequest),
     UninstallSkill(UninstallSkillRequest),
@@ -423,6 +425,10 @@ pub enum LocalDaemonResponse {
         connector: ArrobaConnectorDefinition,
         path: PathBuf,
     },
+    ConnectorUpserted {
+        connector: ArrobaConnectorDefinition,
+        path: PathBuf,
+    },
     ConnectorAdapterRegistered {
         adapter: ArrobaConnectorAdapterDefinition,
         path: PathBuf,
@@ -454,6 +460,10 @@ pub enum LocalDaemonResponse {
         skill: ArrobaSkillMetadata,
     },
     SkillInstalled {
+        skill: ArrobaSkillMetadata,
+        path: PathBuf,
+    },
+    SkillUpserted {
         skill: ArrobaSkillMetadata,
         path: PathBuf,
     },

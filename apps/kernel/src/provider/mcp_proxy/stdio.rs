@@ -71,6 +71,7 @@ impl StdioMcpProcess {
             command,
             args,
             env,
+            credential_env: _,
             env_vars,
             cwd,
         } = &backing.transport

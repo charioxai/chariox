@@ -179,6 +179,92 @@ impl ArrobaSkillRegistry {
         Ok((installed, destination))
     }
 
+    pub fn upsert_from_content(
+        &self,
+        skill_md: &str,
+    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        let root = self.primary_root()?;
+        fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.upsert",
+            message: format!(
+                "failed to create skill registry `{}`: {error}",
+                root.display()
+            ),
+        })?;
+        let temp_dir = root.join(format!(
+            ".skill-upsert-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir).map_err(|error| DaemonError::LocalTransport {
+                operation: "skill.upsert",
+                message: format!(
+                    "failed to remove stale skill temp dir `{}`: {error}",
+                    temp_dir.display()
+                ),
+            })?;
+        }
+        fs::create_dir_all(&temp_dir).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.upsert",
+            message: format!(
+                "failed to create skill temp dir `{}`: {error}",
+                temp_dir.display()
+            ),
+        })?;
+        fs::write(temp_dir.join("SKILL.md"), skill_md).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "skill.upsert",
+                message: format!("failed to write skill content: {error}"),
+            }
+        })?;
+        let metadata = parse_skill_metadata(&temp_dir.join("SKILL.md"))?;
+        let destination = root.join(&metadata.name);
+        if destination.exists() {
+            fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
+                operation: "skill.upsert",
+                message: format!(
+                    "failed to replace skill `{}` at `{}`: {error}",
+                    metadata.name,
+                    destination.display()
+                ),
+            })?;
+        }
+        fs::rename(&temp_dir, &destination).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.upsert",
+            message: format!(
+                "failed to publish skill `{}` at `{}`: {error}",
+                metadata.name,
+                destination.display()
+            ),
+        })?;
+        let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        Ok((installed, destination))
+    }
+
+    pub fn upsert_from_url(
+        &self,
+        url: &str,
+    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        let url = skill_content_url(url)?;
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|error| skill_url_error("skill.upsert.url", error))?;
+        let skill_md = response
+            .into_string()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "skill.upsert.url",
+                message: format!("failed to read skill content: {error}"),
+            })?;
+        if skill_md.len() > 512 * 1024 {
+            return Err(DaemonError::InvalidConfig {
+                field: "skill url",
+                message: "downloaded SKILL.md must be 512 KiB or smaller",
+            });
+        }
+        self.upsert_from_content(&skill_md)
+    }
+
     pub fn uninstall(&self, name: &str) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
         validate_registry_name(name, "skill name")?;
         let destination =
@@ -647,6 +733,53 @@ fn expand_provider_path(value: &str, workspace: &Path) -> PathBuf {
         path
     } else {
         workspace.join(path)
+    }
+}
+
+fn skill_content_url(input: &str) -> Result<String, DaemonError> {
+    let trimmed = input.trim();
+    let parsed = url::Url::parse(trimmed).map_err(|error| DaemonError::LocalTransport {
+        operation: "skill.url",
+        message: format!("invalid skill url: {error}"),
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(DaemonError::InvalidConfig {
+            field: "skill url",
+            message: "skill URL must use https",
+        });
+    }
+    if parsed.host_str() == Some("github.com") {
+        let segments = parsed
+            .path_segments()
+            .map(|segments| segments.collect::<Vec<_>>())
+            .unwrap_or_default();
+        if segments.len() >= 5 && matches!(segments[2], "blob" | "tree") {
+            let owner = segments[0];
+            let repo = segments[1];
+            let branch = segments[3];
+            let mut path = segments[4..].join("/");
+            if segments[2] == "tree" && !path.ends_with("SKILL.md") {
+                path = format!("{}/SKILL.md", path.trim_end_matches('/'));
+            }
+            return Ok(format!(
+                "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+            ));
+        }
+    }
+    if parsed.host_str() == Some("raw.githubusercontent.com") || parsed.path().ends_with("SKILL.md")
+    {
+        return Ok(trimmed.to_string());
+    }
+    Err(DaemonError::InvalidConfig {
+        field: "skill url",
+        message: "skill URL must point to SKILL.md or a GitHub skill directory",
+    })
+}
+
+fn skill_url_error(operation: &'static str, error: ureq::Error) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: error.to_string(),
     }
 }
 

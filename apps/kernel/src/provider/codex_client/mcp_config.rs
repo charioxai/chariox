@@ -36,6 +36,7 @@ pub(super) fn append_codex_mcp_overrides(
                 command,
                 args,
                 env,
+                credential_env: _,
                 env_vars,
                 cwd,
             } => {
@@ -56,7 +57,9 @@ pub(super) fn append_codex_mcp_overrides(
             ArrobaMcpTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var,
+                bearer_token_credential: _,
                 http_headers,
+                credential_http_headers: _,
                 env_http_headers,
             } => {
                 overrides.insert(format!("{prefix}.url"), json!(url));

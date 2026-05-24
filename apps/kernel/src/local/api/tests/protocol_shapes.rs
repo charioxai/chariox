@@ -1,8 +1,89 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_extension_install_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+
+    let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
+        workspace_id: Some("/repo".to_string()),
+        config: crate::mcp::ArrobaMcpServerConfig {
+            name: "github".to_string(),
+            transport: crate::mcp::ArrobaMcpTransportConfig::Stdio {
+                command: "npx".to_string(),
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
+                env: Default::default(),
+                credential_env: std::collections::BTreeMap::from([(
+                    "GITHUB_TOKEN".to_string(),
+                    crate::mcp::ArrobaMcpCredentialBinding {
+                        credential: "github-token".to_string(),
+                    },
+                )]),
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            startup_timeout_sec: None,
+            tool_timeout_sec: Some(30),
+            enabled_tools: None,
+            disabled_tools: None,
+            tools: Default::default(),
+        },
+    });
+    let skill = LocalDaemonRequest::UpsertSkill(crate::local::UpsertSkillRequest {
+        workspace_id: Some("/repo".to_string()),
+        source: crate::local::SkillInstallSource::Url {
+            url: "https://github.com/example/skills/tree/main/review".to_string(),
+        },
+    });
+    let connector = LocalDaemonRequest::UpsertConnector(crate::local::UpsertConnectorRequest {
+        connector: crate::connector::ArrobaConnectorDefinition {
+            kind: "connector".to_string(),
+            name: "status-api".to_string(),
+            description: "Read status".to_string(),
+            adapter: "http".to_string(),
+            credential: Some(crate::connector::ConnectorCredentialPolicy { required: true }),
+            timeout_ms: 30000,
+            max_response_bytes: 1048576,
+            operations: vec![crate::connector::ConnectorOperation {
+                name: "get".to_string(),
+                description: "Read status".to_string(),
+                safety: crate::connector::ConnectorSafety::Read,
+                input_schema: serde_json::json!({"type":"object"}),
+                config: serde_json::json!({"method":"GET","base_url":"https://example.test","path":"/status"}),
+            }],
+        },
+    });
+
+    let snapshot = serde_json::json!([mcp, skill, connector]);
+    assert_eq!(
+        snapshot
+            .pointer("/0/InstallMcpServer/config/transport/credential_env/GITHUB_TOKEN/credential"),
+        Some(&serde_json::json!("github-token"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/UpsertSkill/source/type"),
+        Some(&serde_json::json!("url"))
+    );
+    assert_eq!(
+        snapshot.pointer("/2/UpsertConnector/connector/operations/0/config/path"),
+        Some(&serde_json::json!("/status"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("extension install snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "339c18a18cdf464d468609c5dacac9c912bfa6ad6ce78b4749c60ebff9fa5aed"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -391,7 +472,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "prompt-1".to_string(),
@@ -421,7 +502,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::RequestNativeProviderInteraction(
         RequestNativeProviderInteractionRequest::allow_deny(
@@ -472,7 +553,7 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -504,7 +585,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -539,7 +620,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -562,7 +643,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -611,7 +692,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
         query: "why did the build fail".to_string(),
@@ -729,7 +810,7 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_history_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
         session_id: Some("session-1".to_string()),
@@ -763,7 +844,7 @@ fn local_daemon_protocol_query_history_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -796,7 +877,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -826,7 +907,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 45);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),

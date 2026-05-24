@@ -28,6 +28,11 @@ pub struct ArrobaMcpServerConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrobaMcpCredentialBinding {
+    pub credential: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ArrobaMcpTransportConfig {
     Stdio {
@@ -36,6 +41,8 @@ pub enum ArrobaMcpTransportConfig {
         args: Vec<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        credential_env: BTreeMap<String, ArrobaMcpCredentialBinding>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_vars: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,8 +52,12 @@ pub enum ArrobaMcpTransportConfig {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bearer_token_env_var: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_credential: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         http_headers: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        credential_http_headers: BTreeMap<String, ArrobaMcpCredentialBinding>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env_http_headers: BTreeMap<String, String>,
     },
@@ -83,6 +94,7 @@ impl ArrobaMcpServerConfig {
                 command: command.into(),
                 args,
                 env: BTreeMap::new(),
+                credential_env: BTreeMap::new(),
                 env_vars: Vec::new(),
                 cwd: None,
             },
@@ -102,7 +114,9 @@ impl ArrobaMcpServerConfig {
             transport: ArrobaMcpTransportConfig::StreamableHttp {
                 url: url.into(),
                 bearer_token_env_var: None,
+                bearer_token_credential: None,
                 http_headers: BTreeMap::new(),
+                credential_http_headers: BTreeMap::new(),
                 env_http_headers: BTreeMap::new(),
             },
             enabled: true,
@@ -139,6 +153,46 @@ impl ArrobaMcpServerConfig {
         })?;
         let digest = Sha256::digest(&bytes);
         Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn resolve_credential_bindings(
+        &self,
+        secret_service: &crate::secret::RuntimeSecretService,
+    ) -> Result<Self, DaemonError> {
+        let mut resolved = self.clone();
+        match &mut resolved.transport {
+            ArrobaMcpTransportConfig::Stdio {
+                env,
+                credential_env,
+                ..
+            } => {
+                for (name, binding) in std::mem::take(credential_env) {
+                    env.insert(
+                        name,
+                        secret_service.resolve_mcp_secret(&binding.credential)?,
+                    );
+                }
+            }
+            ArrobaMcpTransportConfig::StreamableHttp {
+                bearer_token_credential,
+                http_headers,
+                credential_http_headers,
+                ..
+            } => {
+                if let Some(credential_id) = bearer_token_credential.take() {
+                    let secret = secret_service.resolve_mcp_secret(&credential_id)?;
+                    http_headers.insert("Authorization".to_string(), format!("Bearer {secret}"));
+                }
+                for (name, binding) in std::mem::take(credential_http_headers) {
+                    http_headers.insert(
+                        name,
+                        secret_service.resolve_mcp_secret(&binding.credential)?,
+                    );
+                }
+            }
+        }
+        resolved.validate()?;
+        Ok(resolved)
     }
 }
 

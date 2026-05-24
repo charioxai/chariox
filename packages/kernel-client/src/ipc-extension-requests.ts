@@ -62,6 +62,15 @@ export function installSkillRequest(workspaceId: string | null, sourcePath: stri
   }
 }
 
+export function upsertSkillRequest(workspaceId: string | null, source: Record<string, unknown>) {
+  return {
+    UpsertSkill: {
+      workspace_id: workspaceId ?? null,
+      source,
+    },
+  }
+}
+
 export function updateSkillRequest(workspaceId: string | null, sourcePath: string) {
   return {
     UpdateSkill: {
@@ -143,6 +152,10 @@ export function listCredentialsRequest() {
 
 export function registerConnectorRequest(sourcePath: string) {
   return { RegisterConnector: { source_path: sourcePath } }
+}
+
+export function upsertConnectorRequest(connector: Record<string, unknown>) {
+  return { UpsertConnector: { connector } }
 }
 
 export function registerConnectorAdapterRequest(sourcePath: string) {

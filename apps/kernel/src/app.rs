@@ -83,7 +83,8 @@ pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnCo
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
-    granted_mcp_servers_for_agent_launch, sanitize_resume_state_for_launch,
+    granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
+    sanitize_resume_state_for_launch,
 };
 pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::ProviderLaunchProcessRuntime;

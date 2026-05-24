@@ -15,6 +15,24 @@ pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> 
         .collect()
 }
 
+pub(crate) fn resolve_mcp_credentials_for_launch(
+    config: &DaemonConfig,
+    servers: Vec<ArrobaMcpServerConfig>,
+) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+    if servers.is_empty() {
+        return Ok(servers);
+    }
+    let credentials = crate::credential::load_user_credentials()?;
+    let service = crate::secret::RuntimeSecretService::with_vault_service(
+        credentials,
+        config.user_config.credential_vault.service.clone(),
+    );
+    servers
+        .into_iter()
+        .map(|server| server.resolve_credential_bindings(&service))
+        .collect()
+}
+
 pub(crate) fn sanitize_resume_state_for_launch(
     request: &LaunchProviderRequest,
     agent: &AgentInstance,
