@@ -3,16 +3,16 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 
 use crate::error::DaemonError;
-use crate::local::{SemanticHistoryMatch, SemanticHistorySearchUtilityInput};
+use crate::local::{SemanticRecallMatch, SemanticRecallSearchUtilityInput};
 
 #[derive(Debug, Deserialize)]
-struct SemanticHistoryUtilityOutput {
+struct SemanticRecallUtilityOutput {
     answer: String,
-    matches: Vec<SemanticHistoryUtilityOutputMatch>,
+    matches: Vec<SemanticRecallUtilityOutputMatch>,
 }
 
 #[derive(Debug, Deserialize)]
-struct SemanticHistoryUtilityOutputMatch {
+struct SemanticRecallUtilityOutputMatch {
     event_id: String,
     #[serde(default)]
     chunk_index: Option<usize>,
@@ -21,33 +21,33 @@ struct SemanticHistoryUtilityOutputMatch {
 }
 
 #[derive(Debug)]
-pub(crate) struct SemanticHistoryUtilityParsedOutput {
+pub(crate) struct SemanticRecallUtilityParsedOutput {
     pub(crate) answer: String,
-    pub(crate) matches: Vec<SemanticHistoryMatch>,
+    pub(crate) matches: Vec<SemanticRecallMatch>,
 }
 
-pub(crate) fn parse_semantic_history_search_utility_output(
+pub(crate) fn parse_semantic_recall_search_utility_output(
     output: &str,
-    candidates: &[SemanticHistoryMatch],
-) -> Result<SemanticHistoryUtilityParsedOutput, DaemonError> {
+    candidates: &[SemanticRecallMatch],
+) -> Result<SemanticRecallUtilityParsedOutput, DaemonError> {
     let json = extract_json_object(output).ok_or_else(|| DaemonError::LocalTransport {
-        operation: "run semantic history search utility",
-        message: "semantic history utility did not return a JSON object".to_string(),
+        operation: "run semantic recall search utility",
+        message: "semantic recall utility did not return a JSON object".to_string(),
     })?;
-    let schema = semantic_history_search_utility_schema();
+    let schema = semantic_recall_search_utility_schema();
     crate::transport::runtime_tools::validate_json_output_schema(
-        "semantic_history_search_utility_output",
+        "semantic_recall_search_utility_output",
         &schema,
         json,
     )
     .map_err(|warning| DaemonError::LocalTransport {
-        operation: "run semantic history search utility",
-        message: format!("semantic history utility output failed validation: {warning}"),
+        operation: "run semantic recall search utility",
+        message: format!("semantic recall utility output failed validation: {warning}"),
     })?;
-    let output = serde_json::from_str::<SemanticHistoryUtilityOutput>(json).map_err(|error| {
+    let output = serde_json::from_str::<SemanticRecallUtilityOutput>(json).map_err(|error| {
         DaemonError::LocalTransport {
-            operation: "run semantic history search utility",
-            message: format!("semantic history utility output was not parseable: {error}"),
+            operation: "run semantic recall search utility",
+            message: format!("semantic recall utility output was not parseable: {error}"),
         }
     })?;
     let candidates_by_event = candidates
@@ -62,9 +62,9 @@ pub(crate) fn parse_semantic_history_search_utility_output(
         }
         let Some(candidate) = candidates_by_event.get(selected.event_id.as_str()) else {
             return Err(DaemonError::LocalTransport {
-                operation: "run semantic history search utility",
+                operation: "run semantic recall search utility",
                 message: format!(
-                    "semantic history utility referenced unknown event `{}`",
+                    "semantic recall utility referenced unknown event `{}`",
                     selected.event_id
                 ),
             });
@@ -74,35 +74,35 @@ pub(crate) fn parse_semantic_history_search_utility_output(
         candidate.reason = Some(format!("{}: {}", selected.relevance, selected.reason));
         matches.push(candidate);
     }
-    Ok(SemanticHistoryUtilityParsedOutput {
+    Ok(SemanticRecallUtilityParsedOutput {
         answer: output.answer,
         matches,
     })
 }
 
-pub(crate) fn semantic_history_search_utility_prompt(
-    input: &SemanticHistorySearchUtilityInput,
-    candidates: &[SemanticHistoryMatch],
+pub(crate) fn semantic_recall_search_utility_prompt(
+    input: &SemanticRecallSearchUtilityInput,
+    candidates: &[SemanticRecallMatch],
 ) -> Result<String, DaemonError> {
-    let schema = semantic_history_search_utility_schema();
+    let schema = semantic_recall_search_utility_schema();
     let candidate_json = serde_json::to_string_pretty(
         &candidates
             .iter()
-            .map(semantic_history_candidate_for_prompt)
+            .map(semantic_recall_candidate_for_prompt)
             .collect::<Vec<_>>(),
     )
     .map_err(|error| DaemonError::LocalTransport {
-        operation: "run semantic history search utility",
-        message: format!("could not encode semantic history candidates: {error}"),
+        operation: "run semantic recall search utility",
+        message: format!("could not encode semantic recall candidates: {error}"),
     })?;
     Ok(format!(
-        "You are running an Arroba history-search utility. Answer the user's question only from the supplied history candidates.\n\
+        "You are running an Arroba recall-search utility. Answer the user's question only from the supplied recall candidates.\n\
 Do not use external knowledge. Do not mention tool calls or runtime mechanics.\n\
 Return exactly one JSON object matching this JSON Schema:\n{schema}\n\n\
 User question:\n{query}\n\n\
-History candidates:\n{candidates}\n\n\
+Recall candidates:\n{candidates}\n\n\
 Rules:\n\
-- Select only event_id values present in History candidates.\n\
+- Select only event_id values present in Recall candidates.\n\
 - If the candidates do not answer the question, say that in answer and return an empty matches array.\n\
 - Keep answer concise.\n\
 - Output JSON only.",
@@ -112,7 +112,7 @@ Rules:\n\
     ))
 }
 
-fn semantic_history_search_utility_schema() -> serde_json::Value {
+fn semantic_recall_search_utility_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "required": ["answer", "matches"],
@@ -148,7 +148,7 @@ fn extract_json_object(output: &str) -> Option<&str> {
     (start < end).then_some(&trimmed[start..=end])
 }
 
-fn semantic_history_candidate_for_prompt(match_: &SemanticHistoryMatch) -> serde_json::Value {
+fn semantic_recall_candidate_for_prompt(match_: &SemanticRecallMatch) -> serde_json::Value {
     serde_json::json!({
         "event_id": match_.event.event_id,
         "chunk_index": match_.chunk_index,
@@ -179,7 +179,7 @@ mod tests {
             candidate("event-2", "second chunk"),
         ];
 
-        let parsed = parse_semantic_history_search_utility_output(
+        let parsed = parse_semantic_recall_search_utility_output(
             r#"prefix {"answer":"Use event 2","matches":[
               {"event_id":"event-2","chunk_index":4,"relevance":"high","reason":"answers it"},
               {"event_id":"event-2","relevance":"low","reason":"duplicate"}
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_history_event_references() {
-        let error = parse_semantic_history_search_utility_output(
+        let error = parse_semantic_recall_search_utility_output(
             r#"{"answer":"bad","matches":[{"event_id":"missing","relevance":"high","reason":"no"}]}"#,
             &[candidate("event-1", "first")],
         )
@@ -211,8 +211,8 @@ mod tests {
 
     #[test]
     fn prompt_contains_trimmed_query_schema_and_candidate_payload() {
-        let prompt = semantic_history_search_utility_prompt(
-            &SemanticHistorySearchUtilityInput {
+        let prompt = semantic_recall_search_utility_prompt(
+            &SemanticRecallSearchUtilityInput {
                 query: "  where did deploy fail?  ".to_string(),
                 session_id: None,
                 agent_id: None,
@@ -235,8 +235,8 @@ mod tests {
         assert!(prompt.contains("\"required\""));
     }
 
-    fn candidate(event_id: &str, chunk_text: &str) -> SemanticHistoryMatch {
-        SemanticHistoryMatch {
+    fn candidate(event_id: &str, chunk_text: &str) -> SemanticRecallMatch {
+        SemanticRecallMatch {
             event: HistoryEvent {
                 event_id: event_id.to_string(),
                 sequence: 1,

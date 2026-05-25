@@ -207,8 +207,8 @@ async function waitForHistoryMatch(client, requests, query, filters, label, time
   while (Date.now() < deadline) {
     if (onPoll) await onPoll().catch(() => {})
     const response = unwrapVariant(
-      await sendWithTimeout(client, requests.searchHistoryRequest(query, filters), 5_000, `search history ${label}`),
-      'HistoryEvents',
+      await sendWithTimeout(client, requests.searchRecallRequest(query, filters), 5_000, `search history ${label}`),
+      'RecallEvents',
     )
     lastEvents = response.events ?? []
     if (lastEvents.length > 0) return lastEvents

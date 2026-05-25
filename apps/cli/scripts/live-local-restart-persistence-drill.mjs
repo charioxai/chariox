@@ -156,7 +156,7 @@ async function main() {
     completePromptRequest,
     getSessionStateRequest,
     getSessionHistoryRequest,
-    searchHistoryRequest,
+    searchRecallRequest,
     installMcpServerRequest,
     installSkillRequest,
     grantAgentExtensionRequest,
@@ -339,7 +339,7 @@ async function main() {
       history.entries.some((entry) => String(entry.text ?? '').includes(promptMarker)),
       true,
     )
-    const search = unwrap(await client.send(searchHistoryRequest(promptMarker, { session_id: sessionId, limit: 10 })), 'HistoryEvents')
+    const search = unwrap(await client.send(searchRecallRequest(promptMarker, { session_id: sessionId, limit: 10 })), 'RecallEvents')
     assert.equal(search.events.length > 0, true)
 
     log('verified', {

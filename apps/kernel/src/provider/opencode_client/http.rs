@@ -72,12 +72,13 @@ impl OpenCodeClient {
         body: Option<&serde_json::Value>,
     ) -> Result<(u16, Vec<u8>), DaemonError> {
         let mut last_error = None;
-        for attempt in 0..Self::REQUEST_RETRY_ATTEMPTS {
+        let retry_attempts = retry_attempts_for_request(method, path);
+        for attempt in 0..retry_attempts {
             match self.send_request_once(method, path, body) {
                 Ok(response) => return Ok(response),
                 Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
                     last_error = Some(error.into_daemon_error(self, method, path));
-                    if attempt + 1 < Self::REQUEST_RETRY_ATTEMPTS {
+                    if attempt + 1 < retry_attempts {
                         std::thread::sleep(retry_delay_for_attempt(attempt));
                     }
                 }
@@ -89,7 +90,7 @@ impl OpenCodeClient {
             .map(|error| {
                 format!(
                     "OpenCode request failed after {} attempts: {error}",
-                    Self::REQUEST_RETRY_ATTEMPTS
+                    retry_attempts
                 )
             })
             .unwrap_or_else(|| "OpenCode request failed".to_string());
@@ -110,7 +111,7 @@ impl OpenCodeClient {
         })?;
         let mut stream = TcpStream::connect(address).map_err(OpenCodeHttpFailure::io)?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(read_timeout_for_request(method, path)))
             .map_err(OpenCodeHttpFailure::io)?;
         stream
             .set_write_timeout(Some(Duration::from_secs(2)))
@@ -222,6 +223,10 @@ fn is_retryable_request(method: &'static str, path: &str) -> bool {
         // OpenCode prompt submission is retried because the body carries Arroba's stable
         // messageID, so a retry can be deduplicated by the provider side.
         || (method == "POST" && path.ends_with("/prompt_async"))
+        // OpenCode can briefly accept TCP connections before the app server is ready
+        // to complete MCP connect requests. Connecting an already-connected MCP is
+        // idempotent for Arroba's runtime initialization path.
+        || (method == "POST" && is_mcp_connect_path(path))
 }
 
 fn is_retryable_io_error_kind(kind: ErrorKind) -> bool {
@@ -240,6 +245,20 @@ fn retry_delay_for_attempt(attempt: usize) -> Duration {
     OpenCodeClient::REQUEST_RETRY_DELAY * (attempt as u32 + 1)
 }
 
+fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
+    if method == "POST" && is_mcp_connect_path(path) {
+        return 1;
+    }
+    OpenCodeClient::REQUEST_RETRY_ATTEMPTS
+}
+
+fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
+    if method == "POST" && is_mcp_connect_path(path) {
+        return Duration::from_secs(12);
+    }
+    Duration::from_secs(2)
+}
+
 fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
         ("GET", "/global/health") => "health",
@@ -249,9 +268,14 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         _ if method == "POST" && path.ends_with("/prompt_async") => "session_prompt",
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
+        _ if method == "POST" && is_mcp_connect_path(path) => "mcp_connect",
         _ if method == "GET" && path.ends_with("/message") => "session_messages",
         _ => "opencode_http",
     }
+}
+
+fn is_mcp_connect_path(path: &str) -> bool {
+    path.starts_with("/mcp/") && path.ends_with("/connect")
 }
 
 pub(super) fn preview_response_body(body: &[u8]) -> String {
@@ -428,4 +452,49 @@ fn read_chunked_http_body(
     }
 
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+
+    use std::time::Duration;
+
+    use super::{
+        is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
+        retry_attempts_for_request, OpenCodeHttpFailure,
+    };
+
+    #[test]
+    fn retries_opencode_mcp_connect_startup_io_failures() {
+        let error = OpenCodeHttpFailure {
+            message: "Resource temporarily unavailable (os error 35)".to_string(),
+            io_kind: Some(ErrorKind::WouldBlock),
+        };
+
+        assert!(is_retryable_opencode_http_error(
+            "POST",
+            "/mcp/arroba/connect",
+            &error
+        ));
+        assert_eq!(
+            method_to_operation("POST", "/mcp/arroba/connect"),
+            "mcp_connect"
+        );
+        assert_eq!(
+            read_timeout_for_request("POST", "/mcp/arroba/connect"),
+            Duration::from_secs(12)
+        );
+        assert_eq!(retry_attempts_for_request("POST", "/mcp/arroba/connect"), 1);
+    }
+
+    #[test]
+    fn does_not_retry_unclassified_opencode_posts() {
+        let error = OpenCodeHttpFailure {
+            message: "Resource temporarily unavailable (os error 35)".to_string(),
+            io_kind: Some(ErrorKind::WouldBlock),
+        };
+
+        assert!(!is_retryable_opencode_http_error("POST", "/mcp", &error));
+    }
 }

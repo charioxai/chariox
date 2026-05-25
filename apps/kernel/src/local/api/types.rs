@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 46;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -181,9 +181,9 @@ pub enum LocalDaemonRequest {
     GetSessionHistory(GetSessionHistoryRequest),
     GetPromptInputHistory(GetPromptInputHistoryRequest),
     RecordPromptInputHistory(RecordPromptInputHistoryRequest),
-    QueryHistory(QueryHistoryRequest),
-    SearchHistory(SearchHistoryRequest),
-    SemanticSearchHistory(SemanticSearchHistoryRequest),
+    QueryRecall(QueryRecallRequest),
+    SearchRecall(SearchRecallRequest),
+    SemanticSearchRecall(SemanticSearchRecallRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     RespondToInteraction(RespondToInteractionRequest),
     RequestNativeProviderInteraction(RequestNativeProviderInteractionRequest),
@@ -696,12 +696,12 @@ pub enum LocalDaemonResponse {
     PromptInputHistoryRecorded {
         entry: PromptInputHistoryEntry,
     },
-    HistoryEvents {
+    RecallEvents {
         events: Vec<HistoryEvent>,
         next_sequence: Option<u64>,
     },
-    SemanticHistoryEvents {
-        results: Vec<SemanticHistoryMatch>,
+    SemanticRecallEvents {
+        results: Vec<SemanticRecallMatch>,
         next_cursor: Option<String>,
         unavailable_reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

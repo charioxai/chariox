@@ -638,6 +638,8 @@ async function runProviderScenario({
     } else if (provider === "codex") {
       proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
       proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
+      await dismissCodexUpdatePromptIfPresent(screenA, logs.a)
+      await dismissCodexUpdatePromptIfPresent(screenB, logs.b)
       if (!remotePlacement) {
         providerSessionA = (await waitForFileMatch(logs.proxyA, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
         providerSessionB = (await waitForFileMatch(logs.proxyB, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
@@ -1120,6 +1122,20 @@ async function prebuildLocalDockerSliceImageIfNeeded(policy) {
   ])
 }
 
+async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const text = await readFile(logFile, "utf8").catch(() => "")
+    if (/Update available!/.test(text) && /Skip/.test(text)) {
+      await screenStuff(screenName, "2\r")
+      await sleep(500)
+      return true
+    }
+    await sleep(250)
+  }
+  return false
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -1146,6 +1162,7 @@ async function main() {
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
   const sliceBuildImagePolicy = process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
+  const rustMinStack = process.env.RUST_MIN_STACK ?? "16777216"
   let relay = null
   let relayTunnel = null
   let kernel = null
@@ -1190,6 +1207,7 @@ async function main() {
         ARROBA_RELAY_HOST: "127.0.0.1",
         ARROBA_RELAY_PORT: String(ports.relayPort),
         ARROBA_RELAY_TOKEN: relayToken,
+        RUST_MIN_STACK: rustMinStack,
       }, "./apps/relay/target/debug/arroba-relay")), {
         stdio: ["ignore", "ignore", "inherit"],
       })
@@ -1216,6 +1234,7 @@ async function main() {
           ARROBA_RELAY_HOST: "127.0.0.1",
           ARROBA_RELAY_PORT: String(ports.relayPort),
           ARROBA_RELAY_TOKEN: relayToken,
+          RUST_MIN_STACK: rustMinStack,
         },
         stdio: ["ignore", "ignore", "inherit"],
       })
@@ -1246,6 +1265,7 @@ async function main() {
         ARROBA_ACCEPT_REMOTE_LEASES: "0",
         ARROBA_DAEMON_SOCKET: path.join(root, "home.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        RUST_MIN_STACK: rustMinStack,
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -1256,6 +1276,7 @@ async function main() {
         const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
         workerKernel = spawn("ssh", sshArgs(options, remoteEnvCommand({
           ARROBA_REMOTE_REPO: options.hetznerRepo,
+          RUST_MIN_STACK: rustMinStack,
           PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
           HOME: "/root",
           XDG_CONFIG_HOME: "/root/.config",
@@ -1302,6 +1323,7 @@ async function main() {
             ARROBA_ACCEPT_REMOTE_LEASES: "1",
             ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
             ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
+            RUST_MIN_STACK: rustMinStack,
           },
           stdio: ["ignore", "ignore", "inherit"],
         })

@@ -37,6 +37,8 @@ pub(super) fn runtime_mcp_env(
                 "type": "remote",
                 "url": binding.server_url,
                 "enabled": true,
+                "oauth": false,
+                "timeout": 45_000,
                 "headers": {
                     "Authorization": format!("Bearer {}", binding.auth_token),
                 }
@@ -108,8 +110,18 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
                 "type": "remote",
                 "url": url,
                 "enabled": server.enabled,
+                "oauth": false,
+                "timeout": opencode_mcp_timeout_ms(server),
                 "headers": headers,
             })
         }
     }
+}
+
+fn opencode_mcp_timeout_ms(server: &ArrobaMcpServerConfig) -> u64 {
+    server
+        .tool_timeout_sec
+        .or(server.startup_timeout_sec)
+        .unwrap_or(45)
+        .saturating_mul(1_000)
 }

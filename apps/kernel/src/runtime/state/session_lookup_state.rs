@@ -46,6 +46,18 @@ impl KernelRuntimeState {
             .to_string())
     }
 
+    pub(crate) async fn attachment_owner_user_id(
+        &self,
+        attachment_id: &str,
+    ) -> Result<String, DaemonError> {
+        Ok(self
+            .owned
+            .attachment_store
+            .get_attachment(attachment_id)?
+            .owner_user_id()
+            .to_string())
+    }
+
     pub(crate) async fn session_snapshot(
         &self,
         session_id: &str,

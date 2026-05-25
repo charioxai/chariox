@@ -1,4 +1,4 @@
-use crate::local::{LocalDaemonRequest, QueryHistoryRequest};
+use crate::local::{LocalDaemonRequest, QueryRecallRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionMembershipScope {
@@ -27,12 +27,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::DetachFromSession(request) => Some(
             SessionMembershipScope::AttachmentId(request.attachment_id.clone()),
         ),
-        LocalDaemonRequest::QueryHistory(request) => optional_session_scope(request),
-        LocalDaemonRequest::SearchHistory(request) => request
+        LocalDaemonRequest::QueryRecall(request) => optional_session_scope(request),
+        LocalDaemonRequest::SearchRecall(request) => request
             .session_id
             .as_ref()
             .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
-        LocalDaemonRequest::SemanticSearchHistory(request) => request
+        LocalDaemonRequest::SemanticSearchRecall(request) => request
             .session_id
             .as_ref()
             .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
@@ -319,7 +319,7 @@ pub(crate) fn request_session_scope(
     }
 }
 
-fn optional_session_scope(request: &QueryHistoryRequest) -> Option<SessionMembershipScope> {
+fn optional_session_scope(request: &QueryRecallRequest) -> Option<SessionMembershipScope> {
     request
         .session_id
         .as_ref()
@@ -332,7 +332,7 @@ mod tests {
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, DetachFromSessionRequest, ListSessionsRequest, QueryHistoryRequest,
+        AttachToSessionRequest, DetachFromSessionRequest, ListSessionsRequest, QueryRecallRequest,
         RelayStatusRequest, ResolveSessionRequest,
     };
 
@@ -377,9 +377,9 @@ mod tests {
     #[test]
     fn request_session_scope_keeps_global_queries_unscoped() {
         assert_eq!(
-            request_session_scope(&LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
+            request_session_scope(&LocalDaemonRequest::QueryRecall(QueryRecallRequest {
                 session_id: None,
-                ..QueryHistoryRequest::default()
+                ..QueryRecallRequest::default()
             })),
             None
         );

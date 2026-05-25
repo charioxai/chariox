@@ -449,13 +449,6 @@ impl DaemonApp {
         }
     }
 
-    pub(crate) fn cancel_active_prompt_for_runtime(
-        &mut self,
-        session_id: &str,
-    ) -> Result<PromptCancellation, DaemonError> {
-        crate::app::KernelAgentService::new(self).cancel_active_prompt_for_runtime(session_id)
-    }
-
     pub(crate) fn cancel_active_prompt_internal(
         &mut self,
         session_id: &str,

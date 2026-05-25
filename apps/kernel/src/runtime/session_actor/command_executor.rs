@@ -130,7 +130,7 @@ impl SessionRuntimeCommandExecutor {
                 self.store.create_session(request, caller_user_id).await
             }
             LocalDaemonRequest::AttachToSession(request) => {
-                self.store.attach_to_session(request).await
+                self.store.attach_to_session(request, caller_user_id).await
             }
             LocalDaemonRequest::DetachFromSession(request) => {
                 self.store.detach_from_session(request).await

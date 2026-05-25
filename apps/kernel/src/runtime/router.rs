@@ -89,7 +89,7 @@ mod tests {
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
         ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
         ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        PumpTerminalOutputRequest, QueryHistoryRequest, RelayStatusRequest,
+        PumpTerminalOutputRequest, QueryRecallRequest, RelayStatusRequest,
         RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
         ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
         TeardownProviderProcessesRequest, UpdateSessionConfigRequest,

@@ -24,7 +24,7 @@ const {
   invokeWorkflowEndpointRequest,
   getSessionStateRequest,
   getSessionHistoryRequest,
-  searchHistoryRequest,
+  searchRecallRequest,
   listAgentsRequest,
   listSessionsRequest,
   endSessionRequest,
@@ -352,8 +352,8 @@ async function main() {
 
     const transcript = await client.send(getSessionHistoryRequest(sessionId, 200, 20_000))
     assert(JSON.stringify(transcript).includes(historyMarker), 'session transcript did not retain completed prompt marker')
-    const search = await client.send(searchHistoryRequest(historyMarker, { session_id: sessionId, limit: 10 }))
-    assert(JSON.stringify(search).includes(historyMarker), 'history search did not find completed prompt marker')
+    const search = await client.send(searchRecallRequest(historyMarker, { session_id: sessionId, limit: 10 }))
+    assert(JSON.stringify(search).includes(historyMarker), 'recall search did not find completed prompt marker')
     log('restored-state-verified', {
       sessionId,
       agentId: agent.id,

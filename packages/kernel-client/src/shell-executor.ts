@@ -9,7 +9,7 @@ import {
   executeScriptCommand,
   executeSkillCommand,
 } from "./shell-capability-command.js"
-import { executeHistoryCommand } from "./shell-history-command.js"
+import { executeRecallCommand } from "./shell-recall-command.js"
 import {
   executeConfigCommand,
   executeCredentialCommand,
@@ -101,8 +101,8 @@ export async function executeShellCommand(
       return executeWorkflowCommand(parsed, context, deps)
     case "workspace":
       return executeWorkspaceCommand(parsed, context, deps)
-    case "history":
-      return executeHistoryCommand(parsed, context, deps)
+    case "recall":
+      return executeRecallCommand(parsed, context, deps)
     case "prompt":
       return executePromptCommand(parsed, context, deps)
     case "stop":

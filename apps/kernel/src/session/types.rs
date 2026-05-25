@@ -8,7 +8,7 @@ pub use super::runtime_interactions::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionKind, RuntimeInteractionLevel,
 };
-pub use super::runtime_session::RuntimeSession;
+pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 pub use super::session_config::SessionConfigState;
 pub use super::session_identity::{

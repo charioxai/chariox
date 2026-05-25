@@ -369,6 +369,158 @@ async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
 }
 
 #[tokio::test]
+async fn workflow_prompt_waits_for_provider_completion_after_structured_message_completion() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("second"),
+        )
+        .expect("second agent should spawn");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("completion-gate".to_string()))
+        .expect("workflow should be created");
+    let first_node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), first_agent.id())
+        .expect("first node should be added");
+    let second_node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), second_agent.id())
+        .expect("second node should be added");
+    app.sessions_mut()
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            first_node.id(),
+            second_node.id(),
+            None,
+            None,
+        )
+        .expect("edge should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            first_node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("run the workflow".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "workflow node prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+        .expect("workflow node run should start");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        first_agent.id(),
+        "workflow node prompt".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("workflow prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-final".to_string()),
+                    bytes: br#"```json
+{"summary":"sent","output":{"message":"{\"value\":1842}"}}
+```"#
+                        .to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "assistant-final".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("structured output should be accepted");
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet poll should not settle a workflow prompt without completion");
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state
+            .active_prompt_for_agent(first_agent.id())
+            .is_some(),
+        "workflow prompt must stay active until provider completion"
+    );
+    let resolved_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should exist");
+    assert_eq!(resolved_run.node_runs().len(), 1);
+    assert_eq!(
+        resolved_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+}
+
+#[tokio::test]
 async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

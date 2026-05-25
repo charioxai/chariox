@@ -6,8 +6,8 @@ import {
 } from "@arroba/tool-display"
 
 import type {
-  HistoryEvent,
-  SemanticHistoryMatch,
+  RecallEvent,
+  SemanticRecallMatch,
   SessionHistoryPageEntry,
 } from "./kernel-types.js"
 
@@ -29,14 +29,14 @@ export function formatPromptReply(history: SessionHistoryPageEntry[]): string {
   return reply || "(no reply output)"
 }
 
-export function formatHistoryEvents(events: HistoryEvent[]): string {
+export function formatRecallEvents(events: RecallEvent[]): string {
   if (events.length === 0) {
-    return "no matching history"
+    return "no matching recall"
   }
-  return events.map((event) => formatHistoryEventLine(event)).join("\n\n")
+  return events.map((event) => formatRecallEventLine(event)).join("\n\n")
 }
 
-export function formatSemanticHistoryMatches(matches: SemanticHistoryMatch[]): string {
+export function formatSemanticRecallMatches(matches: SemanticRecallMatch[]): string {
   if (matches.length === 0) {
     return "no semantic matches"
   }
@@ -45,8 +45,8 @@ export function formatSemanticHistoryMatches(matches: SemanticHistoryMatch[]): s
       ? ` score=${(match.score_millis / 1000).toFixed(3)}`
       : ""
     const chunk = typeof match.chunk_index === "number" ? ` chunk=${match.chunk_index}` : ""
-    const reason = match.reason ? `\nreason: ${truncateHistoryText(match.reason)}` : ""
-    return `${formatHistoryEventLine(match.event)}${score}${chunk}${match.chunk_text ? `\n${truncateHistoryText(match.chunk_text)}` : ""}${reason}`
+    const reason = match.reason ? `\nreason: ${truncateRecallText(match.reason)}` : ""
+    return `${formatRecallEventLine(match.event)}${score}${chunk}${match.chunk_text ? `\n${truncateRecallText(match.chunk_text)}` : ""}${reason}`
   }).join("\n\n")
 }
 
@@ -56,7 +56,7 @@ export function formatPromptBlob(promptId: string, title: string, content: strin
   return [`${promptId} ${title}`, ...lines.map((line) => `${indent}${line}`)].join("\n")
 }
 
-function formatHistoryEventLine(event: HistoryEvent): string {
+function formatRecallEventLine(event: RecallEvent): string {
   const timestamp = Number.isFinite(event.timestamp_ms)
     ? new Date(event.timestamp_ms).toISOString()
     : "unknown-time"
@@ -67,11 +67,11 @@ function formatHistoryEventLine(event: HistoryEvent): string {
     event.session_id ? `session=${event.session_id}` : null,
     event.agent_id ? `agent=${event.agent_id}` : null,
   ].filter(Boolean).join(" ")
-  const content = truncateHistoryText(event.content ?? "")
+  const content = truncateRecallText(event.content ?? "")
   return content ? `${timestamp} ${label}\n${content}` : `${timestamp} ${label}`
 }
 
-function truncateHistoryText(text: string): string {
+function truncateRecallText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim()
   return normalized.length > 320 ? `${normalized.slice(0, 317)}...` : normalized
 }

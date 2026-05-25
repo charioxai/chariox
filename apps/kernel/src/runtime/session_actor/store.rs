@@ -84,14 +84,16 @@ impl SessionRuntimeStore {
     pub(super) async fn attach_to_session(
         &self,
         request: AttachToSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let attach_request = crate::attachment::AttachRequest::new(
+        let attach_request = crate::attachment::AttachRequest::for_user(
             request.session_id,
             request.client_id,
             request.capability_level,
+            caller_user_id,
         );
         let result = self
             .state

@@ -1,19 +1,19 @@
-//! Semantic history search request mapping and archive-backed search.
+//! Semantic recall search request mapping and archive-backed search.
 
 use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
 use crate::history::HistoryEventQuery;
 use crate::history_archive::HistoryArchiveClient;
 use crate::local::{
-    SemanticHistoryMatch, SemanticHistorySearchUtilityInput, SemanticSearchHistoryMode,
-    SemanticSearchHistoryRequest,
+    SemanticRecallMatch, SemanticRecallSearchUtilityInput, SemanticSearchRecallMode,
+    SemanticSearchRecallRequest,
 };
 
-pub(crate) async fn knn_semantic_history_search(
+pub(crate) async fn knn_semantic_recall_search(
     archive_config: UserArchiveHistoryConfig,
-    request: SemanticSearchHistoryRequest,
+    request: SemanticSearchRecallRequest,
     requested_limit: usize,
-) -> Result<(Vec<SemanticHistoryMatch>, Option<String>, Option<String>), DaemonError> {
+) -> Result<(Vec<SemanticRecallMatch>, Option<String>, Option<String>), DaemonError> {
     let response = tokio::task::spawn_blocking(move || {
         let archive_client = HistoryArchiveClient::from_config(&archive_config)?;
         let archive_capabilities = archive_client.capabilities().ok();
@@ -25,11 +25,11 @@ pub(crate) async fn knn_semantic_history_search(
             return Ok((
                 Vec::new(),
                 None,
-                Some("semantic history search is not configured for this kernel".to_string()),
+                Some("semantic recall search is not configured for this kernel".to_string()),
             ));
         }
         let cursor = request.cursor.clone();
-        let mut query = history_query_from_semantic_search_request(request);
+        let mut query = history_query_from_semantic_recall_request(request);
         query.limit = Some(requested_limit);
         let response = archive_client.semantic_search_events(query, cursor)?;
         Ok((response.results, response.next_cursor, None))
@@ -42,10 +42,10 @@ pub(crate) async fn knn_semantic_history_search(
     Ok(response)
 }
 
-pub(crate) fn semantic_utility_input_from_search_request(
-    request: SemanticSearchHistoryRequest,
-) -> SemanticHistorySearchUtilityInput {
-    SemanticHistorySearchUtilityInput {
+pub(crate) fn semantic_recall_utility_input_from_search_request(
+    request: SemanticSearchRecallRequest,
+) -> SemanticRecallSearchUtilityInput {
+    SemanticRecallSearchUtilityInput {
         query: request.query,
         session_id: request.session_id,
         agent_id: request.agent_id,
@@ -60,12 +60,12 @@ pub(crate) fn semantic_utility_input_from_search_request(
     }
 }
 
-pub(crate) fn semantic_search_request_from_utility_input(
-    input: &SemanticHistorySearchUtilityInput,
-) -> SemanticSearchHistoryRequest {
-    SemanticSearchHistoryRequest {
+pub(crate) fn semantic_recall_request_from_utility_input(
+    input: &SemanticRecallSearchUtilityInput,
+) -> SemanticSearchRecallRequest {
+    SemanticSearchRecallRequest {
         query: input.query.clone(),
-        mode: Some(SemanticSearchHistoryMode::Knn),
+        mode: Some(SemanticSearchRecallMode::Knn),
         session_id: input.session_id.clone(),
         agent_id: input.agent_id.clone(),
         provider: input.provider.clone(),
@@ -80,8 +80,8 @@ pub(crate) fn semantic_search_request_from_utility_input(
     }
 }
 
-fn history_query_from_semantic_search_request(
-    request: SemanticSearchHistoryRequest,
+fn history_query_from_semantic_recall_request(
+    request: SemanticSearchRecallRequest,
 ) -> HistoryEventQuery {
     HistoryEventQuery {
         session_id: request.session_id,
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn semantic_utility_request_forces_knn_mode_and_preserves_filters() {
         let request =
-            semantic_search_request_from_utility_input(&SemanticHistorySearchUtilityInput {
+            semantic_recall_request_from_utility_input(&SemanticRecallSearchUtilityInput {
                 query: "why did tests fail?".to_string(),
                 session_id: Some("session-1".to_string()),
                 agent_id: Some("agent-1".to_string()),
@@ -121,7 +121,7 @@ mod tests {
                 limit: Some(12),
             });
 
-        assert_eq!(request.mode, Some(SemanticSearchHistoryMode::Knn));
+        assert_eq!(request.mode, Some(SemanticSearchRecallMode::Knn));
         assert_eq!(request.cursor, None);
         assert_eq!(request.session_id.as_deref(), Some("session-1"));
         assert_eq!(request.agent_id.as_deref(), Some("agent-1"));

@@ -565,6 +565,34 @@ fn structured_output_metadata_records_terminal_diagnostic() {
 }
 
 #[test]
+fn structured_output_metadata_records_completed_codex_resume_state() {
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5"),
+    );
+
+    providers
+        .apply_structured_output_metadata(
+            run.id(),
+            &ProviderPromptSignalBatch {
+                resolved_resume_state: Some(ProviderResumeState::from_codex_thread_id("thread-1")),
+                ..ProviderPromptSignalBatch::default()
+            },
+        )
+        .expect("completed Codex resume state should record");
+
+    let run = providers.get_run(run.id()).expect("run should exist");
+    assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+    assert_eq!(run.provider_session_id(), Some("thread-1"));
+}
+
+#[test]
 fn merge_opencode_run_selection_keeps_the_existing_run_when_sync_has_no_metadata() {
     let request = LaunchProviderRequest::new(
         "session-1",

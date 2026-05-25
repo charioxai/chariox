@@ -1,23 +1,26 @@
 kind: connector
 name: grpc_example
-description: Example gRPC connector.
+description: Public grpcb.in gRPC connector.
 adapter: grpc
 timeout_ms: 30000
 max_response_bytes: 1048576
 operations:
   - name: echo
-    description: Call an echo RPC.
+    description: Call grpcb.in DummyUnary with typed fields.
     safety: read
     input_schema:
       type: object
-      required: [message]
+      required: [message, number]
       properties:
         message:
           type: string
+        number:
+          type: integer
       additionalProperties: false
     config:
-      address: 127.0.0.1:50051
+      address: grpcb.in:9000
       plaintext: true
-      method: example.EchoService/Echo
+      method: grpcbin.GRPCBin/DummyUnary
       data:
-        message: "{{message}}"
+        fString: "{{message}}"
+        fInt32: "{{number}}"

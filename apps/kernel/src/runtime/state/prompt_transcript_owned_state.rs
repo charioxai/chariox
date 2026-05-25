@@ -28,6 +28,8 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         self.terminal_stream.record_assistant_message_completion(
             session_id,
             provider_run_id,
@@ -52,6 +54,8 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let record = self.terminal_stream.fan_out_output(
             session_id,
             provider_run_id,
@@ -197,6 +201,8 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         self.terminal_stream.fan_out_output(
             session_id,
             provider_run_id,
@@ -206,5 +212,20 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             &bytes,
         );
+    }
+
+    pub(super) fn private_recipient_attachment_ids(
+        &self,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        self.attachment_store
+            .filter_attachment_ids_for_user(recipient_attachment_ids, agent.owner_user_id())
     }
 }

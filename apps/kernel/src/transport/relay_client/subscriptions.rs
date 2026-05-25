@@ -3,6 +3,7 @@
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use arroba_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
 
@@ -48,6 +49,7 @@ pub(super) async fn handle_relay_subscribe(
     relay_subscription_id: String,
     session_id: String,
     attachment_id: String,
+    caller_identity: Option<RelayCallerIdentity>,
     client_public_key: String,
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
@@ -85,10 +87,19 @@ pub(super) async fn handle_relay_subscribe(
         );
     }
     if !is_inventory_subscription {
-        if let Err(error) = router
-            .ensure_relay_subscription_attachment(&session_id, &attachment_id)
-            .await
+        let validation = if let Some(user_id) = caller_identity
+            .as_ref()
+            .and_then(|identity| identity.user_id.as_deref())
         {
+            router
+                .ensure_relay_subscription_attachment_for_user(&session_id, &attachment_id, user_id)
+                .await
+        } else {
+            router
+                .ensure_relay_subscription_attachment(&session_id, &attachment_id)
+                .await
+        };
+        if let Err(error) = validation {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "relay subscription attachment validation failed",

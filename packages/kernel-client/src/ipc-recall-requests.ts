@@ -1,6 +1,6 @@
 import type {
-  HistoryQueryPayload,
-  SemanticSearchHistoryMode,
+  RecallQueryPayload,
+  SemanticSearchRecallMode,
   SessionHistoryCursor,
 } from "./kernel-types.js"
 
@@ -53,9 +53,9 @@ export function recordPromptInputHistoryRequest(
   }
 }
 
-export function queryHistoryRequest(query: HistoryQueryPayload) {
+export function queryRecallRequest(query: RecallQueryPayload) {
   return {
-    QueryHistory: {
+    QueryRecall: {
       session_id: query.session_id ?? null,
       agent_id: query.agent_id ?? null,
       provider: query.provider ?? null,
@@ -73,9 +73,9 @@ export function queryHistoryRequest(query: HistoryQueryPayload) {
   }
 }
 
-export function searchHistoryRequest(query: string, filters: Omit<HistoryQueryPayload, "text"> = {}) {
+export function searchRecallRequest(query: string, filters: Omit<RecallQueryPayload, "text"> = {}) {
   return {
-    SearchHistory: {
+    SearchRecall: {
       query,
       session_id: filters.session_id ?? null,
       agent_id: filters.agent_id ?? null,
@@ -92,15 +92,15 @@ export function searchHistoryRequest(query: string, filters: Omit<HistoryQueryPa
   }
 }
 
-export function semanticSearchHistoryRequest(
+export function semanticSearchRecallRequest(
   query: string,
-  filters: Omit<HistoryQueryPayload, "text" | "after_sequence" | "before_sequence"> & {
-    mode?: SemanticSearchHistoryMode | null
+  filters: Omit<RecallQueryPayload, "text" | "after_sequence" | "before_sequence"> & {
+    mode?: SemanticSearchRecallMode | null
     cursor?: string | null
   } = {},
 ) {
   return {
-    SemanticSearchHistory: {
+    SemanticSearchRecall: {
       query,
       mode: filters.mode ?? null,
       session_id: filters.session_id ?? null,

@@ -17,6 +17,8 @@ impl KernelRuntimeOwnedState {
                 .ok()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
         });
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         self.terminal_stream.record_notice(
             session_id,
             provider_run_id,

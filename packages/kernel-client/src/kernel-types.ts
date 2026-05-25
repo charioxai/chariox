@@ -116,6 +116,7 @@ export type RuntimeSession = {
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
+  collaboration_agent_counts?: SessionCollaborationAgentCounts | null
   config_state: SessionConfigState
   workflows?: WorkflowDefinition[]
   workflow_publications?: WorkflowPublicationDefinition[]
@@ -125,6 +126,13 @@ export type RuntimeSession = {
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
+}
+
+export type SessionCollaborationAgentCounts = {
+  owned_agent_count: number
+  other_user_agent_count: number
+  total_agent_count: number
+  collaborator_count: number
 }
 
 export type SessionAgentDefaults = {
@@ -828,7 +836,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 46
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 48
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -980,7 +988,7 @@ export type PromptInputHistoryPage = {
   entries: PromptInputHistoryEntry[]
 }
 
-export type HistoryEventKind =
+export type RecallEventKind =
   | "user_prompt"
   | "provider_output"
   | "provider_reasoning"
@@ -1005,11 +1013,11 @@ export type HistoryEventKind =
   | "git_push_detected"
   | "prompt_input"
 
-export type HistoryEventRole = "user" | "assistant" | "tool" | "system"
+export type RecallEventRole = "user" | "assistant" | "tool" | "system"
 
-export type HistoryAttributionConfidence = "definite" | "likely" | "ambiguous" | "unattributed"
+export type RecallAttributionConfidence = "definite" | "likely" | "ambiguous" | "unattributed"
 
-export type HistoryEvent = {
+export type RecallEvent = {
   event_id: string
   sequence: number
   timestamp_ms: number
@@ -1029,19 +1037,19 @@ export type HistoryEvent = {
   machine_id?: string | null
   repo_root?: string | null
   worktree_path?: string | null
-  kind: HistoryEventKind
-  role?: HistoryEventRole | null
+  kind: RecallEventKind
+  role?: RecallEventRole | null
   content?: string | null
   content_ref?: string | null
   metadata?: Record<string, unknown>
   candidate_agent_ids?: string[]
   candidate_prompt_ids?: string[]
   candidate_turn_ids?: string[]
-  attribution_confidence?: HistoryAttributionConfidence | null
+  attribution_confidence?: RecallAttributionConfidence | null
   caused_by_event_id?: string | null
 }
 
-export type HistoryQueryPayload = {
+export type RecallQueryPayload = {
   session_id?: string | null
   agent_id?: string | null
   provider?: string | null
@@ -1050,30 +1058,30 @@ export type HistoryQueryPayload = {
   machine_id?: string | null
   repo_root?: string | null
   worktree_path?: string | null
-  kind?: HistoryEventKind | string | null
+  kind?: RecallEventKind | string | null
   text?: string | null
   after_sequence?: number | null
   before_sequence?: number | null
   limit?: number | null
 }
 
-export type HistoryEventsPayload = {
-  events: HistoryEvent[]
+export type RecallEventsPayload = {
+  events: RecallEvent[]
   next_sequence: number | null
 }
 
-export type SemanticHistoryMatch = {
-  event: HistoryEvent
+export type SemanticRecallMatch = {
+  event: RecallEvent
   score_millis?: number | null
   chunk_index?: number | null
   chunk_text?: string | null
   reason?: string | null
 }
 
-export type SemanticSearchHistoryMode = "knn" | "agent"
+export type SemanticSearchRecallMode = "knn" | "agent"
 
-export type SemanticHistoryEventsPayload = {
-  results: SemanticHistoryMatch[]
+export type SemanticRecallEventsPayload = {
+  results: SemanticRecallMatch[]
   next_cursor: string | null
   unavailable_reason: string | null
   answer?: string | null

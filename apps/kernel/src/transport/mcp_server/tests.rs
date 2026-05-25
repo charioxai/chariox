@@ -104,11 +104,11 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "arroba.list_extensions"));
-    assert!(tools.iter().any(|tool| tool["name"] == "list_extensions"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "arroba.request_extension"));
-    assert!(tools.iter().any(|tool| tool["name"] == "request_extension"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "list_extensions"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "request_extension"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "arroba.list_credential_handles"));
@@ -939,7 +939,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "list_extensions",
+                "name": "arroba.list_extensions",
                 "arguments": {"kind": "all"}
             }
         }),
@@ -974,7 +974,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "request_extension",
+                "name": "arroba.request_extension",
                 "arguments": {"kind": "skill", "name": "browser-qa"}
             }
         }),

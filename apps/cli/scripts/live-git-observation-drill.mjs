@@ -17,7 +17,7 @@ const {
   launchProviderRunRequest,
   submitPromptRequest,
   completePromptRequest,
-  searchHistoryRequest,
+  searchRecallRequest,
 } = requests
 
 function parseArgs(argv) {
@@ -124,7 +124,7 @@ async function waitForHistoryMatch(client, query, filters, label, timeoutMs = 10
   const deadline = Date.now() + timeoutMs
   let lastEvents = []
   while (Date.now() < deadline) {
-    const response = variant(await client.send(searchHistoryRequest(query, filters)), 'HistoryEvents')
+    const response = variant(await client.send(searchRecallRequest(query, filters)), 'RecallEvents')
     lastEvents = response.events ?? []
     if (lastEvents.length > 0) return lastEvents
     await sleep(250)
@@ -249,14 +249,14 @@ snapshot_interval_events = 1
     await client.send(completePromptRequest(session.id))
 
     const subjectResults = variant(
-      await client.send(searchHistoryRequest(subject, {
+      await client.send(searchRecallRequest(subject, {
         session_id: session.id,
         kind: 'git_commit_detected',
         provider: 'dev-stub',
         model: 'git-observation-model',
         limit: 10,
       })),
-      'HistoryEvents',
+      'RecallEvents',
     ).events
     if (subjectResults.length !== 1) {
       throw new Error(`expected one git commit event by subject, got ${JSON.stringify(subjectResults)}`)
@@ -273,12 +273,12 @@ snapshot_interval_events = 1
     }
 
     const pathResults = variant(
-      await client.send(searchHistoryRequest('feature.txt', {
+      await client.send(searchRecallRequest('feature.txt', {
         session_id: session.id,
         kind: 'git_commit_detected',
         limit: 10,
       })),
-      'HistoryEvents',
+      'RecallEvents',
     ).events
     if (!pathResults.some((candidate) => candidate.event_id === event.event_id)) {
       throw new Error(`expected path search to find commit event ${event.event_id}`)

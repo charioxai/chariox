@@ -38,9 +38,9 @@ pub const DELETE_ARTIFACT_TOOL_ALIAS: &str = "delete_artifact";
 pub const MOVE_ARTIFACT_TOOL: &str = "arroba.move_artifact";
 pub const MOVE_ARTIFACT_TOOL_ALIAS: &str = "move_artifact";
 pub const LIST_EXTENSIONS_TOOL: &str = "arroba.list_extensions";
-pub const LIST_EXTENSIONS_TOOL_ALIAS: &str = "list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "arroba.request_extension";
-pub const REQUEST_EXTENSION_TOOL_ALIAS: &str = "request_extension";
+pub const SEARCH_RECALL_TOOL: &str = "arroba.search_recall";
+pub const QUERY_RECALL_TOOL: &str = "arroba.query_recall";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "arroba.list_credential_handles";
 pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_credential";
@@ -203,6 +203,59 @@ pub struct RequestExtensionArgs {
     pub allow: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchRecallArgs {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryRecallArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,13 +453,79 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
     ];
-    let aliases = canonical
-        .iter()
-        .filter_map(extension_alias_spec)
-        .collect::<Vec<_>>();
-    let mut specs = canonical;
-    specs.extend(aliases);
-    specs
+    canonical
+}
+
+pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    vec![
+        RuntimeToolSpec {
+            name: SEARCH_RECALL_TOOL.to_string(),
+            description: "Search Arroba recall events for prior conversation, workflow, Git, and runtime records. Defaults to the current session; set scope to all only when broader recall is needed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["keyword", "semantic", "agent"]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["current_session", "all"]
+                    },
+                    "session_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                    "workflow_id": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "cursor": {"type": "string"},
+                    "after_sequence": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: QUERY_RECALL_TOOL.to_string(),
+            description: "Load structured Arroba recall events by metadata and sequence filters, typically to inspect context around an event returned by arroba.search_recall.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["current_session", "all"]
+                    },
+                    "session_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                    "workflow_id": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "text": {"type": "string"},
+                    "after_sequence": {"type": "integer", "minimum": 0},
+                    "before_sequence": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+                },
+                "additionalProperties": false
+            }),
+        },
+    ]
+}
+
+pub fn canonical_recall_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        SEARCH_RECALL_TOOL
+        | "arroba_search_recall"
+        | "mcp__arroba__search_recall"
+        | "mcp__arroba__arroba_search_recall" => Some(SEARCH_RECALL_TOOL),
+        QUERY_RECALL_TOOL
+        | "arroba_query_recall"
+        | "mcp__arroba__query_recall"
+        | "mcp__arroba__arroba_query_recall" => Some(QUERY_RECALL_TOOL),
+        _ => None,
+    }
 }
 
 pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
@@ -586,31 +705,13 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
     }
 }
 
-fn extension_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
-    let alias = match spec.name.as_str() {
-        LIST_EXTENSIONS_TOOL => LIST_EXTENSIONS_TOOL_ALIAS,
-        REQUEST_EXTENSION_TOOL => REQUEST_EXTENSION_TOOL_ALIAS,
-        _ => return None,
-    };
-    let mut spec = spec.clone();
-    spec.name = alias.to_string();
-    spec.description = format!(
-        "{} Alias for `{}`.",
-        spec.description,
-        canonical_extension_tool_name(alias).unwrap_or(alias)
-    );
-    Some(spec)
-}
-
 pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         LIST_EXTENSIONS_TOOL
-        | LIST_EXTENSIONS_TOOL_ALIAS
         | "arroba_list_extensions"
         | "mcp__arroba__list_extensions"
         | "mcp__arroba__arroba_list_extensions" => Some(LIST_EXTENSIONS_TOOL),
         REQUEST_EXTENSION_TOOL
-        | REQUEST_EXTENSION_TOOL_ALIAS
         | "arroba_request_extension"
         | "mcp__arroba__request_extension"
         | "mcp__arroba__arroba_request_extension" => Some(REQUEST_EXTENSION_TOOL),

@@ -22,7 +22,7 @@ import {
   formatPromptBlob,
   formatPromptReply,
   formatPromptSummary,
-} from "./shell-history-format.js"
+} from "./shell-recall-format.js"
 import {
   expectSessionState,
   resolveShellAttachmentId,

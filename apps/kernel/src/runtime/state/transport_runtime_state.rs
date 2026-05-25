@@ -56,4 +56,45 @@ impl KernelRuntimeState {
             agent_activity,
         })
     }
+
+    pub(crate) fn session_snapshot_projection_for_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        last_event_id: u64,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        let attachment = self.owned.attachment_store.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        let mut projection = self.session_snapshot_projection(session_id, last_event_id)?;
+        projection.session = projection
+            .session
+            .redacted_for_user(attachment.owner_user_id());
+        projection.agent_activity.retain(|agent_id, _| {
+            projection
+                .session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == agent_id)
+        });
+        if projection
+            .provider_run
+            .as_ref()
+            .and_then(|run| run.agent_instance_id())
+            .is_some_and(|agent_id| {
+                !projection
+                    .session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == agent_id)
+            })
+        {
+            projection.provider_run = None;
+        }
+        Ok(projection)
+    }
 }

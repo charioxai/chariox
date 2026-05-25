@@ -76,12 +76,13 @@ impl CommandRouter {
         .await
     }
 
-    pub(crate) fn session_snapshot_projection(
+    pub(crate) fn session_snapshot_projection_for_attachment(
         &self,
         session_id: &str,
+        attachment_id: &str,
         last_event_id: u64,
     ) -> Result<SessionSnapshotProjection, DaemonError> {
         self.runtime_state
-            .session_snapshot_projection(session_id, last_event_id)
+            .session_snapshot_projection_for_attachment(session_id, attachment_id, last_event_id)
     }
 }

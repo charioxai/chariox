@@ -18,7 +18,7 @@ const {
   launchProviderRunRequest,
   submitPromptRequest,
   completePromptRequest,
-  searchHistoryRequest,
+  searchRecallRequest,
   storeTransferredFileRequest,
 } = requests
 
@@ -171,7 +171,7 @@ async function waitForHistoryMatch(client, query, filters, label, timeoutMs = 10
   const deadline = Date.now() + timeoutMs
   let lastEvents = []
   while (Date.now() < deadline) {
-    const response = variant(await client.send(searchHistoryRequest(query, filters)), 'HistoryEvents')
+    const response = variant(await client.send(searchRecallRequest(query, filters)), 'RecallEvents')
     lastEvents = response.events ?? []
     if (lastEvents.length > 0) return lastEvents
     await sleep(250)
@@ -831,34 +831,34 @@ async function main() {
     const ids = await postgresEventIds(container)
     if (new Set(ids).size !== ids.length) throw new Error(`Postgres archive has duplicate event ids: ${JSON.stringify(ids)}`)
 
-    const historyAfterArchive = variant(await client.send(searchHistoryRequest(markerA, {
+    const historyAfterArchive = variant(await client.send(searchRecallRequest(markerA, {
       session_id: session.id,
       provider: 'dev-stub',
       model: 'archive-drill-model',
       limit: 10,
-    })), 'HistoryEvents').events
-    if (historyAfterArchive.length === 0) throw new Error('operational history search should still work with externally managed archive search disabled')
+    })), 'RecallEvents').events
+    if (historyAfterArchive.length === 0) throw new Error('operational recall search should still work with externally managed archive search disabled')
 
     await sqliteExec(
       historyPath,
       `DELETE FROM history_events WHERE session_id = ${sqlString(session.id)} AND (content LIKE ${sqlString(`%${markerA}%`)} OR metadata_text LIKE ${sqlString(`%${markerA}%`)});`,
     )
-    const operationalOnlyAfterDelete = variant(await client.send(searchHistoryRequest(markerA, {
+    const operationalOnlyAfterDelete = variant(await client.send(searchRecallRequest(markerA, {
       session_id: session.id,
       provider: 'dev-stub',
       model: 'archive-drill-model',
       limit: 10,
-    })), 'HistoryEvents').events
+    })), 'RecallEvents').events
     if (operationalOnlyAfterDelete.length !== 0) {
       throw new Error(`expected operational-only search to miss deleted local event, got ${JSON.stringify(operationalOnlyAfterDelete)}`)
     }
     adapter.state.searchEnabled = true
-    const archiveSearch = variant(await client.send(searchHistoryRequest(markerA, {
+    const archiveSearch = variant(await client.send(searchRecallRequest(markerA, {
       session_id: session.id,
       provider: 'dev-stub',
       model: 'archive-drill-model',
       limit: 10,
-    })), 'HistoryEvents').events
+    })), 'RecallEvents').events
     if (archiveSearch.length === 0 || !archiveSearch.some((event) => String(event.content ?? '').includes(markerA))) {
       throw new Error(`expected Arroba search to return deleted local event from Postgres archive, got ${JSON.stringify(archiveSearch)}`)
     }

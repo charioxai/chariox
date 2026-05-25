@@ -99,7 +99,7 @@ pub(super) async fn handle_incoming_envelope(
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
             relay_subscription_id,
-            caller_identity: _,
+            caller_identity,
             session_id,
             attachment_id,
             client_public_key,
@@ -115,6 +115,7 @@ pub(super) async fn handle_incoming_envelope(
                 relay_subscription_id,
                 session_id,
                 attachment_id,
+                caller_identity,
                 client_public_key,
                 subscription_scope,
                 resume_from_event_id,

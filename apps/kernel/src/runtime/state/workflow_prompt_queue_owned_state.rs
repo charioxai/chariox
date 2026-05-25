@@ -24,7 +24,6 @@ impl KernelRuntimeOwnedState {
             queued_prompt.endpoint_id(),
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
-        self.workflow_flush_agent_context_if_needed(session_id, &workflow)?;
         let workflow_run = self.session_store.write().invoke_workflow_endpoint(
             session_id,
             workflow.id(),

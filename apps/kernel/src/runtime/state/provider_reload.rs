@@ -7,7 +7,7 @@ use super::*;
 
 #[derive(Debug, Clone)]
 pub(crate) enum ProviderReloadTrigger {
-    AgentMcpGrant {
+    AgentMcpChanged {
         session_id: String,
         agent_id: String,
         name: String,
@@ -68,7 +68,7 @@ impl KernelRuntimeState {
     ) -> Result<Vec<ProviderReloadOutcome>, DaemonError> {
         let mut outcomes = Vec::new();
         match trigger {
-            ProviderReloadTrigger::AgentMcpGrant {
+            ProviderReloadTrigger::AgentMcpChanged {
                 session_id,
                 agent_id,
                 name,
@@ -152,7 +152,7 @@ impl KernelRuntimeState {
             let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) else {
                 return Ok(ProviderReloadOutcome::Unaffected);
             };
-            if !matches!(run.adapter_key(), "codex" | "opencode") {
+            if !adapter_supports_policy_reload(run.adapter_key()) {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }
             let config = owned.config_projection.snapshot();
@@ -216,4 +216,33 @@ impl KernelRuntimeState {
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
     path == "providers.managed_io"
+}
+
+fn adapter_supports_policy_reload(adapter_key: &str) -> bool {
+    matches!(adapter_key, "claude" | "codex" | "opencode")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::adapter_supports_policy_reload;
+
+    #[test]
+    fn provider_reload_policy_includes_structured_real_provider_adapters() {
+        for adapter in ["claude", "codex", "opencode"] {
+            assert!(
+                adapter_supports_policy_reload(adapter),
+                "{adapter} should relaunch when launch-time MCP config changes"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_reload_policy_excludes_unmanaged_or_stub_adapters() {
+        for adapter in ["dev-stub", "unknown"] {
+            assert!(
+                !adapter_supports_policy_reload(adapter),
+                "{adapter} should not use provider relaunch policy"
+            );
+        }
+    }
 }

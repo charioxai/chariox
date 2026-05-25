@@ -196,7 +196,7 @@ impl KernelRuntimeState {
         self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
             .await?;
         let _ = self
-            .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpGrant {
+            .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
                 session_id: agent.session_id().to_string(),
                 agent_id: agent.id().to_string(),
                 name,
@@ -215,6 +215,13 @@ impl KernelRuntimeState {
             .owned
             .revoke_agent_mcp(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_revoked", &agent, Some(name))
+            .await?;
+        let _ = self
+            .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
+                session_id: agent.session_id().to_string(),
+                agent_id: agent.id().to_string(),
+                name: name.to_string(),
+            })
             .await?;
         Ok(agent)
     }

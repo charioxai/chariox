@@ -100,12 +100,12 @@ async fn query_history_reads_operational_events() {
 
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let history_request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
+    let history_request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some(session_id.clone()),
         agent_id: Some(agent_id.clone()),
         text: Some("history event".to_string()),
         limit: Some(5),
-        ..QueryHistoryRequest::default()
+        ..QueryRecallRequest::default()
     });
     let history_command =
         KernelCommand::from_local_request("cmd-history-query", None, None, &history_request);
@@ -113,10 +113,10 @@ async fn query_history_reads_operational_events() {
     let response = router
         .dispatch(history_command, history_request)
         .await
-        .expect("history query should resolve");
+        .expect("recall query should resolve");
 
     match response {
-        LocalDaemonResponse::HistoryEvents {
+        LocalDaemonResponse::RecallEvents {
             events,
             next_sequence,
         } => {
@@ -129,7 +129,7 @@ async fn query_history_reads_operational_events() {
             );
             assert!(next_sequence.is_none());
         }
-        _ => panic!("unexpected history query response"),
+        _ => panic!("unexpected recall query response"),
     }
 }
 

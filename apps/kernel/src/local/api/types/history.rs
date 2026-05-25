@@ -43,7 +43,7 @@ pub struct RecordPromptInputHistoryRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct QueryHistoryRequest {
+pub struct QueryRecallRequest {
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
     pub provider: Option<String>,
@@ -60,7 +60,7 @@ pub struct QueryHistoryRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchHistoryRequest {
+pub struct SearchRecallRequest {
     pub query: String,
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
@@ -77,22 +77,22 @@ pub struct SearchHistoryRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SemanticSearchHistoryMode {
+pub enum SemanticSearchRecallMode {
     Knn,
     Agent,
 }
 
-impl Default for SemanticSearchHistoryMode {
+impl Default for SemanticSearchRecallMode {
     fn default() -> Self {
         Self::Knn
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticSearchHistoryRequest {
+pub struct SemanticSearchRecallRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<SemanticSearchHistoryMode>,
+    pub mode: Option<SemanticSearchRecallMode>,
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
     pub provider: Option<String>,
@@ -108,7 +108,7 @@ pub struct SemanticSearchHistoryRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticHistoryMatch {
+pub struct SemanticRecallMatch {
     pub event: HistoryEvent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_millis: Option<u32>,

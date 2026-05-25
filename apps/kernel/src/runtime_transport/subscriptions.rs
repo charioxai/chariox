@@ -330,8 +330,32 @@ fn changed_workflow_runs(
 fn build_session_snapshot(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
+    attachment_owner_user_id: &str,
 ) -> Result<SessionSnapshotProjection, DaemonError> {
-    SessionSnapshotProjection::from_daemon_app(app, session_id, 0)
+    let mut snapshot = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
+    snapshot.session = snapshot.session.redacted_for_user(attachment_owner_user_id);
+    snapshot.agent_activity.retain(|agent_id, _| {
+        snapshot
+            .session
+            .agents()
+            .iter()
+            .any(|agent| agent.id() == agent_id)
+    });
+    if snapshot
+        .provider_run
+        .as_ref()
+        .and_then(|run| run.agent_instance_id())
+        .is_some_and(|agent_id| {
+            !snapshot
+                .session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == agent_id)
+        })
+    {
+        snapshot.provider_run = None;
+    }
+    Ok(snapshot)
 }
 
 pub(crate) enum WatchResult {
@@ -353,12 +377,14 @@ pub(crate) fn watch_subscription_state(
     previous_snapshot: Option<SessionSnapshotProjection>,
     last_workflow_design_sequence: u64,
 ) -> WatchResult {
-    if crate::app::KernelSessionReadService::new(app)
+    let attachment = if let Ok(attachment) = crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)
-        .is_err()
     {
+        attachment
+    } else {
         return WatchResult::Unavailable("Current session is no longer available.".to_string());
-    }
+    };
+    let attachment_owner_user_id = attachment.owner_user_id().to_string();
 
     let records = match crate::app::provider_output::pump_terminal_output_for_attachment(
         app,
@@ -398,7 +424,7 @@ pub(crate) fn watch_subscription_state(
         attachment_id,
     );
     let snapshot = if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
-        match build_session_snapshot(app, session_id) {
+        match build_session_snapshot(app, session_id, &attachment_owner_user_id) {
             Ok(snapshot) => {
                 if previous_snapshot.as_ref() != Some(&snapshot) {
                     Box::new(Some(snapshot))
@@ -629,7 +655,7 @@ pub(super) async fn emit_replay_gap_snapshot(
     attachment_id: &str,
 ) {
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
-    let snapshot = router.session_snapshot_projection(session_id, 0);
+    let snapshot = router.session_snapshot_projection_for_attachment(session_id, attachment_id, 0);
     match snapshot {
         Ok(projection) => {
             let _ = emit_kernel_event(

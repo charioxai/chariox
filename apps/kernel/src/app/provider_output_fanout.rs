@@ -1,4 +1,6 @@
+use crate::agent::AgentServiceStore;
 use crate::app::DaemonApp;
+use crate::attachment::AttachmentServiceStore;
 use crate::history::{
     HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore,
 };
@@ -11,6 +13,8 @@ use crate::terminal::{
 
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
+    agent_store: AgentServiceStore,
+    attachment_store: AttachmentServiceStore,
     session_store: SessionStateStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
@@ -23,6 +27,8 @@ impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
             provider_store: app.providers.clone(),
+            agent_store: app.agents.clone(),
+            attachment_store: app.attachments.clone(),
             session_store: app.sessions.clone(),
             history_store: app.history_store(),
             operational_history_store: app.operational_history_store(),
@@ -45,6 +51,8 @@ impl ProviderOutputFanout {
         let agent_id = provider_run
             .as_ref()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let record = self.terminal.fan_out_output(
             session_id,
             provider_run_id,
@@ -84,6 +92,8 @@ impl ProviderOutputFanout {
                 .ok()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
         });
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         let record = self.terminal.record_notice(
             session_id,
             provider_run_id,
@@ -111,6 +121,8 @@ impl ProviderOutputFanout {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
         self.terminal.record_assistant_message_completion(
             session_id,
             provider_run_id,
@@ -119,6 +131,21 @@ impl ProviderOutputFanout {
             message_id,
             completed_at_ms,
         );
+    }
+
+    fn private_recipient_attachment_ids(
+        &self,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        self.attachment_store
+            .filter_attachment_ids_for_user(recipient_attachment_ids, agent.owner_user_id())
     }
 
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {

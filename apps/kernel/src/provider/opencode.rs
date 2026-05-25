@@ -300,6 +300,8 @@ mod tests {
         assert!(config.contains("\"mcp\""));
         assert!(config.contains("http://127.0.0.1:43120/mcp"));
         assert!(config.contains("Bearer token-123"));
+        assert!(config.contains("\"oauth\":false"));
+        assert!(config.contains("\"timeout\":45000"));
     }
 
     #[test]
@@ -460,6 +462,8 @@ mod tests {
         assert!(config.contains("\"type\":\"remote\""));
         assert!(config.contains("http://127.0.0.1:43120/mcp/proxy/browser"));
         assert!(config.contains("Bearer token-123"));
+        assert!(config.contains("\"oauth\":false"));
+        assert!(config.contains("\"timeout\":45000"));
         assert!(!config.contains("@playwright/mcp@latest"));
     }
 

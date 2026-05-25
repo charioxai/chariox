@@ -91,9 +91,8 @@ impl KernelRuntimeOwnedState {
             request,
             self.config_projection.snapshot().runtime_mcp_url(),
         )?;
-        let run = self.provider_store.launch_run_detached(request)?;
-        self.session_store
-            .set_active_provider_run(session_id, Some(run.id().to_string()))?;
+        let started = self.start_provider_launch(request)?;
+        let run = started.run;
         self.provider_run_projection.update(run.clone());
         Ok(run.id().to_string())
     }
@@ -274,98 +273,6 @@ impl KernelRuntimeOwnedState {
                     operation: "validate_workflow_handoff",
                 });
             }
-        }
-        Ok(())
-    }
-
-    pub(super) fn workflow_flush_agent_context_if_needed(
-        &self,
-        session_id: &str,
-        workflow: &crate::session::WorkflowDefinition,
-    ) -> Result<(), DaemonError> {
-        if !workflow.flush_agent_context_before_run() {
-            return Ok(());
-        }
-        let workflow_agent_ids = workflow
-            .nodes()
-            .iter()
-            .map(|node| node.agent_id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        if workflow_agent_ids.is_empty() {
-            return Ok(());
-        }
-        self.workflow_clear_agent_resume_state(session_id, &workflow_agent_ids)?;
-        let session = self.session_store.get_session(session_id)?;
-        for agent_id in &workflow_agent_ids {
-            if self
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, agent_id)
-                .is_some()
-            {
-                let _ = self.cancel_active_prompt_only(session_id, agent_id);
-            }
-        }
-        for agent_id in workflow_agent_ids {
-            let Some(run) = self.provider_store.get_run_for_agent(session_id, &agent_id) else {
-                continue;
-            };
-            if run.state() == crate::provider::ProviderRunState::Ended {
-                continue;
-            }
-            let ended = self
-                .provider_store
-                .terminate_run_provider_only(session_id, run.id())?
-                .into_run();
-            if self
-                .session_store
-                .get_session(session_id)?
-                .active_provider_run_id()
-                == Some(ended.id())
-            {
-                self.session_store
-                    .set_active_provider_run(session_id, None)?;
-            }
-            self.provider_run_projection.update(ended.clone());
-            self.remove_provider_process_tracking_for_run(ended.id(), None);
-        }
-        Ok(())
-    }
-
-    fn workflow_clear_agent_resume_state(
-        &self,
-        session_id: &str,
-        workflow_agent_ids: &std::collections::BTreeSet<String>,
-    ) -> Result<(), DaemonError> {
-        for agent_id in workflow_agent_ids {
-            let agent = self.agent_store.get_agent(agent_id)?;
-            if agent.provider_resume_state().is_empty() {
-                continue;
-            }
-            let updated = self.agent_store.set_agent_runtime_profile(
-                agent_id,
-                agent.provider(),
-                agent.model().map(str::to_string),
-                agent.effort().map(str::to_string),
-                crate::provider::ProviderResumeState::default(),
-            )?;
-            let _ = self.durable_state_store.append_event(
-                "agent.runtime_profile_updated",
-                Some(updated.id().to_string()),
-                serde_json::json!({
-                    "agent": &updated,
-                    "reason": "workflow_context_flushed",
-                }),
-            );
-            self.record_notice(
-                session_id,
-                None,
-                self.attachment_store
-                    .list_session_attachment_ids(session_id),
-                format!(
-                    "Workflow context flush cleared provider resume state for agent `{}`.",
-                    updated.id()
-                ),
-            );
         }
         Ok(())
     }

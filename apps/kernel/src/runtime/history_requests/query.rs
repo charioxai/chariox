@@ -1,14 +1,14 @@
-//! Operational history query and archive merge support.
+//! Operational recall query and archive merge support.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use crate::config::UserArchiveHistoryConfig;
 use crate::error::DaemonError;
-use crate::history::{HistoryEvent, HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
+use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
 use crate::history_archive::HistoryArchiveClient;
-use crate::local::{LocalDaemonResponse, QueryHistoryRequest, SearchHistoryRequest};
+use crate::local::{LocalDaemonResponse, QueryRecallRequest, SearchRecallRequest};
 
-pub(crate) async fn execute_query_history_request(
+pub(crate) async fn execute_query_recall_request(
     history: OperationalHistoryStore,
     archive_config: UserArchiveHistoryConfig,
     query: HistoryEventQuery,
@@ -37,19 +37,19 @@ pub(crate) async fn execute_query_history_request(
         } else {
             None
         };
-        Ok(LocalDaemonResponse::HistoryEvents {
+        Ok(LocalDaemonResponse::RecallEvents {
             events,
             next_sequence,
         })
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
-        operation: "query history",
+        operation: "query recall",
         message: error.to_string(),
     })?
 }
 
-pub(crate) fn history_query_from_request(request: QueryHistoryRequest) -> HistoryEventQuery {
+pub(crate) fn recall_query_from_request(request: QueryRecallRequest) -> HistoryEventQuery {
     HistoryEventQuery {
         session_id: request.session_id,
         agent_id: request.agent_id,
@@ -67,9 +67,7 @@ pub(crate) fn history_query_from_request(request: QueryHistoryRequest) -> Histor
     }
 }
 
-pub(crate) fn history_query_from_search_request(
-    request: SearchHistoryRequest,
-) -> HistoryEventQuery {
+pub(crate) fn recall_query_from_search_request(request: SearchRecallRequest) -> HistoryEventQuery {
     HistoryEventQuery {
         session_id: request.session_id,
         agent_id: request.agent_id,
@@ -102,6 +100,9 @@ fn merge_history_events(events: &mut Vec<HistoryEvent>, archive_events: Vec<Hist
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::history::HistoryEventKind;
 
     fn history_event(event_id: &str, sequence: u64) -> HistoryEvent {
         HistoryEvent {
@@ -138,8 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn history_query_from_search_request_maps_text_and_pagination() {
-        let query = history_query_from_search_request(SearchHistoryRequest {
+    fn recall_query_from_search_request_maps_text_and_pagination() {
+        let query = recall_query_from_search_request(SearchRecallRequest {
             query: "deploy".to_string(),
             session_id: Some("session-1".to_string()),
             agent_id: None,

@@ -3,12 +3,14 @@ use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::provider::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch, RuntimeProviderRun,
+    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::PromptAttachment;
 
 use super::super::{
     claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
+    codex_runtime::CodexPollResult,
     codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
     opencode_binding::{
         abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
@@ -157,6 +159,8 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
+        let resolved_resume_state =
+            completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
         runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
         let poll = poll?;
         crate::logging::debug_with_fields(
@@ -197,7 +201,7 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
-            resolved_resume_state: None,
+            resolved_resume_state,
         }));
     }
     if run.adapter_key() == "claude" {
@@ -253,4 +257,54 @@ pub(super) fn execute_output_poll_command(
         resolved_usage: None,
         resolved_resume_state: None,
     }))
+}
+
+fn completed_codex_turn_resume_state(
+    thread_id: &str,
+    poll: Option<&CodexPollResult>,
+) -> Option<ProviderResumeState> {
+    let poll = poll?;
+    if !poll.prompt_completed {
+        return None;
+    }
+    Some(ProviderResumeState::from_codex_thread_id(thread_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::codex_runtime::{CodexAssistantCompletion, CodexPollResult};
+
+    use super::completed_codex_turn_resume_state;
+
+    fn codex_poll(prompt_completed: bool) -> CodexPollResult {
+        CodexPollResult {
+            chunks: Vec::new(),
+            completions: prompt_completed
+                .then(|| CodexAssistantCompletion {
+                    message_id: "msg-1".to_string(),
+                    completed_at_ms: 1,
+                })
+                .into_iter()
+                .collect(),
+            prompt_completed,
+            terminal_failure: None,
+            notices: Vec::new(),
+            resolved_usage: None,
+        }
+    }
+
+    #[test]
+    fn codex_resume_state_is_durable_only_after_prompt_completion() {
+        assert_eq!(
+            completed_codex_turn_resume_state("thread-1", Some(&codex_poll(false)))
+                .and_then(|state| state.codex_thread_id().map(str::to_string)),
+            None
+        );
+
+        assert_eq!(
+            completed_codex_turn_resume_state("thread-1", Some(&codex_poll(true)))
+                .and_then(|state| state.codex_thread_id().map(str::to_string)),
+            Some("thread-1".to_string())
+        );
+    }
 }

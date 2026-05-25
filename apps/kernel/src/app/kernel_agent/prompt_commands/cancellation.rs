@@ -34,19 +34,6 @@ impl<'a> KernelAgentService<'a> {
         self.cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
     }
 
-    pub(crate) fn cancel_active_prompt_for_runtime(
-        &mut self,
-        session_id: &str,
-    ) -> Result<PromptCancellation, DaemonError> {
-        let target_agent_id = self
-            .app
-            .prompt_owner_active_prompt_agent_id(session_id)?
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        self.cancel_active_prompt_internal(session_id, &target_agent_id, None)
-    }
-
     pub(crate) fn cancel_active_prompt_internal(
         &mut self,
         session_id: &str,

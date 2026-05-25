@@ -132,8 +132,8 @@ mod tests {
     fn runtime_instructions_are_loaded_from_policy_file() {
         let instructions = runtime_instructions();
 
-        assert!(instructions.contains("list_extensions"));
-        assert!(instructions.contains("request_extension"));
+        assert!(instructions.contains("arroba.list_extensions"));
+        assert!(instructions.contains("arroba.request_extension"));
         assert!(instructions.contains("request_popup"));
         assert!(!instructions.contains("slice_screenshot"));
         assert!(!instructions.contains("native provider actions"));

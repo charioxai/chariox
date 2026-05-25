@@ -73,6 +73,24 @@ impl AttachmentServiceStore {
         self.read().list_session_attachment_ids(session_id)
     }
 
+    pub fn list_session_attachment_ids_for_user(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+    ) -> Vec<String> {
+        self.read()
+            .list_session_attachment_ids_for_user(session_id, owner_user_id)
+    }
+
+    pub fn filter_attachment_ids_for_user(
+        &self,
+        attachment_ids: Vec<String>,
+        owner_user_id: &str,
+    ) -> Vec<String> {
+        self.read()
+            .filter_attachment_ids_for_user(attachment_ids, owner_user_id)
+    }
+
     pub fn list_client_attachments(&self, client_id: &str) -> Vec<RuntimeAttachment> {
         self.read().list_client_attachments(client_id)
     }
@@ -98,6 +116,7 @@ impl AttachmentService {
             request.session_id.clone(),
             request.client_id,
             request.capability_level,
+            request.owner_user_id,
         );
 
         sessions.add_attachment_to_session(&request.session_id, &attachment_id)?;
@@ -158,6 +177,35 @@ impl AttachmentService {
             .values()
             .filter(|attachment| attachment.session_id() == session_id)
             .map(|attachment| attachment.id().to_string())
+            .collect()
+    }
+
+    pub fn list_session_attachment_ids_for_user(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+    ) -> Vec<String> {
+        self.attachments
+            .values()
+            .filter(|attachment| {
+                attachment.session_id() == session_id && attachment.owner_user_id() == owner_user_id
+            })
+            .map(|attachment| attachment.id().to_string())
+            .collect()
+    }
+
+    pub fn filter_attachment_ids_for_user(
+        &self,
+        attachment_ids: Vec<String>,
+        owner_user_id: &str,
+    ) -> Vec<String> {
+        attachment_ids
+            .into_iter()
+            .filter(|attachment_id| {
+                self.attachments
+                    .get(attachment_id)
+                    .is_some_and(|attachment| attachment.owner_user_id() == owner_user_id)
+            })
             .collect()
     }
 

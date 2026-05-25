@@ -33,6 +33,14 @@ use super::workflow_turns::{WorkflowNodeRunStatus, WorkflowRunStatus};
 use super::workspace_links::WorkspaceLinkDefinition;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCollaborationAgentCounts {
+    pub owned_agent_count: usize,
+    pub other_user_agent_count: usize,
+    pub total_agent_count: usize,
+    pub collaborator_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
     alias: Option<String>,
@@ -58,6 +66,8 @@ pub struct RuntimeSession {
     focused_agent_id: Option<String>,
     max_agents: i32,
     agents: Vec<AgentInstance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    collaboration_agent_counts: Option<SessionCollaborationAgentCounts>,
     attachment_ids: BTreeSet<String>,
     #[serde(flatten)]
     prompt_runtime: PromptRuntimeState,
@@ -114,6 +124,7 @@ impl RuntimeSession {
             focused_agent_id: None,
             max_agents: DEFAULT_SESSION_MAX_AGENTS,
             agents: Vec::new(),
+            collaboration_agent_counts: None,
             attachment_ids: BTreeSet::new(),
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
@@ -273,9 +284,31 @@ impl RuntimeSession {
 
     pub fn set_agents(&mut self, agents: Vec<AgentInstance>) {
         self.agents = agents;
+        self.collaboration_agent_counts = None;
+    }
+
+    pub fn collaboration_agent_counts(&self) -> Option<&SessionCollaborationAgentCounts> {
+        self.collaboration_agent_counts.as_ref()
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        let total_agent_count = self.agents.len();
+        let owned_agent_count = self
+            .agents
+            .iter()
+            .filter(|agent| agent.owner_user_id() == user_id)
+            .count();
+        let collaborator_count = self
+            .members
+            .iter()
+            .filter(|member| member.user_id() != user_id)
+            .count();
+        self.collaboration_agent_counts = Some(SessionCollaborationAgentCounts {
+            owned_agent_count,
+            other_user_agent_count: total_agent_count.saturating_sub(owned_agent_count),
+            total_agent_count,
+            collaborator_count,
+        });
         let has_unowned_agents = self
             .agents
             .iter()

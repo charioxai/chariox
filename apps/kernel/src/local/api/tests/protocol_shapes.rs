@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
@@ -83,7 +83,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -472,7 +472,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "prompt-1".to_string(),
@@ -502,7 +502,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::RequestNativeProviderInteraction(
         RequestNativeProviderInteractionRequest::allow_deny(
@@ -553,7 +553,7 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -585,7 +585,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -620,7 +620,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -643,7 +643,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -691,12 +691,12 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 }
 
 #[test]
-fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
-    let request = LocalDaemonRequest::SemanticSearchHistory(SemanticSearchHistoryRequest {
+    let request = LocalDaemonRequest::SemanticSearchRecall(SemanticSearchRecallRequest {
         query: "why did the build fail".to_string(),
-        mode: Some(crate::local::SemanticSearchHistoryMode::Agent),
+        mode: Some(crate::local::SemanticSearchRecallMode::Agent),
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
         provider: Some("codex".to_string()),
@@ -711,23 +711,23 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     });
     let request_snapshot = serde_json::to_value(request).expect("request should serialize");
     assert_eq!(
-        request_snapshot.pointer("/SemanticSearchHistory/query"),
+        request_snapshot.pointer("/SemanticSearchRecall/query"),
         Some(&serde_json::json!("why did the build fail"))
     );
     assert_eq!(
-        request_snapshot.pointer("/SemanticSearchHistory/mode"),
+        request_snapshot.pointer("/SemanticSearchRecall/mode"),
         Some(&serde_json::json!("agent"))
     );
     assert_eq!(
-        request_snapshot.pointer("/SemanticSearchHistory/session_id"),
+        request_snapshot.pointer("/SemanticSearchRecall/session_id"),
         Some(&serde_json::json!("session-1"))
     );
     assert_eq!(
-        request_snapshot.pointer("/SemanticSearchHistory/limit"),
+        request_snapshot.pointer("/SemanticSearchRecall/limit"),
         Some(&serde_json::json!(12))
     );
     assert_eq!(
-        request_snapshot.pointer("/SemanticSearchHistory/cursor"),
+        request_snapshot.pointer("/SemanticSearchRecall/cursor"),
         Some(&serde_json::json!("cursor-0"))
     );
 
@@ -762,8 +762,8 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
         attribution_confidence: None,
         caused_by_event_id: None,
     };
-    let response = LocalDaemonResponse::SemanticHistoryEvents {
-        results: vec![SemanticHistoryMatch {
+    let response = LocalDaemonResponse::SemanticRecallEvents {
+        results: vec![SemanticRecallMatch {
             event,
             score_millis: Some(914),
             chunk_index: Some(0),
@@ -776,23 +776,23 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
     };
     let response_snapshot = serde_json::to_value(response).expect("response should serialize");
     assert_eq!(
-        response_snapshot.pointer("/SemanticHistoryEvents/results/0/score_millis"),
+        response_snapshot.pointer("/SemanticRecallEvents/results/0/score_millis"),
         Some(&serde_json::json!(914))
     );
     assert_eq!(
-        response_snapshot.pointer("/SemanticHistoryEvents/results/0/chunk_text"),
+        response_snapshot.pointer("/SemanticRecallEvents/results/0/chunk_text"),
         Some(&serde_json::json!("build failed because tests failed"))
     );
     assert_eq!(
-        response_snapshot.pointer("/SemanticHistoryEvents/results/0/reason"),
+        response_snapshot.pointer("/SemanticRecallEvents/results/0/reason"),
         Some(&serde_json::json!("high: direct match"))
     );
     assert_eq!(
-        response_snapshot.pointer("/SemanticHistoryEvents/answer"),
+        response_snapshot.pointer("/SemanticRecallEvents/answer"),
         Some(&serde_json::json!("The build failed because tests failed."))
     );
     assert_eq!(
-        response_snapshot.pointer("/SemanticHistoryEvents/unavailable_reason"),
+        response_snapshot.pointer("/SemanticRecallEvents/unavailable_reason"),
         Some(&serde_json::Value::Null)
     );
 
@@ -800,19 +800,19 @@ fn local_daemon_protocol_semantic_history_search_shape_is_versioned() {
         "request": request_snapshot,
         "response": response_snapshot,
     }))
-    .expect("semantic history snapshot should encode");
+    .expect("semantic recall snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6f8e40065757d56ae36fd7f8609d4aaed543d76a582dcffe20c2dae514688196"
+        "5c28f67e35c7840b0f754e4d635fce1670dba9064756a90893204415418f5d2a"
     );
 }
 
 #[test]
-fn local_daemon_protocol_query_history_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
-    let request = LocalDaemonRequest::QueryHistory(QueryHistoryRequest {
+    let request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
         provider: None,
@@ -829,22 +829,21 @@ fn local_daemon_protocol_query_history_context_shape_is_versioned() {
     });
     let snapshot = serde_json::to_value(request).expect("request should serialize");
     assert_eq!(
-        snapshot.pointer("/QueryHistory/before_sequence"),
+        snapshot.pointer("/QueryRecall/before_sequence"),
         Some(&serde_json::json!(42))
     );
 
-    let serialized =
-        serde_json::to_string(&snapshot).expect("query history snapshot should encode");
+    let serialized = serde_json::to_string(&snapshot).expect("query recall snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "e58f083c2b36e276158bcde1483d734b76fd29067f613ea61b51a3ea1eda3a7d"
+        "4e8f0791f65d7a0d7df9d983cafe6584d2e155bd59d0f0a51f176d6f50ba7485"
     );
 }
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -877,7 +876,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -907,7 +906,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 46);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 48);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),

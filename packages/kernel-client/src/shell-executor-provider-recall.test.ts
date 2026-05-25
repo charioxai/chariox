@@ -84,14 +84,14 @@ test("executeShellCommand manages provider auth and processes", async () => {
   ])
 })
 
-test("executeShellCommand searches current session history", async () => {
+test("executeShellCommand searches current session recall", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         return {
-          HistoryEvents: {
+          RecallEvents: {
             events: [{
               event_id: "event-1",
               sequence: 42,
@@ -111,12 +111,12 @@ test("executeShellCommand searches current session history", async () => {
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const result = await executeShellCommand(parseShellCommand("history search failing build"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("recall search failing build"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /Fixed the failing build/)
   assert.deepEqual(requests, [
     {
-      SearchHistory: {
+      SearchRecall: {
         query: "failing build",
         session_id: "session-1",
         agent_id: null,
@@ -134,29 +134,29 @@ test("executeShellCommand searches current session history", async () => {
   ])
 })
 
-test("executeShellCommand surfaces semantic history search availability", async () => {
+test("executeShellCommand surfaces semantic recall search availability", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         return {
-          SemanticHistoryEvents: {
+          SemanticRecallEvents: {
             results: [],
             next_cursor: null,
-            unavailable_reason: "semantic history search is not configured for this kernel",
+            unavailable_reason: "semantic recall search is not configured for this kernel",
           },
         }
       },
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const result = await executeShellCommand(parseShellCommand("history semantic-search why did tests fail"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("recall semantic-search why did tests fail"), context, { client: fake.client })
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /not configured/)
   assert.deepEqual(requests, [
     {
-      SemanticSearchHistory: {
+      SemanticSearchRecall: {
         query: "why did tests fail",
         mode: "knn",
         session_id: "session-1",
@@ -175,14 +175,14 @@ test("executeShellCommand surfaces semantic history search availability", async 
   ])
 })
 
-test("executeShellCommand requests focused-agent semantic history search", async () => {
+test("executeShellCommand requests focused-agent semantic recall search", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         return {
-          SemanticHistoryEvents: {
+          SemanticRecallEvents: {
             answer: "Tests failed because the snapshot changed.",
             results: [],
             next_cursor: null,
@@ -193,12 +193,12 @@ test("executeShellCommand requests focused-agent semantic history search", async
     },
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const result = await executeShellCommand(parseShellCommand("history semantic-search --agent why did tests fail"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("recall semantic-search --agent why did tests fail"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /snapshot changed/)
   assert.deepEqual(requests, [
     {
-      SemanticSearchHistory: {
+      SemanticSearchRecall: {
         query: "why did tests fail",
         mode: "agent",
         session_id: "session-1",

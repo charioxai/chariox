@@ -30,6 +30,27 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn ensure_relay_subscription_attachment_for_user(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        user_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.ensure_relay_subscription_attachment(session_id, attachment_id)
+            .await?;
+        let owner_user_id = self
+            .runtime_state
+            .attachment_owner_user_id(attachment_id)
+            .await?;
+        if owner_user_id == user_id {
+            return Ok(());
+        }
+        Err(DaemonError::SessionAccessDenied {
+            session_id: session_id.to_string(),
+            user_id: user_id.to_string(),
+        })
+    }
+
     pub(crate) async fn relay_watch_subscription_state(
         &self,
         session_id: &str,

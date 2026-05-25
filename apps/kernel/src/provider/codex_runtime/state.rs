@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::provider::{
-    CodexNotification, CodexRunSelection, CodexSocket, ProviderResumeState, ProviderRunTokenUsage,
-};
+use crate::provider::{CodexNotification, CodexRunSelection, CodexSocket, ProviderRunTokenUsage};
 use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
@@ -92,5 +90,4 @@ impl CodexRuntimeState {
 pub struct CodexRuntimeBinding {
     pub state: CodexRuntimeState,
     pub selection: CodexRunSelection,
-    pub resume_state: ProviderResumeState,
 }

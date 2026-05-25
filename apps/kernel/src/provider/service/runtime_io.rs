@@ -70,11 +70,6 @@ impl ProviderProcessService {
             ProviderRuntimeBinding::Codex(binding) => {
                 self.run_actor_mailbox
                     .insert_codex_runtime(run_id.to_string(), binding.state);
-                let run_mut = self.get_run_mut(run_id)?;
-                run_mut.set_resume_state(binding.resume_state.clone());
-                run_mut.set_provider_session_id(
-                    binding.resume_state.codex_thread_id().map(str::to_string),
-                );
                 self.apply_codex_run_selection(run_id, binding.selection)?;
             }
             ProviderRuntimeBinding::OpenCode(binding) => {

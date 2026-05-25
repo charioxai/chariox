@@ -51,6 +51,10 @@ impl KernelRuntimeState {
                 state.fail_provider_launch(&started, &error).await;
                 return;
             }
+            state
+                .owned
+                .provider_run_projection
+                .update(started.run.clone());
             let run = started.run.clone();
             let binding = tokio::task::spawn_blocking(move || {
                 crate::provider::ProviderProcessService::initialize_runtime_binding(&run)

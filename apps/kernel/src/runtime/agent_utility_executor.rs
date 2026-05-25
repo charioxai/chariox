@@ -8,17 +8,17 @@ use crate::error::DaemonError;
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, AgentUtilityResult,
     GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
-    RunAgentUtilityRequest, SemanticHistorySearchUtilityInput, WorkspaceCommitMessageUtilityInput,
+    RunAgentUtilityRequest, SemanticRecallSearchUtilityInput, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{
     run_codex_utility_prompt, run_opencode_utility_prompt, ProviderRunState, RuntimeProviderRun,
 };
 use crate::runtime::history_requests::{
-    knn_semantic_history_search, semantic_search_request_from_utility_input,
+    knn_semantic_recall_search, semantic_recall_request_from_utility_input,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
-use crate::runtime::semantic_history_utility::{
-    parse_semantic_history_search_utility_output, semantic_history_search_utility_prompt,
+use crate::runtime::semantic_recall_utility::{
+    parse_semantic_recall_search_utility_output, semantic_recall_search_utility_prompt,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
@@ -113,9 +113,9 @@ pub(crate) async fn run_agent_utility(
             message: run_workspace_commit_message_utility(provider_run, input).await?,
         },
         (
-            AgentUtilityKind::SemanticHistorySearch,
-            AgentUtilityInput::SemanticHistorySearch(input),
-        ) => run_semantic_history_search_utility(archive_config, provider_run, input).await?,
+            AgentUtilityKind::SemanticRecallSearch,
+            AgentUtilityInput::SemanticRecallSearch(input),
+        ) => run_semantic_recall_search_utility(archive_config, provider_run, input).await?,
         (kind, _) => {
             return Err(DaemonError::LocalTransport {
                 operation: agent_utility_operation(kind),
@@ -168,27 +168,27 @@ async fn run_workspace_commit_message_utility(
     run_provider_utility_prompt(provider_run, prompt, "run workspace commit message utility").await
 }
 
-async fn run_semantic_history_search_utility(
+async fn run_semantic_recall_search_utility(
     archive_config: UserArchiveHistoryConfig,
     provider_run: RuntimeProviderRun,
-    input: SemanticHistorySearchUtilityInput,
+    input: SemanticRecallSearchUtilityInput,
 ) -> Result<AgentUtilityOutput, DaemonError> {
     let requested_limit = input.limit.unwrap_or(20).clamp(1, 50);
-    let search_request = semantic_search_request_from_utility_input(&input);
+    let search_request = semantic_recall_request_from_utility_input(&input);
     let (candidates, _next_cursor, unavailable_reason) =
-        knn_semantic_history_search(archive_config, search_request, requested_limit).await?;
+        knn_semantic_recall_search(archive_config, search_request, requested_limit).await?;
     if let Some(reason) = unavailable_reason {
         return Err(DaemonError::LocalTransport {
-            operation: "run semantic history search utility",
+            operation: "run semantic recall search utility",
             message: reason,
         });
     }
-    let prompt = semantic_history_search_utility_prompt(&input, &candidates)?;
+    let prompt = semantic_recall_search_utility_prompt(&input, &candidates)?;
     let output =
-        run_provider_utility_prompt(provider_run, prompt, "run semantic history search utility")
+        run_provider_utility_prompt(provider_run, prompt, "run semantic recall search utility")
             .await?;
-    let parsed = parse_semantic_history_search_utility_output(&output, &candidates)?;
-    Ok(AgentUtilityOutput::SemanticHistorySearch {
+    let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
+    Ok(AgentUtilityOutput::SemanticRecallSearch {
         answer: parsed.answer,
         matches: parsed.matches,
     })
@@ -197,7 +197,7 @@ async fn run_semantic_history_search_utility(
 fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
     match kind {
         AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
-        AgentUtilityKind::SemanticHistorySearch => "run semantic history search utility",
+        AgentUtilityKind::SemanticRecallSearch => "run semantic recall search utility",
     }
 }
 
@@ -247,8 +247,8 @@ mod tests {
             "run workspace commit message utility"
         );
         assert_eq!(
-            agent_utility_operation(&AgentUtilityKind::SemanticHistorySearch),
-            "run semantic history search utility"
+            agent_utility_operation(&AgentUtilityKind::SemanticRecallSearch),
+            "run semantic recall search utility"
         );
     }
 }

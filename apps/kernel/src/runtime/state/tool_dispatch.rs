@@ -13,6 +13,7 @@ mod managed_io_access;
 mod managed_io_local;
 mod managed_io_permission;
 mod managed_io_remote_dispatch;
+mod recall;
 mod remote_capability_sync;
 mod script;
 mod slice;
@@ -27,6 +28,7 @@ impl KernelRuntimeState {
         let mut specs = crate::transport::runtime_tools::managed_io_runtime_tool_specs()
             .into_iter()
             .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
+            .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
             .chain(self.script_runtime_tool_specs_for_auth_token(auth_token))
             .chain(self.connector_runtime_tool_specs_for_auth_token(auth_token))
             .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
@@ -52,6 +54,9 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::canonical_managed_io_tool_name(tool_name)
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_recall_tool_name(tool_name)
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_credential_tool_name(tool_name)
@@ -113,6 +118,19 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_capability_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+                    | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+            ) {
+                return self
+                    .dispatch_recall_runtime_tool_call(
                         &provider_runs[0],
                         canonical_tool_name,
                         arguments,

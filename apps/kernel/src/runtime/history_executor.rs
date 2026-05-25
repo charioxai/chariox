@@ -3,17 +3,17 @@ use crate::history::{HistoryEventQuery, OperationalHistoryStore, SessionHistoryS
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, GetPromptInputHistoryRequest,
     GetSessionHistoryRequest, LocalDaemonRequest, LocalDaemonResponse,
-    RecordPromptInputHistoryRequest, RunAgentUtilityRequest, SemanticHistoryMatch,
-    SemanticSearchHistoryMode, SemanticSearchHistoryRequest,
+    RecordPromptInputHistoryRequest, RunAgentUtilityRequest, SemanticRecallMatch,
+    SemanticSearchRecallMode, SemanticSearchRecallRequest,
 };
 use crate::runtime::agent_utility_executor::run_agent_utility;
 use crate::runtime::history_requests::{
     execute_prompt_input_history_request as execute_prompt_input_history,
-    execute_query_history_request as execute_query_history,
+    execute_query_recall_request as execute_query_recall,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
-    execute_session_history_request_from_session, history_query_from_request,
-    history_query_from_search_request, knn_semantic_history_search,
-    semantic_utility_input_from_search_request,
+    execute_session_history_request_from_session, knn_semantic_recall_search,
+    recall_query_from_request, recall_query_from_search_request,
+    semantic_recall_utility_input_from_search_request,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, SessionHistoryProjectionStore};
 use crate::runtime::state::KernelRuntimeState;
@@ -81,28 +81,28 @@ pub(crate) async fn execute_history_request(
         LocalDaemonRequest::RecordPromptInputHistory(request) => {
             execute_record_prompt_input_history_request(operational_history_store, request).await
         }
-        LocalDaemonRequest::QueryHistory(request) => {
-            execute_query_history_request(
+        LocalDaemonRequest::QueryRecall(request) => {
+            execute_query_recall_request(
                 operational_history_store,
                 config_projection,
-                history_query_from_request(request),
+                recall_query_from_request(request),
             )
             .await
         }
-        LocalDaemonRequest::SearchHistory(request) => {
-            execute_query_history_request(
+        LocalDaemonRequest::SearchRecall(request) => {
+            execute_query_recall_request(
                 operational_history_store,
                 config_projection,
-                history_query_from_search_request(request),
+                recall_query_from_search_request(request),
             )
             .await
         }
-        LocalDaemonRequest::SemanticSearchHistory(request) => {
-            execute_semantic_search_history_request(runtime_state, config_projection, request).await
+        LocalDaemonRequest::SemanticSearchRecall(request) => {
+            execute_semantic_search_recall_request(runtime_state, config_projection, request).await
         }
         _ => Err(DaemonError::LocalTransport {
-            operation: "history request",
-            message: "unsupported history request".to_string(),
+            operation: "recall request",
+            message: "unsupported recall request".to_string(),
         }),
     }
 }
@@ -139,39 +139,39 @@ pub(crate) async fn execute_record_prompt_input_history_request(
     execute_record_prompt_input_history(operational_history_store, request).await
 }
 
-pub(crate) async fn execute_query_history_request(
+pub(crate) async fn execute_query_recall_request(
     operational_history_store: OperationalHistoryStore,
     config_projection: &DaemonConfigProjectionStore,
     query: HistoryEventQuery,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let archive_config = config_projection.snapshot().user_config.history.archive;
-    execute_query_history(operational_history_store, archive_config, query).await
+    execute_query_recall(operational_history_store, archive_config, query).await
 }
 
-pub(crate) async fn execute_semantic_search_history_request(
+pub(crate) async fn execute_semantic_search_recall_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
-    request: SemanticSearchHistoryRequest,
+    request: SemanticSearchRecallRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request.mode.unwrap_or_default() {
-        SemanticSearchHistoryMode::Knn => {
-            execute_knn_semantic_search_history_request(config_projection, request).await
+        SemanticSearchRecallMode::Knn => {
+            execute_knn_semantic_search_recall_request(config_projection, request).await
         }
-        SemanticSearchHistoryMode::Agent => {
-            execute_agent_semantic_search_history_request(runtime_state, config_projection, request)
+        SemanticSearchRecallMode::Agent => {
+            execute_agent_semantic_search_recall_request(runtime_state, config_projection, request)
                 .await
         }
     }
 }
 
-async fn execute_knn_semantic_search_history_request(
+async fn execute_knn_semantic_search_recall_request(
     config_projection: &DaemonConfigProjectionStore,
-    request: SemanticSearchHistoryRequest,
+    request: SemanticSearchRecallRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let requested_limit = request.limit.unwrap_or(20).clamp(1, 100);
     let (results, next_cursor, unavailable_reason) =
-        execute_knn_semantic_history_search(config_projection, request, requested_limit).await?;
-    Ok(LocalDaemonResponse::SemanticHistoryEvents {
+        execute_knn_semantic_recall_search(config_projection, request, requested_limit).await?;
+    Ok(LocalDaemonResponse::SemanticRecallEvents {
         results,
         next_cursor,
         unavailable_reason,
@@ -179,27 +179,27 @@ async fn execute_knn_semantic_search_history_request(
     })
 }
 
-async fn execute_agent_semantic_search_history_request(
+async fn execute_agent_semantic_search_recall_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
-    request: SemanticSearchHistoryRequest,
+    request: SemanticSearchRecallRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let Some(session_id) = request.session_id.clone() else {
-        return Ok(LocalDaemonResponse::SemanticHistoryEvents {
+        return Ok(LocalDaemonResponse::SemanticRecallEvents {
             results: Vec::new(),
             next_cursor: None,
             unavailable_reason: Some(
-                "focused-agent semantic history search requires a session".to_string(),
+                "focused-agent semantic recall search requires a session".to_string(),
             ),
             answer: None,
         });
     };
     let Some(agent_id) = runtime_state.focused_agent_id(&session_id).await? else {
-        return Ok(LocalDaemonResponse::SemanticHistoryEvents {
+        return Ok(LocalDaemonResponse::SemanticRecallEvents {
             results: Vec::new(),
             next_cursor: None,
             unavailable_reason: Some(
-                "focused-agent semantic history search requires a focused agent".to_string(),
+                "focused-agent semantic recall search requires a focused agent".to_string(),
             ),
             answer: None,
         });
@@ -210,20 +210,20 @@ async fn execute_agent_semantic_search_history_request(
         RunAgentUtilityRequest {
             session_id,
             agent_id,
-            kind: AgentUtilityKind::SemanticHistorySearch,
-            input: AgentUtilityInput::SemanticHistorySearch(
-                semantic_utility_input_from_search_request(request),
+            kind: AgentUtilityKind::SemanticRecallSearch,
+            input: AgentUtilityInput::SemanticRecallSearch(
+                semantic_recall_utility_input_from_search_request(request),
             ),
         },
     )
     .await?;
-    let AgentUtilityOutput::SemanticHistorySearch { answer, matches } = result.output else {
+    let AgentUtilityOutput::SemanticRecallSearch { answer, matches } = result.output else {
         return Err(DaemonError::LocalTransport {
-            operation: "semantic history agent search",
-            message: "semantic history utility returned unexpected output".to_string(),
+            operation: "semantic recall agent search",
+            message: "semantic recall utility returned unexpected output".to_string(),
         });
     };
-    Ok(LocalDaemonResponse::SemanticHistoryEvents {
+    Ok(LocalDaemonResponse::SemanticRecallEvents {
         results: matches,
         next_cursor: None,
         unavailable_reason: None,
@@ -231,11 +231,11 @@ async fn execute_agent_semantic_search_history_request(
     })
 }
 
-async fn execute_knn_semantic_history_search(
+async fn execute_knn_semantic_recall_search(
     config_projection: &DaemonConfigProjectionStore,
-    request: SemanticSearchHistoryRequest,
+    request: SemanticSearchRecallRequest,
     requested_limit: usize,
-) -> Result<(Vec<SemanticHistoryMatch>, Option<String>, Option<String>), DaemonError> {
+) -> Result<(Vec<SemanticRecallMatch>, Option<String>, Option<String>), DaemonError> {
     let archive_config = config_projection.snapshot().user_config.history.archive;
-    knn_semantic_history_search(archive_config, request, requested_limit).await
+    knn_semantic_recall_search(archive_config, request, requested_limit).await
 }

@@ -234,10 +234,7 @@ impl ArrobaMcpRegistry {
                 operation: "mcp.install",
                 message: format!("failed to serialize MCP `{}`: {error}", config.name),
             })?;
-        fs::write(&path, format!("{payload}\n")).map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.install",
-            message: format!("failed to write MCP `{}`: {error}", path.display()),
-        })?;
+        atomic_write_config(&path, format!("{payload}\n").as_bytes(), "mcp.install")?;
         Ok(path)
     }
 
@@ -254,10 +251,7 @@ impl ArrobaMcpRegistry {
                 operation: "mcp.update",
                 message: format!("failed to serialize MCP `{}`: {error}", config.name),
             })?;
-        fs::write(&path, format!("{payload}\n")).map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.update",
-            message: format!("failed to write MCP `{}`: {error}", path.display()),
-        })?;
+        atomic_write_config(&path, format!("{payload}\n").as_bytes(), "mcp.update")?;
         Ok(path)
     }
 
@@ -724,6 +718,47 @@ fn default_true() -> bool {
 
 fn invalid<T>(field: &'static str, message: &'static str) -> Result<T, DaemonError> {
     Err(DaemonError::InvalidConfig { field, message })
+}
+
+fn atomic_write_config(
+    path: &Path,
+    contents: &[u8],
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let parent = path.parent().ok_or_else(|| DaemonError::LocalTransport {
+        operation,
+        message: format!("MCP config path `{}` has no parent", path.display()),
+    })?;
+    fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "failed to create MCP config parent `{}`: {error}",
+            parent.display()
+        ),
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("mcp-config");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    fs::write(&temp_path, contents).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "failed to write temporary MCP config `{}`: {error}",
+            temp_path.display()
+        ),
+    })?;
+    fs::rename(&temp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to publish MCP config `{}`: {error}", path.display()),
+        }
+    })
 }
 
 fn home_dir() -> Option<PathBuf> {

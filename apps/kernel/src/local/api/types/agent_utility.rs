@@ -3,7 +3,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityKind {
     WorkspaceCommitMessage,
-    SemanticHistorySearch,
+    SemanticRecallSearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +15,7 @@ pub struct WorkspaceCommitMessageUtilityInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticHistorySearchUtilityInput {
+pub struct SemanticRecallSearchUtilityInput {
     pub query: String,
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
@@ -32,7 +32,7 @@ pub struct SemanticHistorySearchUtilityInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityInput {
     WorkspaceCommitMessage(WorkspaceCommitMessageUtilityInput),
-    SemanticHistorySearch(SemanticHistorySearchUtilityInput),
+    SemanticRecallSearch(SemanticRecallSearchUtilityInput),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,9 +48,9 @@ pub enum AgentUtilityOutput {
     WorkspaceCommitMessage {
         message: String,
     },
-    SemanticHistorySearch {
+    SemanticRecallSearch {
         answer: String,
-        matches: Vec<SemanticHistoryMatch>,
+        matches: Vec<SemanticRecallMatch>,
     },
 }
 

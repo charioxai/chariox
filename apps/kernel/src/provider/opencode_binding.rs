@@ -16,6 +16,8 @@ const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const OPENCODE_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_SESSION_CREATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const OPENCODE_MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(180);
+const OPENCODE_MCP_CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const OPENCODE_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
@@ -154,7 +156,11 @@ fn ensure_configured_mcp_servers_connected(
     names.sort();
     names.dedup();
     for name in names {
-        client.connect_mcp_server(&name)?;
+        client.connect_mcp_server_with_retry(
+            &name,
+            OPENCODE_MCP_CONNECT_TIMEOUT,
+            OPENCODE_MCP_CONNECT_RETRY_INTERVAL,
+        )?;
         crate::logging::info_with_fields(
             "daemon.provider.opencode",
             "connected opencode MCP server",

@@ -38,13 +38,18 @@ mod managed_io_tests {
     fn extension_specs_expose_discovery_and_request_tools() {
         let specs = extension_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == LIST_EXTENSIONS_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REQUEST_EXTENSION_TOOL_ALIAS));
+        assert!(!specs.iter().any(|spec| spec.name == "list_extensions"));
+        assert!(!specs.iter().any(|spec| spec.name == "request_extension"));
+    }
+
+    #[test]
+    fn recall_specs_expose_search_and_query_tools_without_compat_aliases() {
+        let specs = recall_runtime_tool_specs();
+        assert!(specs.iter().any(|spec| spec.name == SEARCH_RECALL_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == QUERY_RECALL_TOOL));
+        assert!(!specs.iter().any(|spec| spec.name == "search_recall"));
+        assert!(!specs.iter().any(|spec| spec.name == "query_recall"));
     }
 
     #[test]
@@ -89,6 +94,19 @@ mod managed_io_tests {
             Some(REQUEST_EXTENSION_TOOL)
         );
         assert_eq!(canonical_extension_tool_name("unknown"), None);
+    }
+
+    #[test]
+    fn canonical_recall_tool_name_accepts_provider_aliases() {
+        assert_eq!(
+            canonical_recall_tool_name("mcp__arroba__search_recall"),
+            Some(SEARCH_RECALL_TOOL)
+        );
+        assert_eq!(
+            canonical_recall_tool_name("mcp__arroba__arroba_query_recall"),
+            Some(QUERY_RECALL_TOOL)
+        );
+        assert_eq!(canonical_recall_tool_name("unknown"), None);
     }
 
     #[test]

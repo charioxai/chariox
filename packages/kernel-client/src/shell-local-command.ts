@@ -21,7 +21,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
           "workspace link create|list|show|attach|detach",
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
-          "history search|semantic-search",
+          "recall search|semantic-search",
           "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
           "provider status|login|logout|reauth|processes",
           "stop",

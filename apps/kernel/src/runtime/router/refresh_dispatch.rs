@@ -130,9 +130,9 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetSessionHistory(_)
             | LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)
-            | LocalDaemonRequest::QueryHistory(_)
-            | LocalDaemonRequest::SearchHistory(_)
-            | LocalDaemonRequest::SemanticSearchHistory(_)) => {
+            | LocalDaemonRequest::QueryRecall(_)
+            | LocalDaemonRequest::SearchRecall(_)
+            | LocalDaemonRequest::SemanticSearchRecall(_)) => {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),

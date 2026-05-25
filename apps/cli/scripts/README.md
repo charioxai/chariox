@@ -198,7 +198,7 @@ It kills the event subscription lane while a control request is pending and fail
 
 ## Git Observation Drill
 
-Use this after touching local prompt dispatch, provider working directories, operational history search, or Git observation:
+Use this after touching local prompt dispatch, provider working directories, operational recall search, or Git observation:
 
 ```bash
 pnpm --filter @arroba/cli run git-observation:drill
@@ -217,7 +217,7 @@ Use this after touching operational history archive export, outbox checkpointing
 pnpm --filter @arroba/cli run postgres-archive:drill
 ```
 
-It launches an isolated kernel plus real `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers, runs a small HTTP archive adapter in front of Postgres and MinIO, creates transcript events and a transferred artifact through a dev-stub provider/session, and flushes Arroba's durable archive outboxes through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, `POST /arroba/history/search`, `POST /arroba/history/semantic-search`, `PUT /arroba/artifacts/blobs/:artifact_id`, `POST /arroba/artifacts/manifest`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, operational-only history search when external archive search is disabled, Postgres-backed archive search after deleting the matching operational row, semantic archive-search protocol handling, artifact blob storage in MinIO, and artifact manifest storage in Postgres.
+It launches an isolated kernel plus real `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers, runs a small HTTP archive adapter in front of Postgres and MinIO, creates transcript events and a transferred artifact through a dev-stub provider/session, and flushes Arroba's durable archive outboxes through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, `POST /arroba/history/search`, `POST /arroba/history/semantic-search`, `PUT /arroba/artifacts/blobs/:artifact_id`, `POST /arroba/artifacts/manifest`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, operational-only recall search when external archive search is disabled, Postgres-backed archive search after deleting the matching operational row, semantic archive-search protocol handling, artifact blob storage in MinIO, and artifact manifest storage in Postgres.
 
 ## Remote Restart Drill
 

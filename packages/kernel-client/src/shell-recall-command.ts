@@ -1,64 +1,64 @@
 import type {
-  HistoryEvent,
-  SemanticHistoryMatch,
+  RecallEvent,
+  SemanticRecallMatch,
 } from "./kernel-types.js"
 import {
-  searchHistoryRequest,
-  semanticSearchHistoryRequest,
+  searchRecallRequest,
+  semanticSearchRecallRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
-  formatHistoryEvents,
-  formatSemanticHistoryMatches,
-} from "./shell-history-format.js"
+  formatRecallEvents,
+  formatSemanticRecallMatches,
+} from "./shell-recall-format.js"
 
-type ShellHistoryCommandDeps = {
+type ShellRecallCommandDeps = {
   client: {
     send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
   }
 }
 
-export async function executeHistoryCommand(
+export async function executeRecallCommand(
   parsed: ParsedShellCommand,
   context: ShellContext,
-  deps: ShellHistoryCommandDeps,
+  deps: ShellRecallCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, ...rest] = parsed.args
   if (action !== "search" && action !== "semantic-search") {
-    return { ok: false, message: "usage: history search <query> | history semantic-search [--agent] <query>" }
+    return { ok: false, message: "usage: recall search <query> | recall semantic-search [--agent] <query>" }
   }
   const semanticMode = action === "semantic-search" && rest[0] === "--agent" ? "agent" : "knn"
   const queryArgs = semanticMode === "agent" ? rest.slice(1) : rest
   const query = queryArgs.join(" ").trim()
   if (!query) {
-    return { ok: false, message: `usage: history ${action} <query>` }
+    return { ok: false, message: `usage: recall ${action} <query>` }
   }
   const filters = {
     session_id: context.sessionId ?? null,
     limit: action === "semantic-search" ? 20 : 50,
   }
   if (action === "semantic-search") {
-    const response = await deps.client.send(semanticSearchHistoryRequest(query, { ...filters, mode: semanticMode }))
+    const response = await deps.client.send(semanticSearchRecallRequest(query, { ...filters, mode: semanticMode }))
     const payload = expectVariant<{
-      results?: SemanticHistoryMatch[]
+      results?: SemanticRecallMatch[]
       unavailable_reason?: string | null
       answer?: string | null
-    }>(response, "SemanticHistoryEvents")
+    }>(response, "SemanticRecallEvents")
     const unavailable = payload.unavailable_reason?.trim()
     if (unavailable) {
       return { ok: false, message: unavailable }
     }
     return {
       ok: true,
-      message: [payload.answer?.trim(), formatSemanticHistoryMatches(payload.results ?? [])].filter(Boolean).join("\n\n"),
+      message: [payload.answer?.trim(), formatSemanticRecallMatches(payload.results ?? [])].filter(Boolean).join("\n\n"),
       format: "text",
     }
   }
-  const response = await deps.client.send(searchHistoryRequest(query, filters))
-  const payload = expectVariant<{ events?: HistoryEvent[] }>(response, "HistoryEvents")
+  const response = await deps.client.send(searchRecallRequest(query, filters))
+  const payload = expectVariant<{ events?: RecallEvent[] }>(response, "RecallEvents")
   return {
     ok: true,
-    message: formatHistoryEvents(payload.events ?? []),
+    message: formatRecallEvents(payload.events ?? []),
     format: "text",
   }
 }

@@ -6,7 +6,7 @@ use crate::artifacts::{ArtifactArchiveOutboxItem, ArtifactRecord, OperationalArt
 use crate::config::{HistoryArchiveMode, UserArchiveArtifactsConfig, UserArchiveHistoryConfig};
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
-use crate::local::SemanticHistoryMatch;
+use crate::local::SemanticRecallMatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryArchiveClient {
@@ -75,7 +75,7 @@ pub struct HistoryArchiveSemanticSearchRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryArchiveSemanticSearchResponse {
     #[serde(default)]
-    pub results: Vec<SemanticHistoryMatch>,
+    pub results: Vec<SemanticRecallMatch>,
     #[serde(default)]
     pub next_cursor: Option<String>,
 }

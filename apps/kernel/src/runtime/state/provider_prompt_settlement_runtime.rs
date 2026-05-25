@@ -62,6 +62,29 @@ impl KernelRuntimeState {
 
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        let is_workflow_prompt = active_prompt.workflow_run_id().is_some();
+        if is_workflow_prompt && !force && !prompt_completed {
+            if completion_recorded && saw_settlement_blocking_activity {
+                owned.note_prompt_settlement_requested(provider_run_id);
+                let _ = owned.session_snapshot(session_id);
+            }
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "workflow provider prompt settlement skipped until provider completion",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "settlement_pending": settlement_pending,
+                    "saw_settlement_blocking_activity": saw_settlement_blocking_activity,
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
         if !force && !prompt_completed && !settlement_pending {
             crate::logging::debug_with_fields(
                 "daemon.provider",
