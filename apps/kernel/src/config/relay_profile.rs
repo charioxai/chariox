@@ -17,7 +17,7 @@ impl DaemonConfig {
         &mut self,
         profile: Option<PersistedCloudRelayProfile>,
     ) -> Result<(), DaemonError> {
-        self.cloud_relay = profile;
+        self.cloud_relay = profile.map(PersistedCloudRelayProfile::canonicalized);
         self.persist_relay_config()
     }
 }

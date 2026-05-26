@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use super::identity::load_or_create_runtime_identity;
 use super::{
-    default_os_name, load_user_config_from_path, persisted_daemon::load_persisted_relay_config,
+    default_os_name, load_user_config_from_path,
+    persisted_daemon::{load_cli_cloud_relay_profile, load_persisted_relay_config},
     DaemonConfig,
 };
 
@@ -20,6 +21,14 @@ impl DaemonConfig {
         let runtime_identity =
             load_or_create_runtime_identity(&kernel_websocket_host, kernel_websocket_port);
         let persisted_config = load_persisted_relay_config();
+        let persisted_cloud_relay = persisted_config
+            .as_ref()
+            .and_then(|config| config.cloud_relay.clone());
+        let cli_cloud_relay = if persisted_cloud_relay.is_none() {
+            load_cli_cloud_relay_profile()
+        } else {
+            None
+        };
         let env_relay_url = env::var("ARROBA_RELAY_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -105,7 +114,7 @@ impl DaemonConfig {
             cloud_relay: if env_relay_configured {
                 None
             } else {
-                persisted_config.and_then(|config| config.cloud_relay)
+                persisted_cloud_relay.or(cli_cloud_relay)
             },
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,

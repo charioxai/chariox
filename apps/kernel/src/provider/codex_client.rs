@@ -21,7 +21,9 @@ mod thread_runtime;
 mod mcp_config;
 
 use json_rpc::JsonRpcMessage;
+#[cfg(test)]
 use notifications::parse_notification;
+#[cfg(test)]
 use permission::{
     codex_collaboration_mode, codex_permission_policy, managed_io_codex_permission_grant,
 };

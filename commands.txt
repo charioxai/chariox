@@ -8,7 +8,7 @@ export ARROBA_CLOUD_API_URL=https://arroba-cloud-staging.osc-fr1.scalingo.io
 pnpm run start:cli -- --kernel-url ws://127.0.0.1:43119/kernel
 # daemon
 cd /Users/miguel/arroba
-cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+ARROBA_KERNEL_PORT=43119 cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
 pkill -f '/Users/miguel/arroba/apps/kernel/target/debug/arroba-kernel' || true
 screen -dmS arroba-kernel env ARROBA_KERNEL_PORT=43119 /Users/miguel/arroba/apps/kernel/target/debug/arroba-kernel
 

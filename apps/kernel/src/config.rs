@@ -30,6 +30,8 @@ use identity::{generate_identity_suffix, RuntimeIdentity};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
+use persisted_daemon::HOSTED_STAGING_RELAY_URL;
+#[cfg(test)]
 use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
@@ -541,6 +543,154 @@ mod tests {
         assert_eq!(config.relay_url.as_deref(), Some("ws://127.0.0.1:47000"));
         assert_eq!(config.relay_token.as_deref(), Some("local-drill-token"));
         assert_eq!(config.cloud_relay, None);
+    }
+
+    #[test]
+    fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
+        let _guard = env_test_guard().lock().expect("env test guard poisoned");
+        let temp_home = std::env::temp_dir().join(format!(
+            "arroba-config-cli-cloud-import-test-{}",
+            generate_identity_suffix()
+        ));
+        let old_home = env::var_os("HOME");
+        let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+        let old_relay_url = env::var_os("ARROBA_RELAY_URL");
+        let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        unsafe {
+            env::set_var("HOME", &temp_home);
+            env::remove_var("XDG_CONFIG_HOME");
+            env::remove_var("XDG_STATE_HOME");
+            env::remove_var("ARROBA_RELAY_URL");
+            env::remove_var("ARROBA_RELAY_TOKEN");
+        }
+        let preferences_path = temp_home.join(".arroba").join("config.json");
+        fs::create_dir_all(preferences_path.parent().expect("preferences parent"))
+            .expect("preferences parent should be created");
+        fs::write(
+            &preferences_path,
+            r#"{
+              "relay": {
+                "cloud": {
+                  "apiUrl": "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+                  "email": "test@example.com",
+                  "accountId": "account-1",
+                  "userId": "user-1",
+                  "accountSlug": "account",
+                  "realmId": "realm-1",
+                  "relayUrl": "ws://195.201.123.115:43130",
+                  "issuerId": "arroba-cloud-staging",
+                  "machineId": "machine-1",
+                  "machineCredential": "machine-credential",
+                  "cloudSessionToken": "session-token",
+                  "cloudSessionExpiresAtMs": 12345
+                }
+              }
+            }"#,
+        )
+        .expect("CLI preferences should write");
+
+        let config = DaemonConfig::load_from_env();
+
+        unsafe {
+            restore_env_var("HOME", old_home);
+            restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+            restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+            restore_env_var("ARROBA_RELAY_URL", old_relay_url);
+            restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+        }
+        let _ = fs::remove_dir_all(temp_home);
+
+        let profile = config
+            .cloud_relay
+            .expect("CLI cloud profile should seed kernel cloud relay");
+        assert_eq!(profile.account_id, "account-1");
+        assert_eq!(profile.machine_id.as_deref(), Some("machine-1"));
+        assert_eq!(
+            profile.machine_credential.as_deref(),
+            Some("machine-credential")
+        );
+        assert_eq!(profile.relay_url, HOSTED_STAGING_RELAY_URL);
+        assert_eq!(config.relay_url, None);
+        assert_eq!(config.relay_token, None);
+    }
+
+    #[test]
+    fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
+        let _guard = env_test_guard().lock().expect("env test guard poisoned");
+        let temp_home = std::env::temp_dir().join(format!(
+            "arroba-config-daemon-cloud-precedence-test-{}",
+            generate_identity_suffix()
+        ));
+        let old_home = env::var_os("HOME");
+        let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+        let old_relay_url = env::var_os("ARROBA_RELAY_URL");
+        let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        unsafe {
+            env::set_var("HOME", &temp_home);
+            env::remove_var("XDG_CONFIG_HOME");
+            env::remove_var("XDG_STATE_HOME");
+            env::remove_var("ARROBA_RELAY_URL");
+            env::remove_var("ARROBA_RELAY_TOKEN");
+        }
+        let daemon_config_path = DaemonConfig::default_daemon_config_path();
+        fs::create_dir_all(daemon_config_path.parent().expect("daemon config parent"))
+            .expect("daemon config parent should be created");
+        fs::write(
+            &daemon_config_path,
+            r#"{
+              "cloud_relay": {
+                "api_url": "https://daemon-cloud.example",
+                "email": "daemon@example.com",
+                "account_id": "daemon-account",
+                "user_id": "daemon-user",
+                "account_slug": "daemon",
+                "realm_id": "daemon-realm",
+                "relay_url": "wss://daemon-relay.example",
+                "issuer_id": "daemon-issuer",
+                "machine_credential": "daemon-machine-credential"
+              }
+            }"#,
+        )
+        .expect("daemon config should write");
+        let preferences_path = temp_home.join(".arroba").join("config.json");
+        fs::write(
+            &preferences_path,
+            r#"{
+              "relay": {
+                "cloud": {
+                  "apiUrl": "https://cli-cloud.example",
+                  "email": "cli@example.com",
+                  "accountId": "cli-account",
+                  "userId": "cli-user",
+                  "accountSlug": "cli",
+                  "realmId": "cli-realm",
+                  "relayUrl": "wss://cli-relay.example",
+                  "issuerId": "cli-issuer",
+                  "machineCredential": "cli-machine-credential"
+                }
+              }
+            }"#,
+        )
+        .expect("CLI preferences should write");
+
+        let config = DaemonConfig::load_from_env();
+
+        unsafe {
+            restore_env_var("HOME", old_home);
+            restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+            restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+            restore_env_var("ARROBA_RELAY_URL", old_relay_url);
+            restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+        }
+        let _ = fs::remove_dir_all(temp_home);
+
+        let profile = config
+            .cloud_relay
+            .expect("daemon cloud profile should be loaded");
+        assert_eq!(profile.account_id, "daemon-account");
+        assert_eq!(profile.relay_url, "wss://daemon-relay.example");
     }
 
     #[test]

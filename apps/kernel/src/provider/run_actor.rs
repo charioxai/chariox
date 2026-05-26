@@ -11,9 +11,11 @@ mod native_interaction;
 mod operation_lanes;
 mod runtime_slots;
 mod worker;
+#[cfg(test)]
+use finished_jobs::push_finished_output_poll;
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
-    drain_finished_submits, push_finished_output_poll,
+    drain_finished_submits,
 };
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
@@ -127,6 +129,7 @@ impl ProviderRunActorMailbox {
         self.in_flight.clear_output_poll_in_flight(run_id);
     }
 
+    #[cfg(test)]
     fn structured_output_poll_in_flight(&self, run_id: &str) -> bool {
         self.in_flight.output_poll_in_flight(run_id)
     }
