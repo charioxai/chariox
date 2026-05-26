@@ -54,6 +54,7 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onSlice: (command) => calls.push(`slice:${command.args.join(" ")}`),
     onRelay: (command) => calls.push(`relay:${command.args.join(" ")}`),
     onCloud: (command) => calls.push(`cloud:${command.args.join(" ")}`),
+    onCollab: (command) => calls.push(`collab:${command.args.join(" ")}`),
     onConfig: (command) => calls.push(`config:${command.args.join(" ")}`),
     onWorkspace: (command) => calls.push(`workspace:${command.args.join(" ")}`),
     onWorktree: (command) => calls.push(`worktree:${command.args.join(" ")}`),

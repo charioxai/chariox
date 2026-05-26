@@ -9,6 +9,7 @@ export type WaitingRoomFocus =
   | "effort"
   | "workspace"
   | "worktree"
+  | "collaborators"
   | "slice"
   | "theme"
   | "join-sessions"
@@ -70,6 +71,7 @@ export type WaitingRoomRemoteState = {
   inventoryStatus?: "loading" | "ready" | "error"
   loadingFrame?: number
   cloudNotice?: string | null
+  collaborationBackend?: "cloud" | "relay" | "local"
   relay?: {
     configured: boolean
     connected: boolean

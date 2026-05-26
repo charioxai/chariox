@@ -1,4 +1,5 @@
 import type { AgentInstance, WorkflowDefinition, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
+import { collaboratorAgentLabel, workflowAgentRefDisplayLabel } from "../workflow-collaboration-labels.js"
 import type { WorkflowOutline, WorkflowOutlineEdgeItem, WorkflowOutlineNodeItem } from "./types.js"
 
 export function buildWorkflowOutline(options: {
@@ -45,7 +46,7 @@ export function buildWorkflowOutline(options: {
     return {
       id: node.id,
       agentId: node.agent_id,
-      agentRef: agent?.agent_ref ?? node.agent_id,
+      agentRef: workflowAgentRefDisplayLabel(agent),
       agentAlias: agent?.alias ?? null,
       provider: agent?.provider ?? null,
       model: agent?.model ?? null,
@@ -100,7 +101,7 @@ function buildEdgeItem(
     id: edgeId,
     nodeId: adjacentNodeId,
     agentId: adjacentNode?.agent_id ?? adjacentNodeId,
-    agentRef: adjacentAgent?.agent_ref ?? adjacentNode?.agent_id ?? adjacentNodeId,
+    agentRef: adjacentNode ? workflowAgentRefDisplayLabel(adjacentAgent) : collaboratorAgentLabel,
     agentAlias: adjacentAgent?.alias ?? null,
   }
 }

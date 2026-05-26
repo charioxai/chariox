@@ -1,10 +1,10 @@
 import type { TextareaRenderable } from "@opentui/core"
 
-import { formatAgentLabel } from "./agent-label.js"
 import type {
   RuntimeSession,
   WorkflowRun,
 } from "./cli-types.js"
+import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
 import { resolveActiveWorkflowRun } from "./workflow-prompt-state.js"
 
@@ -53,7 +53,7 @@ function buildNodeInstructionsInspector(
   const node = workflow?.nodes?.find((entry) => entry.id === editor.nodeId) ?? null
   const agent = node ? input.session.agents.find((entry) => entry.id === node.agent_id) ?? null : null
   const workflowLabel = workflow?.alias ? `${workflow.id} (${workflow.alias})` : editor.workflowId
-  const agentLabel = agent ? formatAgentLabel(agent) : node?.agent_id ?? "unknown"
+  const agentLabel = node ? workflowAgentDisplayLabel(agent) : "unknown"
   return {
     title: "Node Instructions",
     meta: [
@@ -85,7 +85,7 @@ function buildRuntimeInspector(
   const meta = [
     `Workflow: ${workflowLabel}`,
     `Selected node: ${selectedNode?.id ?? "-"}`,
-    `Agent: ${selectedAgent ? formatAgentLabel(selectedAgent) : selectedNode?.agent_id ?? "-"}`,
+    `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
     `Run: ${workflowRun?.id ?? "-"}`,
     `Run status: ${String(workflowRun?.status ?? "idle").toLowerCase()}`,
   ]

@@ -33,6 +33,7 @@ export function createCliAppCommandRoutingComposition(
     onSlice: commandHandlers.handleSliceCommand,
     onRelay: commandHandlers.handleRelayCommand,
     onCloud: commandHandlers.handleCloudCommand,
+    onCollab: commandHandlers.handleCollabCommand,
     onConfig: commandHandlers.handleConfigCommand,
     onWorkspace: commandHandlers.handleWorkspaceCommand,
     onWorktree: commandHandlers.handleWorktreeCommand,

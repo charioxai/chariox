@@ -349,7 +349,7 @@ async function resolveWorkflowNodeAgent(
   }
   const agent = deps.sessionState().agents.find((candidate) => candidate.id === node.agent_id) ?? null
   if (!agent) {
-    deps.flashFooter(`agent '${node.agent_id}' for workflow node '${nodeId}' not found`, "error")
+    deps.flashFooter("Extensions are managed by the collaborator who owns this node.", "error")
     return { node: null, agent: null }
   }
   return { node, agent }

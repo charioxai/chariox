@@ -467,7 +467,9 @@ mod tests {
         PumpTerminalOutputRequest, RunShellCapabilityRequest, SpawnAgentRequest,
         SubmitPromptRequest,
     };
-    use crate::session::{CreateSessionRequest, WorkflowRunStatus};
+    use crate::session::{
+        CreateSessionRequest, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
@@ -1201,16 +1203,15 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         }
 
-        let routed = match client
-            .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-                session_id: session.id().to_string(),
-                workflow_run_ref: workflow_run.id().to_string(),
-            }))
-            .expect("routed workflow run should resolve")
-        {
-            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let routed = wait_for_ipc_workflow_run(&client, session.id(), workflow_run.id(), |run| {
+            run.status() == WorkflowRunStatus::Running
+                && run.active_node_run_id().is_some()
+                && run.node_runs().iter().any(|node_run| {
+                    node_run.node_id() == second_node.id()
+                        && node_run.status() == WorkflowNodeRunStatus::Running
+                })
+        })
+        .await;
         assert_eq!(format!("{:?}", routed.status()), "Running");
         assert_eq!(routed.node_runs().len(), 2);
         assert_eq!(
@@ -1261,6 +1262,35 @@ mod tests {
                 tokio::time::Instant::now() < deadline,
                 "timed out waiting for socket {}",
                 socket_path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn wait_for_ipc_workflow_run(
+        client: &LocalIpcClient,
+        session_id: &str,
+        workflow_run_id: &str,
+        predicate: impl Fn(&WorkflowRun) -> bool,
+    ) -> WorkflowRun {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let workflow_run = match client
+                .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                    session_id: session_id.to_string(),
+                    workflow_run_ref: workflow_run_id.to_string(),
+                }))
+                .expect("workflow run should resolve while waiting")
+            {
+                LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+                other => panic!("unexpected response: {other:?}"),
+            };
+            if predicate(&workflow_run) {
+                return workflow_run;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for workflow run `{workflow_run_id}` to reach expected state"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

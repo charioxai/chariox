@@ -190,16 +190,19 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
         _ => panic!("unexpected local response"),
     }
 
-    let routed = match harness
-        .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-            session_id: session.id().to_string(),
-            workflow_run_ref: workflow_run.id().to_string(),
-        }))
-        .expect("routed workflow run should resolve")
-    {
-        LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-        _ => panic!("unexpected local response"),
-    };
+    let routed = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        workflow_run.id(),
+        "downstream node should start after provider launch advances the queued workflow prompt",
+        |workflow_run| {
+            workflow_run.status() == WorkflowRunStatus::Running
+                && workflow_run.active_node_run_id().is_some()
+                && workflow_run.node_runs().iter().any(|node_run| {
+                    node_run.node_id() == second_node.id()
+                        && node_run.status() == WorkflowNodeRunStatus::Running
+                })
+        },
+    );
     assert_eq!(format!("{:?}", routed.status()), "Running");
     assert_eq!(routed.node_runs().len(), 2);
     assert_eq!(routed.messages().len(), 2);
@@ -298,17 +301,32 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     };
 
     let entry_agent = harness.spawn_workflow_test_agent(session.id(), "entry");
+    let branch_one_worktree = std::env::temp_dir()
+        .join("arroba-workflow-join-branch-one")
+        .join(session.id());
+    let branch_two_worktree = std::env::temp_dir()
+        .join("arroba-workflow-join-branch-two")
+        .join(session.id());
+    std::fs::create_dir_all(&branch_one_worktree)
+        .expect("branch one workflow test worktree should exist");
+    std::fs::create_dir_all(&branch_two_worktree)
+        .expect("branch two workflow test worktree should exist");
+    let branch_one_worktree = branch_one_worktree.to_string_lossy().to_string();
+    let branch_two_worktree = branch_two_worktree.to_string_lossy().to_string();
     let branch_one_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "branch-one",
-        Some("worktree-branch-one"),
+        Some(&branch_one_worktree),
     );
     let branch_two_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "branch-two",
-        Some("worktree-branch-two"),
+        Some(&branch_two_worktree),
     );
     let join_agent = harness.spawn_workflow_test_agent(session.id(), "join");
+    harness.launch_workflow_test_provider(session.id(), branch_one_agent.id());
+    harness.launch_workflow_test_provider(session.id(), branch_two_agent.id());
+    harness.launch_workflow_test_provider(session.id(), join_agent.id());
 
     let workflow = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
@@ -385,14 +403,30 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     };
 
     harness.complete_workflow_test_prompt(session.id(), "entry workflow prompt");
+    let session_after_entry = harness.wait_for_session_where(
+        session.id(),
+        "branch prompts should be active or queued after entry dispatch",
+        |session| {
+            let branch_agents = [branch_one_agent.id(), branch_two_agent.id()];
+            let active_count = branch_agents
+                .into_iter()
+                .filter(|agent_id| session.active_prompt_for_agent(agent_id).is_some())
+                .count();
+            let queued_count = branch_agents
+                .into_iter()
+                .map(|agent_id| {
+                    session
+                        .prompt_states()
+                        .get(agent_id)
+                        .map(|state| state.queued_prompts().len())
+                        .unwrap_or(0)
+                })
+                .sum::<usize>();
+            active_count >= 1 && active_count + queued_count == 2
+        },
+    );
     let after_entry = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert_eq!(after_entry.node_runs().len(), 3);
-    let session_after_entry = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve after entry")
-            .clone()
-    });
     let active_branch_agents = [branch_one_agent.id(), branch_two_agent.id()]
         .into_iter()
         .filter(|agent_id| {
@@ -416,7 +450,7 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         "expected at least one branch prompt to be active after entry completed"
     );
     assert_eq!(active_prompt_count + queued_prompt_count, 2);
-    assert_eq!(active_branch_agents.len(), 2);
+    assert!(!active_branch_agents.is_empty());
     assert_eq!(
         after_entry
             .node_runs()
@@ -448,15 +482,19 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     assert!(buffered_join_messages[0]
         .consumed_by_node_run_id()
         .is_none());
-    let session_after_first_branch = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve after first branch")
-            .clone()
-    });
-    let remaining_active_branch_agents = active_branch_agents
-        .iter()
-        .copied()
+    let session_after_first_branch = harness.wait_for_session_where(
+        session.id(),
+        "remaining branch prompt should become active after first branch completion",
+        |session| {
+            [branch_one_agent.id(), branch_two_agent.id()]
+                .into_iter()
+                .filter(|agent_id| session.active_prompt_for_agent(agent_id).is_some())
+                .count()
+                == 1
+        },
+    );
+    let remaining_active_branch_agents = [branch_one_agent.id(), branch_two_agent.id()]
+        .into_iter()
         .filter(|agent_id| {
             session_after_first_branch
                 .active_prompt_for_agent(agent_id)
@@ -489,7 +527,16 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         .iter()
         .all(|message| message.consumed_by_node_run_id() == Some(join_run.id())));
 
-    harness.complete_workflow_test_prompt(session.id(), "join workflow prompt");
+    let _ = harness.wait_for_session_where(
+        session.id(),
+        "join prompt should become active after both branch inputs arrive",
+        |session| session.active_prompt_for_agent(join_agent.id()).is_some(),
+    );
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        join_agent.id(),
+        "join workflow prompt",
+    );
     let completed = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert_eq!(format!("{:?}", completed.status()), "Completed");
     assert_eq!(completed.node_runs().len(), 4);

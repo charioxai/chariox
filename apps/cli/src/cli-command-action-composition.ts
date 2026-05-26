@@ -335,6 +335,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
+    isRelayConnection: () => Boolean(options.relayUrl),
     flashFooter,
     appendNotice,
     appendCloudNotice,

@@ -31,6 +31,7 @@ test("waiting room start rows render configuration labels and join action", () =
     "effort",
     "workspace",
     "worktree",
+    "collaborators",
     "slice",
     "join-header",
   ])
@@ -38,6 +39,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
+  assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
@@ -62,8 +64,29 @@ test("waiting room start rows render loading placeholders before inventory arriv
   assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
+})
+
+test("waiting room start rows hint cloud collaborator setup when cloud-linked", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ focus: "collaborators" }),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
+    {
+      modelOptions,
+      remote: { collaborationBackend: "cloud" },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "collaborators")?.value, "use Cloud")
+  assert.equal(rows.find((row) => row.id === "collaborators")?.focused, true)
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

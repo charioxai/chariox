@@ -4,6 +4,7 @@ import {
   saveProviderPreferences,
   saveUiPreferences,
   mergeUiPreferences,
+  relayCloudProfile,
 } from "./preferences.js"
 import {
   getProviderAuthStatus,
@@ -101,6 +102,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
       cloudNotice: deps.waitingRoomCloudNotice(),
+      collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
       relay: deps.relayStatusState(),
@@ -220,6 +222,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
       cloudNotice: deps.waitingRoomCloudNotice(),
+      collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
       loadingFrame: deps.waitingRoomState().introStep,
       relay: deps.relayStatusState(),

@@ -116,6 +116,36 @@ test("workflow inspector projects runtime state for the selected workflow node",
   assert.match(inspector?.body ?? "", /schema mismatch/)
 })
 
+test("workflow inspector redacts collaborator-owned node agent ids", () => {
+  const inspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      agents: [],
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [{ id: "node-1", agent_id: "agent-hidden" }],
+          edges: [],
+          endpoints: [],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    inspectorMode: "runtime",
+    nodeInstructionsEditor: null,
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.deepEqual(inspector?.meta.slice(0, 3), [
+    "Workflow: workflow-1 (Release)",
+    "Selected node: node-1",
+    "Agent: another collaborator's agent",
+  ])
+  assert.doesNotMatch(inspector?.meta.join("\n") ?? "", /agent-hidden/)
+})
+
 test("workflow inspector projects terminal console output", () => {
   const inspector = buildWorkflowInspectorProjection({
     session: baseSession({

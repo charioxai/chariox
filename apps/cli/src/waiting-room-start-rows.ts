@@ -32,6 +32,7 @@ export function waitingRoomStartRows(
     options.targets?.worktreePath,
   )
   const selectedSliceLabel = formatWaitingRoomSliceSelection(state.sliceSelectionId, waitingRoomSlices(remote))
+  const collaborationBackend = remote.collaborationBackend ?? "local"
   return [
     {
       id: "new",
@@ -94,6 +95,16 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "worktree",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "collaborators",
+      title: "Collaborators",
+      value: collaborationBackend === "cloud" ? "use Cloud" : "after session start",
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "collaborators",
       selectable: true,
       scrollbar: "",
     },

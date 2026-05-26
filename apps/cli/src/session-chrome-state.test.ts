@@ -183,8 +183,34 @@ test("deriveAttachedFooterSummary includes view mode and hotkey hint without foc
 
   assert.equal(
     summary,
-    "Session feature-refactor • 2 CLIs connected • 2 agents in session • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys",
+    "Session feature-refactor • 2 CLIs connected • 2 visible agents • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys",
   )
+})
+
+test("deriveAttachedFooterSummary shows aggregate collaborator agents without identities", () => {
+  const summary = deriveAttachedFooterSummary({
+    session: session({
+      alias: "shared-review",
+      agents: [agent("agent-a")],
+      collaboration_agent_counts: {
+        owned_agent_count: 1,
+        other_user_agent_count: 3,
+        total_agent_count: 4,
+        collaborator_count: 2,
+      },
+    }),
+    connectedClientCount: 3,
+    multiAgentMode: false,
+    responseLayout: "individual",
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+  })
+
+  assert.equal(
+    summary,
+    "Session shared-review • 3 CLIs connected • 1 visible agent • 3 collaborator agents • 2 collaborators • Ctrl+T hotkeys",
+  )
+  assert.doesNotMatch(summary, /user-|agent-a|owner/)
 })
 
 test("deriveVisibleActivityLabel prefers active tool activity over provider activity", () => {

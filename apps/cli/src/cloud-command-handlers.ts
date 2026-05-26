@@ -30,6 +30,14 @@ export async function handleRelaySlashCommand(
     await handleRelayCloudCommand(deps, args)
     return
   }
+  if (subcommand === "invite") {
+    await handleRelayInviteCommand(deps, actionArg(command.args), restArgs(command.args))
+    return
+  }
+  if ((subcommand === "members" && !args[0]) || (subcommand === "members" && args[0] === "list")) {
+    await listRelayMembers(deps)
+    return
+  }
   if (!subcommand || subcommand === "status") {
     if (!deps.getRelayStatus) {
       deps.flashFooter("relay status is unavailable in this build", "error")
@@ -76,7 +84,7 @@ export async function handleRelaySlashCommand(
     deps.flashFooter("relay disabled", "info")
     return
   }
-  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable", "error")
+  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable | /relay invite create [max-uses] | /relay invite accept <token> | /relay members", "error")
 }
 
 export async function handleCloudSlashCommand(
@@ -105,6 +113,33 @@ export async function handleCloudSlashCommand(
     return
   }
   deps.flashFooter("usage: /cloud [open|link|status] | /cloud invite create [max-uses] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
+}
+
+export async function handleCollabSlashCommand(
+  deps: CloudCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "collab" }>,
+): Promise<void> {
+  const profile = deps.getCloudRelayProfile?.() ?? null
+  if (profile) {
+    await handleCloudSlashCommand(deps, {
+      kind: "cloud",
+      raw: command.raw.replace(/^\/collab/, "/cloud"),
+      args: command.args,
+    })
+    return
+  }
+
+  const relayStatus = await deps.getRelayStatus?.()
+  if (relayStatus?.configured) {
+    await handleRelaySlashCommand(deps, {
+      kind: "relay",
+      raw: command.raw.replace(/^\/collab/, "/relay"),
+      args: command.args,
+    })
+    return
+  }
+
+  deps.flashFooter("collaboration invites require Cloud or a relay-connected session", "error")
 }
 
 async function showCloudStatus(deps: CloudCommandHandlerDeps, profile: RelayCloudProfile | null): Promise<void> {
@@ -142,4 +177,94 @@ function relayStateLabel(status: RelayStatus | null | undefined): string {
 
 function appendCloudNotice(deps: CloudCommandHandlerDeps, message: string): void {
   ;(deps.appendCloudNotice ?? deps.appendNotice)(message)
+}
+
+function actionArg(args: readonly string[]): string | undefined {
+  return args[1]
+}
+
+function restArgs(args: readonly string[]): string[] {
+  return [...args.slice(2)]
+}
+
+async function handleRelayInviteCommand(
+  deps: CloudCommandHandlerDeps,
+  action: string | undefined,
+  args: string[],
+): Promise<void> {
+  if (action === "create") {
+    await createRelayInvite(deps, args)
+    return
+  }
+  if (action === "accept") {
+    await acceptRelayInvite(deps, args)
+    return
+  }
+  deps.flashFooter("usage: /relay invite create [max-uses] | /relay invite accept <token>", "error")
+}
+
+async function createRelayInvite(deps: CloudCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("attach to a session before creating a relay invite", "error")
+    return
+  }
+  if (!deps.createSessionInvite) {
+    deps.flashFooter("relay invite creation is unavailable in this build", "error")
+    return
+  }
+  const maxUsesIndex = args.findIndex((value) => value === "--max-uses")
+  const maxUses = parsePositiveInt(maxUsesIndex >= 0 ? args[maxUsesIndex + 1] : args[0]) ?? 1
+  if (maxUses <= 0) {
+    deps.flashFooter("usage: /relay invite create [max-uses|--max-uses n]", "error")
+    return
+  }
+  const local = await deps.createSessionInvite(deps.sessionState().id, null, maxUses)
+  deps.applySessionState(local.session)
+  deps.appendNotice([
+    "relay session invite",
+    `invite_token=${local.invite.invite_token}`,
+    "share this token with a user already connected to the same relay",
+  ].join("\n"))
+  deps.flashFooter("relay invite created", "info")
+}
+
+async function acceptRelayInvite(deps: CloudCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.joinSessionInvite) {
+    deps.flashFooter("relay invite acceptance is unavailable in this build", "error")
+    return
+  }
+  const inviteToken = args[0]
+  if (!inviteToken) {
+    deps.flashFooter("usage: /relay invite accept <token>", "error")
+    return
+  }
+  const relayStatus = await deps.getRelayStatus?.()
+  const userId = relayStatus?.daemon_id || "relay-user"
+  const joined = await deps.joinSessionInvite(inviteToken, userId)
+  deps.applySessionState(joined.session)
+  await deps.attachBinding(joined.session, false)
+  deps.flashFooter(`joined relay session as ${joined.member.user_id}`, "info")
+}
+
+async function listRelayMembers(deps: CloudCommandHandlerDeps): Promise<void> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("attach to a session before listing relay members", "error")
+    return
+  }
+  if (!deps.listCloudSessionMembers) {
+    deps.flashFooter("relay member listing is unavailable in this build", "error")
+    return
+  }
+  const listed = await deps.listCloudSessionMembers(deps.sessionState().id)
+  const members = (listed.members as Array<{ user_id: string }> | undefined) ?? []
+  deps.appendNotice(members.length === 0
+    ? "No relay members in this session."
+    : members.map((member) => member.user_id).join("\n"))
+  deps.flashFooter(`listed ${members.length} relay member${members.length === 1 ? "" : "s"}`, "info")
+}
+
+function parsePositiveInt(value: string | undefined): number | null | undefined {
+  if (value === undefined) return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }

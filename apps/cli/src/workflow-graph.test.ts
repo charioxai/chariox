@@ -146,6 +146,8 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
   assert.equal(nodeB!.y < nodeC!.y, true)
   assert.equal(nodeB!.selected, true)
   assert.equal(nodeC!.missing, true)
+  assert.equal(nodeC!.lines[0], "another collaborator's agent")
+  assert.doesNotMatch(nodeC!.lines.join("\n"), /agent-c/)
   assert.equal(nodeB!.lines[0], "agent-b (reviewer)")
   assert.equal(nodeB!.lines[1], "provider opencode")
   assert.equal(nodeB!.lines[2], "model openai/gpt-5")

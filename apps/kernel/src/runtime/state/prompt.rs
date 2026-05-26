@@ -118,16 +118,31 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let started_next = self
-            .prompt_state_owner
-            .activate_next_queued_prompt(&session, agent_id, Some(next_queued_prompt.id()))?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "advance queued prompt",
-                message: format!(
-                    "expected queued prompt `{}` but no queued prompt was available",
-                    next_queued_prompt.id()
-                ),
-            })?;
+        let Some(started_next) = self.prompt_state_owner.activate_next_queued_prompt(
+            &session,
+            agent_id,
+            Some(next_queued_prompt.id()),
+        )?
+        else {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            let released_claim = self.clear_prompt_activity(&provider_run_id);
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(Some(OwnedPromptCompletion {
+                completion: crate::session::PromptCompletion {
+                    completed,
+                    started_next: None,
+                },
+                released_claim,
+                dispatch: None,
+            }));
+        };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.session_store.mirror_agent_prompt_state(

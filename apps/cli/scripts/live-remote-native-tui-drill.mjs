@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
 import { access, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import os from "node:os"
+import { promisify } from "node:util"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -63,6 +64,7 @@ const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
 const realHomeDir = os.homedir()
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
+const execFileAsync = promisify(execFile)
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -1073,6 +1075,28 @@ async function runProviderScenario({
   }
 }
 
+function localCodexAuthPath() {
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(realHomeDir, ".codex")
+  return path.join(codexHome, "auth.json")
+}
+
+async function syncHetznerCodexAuth(options) {
+  const authPath = localCodexAuthPath()
+  await access(authPath)
+  await execFileAsync("ssh", sshArgs(options, "mkdir -p /root/.codex && chmod 700 /root/.codex"))
+  await execFileAsync("scp", [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    authPath,
+    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
+  ])
+  await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
+}
+
 async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers, relayUrl, relayToken }) {
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
@@ -1194,12 +1218,18 @@ async function main() {
     }
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
+      if (options.providers.includes("codex")) {
+        await syncHetznerCodexAuth(options)
+      }
     }
     await access(path.join(realHomeDir, ".claude"))
       .then(() => symlink(path.join(realHomeDir, ".claude"), path.join(homeDir, ".claude"), "dir"))
       .catch(() => {})
     await access(path.join(realHomeDir, ".claude.json"))
       .then(() => symlink(path.join(realHomeDir, ".claude.json"), path.join(homeDir, ".claude.json")))
+      .catch(() => {})
+    await access(path.join(realHomeDir, ".codex"))
+      .then(() => symlink(path.join(realHomeDir, ".codex"), path.join(homeDir, ".codex"), "dir"))
       .catch(() => {})
     if (options.hetznerWorker) {
       relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
@@ -1283,6 +1313,7 @@ async function main() {
           XDG_STATE_HOME: "/root/.local/state",
           XDG_DATA_HOME: "/root/.local/share",
           XDG_CACHE_HOME: "/root/.cache",
+          CODEX_HOME: "/root/.codex",
           OPENCODE_CONFIG_DIR: "/root/.config/opencode",
           ARROBA_LOG_DIR: path.posix.join(remoteRoot, "worker-logs"),
           ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
@@ -1360,6 +1391,8 @@ async function main() {
         options,
         nativeEnv: options.hetznerWorker
           ? {
+            HOME: realHomeDir,
+            CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
             ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_HOST: options.hetznerHost,
             ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_KEY: options.hetznerKey,
           }

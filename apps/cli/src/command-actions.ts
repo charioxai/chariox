@@ -7,6 +7,7 @@ import type {
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
+  handleCollabSlashCommand,
   handleCloudSlashCommand,
   handleRelaySlashCommand,
   type CloudCommandHandlerDeps,
@@ -206,6 +207,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
   ): Promise<void> => handleCloudSlashCommand(deps, command)
 
+  const handleCollabCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "collab" }>,
+  ): Promise<void> => handleCollabSlashCommand(deps, command)
+
   const handleConfigCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "config" }>,
   ): Promise<void> => {
@@ -303,6 +308,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleSliceCommand,
     handleRelayCommand,
     handleCloudCommand,
+    handleCollabCommand,
     handleConfigCommand,
     handleWorkspaceCommand,
     handleWorktreeCommand,

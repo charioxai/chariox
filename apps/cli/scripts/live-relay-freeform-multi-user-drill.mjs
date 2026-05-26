@@ -5,6 +5,7 @@ import { mkdir, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -14,6 +15,41 @@ const RELAY_ISSUER = 'arroba-relay-freeform-multi-user-drill'
 const RELAY_SECRET = 'arroba-relay-freeform-multi-user-drill-secret'
 const RELAY_REALM = 'relay-freeform-multi-user-drill'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function parseArgs(argv = process.argv.slice(2)) {
+  const options = {
+    hetznerRelay: false,
+    hetznerHost: process.env.ARROBA_COLLAB_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.ARROBA_COLLAB_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
+    hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--hetzner-relay') {
+      options.hetznerRelay = true
+    } else if (arg === '--hetzner-host') {
+      options.hetznerHost = argv[++index]
+    } else if (arg === '--hetzner-key') {
+      options.hetznerKey = argv[++index]
+    } else if (arg === '--hetzner-repo') {
+      options.hetznerRepo = argv[++index]
+    } else if (arg === '--help' || arg === '-h') {
+      console.log([
+        'Usage: node apps/cli/scripts/live-relay-freeform-multi-user-drill.mjs [options]',
+        '',
+        'Options:',
+        '  --hetzner-relay       Run the scoped relay on the configured Hetzner host through an SSH tunnel',
+        '  --hetzner-host HOST   SSH host for --hetzner-relay',
+        '  --hetzner-key PATH    SSH key for --hetzner-relay',
+        '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
+      ].join('\n'))
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument ${arg}`)
+    }
+  }
+  return options
+}
 
 function log(name, details = null) {
   if (details == null) console.log(`[relay-freeform-multi-user-drill] ${name}`)
@@ -199,6 +235,7 @@ async function expectReject(promise, label, expectedText) {
 }
 
 async function main() {
+  const options = parseArgs()
   const rootDir = path.join(os.tmpdir(), `arroba-relay-freeform-multi-user-${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
@@ -212,22 +249,56 @@ async function main() {
   const ports = makePorts()
   const envs = makeEnv(ports, rootDir)
   let relay = null
+  let relayTunnel = null
   let daemon = null
   const clients = []
   let sessionId = null
   try {
-    relay = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
-      cwd: repoRoot,
-      env: envs.relayEnv,
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
+    if (options.hetznerRelay) {
+      const remoteRelayCheck = await run('ssh', sshArgs(options, [
+        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
+      ].join('; ')))
+      if (remoteRelayCheck.code !== 0) {
+        throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
+      }
+      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(ports.relayPort),
+        ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+        ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      }, './apps/relay/target/debug/arroba-relay')), {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+      relayTunnel = spawn('ssh', [
+        '-i',
+        options.hetznerKey,
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-N',
+        '-L',
+        `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
+        options.hetznerHost,
+      ], {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    } else {
+      relay = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+        cwd: repoRoot,
+        env: envs.relayEnv,
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    }
     daemon = spawn(kernelPath, [], { cwd: repoRoot, env: envs.daemonEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForRelayTarget(LocalIpcClient, requests, envs.relayUrl, envs.daemonAlias)
     log('relay-target-ready', { relayUrl: envs.relayUrl, daemonAlias: envs.daemonAlias })
 
     const user1 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-1')
     const user2 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-2')
-    clients.push(user1, user2)
+    const user3 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-3')
+    clients.push(user1, user2, user3)
 
     const created = unwrap(
       await user1.send(requests.createSessionRequest(workspace, workspace)),
@@ -237,10 +308,11 @@ async function main() {
     sessionId = session.id
     assert(session.owner_user_id === 'user-1', 'relay-created freeform session should be owned by user-1', session)
     const invite = unwrap(
-      await user1.send(requests.createSessionInviteRequest(session.id, null, 1)),
+      await user1.send(requests.createSessionInviteRequest(session.id, null, 2)),
       'SessionInviteCreated',
     )
     await user2.send(requests.joinSessionInviteRequest(invite.invite.invite_token, 'user-2'))
+    await user3.send(requests.joinSessionInviteRequest(invite.invite.invite_token, 'user-3'))
 
     const attachment1 = unwrap(
       await user1.send(requests.attachToSessionRequest(session.id, `freeform-user-1-${process.pid}`)),
@@ -248,6 +320,10 @@ async function main() {
     ).attachment
     const attachment2 = unwrap(
       await user2.send(requests.attachToSessionRequest(session.id, `freeform-user-2-${process.pid}`)),
+      'SessionAttached',
+    ).attachment
+    const attachment3 = unwrap(
+      await user3.send(requests.attachToSessionRequest(session.id, `freeform-user-3-${process.pid}`)),
       'SessionAttached',
     ).attachment
 
@@ -259,11 +335,17 @@ async function main() {
       await user2.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'freeform-user-two', 'freeform-drill-model', workspace, 'low')),
       'AgentSpawned',
     ).agent
+    const agent3 = unwrap(
+      await user3.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'freeform-user-three', 'freeform-drill-model', workspace, 'low')),
+      'AgentSpawned',
+    ).agent
     assert(agent1.owner_user_id === 'user-1', 'user-1 freeform agent owner mismatch', agent1)
     assert(agent2.owner_user_id === 'user-2', 'user-2 freeform agent owner mismatch', agent2)
+    assert(agent3.owner_user_id === 'user-3', 'user-3 freeform agent owner mismatch', agent3)
 
     const user1Agents = unwrap(await user1.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     const user2Agents = unwrap(await user2.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
+    const user3Agents = unwrap(await user3.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     assert(
       user1Agents.length >= 1
         && user1Agents.every((agent) => agent.owner_user_id === 'user-1')
@@ -272,9 +354,11 @@ async function main() {
       user1Agents,
     )
     assert(user2Agents.length === 1 && user2Agents[0].id === agent2.id, 'user-2 should list only its own freeform agent', user2Agents)
+    assert(user3Agents.length === 1 && user3Agents[0].id === agent3.id, 'user-3 should list only its own freeform agent', user3Agents)
 
     await user1.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent1.id))
     await user2.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent2.id))
+    await user3.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent3.id))
 
     const user1Prompt = unwrap(
       await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Freeform user-1 prompt.', [])),
@@ -295,28 +379,50 @@ async function main() {
     assert(user2Prompt.outcome?.Started?.prompt?.target_agent_id === agent2.id, 'user-2 prompt should start for own agent', user2Prompt)
     await user2.send(requests.completePromptRequest(session.id)).catch(() => {})
 
+    const user3Prompt = unwrap(
+      await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent3.id, 'Freeform user-3 prompt.', [])),
+      'PromptSubmitted',
+    )
+    assert(user3Prompt.outcome?.Started?.prompt?.target_agent_id === agent3.id, 'user-3 prompt should start for own agent', user3Prompt)
+    await user3.send(requests.completePromptRequest(session.id)).catch(() => {})
+
     const state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     const state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    const state3 = unwrap(await user3.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     assert(
       state1.agents.every((agent) => agent.owner_user_id === 'user-1') && state1.agents.some((agent) => agent.id === agent1.id),
       'user-1 freeform projection should redact user-2 agents and retain user-1 agents',
       state1.agents,
     )
     assert(state2.agents.length === 1 && state2.agents[0].id === agent2.id, 'user-2 freeform projection should redact user-1 agent', state2.agents)
+    assert(state3.agents.length === 1 && state3.agents[0].id === agent3.id, 'user-3 freeform projection should redact user-1/user-2 agents', state3.agents)
+
+    for (const [label, state, ownedCount, otherCount] of [
+      ['user-1', state1, 2, 2],
+      ['user-2', state2, 1, 3],
+      ['user-3', state3, 1, 3],
+    ]) {
+      assert(state.collaboration_agent_counts?.owned_agent_count === ownedCount, `${label} owned agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.other_user_agent_count === otherCount, `${label} collaborator agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.total_agent_count === 4, `${label} total agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.collaborator_count === 2, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
+    }
 
     console.log(JSON.stringify({
       status: 'ok',
-      mode: 'relay-freeform-multi-user',
+      mode: options.hetznerRelay ? 'hetzner-relay-freeform-multi-user' : 'relay-freeform-multi-user',
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId: session.id,
       agents: [
         { id: agent1.id, ownerUserId: agent1.owner_user_id },
         { id: agent2.id, ownerUserId: agent2.owner_user_id },
+        { id: agent3.id, ownerUserId: agent3.owner_user_id },
       ],
       assertions: [
-        'two users share one scoped-relay freeform session',
+        'three users share one scoped-relay freeform session',
         'each user sees only its own agents outside workflow mode',
+        'collaboration agent counts report aggregate other-user agents without identities',
         'freeform prompt submit succeeds for owned agent',
         'freeform prompt submit rejects another user agent',
         'session state projection redacts other-user agents',
@@ -327,6 +433,7 @@ async function main() {
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
     await terminateChild(relay)
+    await terminateChild(relayTunnel)
     await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   }
 }

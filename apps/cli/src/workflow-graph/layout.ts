@@ -1,4 +1,5 @@
 import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
+import { collaboratorAgentLabel } from "../workflow-collaboration-labels.js"
 import { routeWorkflowEdge } from "./routing.js"
 import type {
   WorkflowGraphEdgeLayout,
@@ -99,7 +100,7 @@ export function buildWorkflowGraphLayout(options: {
           lines: formatNodeLines({
             title: agent
               ? (agent.alias ? `${agent.agent_ref} (${agent.alias})` : agent.agent_ref)
-              : node.agent_id,
+              : collaboratorAgentLabel,
             provider,
             model,
             effort,

@@ -15,6 +15,7 @@ const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://arroba:arroba@localhost:5432/arroba_cloud"
 const CLOUD_SECRET = "arroba-cloud-live-drill-secret"
 const CLOUD_ISSUER = "arroba-cloud-live-drill"
+const DEV_AUTH_SECRET = "arroba-cloud-live-drill-dev-auth-secret"
 const machineCredentialOnly = process.env.ARROBA_CLOUD_MACHINE_CREDENTIAL_ONLY === "1"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -241,16 +242,15 @@ async function loginCloudDrillUser(apiUrl, { email, accountSlug, clientId, clien
     clientId,
     clientAlias,
   })
-  await postJsonWithHeaders(`${apiUrl}/auth/device/approve`, {
+  await postJsonWithHeaders(`${apiUrl}/auth/dev/device/approve`, {
     userCode: started.userCode,
     accountSlug,
-  }, await browserMutationHeaders(apiUrl, {
     provider: "auth0",
     providerSubject: `auth0|${accountSlug}`,
     email,
     emailVerified: true,
     displayName: accountSlug,
-  }))
+  }, devDeviceApprovalHeaders())
   const polled = await postJson(`${apiUrl}/auth/device/poll`, {
     deviceCode: started.deviceCode,
   })
@@ -341,6 +341,12 @@ async function browserMutationHeaders(apiUrl, identity) {
     cookie: csrfCookie,
     "csrf-token": csrf.body.csrfToken,
     "x-arroba-test-auth0-identity": JSON.stringify(identity),
+  }
+}
+
+function devDeviceApprovalHeaders() {
+  return {
+    "x-arroba-dev-auth-secret": DEV_AUTH_SECRET,
   }
 }
 
@@ -496,16 +502,15 @@ function createMinimalCommandDeps({
       if (!profileRef.deviceApproved) {
         profileRef.deviceApproved = true
         log("cloud-device-approve")
-        await postJsonWithHeaders(`${nextApiUrl}/auth/device/approve`, {
+        await postJsonWithHeaders(`${nextApiUrl}/auth/dev/device/approve`, {
           userCode: profileRef.deviceUserCode,
           accountSlug: runId,
-        }, await browserMutationHeaders(nextApiUrl, {
           provider: "auth0",
           providerSubject: `auth0|${runId}`,
           email: `${runId}@example.com`,
           emailVerified: true,
           displayName: runId,
-        }))
+        }, devDeviceApprovalHeaders())
       }
       log("kernel-cloud-login-poll")
       const result = unwrap(
@@ -606,6 +611,7 @@ async function main() {
     ARROBA_CLOUD_ISSUER_ID: CLOUD_ISSUER,
     ARROBA_CLOUD_RELAY_TOKEN_SECRET: CLOUD_SECRET,
     ARROBA_CLOUD_TEST_AUTH0_IDENTITY_HEADER: "1",
+    ARROBA_CLOUD_DEV_AUTH_SECRET: DEV_AUTH_SECRET,
   }
 
   let relay = null
@@ -643,7 +649,7 @@ async function main() {
     }
 
     log("start-cloud")
-    cloudServer = spawnProcess("node", [path.join(cloudRoot, "apps/api/dist/server.js")], {
+    cloudServer = spawnProcess("node", [path.join(cloudRoot, "apps/api/dist/node-server.js")], {
       cwd: cloudRoot,
       env: cloudEnv,
       name: "cloud-api",

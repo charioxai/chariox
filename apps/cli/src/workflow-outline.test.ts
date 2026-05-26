@@ -121,6 +121,24 @@ test("renderWorkflowOutlineToText keeps graph structure visible while expanding 
   assert.match(rendered, /instructions\n  inspect diff/)
 })
 
+test("workflow outline redacts collaborator-owned agent ids", () => {
+  const outline = buildWorkflowOutline({
+    workflow: workflow(),
+    agents: [
+      agent("agent-a", { agent_ref: "a1", alias: "lead" }),
+    ],
+    workflowRuns: [],
+    selectedNodeId: "node-a",
+  })
+
+  const rendered = renderWorkflowOutlineToText(outline)
+
+  assert.match(rendered, /node node-b • agent another collaborator's agent/)
+  assert.match(rendered, /edge-c -> node-c • agent another collaborator's agent/)
+  assert.doesNotMatch(rendered, /agent-b/)
+  assert.doesNotMatch(rendered, /agent-c/)
+})
+
 test("workflow outline surfaces failure counts and selected-node failure details", () => {
   const outline = buildWorkflowOutline({
     workflow: workflow(),

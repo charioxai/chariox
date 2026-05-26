@@ -22,6 +22,7 @@ export type ParsedSlashCommand =
   | { kind: "slice"; raw: string; args: string[] }
   | { kind: "relay"; raw: string; args: string[] }
   | { kind: "cloud"; raw: string; args: string[] }
+  | { kind: "collab"; raw: string; args: string[] }
   | { kind: "config"; raw: string; args: string[] }
   | { kind: "workspace"; raw: string; args: string[] }
   | { kind: "worktree"; raw: string; args: string[] }
@@ -50,6 +51,7 @@ export type SlashCommandHandlers = {
   onSlice: (command: Extract<ParsedSlashCommand, { kind: "slice" }>) => Promise<unknown> | unknown
   onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onCloud: (command: Extract<ParsedSlashCommand, { kind: "cloud" }>) => Promise<unknown> | unknown
+  onCollab: (command: Extract<ParsedSlashCommand, { kind: "collab" }>) => Promise<unknown> | unknown
   onConfig: (command: Extract<ParsedSlashCommand, { kind: "config" }>) => Promise<unknown> | unknown
   onWorkspace: (command: Extract<ParsedSlashCommand, { kind: "workspace" }>) => Promise<unknown> | unknown
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
@@ -158,6 +160,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "cloud",
       raw: trimmed,
       args: trimmed.replace(/^\/cloud\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/collab")) {
+    return {
+      kind: "collab",
+      raw: trimmed,
+      args: trimmed.replace(/^\/collab\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/config")) {
@@ -295,6 +304,9 @@ export async function executeSlashCommand(
     case "cloud":
       await handlers.onCloud(command)
       break
+    case "collab":
+      await handlers.onCollab(command)
+      break
     case "config":
       await handlers.onConfig(command)
       break
@@ -344,6 +356,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "slice":
     case "relay":
     case "cloud":
+    case "collab":
     case "config":
     case "workspace":
     case "worktree":

@@ -25,7 +25,7 @@ test("session chrome render controller applies attached chrome in order", () => 
 
   assert.deepEqual(calls, [
     "placeholder",
-    "summary:prompt-box:footer-box:ready:muted:Session session-1 • 2 CLIs connected • 2 agents in session • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • ? hotkeys:none",
+    "summary:prompt-box:footer-box:ready:muted:Session session-1 • 2 CLIs connected • 2 visible agents • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • ? hotkeys:none",
     "meta:1",
     "status",
     "footers",

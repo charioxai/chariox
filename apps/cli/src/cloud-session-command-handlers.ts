@@ -18,6 +18,7 @@ export type CloudSessionCommandHandlerDeps = {
   attachBinding: (session: Pick<RuntimeSession, "id">, createdSession: boolean) => Promise<void>
   flashFooter: (message: string, tone: "info" | "error") => void
   appendNotice: (message: string) => void
+  isRelayConnection?: () => boolean
   openExternalUrl?: (url: string) => Promise<boolean>
   createSessionInvite?: (
     sessionId: string,
@@ -124,6 +125,10 @@ async function acceptCloudInvite(
     return
   }
   const parsed = parseCloudInviteReference(inviteRef)
+  if (parsed.localInviteToken && deps.isRelayConnection?.() === false && profile.userId !== "local") {
+    deps.flashFooter("cloud invite accepted only through relay identity; reconnect with the relay invite link", "error")
+    return
+  }
   const accepted = await deps.acceptCloudSessionInvite(parsed.cloudInviteToken)
   const acceptance = accepted.acceptance as { user_id?: string }
   const userId = acceptance.user_id ?? profile.userId

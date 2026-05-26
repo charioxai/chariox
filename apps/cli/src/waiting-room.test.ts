@@ -151,7 +151,7 @@ test("waiting room cycles slices for new sessions", () => {
   }]
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
 
-  state = moveWaitingRoomFocus(state, [], 6, { slices })
+  state = moveWaitingRoomFocus(state, [], 7, { slices })
   assert.equal(state.focus, "slice")
   assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "None")
 
@@ -175,7 +175,7 @@ test("waiting room renders indented sections and only previews the last two acti
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 6)
+  state = moveWaitingRoomFocus(state, sessions, 7)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "provider")
@@ -184,12 +184,13 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[3]?.id, "effort")
   assert.equal(firstWindow[4]?.id, "workspace")
   assert.equal(firstWindow[5]?.id, "worktree")
-  assert.equal(firstWindow[6]?.id, "slice")
-  assert.equal(firstWindow[6]?.value, "None")
-  assert.equal(firstWindow[7]?.id, "join-header")
-  assert.equal(firstWindow[7]?.indent, 0)
-  assert.equal(firstWindow[7]?.focused, true)
-  assert.equal(firstWindow[7]?.value, "Press Enter")
+  assert.equal(firstWindow[6]?.id, "collaborators")
+  assert.equal(firstWindow[7]?.id, "slice")
+  assert.equal(firstWindow[7]?.value, "None")
+  assert.equal(firstWindow[8]?.id, "join-header")
+  assert.equal(firstWindow[8]?.indent, 0)
+  assert.equal(firstWindow[8]?.focused, true)
+  assert.equal(firstWindow[8]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
@@ -282,14 +283,15 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[3]?.id, "effort")
   assert.equal(rows[4]?.id, "workspace")
   assert.equal(rows[5]?.id, "worktree")
-  assert.equal(rows[6]?.id, "slice")
-  assert.equal(rows[6]?.value, "None")
-  assert.equal(rows[7]?.id, "join-header")
-  assert.equal(rows[7]?.title, "Join Existing Session")
+  assert.equal(rows[6]?.id, "collaborators")
+  assert.equal(rows[7]?.id, "slice")
+  assert.equal(rows[7]?.value, "None")
+  assert.equal(rows[8]?.id, "join-header")
+  assert.equal(rows[8]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")
   assert.equal(rows.at(-1)?.indent, 0)
 
-  state = moveWaitingRoomFocus(state, [], 6)
+  state = moveWaitingRoomFocus(state, [], 7)
   assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
@@ -360,7 +362,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 8, remote)
+  state = moveWaitingRoomFocus(state, [], 9, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
@@ -402,7 +404,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 7, remote)
+  state = moveWaitingRoomFocus(state, [], 8, remote)
   assert.equal(state.focus, "machine")
   let rows = waitingRoomRows(state, [], catalog, remote)
   const machineRow = rows.find((row) => row.id === "machine:machine-offline")

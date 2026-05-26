@@ -295,6 +295,13 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         command: `/worktree ${options.worktreePath}`,
         message: "edit the worktree path and press Enter",
       }
+    case "collaborators":
+      return {
+        action: "info",
+        message: options.remote?.collaborationBackend === "cloud"
+          ? "Open Arroba Cloud for saved collaborators before starting. After session start, use /cloud invite create."
+          : "Create the session first, then use /relay invite create. Arroba Cloud adds saved collaborators and pre-session invites.",
+      }
     case "machine": {
       const machine = remote.machines?.[options.state.machineIndex]
       if (!machine) {

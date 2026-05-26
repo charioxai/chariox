@@ -204,8 +204,27 @@ export function deriveAttachedFooterSummary(options: {
   focusedHasPromptWork?: boolean
 }): string {
   const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
+  const agentInfo = formatVisibleAgentSummary(options.session)
 
-  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${options.session.agents.length} ${options.session.agents.length === 1 ? "agent" : "agents"} in session${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
+  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${agentInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
+}
+
+function formatVisibleAgentSummary(session: RuntimeSession): string {
+  const counts = session.collaboration_agent_counts
+  const visibleCount = counts?.owned_agent_count ?? session.agents.length
+  const otherCount = counts?.other_user_agent_count ?? 0
+  const collaboratorCount = counts?.collaborator_count ?? 0
+  const ownLabel = `${visibleCount} visible ${visibleCount === 1 ? "agent" : "agents"}`
+  const parts = [ownLabel]
+
+  if (otherCount > 0) {
+    parts.push(`${otherCount} collaborator ${otherCount === 1 ? "agent" : "agents"}`)
+  }
+  if (collaboratorCount > 0) {
+    parts.push(`${collaboratorCount} ${collaboratorCount === 1 ? "collaborator" : "collaborators"}`)
+  }
+
+  return parts.join(" • ")
 }
 
 function resolveProviderModelContextLimit(

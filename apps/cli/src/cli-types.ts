@@ -107,6 +107,9 @@ export type RuntimeSession = {
   alias?: string | null
   workspace_id: string
   worktree_id: string
+  owner_user_id?: string
+  members?: SessionMember[]
+  invites?: SessionInvite[]
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
@@ -124,6 +127,7 @@ export type RuntimeSession = {
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
+  collaboration_agent_counts?: SessionCollaborationAgentCounts | null
   config_state: SessionConfigState
   workflows?: WorkflowDefinition[]
   workflow_runs?: WorkflowRun[]
@@ -132,6 +136,30 @@ export type RuntimeSession = {
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
+}
+
+export type SessionCollaborationAgentCounts = {
+  owned_agent_count: number
+  other_user_agent_count: number
+  total_agent_count: number
+  collaborator_count: number
+}
+
+export type SessionMember = {
+  user_id: string
+  joined_at_ms: number
+  invited_by_user_id?: string | null
+}
+
+export type SessionInvite = {
+  invite_id: string
+  session_id: string
+  created_by_user_id: string
+  created_at_ms: number
+  expires_at_ms?: number | null
+  max_uses?: number | null
+  used_count: number
+  revoked_at_ms?: number | null
 }
 
 export type SessionAgentDefaults = {

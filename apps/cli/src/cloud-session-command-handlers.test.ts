@@ -3,6 +3,9 @@ import test from "node:test"
 
 import type { RuntimeSession } from "./cli-types.js"
 import {
+  handleRelaySlashCommand,
+} from "./cloud-command-handlers.js"
+import {
   buildCloudInviteUrl,
   handleCloudSessionCommand,
   parseCloudInviteReference,
@@ -62,6 +65,142 @@ test("cloud session invite create pairs cloud and local invite tokens", async ()
   assert.equal(openedUrl, "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token")
   assert.match(notice, /cloud_invite_id=cloud-invite/)
   assert.equal(flashedMessage, "cloud invite created")
+})
+
+test("cloud invite accept refuses direct local attach for cloud collaborator identity", async () => {
+  let accepted = false
+  let joined = false
+  let flashedMessage = ""
+
+  const handled = await handleCloudSessionCommand({
+    isAttached: () => false,
+    sessionState: () => session(),
+    applySessionState: () => {},
+    attachBinding: async () => { throw new Error("attach should not be called") },
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    isRelayConnection: () => false,
+    acceptCloudSessionInvite: async () => {
+      accepted = true
+      return { acceptance: { user_id: "user-2" } }
+    },
+    joinSessionInvite: async () => {
+      joined = true
+      return { member: { user_id: "user-2" }, session: session() }
+    },
+  }, profile({ userId: "user-2" }), "invite", "accept", [
+    "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token",
+  ])
+
+  assert.equal(handled, true)
+  assert.equal(accepted, false)
+  assert.equal(joined, false)
+  assert.equal(flashedMessage, "cloud invite accepted only through relay identity; reconnect with the relay invite link")
+})
+
+test("cloud invite accept joins when the TUI is relay connected", async () => {
+  let attached = false
+  let flashedMessage = ""
+
+  const handled = await handleCloudSessionCommand({
+    isAttached: () => false,
+    sessionState: () => session(),
+    applySessionState: () => {},
+    attachBinding: async (joinedSession) => {
+      assert.equal(joinedSession.id, "joined-session")
+      attached = true
+    },
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    isRelayConnection: () => true,
+    acceptCloudSessionInvite: async (inviteToken) => {
+      assert.equal(inviteToken, "cloud-token")
+      return { acceptance: { user_id: "user-2" } }
+    },
+    joinSessionInvite: async (inviteToken, userId) => {
+      assert.equal(inviteToken, "local-token")
+      assert.equal(userId, "user-2")
+      return { member: { user_id: "user-2" }, session: session({ id: "joined-session" }) }
+    },
+  }, profile({ userId: "user-2" }), "invite", "accept", [
+    "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token",
+  ])
+
+  assert.equal(handled, true)
+  assert.equal(attached, true)
+  assert.equal(flashedMessage, "joined cloud session as user-2")
+})
+
+test("relay invite create uses local kernel invite without cloud metadata", async () => {
+  const currentSession = session()
+  let notice = ""
+  let flashedMessage = ""
+  let createdMaxUses: number | null | undefined
+
+  await handleRelaySlashCommand({
+    isAttached: () => true,
+    sessionState: () => currentSession,
+    applySessionState: () => {},
+    attachBinding: async () => {},
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    appendNotice: (message) => { notice = message },
+    createSessionInvite: async (_sessionId, _expiresInMs, maxUses) => {
+      createdMaxUses = maxUses
+      return {
+        invite: { invite_token: "relay-token", invite: { invite_id: "relay-invite" } },
+        session: currentSession,
+      }
+    },
+  }, {
+    kind: "relay",
+    raw: "/relay invite create 2",
+    args: ["invite", "create", "2"],
+  })
+
+  assert.equal(createdMaxUses, 2)
+  assert.match(notice, /invite_token=relay-token/)
+  assert.doesNotMatch(notice, /cloud_invite/)
+  assert.equal(flashedMessage, "relay invite created")
+})
+
+test("relay invite accept joins as same-relay daemon identity", async () => {
+  let attached = false
+  let flashedMessage = ""
+
+  await handleRelaySlashCommand({
+    isAttached: () => false,
+    sessionState: () => session(),
+    applySessionState: () => {},
+    attachBinding: async (joinedSession) => {
+      assert.equal(joinedSession.id, "joined-session")
+      attached = true
+    },
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    appendNotice: () => {},
+    getRelayStatus: async () => ({
+      configured: true,
+      connected: true,
+      relay_url: "ws://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-collaborator",
+      machine_id: "machine-1",
+      machine_alias: "collab",
+    }),
+    joinSessionInvite: async (inviteToken, userId) => {
+      assert.equal(inviteToken, "relay-token")
+      assert.equal(userId, "daemon-collaborator")
+      return { member: { user_id: userId }, session: session({ id: "joined-session" }) }
+    },
+  }, {
+    kind: "relay",
+    raw: "/relay invite accept relay-token",
+    args: ["invite", "accept", "relay-token"],
+  })
+
+  assert.equal(attached, true)
+  assert.equal(flashedMessage, "joined relay session as daemon-collaborator")
 })
 
 function profile(overrides: Partial<RelayCloudProfile> = {}): RelayCloudProfile {

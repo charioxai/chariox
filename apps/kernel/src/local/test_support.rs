@@ -6,15 +6,17 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use crate::agent::AgentInstance;
+use crate::provider::ProviderRunState;
 use crate::runtime::command::{KernelCaller, KernelCommand};
 use crate::runtime::router::CommandRouter;
-use crate::session::{WorkflowNodeDefinition, WorkflowRun, WorkflowRunStatus};
+use crate::session::{RuntimeSession, WorkflowNodeDefinition, WorkflowRun, WorkflowRunStatus};
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 
 use super::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CompletePromptRequest, FocusAgentRequest,
-    GetWorkflowRunRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+    GetWorkflowRunRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+    SpawnAgentRequest,
 };
 
 static LOCAL_ROUTER_TEST_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
@@ -128,6 +130,45 @@ impl LocalRouterTestHarness {
             LocalDaemonResponse::AgentSpawned { agent } => agent,
             _ => panic!("unexpected local response"),
         }
+    }
+
+    pub(crate) fn launch_workflow_test_provider(&self, session_id: &str, agent_id: &str) {
+        match self
+            .dispatch(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session_id.to_string(),
+                    agent_id: Some(agent_id.to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "dev-stub".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "default".to_string(),
+                    variant: None,
+                    structured_endpoint: None,
+                    provider_session_id: None,
+                    native_tui: false,
+                },
+            ))
+            .expect("workflow test provider should launch")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { .. }
+            | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+        self.runtime.block_on(async {
+            for _ in 0..500 {
+                let running = {
+                    let app = self.app.lock().await;
+                    app.providers()
+                        .get_run_for_agent(session_id, agent_id)
+                        .is_some_and(|run| run.state() == ProviderRunState::Running)
+                };
+                if running {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("workflow test provider for agent `{agent_id}` should become running");
+        });
     }
 
     pub(crate) fn add_workflow_test_node(
@@ -287,6 +328,59 @@ impl LocalRouterTestHarness {
             LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
             _ => panic!("unexpected local response"),
         }
+    }
+
+    pub(crate) fn wait_for_workflow_test_run_where(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        reason: &str,
+        predicate: impl Fn(&WorkflowRun) -> bool,
+    ) -> WorkflowRun {
+        self.runtime.block_on(async {
+            for _ in 0..500 {
+                let workflow_run = {
+                    let app = self.app.lock().await;
+                    app.sessions()
+                        .get_session(session_id)
+                        .expect("session should resolve")
+                        .workflow_run(workflow_run_id)
+                        .unwrap_or_else(|| {
+                            panic!("workflow run `{workflow_run_id}` should resolve")
+                        })
+                        .clone()
+                };
+                if predicate(&workflow_run) {
+                    return workflow_run;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("workflow run `{workflow_run_id}` did not reach expected state: {reason}");
+        })
+    }
+
+    pub(crate) fn wait_for_session_where(
+        &self,
+        session_id: &str,
+        reason: &str,
+        predicate: impl Fn(&RuntimeSession) -> bool,
+    ) -> RuntimeSession {
+        self.runtime.block_on(async {
+            for _ in 0..500 {
+                let session = {
+                    let app = self.app.lock().await;
+                    app.sessions()
+                        .get_session(session_id)
+                        .expect("session should resolve")
+                        .clone()
+                };
+                if predicate(&session) {
+                    return session;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("session `{session_id}` did not reach expected state: {reason}");
+        })
     }
 
     fn session_has_no_active_workflow(&self, session_id: &str) -> bool {

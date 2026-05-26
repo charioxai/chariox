@@ -64,6 +64,32 @@ export const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "relay",
+    label: "/relay",
+    description: "Manage relay connection and self-hosted collaboration",
+    value: "/relay ",
+    children: [
+      { id: "relay-status", label: "status", description: "Show relay configuration and connection status", value: "/relay status" },
+      { id: "relay-use", label: "use", description: "Configure a self-hosted relay URL and token", value: "/relay use " },
+      { id: "relay-disable", label: "disable", description: "Disable relay configuration", value: "/relay disable" },
+      { id: "relay-invite-create", label: "invite create", description: "Create a same-relay session invite", value: "/relay invite create " },
+      { id: "relay-invite-accept", label: "invite accept", description: "Accept a same-relay session invite", value: "/relay invite accept " },
+      { id: "relay-members", label: "members", description: "List same-relay members for the current session", value: "/relay members" },
+    ],
+  },
+  {
+    id: "collab",
+    label: "/collab",
+    description: "Manage collaboration using the configured backend",
+    value: "/collab ",
+    children: [
+      { id: "collab-invite-create", label: "invite create", description: "Create a collaboration invite", value: "/collab invite create " },
+      { id: "collab-invite-accept", label: "invite accept", description: "Accept a collaboration invite", value: "/collab invite accept " },
+      { id: "collab-members", label: "members", description: "List members for the current session", value: "/collab members" },
+      { id: "collab-invites", label: "invites", description: "List active collaboration invites", value: "/collab invites" },
+    ],
+  },
+  {
     id: "mcp",
     label: "/mcp",
     description: "Manage Arroba MCP registry and agent grants",

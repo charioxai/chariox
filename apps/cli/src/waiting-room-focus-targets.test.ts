@@ -20,6 +20,7 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "effort",
     "workspace",
     "worktree",
+    "collaborators",
     "slice",
     "join-sessions",
     "session",

@@ -141,6 +141,7 @@ function createHarness(options: {
     handleSliceCommand: (command) => calls.push(`slice:${command.args.join(" ")}`),
     handleRelayCommand: (command) => calls.push(`relay:${command.args.join(" ")}`),
     handleCloudCommand: (command) => calls.push(`cloud:${command.args.join(" ")}`),
+    handleCollabCommand: (command) => calls.push(`collab:${command.args.join(" ")}`),
     handleConfigCommand: (command) => calls.push(`config:${command.args.join(" ")}`),
     handleWorkspaceCommand: (command) => calls.push(`workspace:${command.args.join(" ")}`),
     handleWorktreeCommand: (command) => calls.push(`worktree:${command.args.join(" ")}`),

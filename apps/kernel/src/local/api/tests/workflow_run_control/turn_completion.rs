@@ -183,16 +183,12 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         }))
         .expect("first workflow prompt should complete");
 
-    let routed = match harness
-        .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-            session_id: session.id().to_string(),
-            workflow_run_ref: workflow_run.id().to_string(),
-        }))
-        .expect("workflow run should resolve")
-    {
-        LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-        _ => panic!("unexpected local response"),
-    };
+    let _ = harness.wait_for_session_where(
+        session.id(),
+        "second workflow node prompt should become active after provider launch",
+        |session| session.active_prompt_for_agent(second_agent.id()).is_some(),
+    );
+    let routed = harness.get_workflow_test_run(session.id(), workflow_run.id());
     let first_completed = routed
         .node_runs()
         .iter()
@@ -302,6 +298,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
     };
     let first_agent = harness.spawn_workflow_test_agent(session.id(), "loop-a");
     let second_agent = harness.spawn_workflow_test_agent(session.id(), "loop-b");
+    harness.launch_workflow_test_provider(session.id(), second_agent.id());
     let workflow = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: session.id().to_string(),
@@ -440,30 +437,27 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         }))
         .expect("warning workflow prompt should complete");
 
-    let after_warning = match harness
-        .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-            session_id: session.id().to_string(),
-            workflow_run_ref: workflow_run.id().to_string(),
-        }))
-        .expect("updated workflow run should resolve")
-    {
-        LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-        _ => panic!("unexpected local response"),
-    };
+    let _ = harness.wait_for_session_where(
+        session.id(),
+        "second node should become active after warning handoff",
+        |session| session.active_prompt_for_agent(second_agent.id()).is_some(),
+    );
+    let after_warning = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert!(after_warning.failure_events().iter().any(|event| {
         matches!(
             event.kind(),
             crate::session::WorkflowFailureKind::OutputValidationFailed
         ) && event.message().contains("output.message is not valid JSON")
     }));
-    let second_active_prompt = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_prompt()
-            .cloned()
-            .expect("second node should be active")
-    });
+    let second_active_prompt = harness
+        .wait_for_session_where(
+            session.id(),
+            "second node active prompt should be visible",
+            |session| session.active_prompt_for_agent(second_agent.id()).is_some(),
+        )
+        .active_prompt_for_agent(second_agent.id())
+        .expect("second node should be active")
+        .clone();
     assert!(second_active_prompt.prompt().contains("Control mailbox:"));
     assert!(second_active_prompt
         .prompt()
@@ -524,14 +518,15 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         }))
         .expect("second node prompt should complete");
 
-    let active_prompt = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_prompt()
-            .cloned()
-            .expect("first node should be active again")
-    });
+    let active_prompt = harness
+        .wait_for_session_where(
+            session.id(),
+            "first node should become active again",
+            |session| session.active_prompt_for_agent(first_agent.id()).is_some(),
+        )
+        .active_prompt_for_agent(first_agent.id())
+        .expect("first node should be active again")
+        .clone();
     assert!(active_prompt.prompt().contains("Control mailbox:"));
     assert!(active_prompt
         .prompt()

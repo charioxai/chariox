@@ -127,6 +127,22 @@ test("workflow node command validates usage and unavailable runtime support", as
   ])
 })
 
+test("workflow node extension commands explain collaborator-owned nodes without leaking hidden agent ids", async () => {
+  const harness = createHarness({
+    workflow: workflow({ nodes: [node({ id: "node-hidden", agent_id: "agent-hidden" })] }),
+    sessionAgents: [agent({ id: "agent-a" })],
+  })
+
+  await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "extensions", "node-hidden"])
+
+  assert.deepEqual(harness.calls, [
+    "resolve:workflow-1",
+    "upsert:workflow-1",
+    "footer:error:Extensions are managed by the collaborator who owns this node.",
+  ])
+  assert.doesNotMatch(harness.calls.join("\n"), /agent-hidden/)
+})
+
 type HarnessOptions = Partial<WorkflowNodeCommandDeps> & {
   agentsByRef?: Record<string, AgentInstance>
   context?: Partial<WorkflowNodeCommandContext>

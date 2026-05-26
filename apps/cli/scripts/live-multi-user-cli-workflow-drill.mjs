@@ -6,6 +6,7 @@ import { access, mkdir, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -16,6 +17,41 @@ const RELAY_SECRET = 'arroba-multi-user-cli-workflow-drill-secret'
 const RELAY_REALM = 'multi-user-cli-workflow-drill'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function parseArgs(argv = process.argv.slice(2)) {
+  const options = {
+    hetznerRelay: false,
+    hetznerHost: process.env.ARROBA_COLLAB_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.ARROBA_COLLAB_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
+    hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--hetzner-relay') {
+      options.hetznerRelay = true
+    } else if (arg === '--hetzner-host') {
+      options.hetznerHost = argv[++index]
+    } else if (arg === '--hetzner-key') {
+      options.hetznerKey = argv[++index]
+    } else if (arg === '--hetzner-repo') {
+      options.hetznerRepo = argv[++index]
+    } else if (arg === '--help' || arg === '-h') {
+      console.log([
+        'Usage: node apps/cli/scripts/live-multi-user-cli-workflow-drill.mjs [options]',
+        '',
+        'Options:',
+        '  --hetzner-relay       Run the scoped relay on the configured Hetzner host through an SSH tunnel',
+        '  --hetzner-host HOST   SSH host for --hetzner-relay',
+        '  --hetzner-key PATH    SSH key for --hetzner-relay',
+        '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
+      ].join('\n'))
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument ${arg}`)
+    }
+  }
+  return options
+}
 
 function log(name, details = null) {
   if (details == null) console.log(`[multi-user-cli-workflow-drill] ${name}`)
@@ -121,7 +157,7 @@ async function buildKernelIfNeeded() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (exists) return binary
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await runCommand('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -134,7 +170,7 @@ async function requireBuiltCli() {
   return cli
 }
 
-async function run(command, args, options = {}) {
+async function runCommand(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
@@ -326,6 +362,7 @@ async function expectAutomationReject(promise, label, expectedText) {
 }
 
 async function main() {
+  const options = parseArgs()
   const rootDir = path.join(os.tmpdir(), `arroba-multi-user-cli-workflow-${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home1 = path.join(rootDir, 'home-user-1')
@@ -346,6 +383,7 @@ async function main() {
   const ports = makePorts()
   const envs = makeEnv(ports, rootDir)
   let relay = null
+  let relayTunnel = null
   let daemon = null
   let cli1 = null
   let cli2 = null
@@ -355,11 +393,43 @@ async function main() {
   let joinClient = null
   let sessionId = null
   try {
-    relay = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
-      cwd: repoRoot,
-      env: envs.relayEnv,
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
+    if (options.hetznerRelay) {
+      const remoteRelayCheck = await runCommand('ssh', sshArgs(options, [
+        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
+      ].join('; ')))
+      if (remoteRelayCheck.code !== 0) {
+        throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
+      }
+      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(ports.relayPort),
+        ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+        ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      }, './apps/relay/target/debug/arroba-relay')), {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+      relayTunnel = spawn('ssh', [
+        '-i',
+        options.hetznerKey,
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-N',
+        '-L',
+        `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
+        options.hetznerHost,
+      ], {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    } else {
+      relay = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+        cwd: repoRoot,
+        env: envs.relayEnv,
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    }
     daemon = spawn(kernelPath, [], { cwd: repoRoot, env: envs.daemonEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForRelayTarget(LocalIpcClient, requests, envs.relayUrl, envs.daemonAlias)
     log('relay-target-ready', { relayUrl: envs.relayUrl, daemonAlias: envs.daemonAlias })
@@ -503,7 +573,7 @@ async function main() {
 
     console.log(JSON.stringify({
       status: 'ok',
-      mode: 'multi-user-cli-workflow-relay',
+      mode: options.hetznerRelay ? 'multi-user-cli-workflow-hetzner-relay' : 'multi-user-cli-workflow-relay',
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId,
@@ -536,6 +606,7 @@ async function main() {
     await terminateChild(cli2?.child)
     await terminateChild(daemon)
     await terminateChild(relay)
+    await terminateChild(relayTunnel)
     await rm(rootDir, { recursive: true, force: true }).catch(() => {})
     await rm(socket1, { force: true }).catch(() => {})
     await rm(socket2, { force: true }).catch(() => {})
