@@ -1905,6 +1905,102 @@ mod tests {
     }
 
     #[test]
+    fn workspace_live_sync_apply_target_conflicts_on_binary_mismatch() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-binary-conflict-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&target).expect("target should be created");
+        std::fs::write(target.join("image.bin"), [0xff, 1, 9, 3]).expect("target should write");
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let change = WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["image.bin".to_string()],
+            file_changes: vec![WorkspaceLiveSyncFileChange {
+                path: "image.bin".to_string(),
+                previous_path: None,
+                kind: WorkspaceLiveSyncFileChangeKind::Modified,
+                before_content_base64: Some(encode(&[0xff, 1, 2, 3])),
+                after_content_base64: Some(encode(&[0xff, 1, 2, 4])),
+                binary: true,
+            }],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(
+            results[0].status,
+            WorkspaceLiveSyncApplyStatus::SkippedConflict
+        );
+        assert!(results[0].message.contains("binary"));
+        assert_eq!(
+            std::fs::read(target.join("image.bin")).expect("target should read"),
+            vec![0xff, 1, 9, 3]
+        );
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_apply_target_conflicts_on_incompatible_rename() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-rename-conflict-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&target).expect("target should be created");
+        std::fs::write(target.join("old.txt"), "old\n").expect("old target should write");
+        std::fs::write(target.join("new.txt"), "already here\n").expect("new target should write");
+        let encode =
+            |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+        let change = WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["new.txt".to_string()],
+            file_changes: vec![WorkspaceLiveSyncFileChange {
+                path: "new.txt".to_string(),
+                previous_path: Some("old.txt".to_string()),
+                kind: WorkspaceLiveSyncFileChangeKind::Renamed,
+                before_content_base64: Some(encode("old\n")),
+                after_content_base64: Some(encode("moved\n")),
+                binary: false,
+            }],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(
+            results[0].status,
+            WorkspaceLiveSyncApplyStatus::SkippedConflict
+        );
+        assert!(results[0].message.contains("already exists"));
+        assert_eq!(
+            std::fs::read_to_string(target.join("old.txt")).expect("old target should read"),
+            "old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("new.txt")).expect("new target should read"),
+            "already here\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
     fn workspace_live_sync_identity_conflict_detects_branch_drift() {
         let target = std::env::temp_dir().join(format!(
             "arroba-tracked-sync-identity-target-{}-{}",
