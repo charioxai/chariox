@@ -79,8 +79,6 @@ impl KernelRuntimeState {
             prompt_summary: before.prompt_summary.clone(),
         };
         let history = self.owned.operational_history_store.clone();
-        let tracked_workspace_live_sync_journal =
-            self.owned.tracked_workspace_live_sync_journal.clone();
         let observation = tokio::task::spawn_blocking(move || {
             let after = crate::git_observer::capture_turn_snapshot(after_context)?;
             let tracked_change = if before.workspace_live_sync_tracked {
@@ -98,11 +96,8 @@ impl KernelRuntimeState {
             Ok(Some(Ok((events, tracked_change)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
-                    let target_results =
-                        self.apply_tracked_workspace_live_sync_change_to_link_targets(&change);
-                    self.record_tracked_workspace_live_sync_notices(&change, &target_results);
-                    tracked_workspace_live_sync_journal.append(change);
-                    tracked_workspace_live_sync_journal.record_target_results(target_results);
+                    self.record_and_fanout_tracked_workspace_live_sync_change(change, None)
+                        .await;
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
                         "recorded tracked workspace live sync turn change",
@@ -147,9 +142,27 @@ impl KernelRuntimeState {
         }
     }
 
-    fn apply_tracked_workspace_live_sync_change_to_link_targets(
+    pub(super) async fn record_and_fanout_tracked_workspace_live_sync_change(
+        &self,
+        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        source_kernel_id: Option<&str>,
+    ) {
+        let target_results = self
+            .apply_tracked_workspace_live_sync_change_to_link_targets(&change, source_kernel_id)
+            .await;
+        self.record_tracked_workspace_live_sync_notices(&change, &target_results);
+        self.owned
+            .tracked_workspace_live_sync_journal
+            .append(change);
+        self.owned
+            .tracked_workspace_live_sync_journal
+            .record_target_results(target_results);
+    }
+
+    async fn apply_tracked_workspace_live_sync_change_to_link_targets(
         &self,
         change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        source_kernel_id: Option<&str>,
     ) -> Vec<crate::git_observer::TrackedWorkspaceLiveSyncTargetResult> {
         let Ok(session) = self.owned.session_store.get_session(&change.session_id) else {
             return Vec::new();
@@ -158,17 +171,22 @@ impl KernelRuntimeState {
         let Some(link) = session.workspace_link_for_repo_root(source_root).cloned() else {
             return Vec::new();
         };
-        link.attachments()
-            .iter()
-            .filter(|attachment| attachment.repo_root() != change.worktree_path)
-            .map(|attachment| {
+        let config = self.config_snapshot().await;
+        let mut results = Vec::new();
+        for attachment in link.attachments() {
+            if attachment.repo_root() == change.worktree_path
+                && source_kernel_id.is_none_or(|kernel_id| kernel_id == attachment.kernel_id())
+            {
+                continue;
+            }
+            if attachment.kernel_id() == config.daemon_id {
                 let target_root = std::path::Path::new(attachment.repo_root());
                 let path_results =
                     crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
                         change,
                         target_root,
                     );
-                crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+                results.push(crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
                     session_id: change.session_id.clone(),
                     link_id: link.link_id().to_string(),
                     link_name: link.name().to_string(),
@@ -179,9 +197,89 @@ impl KernelRuntimeState {
                     target_kernel_id: attachment.kernel_id().to_string(),
                     target_repo_root: attachment.repo_root().to_string(),
                     path_results,
-                }
-            })
-            .collect()
+                });
+                continue;
+            }
+            results.push(
+                self.apply_tracked_workspace_live_sync_change_to_remote_target(
+                    &config, change, &link, attachment,
+                )
+                .await,
+            );
+        }
+        results
+    }
+
+    async fn apply_tracked_workspace_live_sync_change_to_remote_target(
+        &self,
+        config: &crate::config::DaemonConfig,
+        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        link: &crate::session::WorkspaceLinkDefinition,
+        attachment: &crate::session::WorkspaceLinkAttachment,
+    ) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+        let context = crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext {
+            home_session_id: change.session_id.clone(),
+            link_id: link.link_id().to_string(),
+            link_name: link.name().to_string(),
+            source_agent_id: change.agent_id.clone(),
+            source_worktree_path: change.worktree_path.clone(),
+            target_user_id: attachment.user_id().to_string(),
+            target_machine_id: attachment.machine_id().to_string(),
+            target_kernel_id: attachment.kernel_id().to_string(),
+            target_repo_root: attachment.repo_root().to_string(),
+        };
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            config,
+            arroba_relay::protocol::ClientTarget {
+                daemon_id: Some(attachment.kernel_id().to_string()),
+                daemon_alias: None,
+            },
+            crate::transport::relay_peer::RelayPeerRequest::ApplyTrackedWorkspaceLiveSyncChange {
+                context: context.clone(),
+                change: change.clone(),
+            },
+        )
+        .await;
+        match response {
+            Ok(crate::transport::relay_peer::RelayPeerResponse::TrackedWorkspaceLiveSyncChangeApplied {
+                target_result,
+            }) => target_result,
+            Ok(other) => tracked_workspace_live_sync_remote_failed_result(
+                &context,
+                format!("unexpected relay apply response: {other:?}"),
+            ),
+            Err(error) => tracked_workspace_live_sync_remote_failed_result(
+                &context,
+                format!("failed to relay tracked workspace live sync change: {error}"),
+            ),
+        }
+    }
+
+    pub(crate) fn apply_forwarded_tracked_workspace_live_sync_change(
+        &self,
+        context: crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+    ) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+        let path_results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
+            &change,
+            std::path::Path::new(&context.target_repo_root),
+        );
+        let target_result = crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+            session_id: context.home_session_id.clone(),
+            link_id: context.link_id.clone(),
+            link_name: context.link_name.clone(),
+            source_agent_id: context.source_agent_id.clone(),
+            source_worktree_path: context.source_worktree_path.clone(),
+            target_user_id: context.target_user_id.clone(),
+            target_machine_id: context.target_machine_id.clone(),
+            target_kernel_id: context.target_kernel_id.clone(),
+            target_repo_root: context.target_repo_root.clone(),
+            path_results,
+        };
+        self.owned
+            .tracked_workspace_live_sync_journal
+            .record_target_results(vec![target_result.clone()]);
+        target_result
     }
 
     fn record_tracked_workspace_live_sync_notices(
@@ -248,5 +346,29 @@ impl KernelRuntimeState {
                 failed_count
             ),
         );
+    }
+}
+
+fn tracked_workspace_live_sync_remote_failed_result(
+    context: &crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
+    message: String,
+) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+    crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+        session_id: context.home_session_id.clone(),
+        link_id: context.link_id.clone(),
+        link_name: context.link_name.clone(),
+        source_agent_id: context.source_agent_id.clone(),
+        source_worktree_path: context.source_worktree_path.clone(),
+        target_user_id: context.target_user_id.clone(),
+        target_machine_id: context.target_machine_id.clone(),
+        target_kernel_id: context.target_kernel_id.clone(),
+        target_repo_root: context.target_repo_root.clone(),
+        path_results: vec![
+            crate::git_observer::TrackedWorkspaceLiveSyncPathApplyResult {
+                path: "*".to_string(),
+                status: crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+                message,
+            },
+        ],
     }
 }

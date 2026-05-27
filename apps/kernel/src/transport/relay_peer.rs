@@ -101,6 +101,19 @@ pub struct RemoteGitObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTrackedWorkspaceLiveSyncApplyContext {
+    pub home_session_id: String,
+    pub link_id: String,
+    pub link_name: String,
+    pub source_agent_id: String,
+    pub source_worktree_path: String,
+    pub target_user_id: String,
+    pub target_machine_id: String,
+    pub target_kernel_id: String,
+    pub target_repo_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RemoteMcpAvailabilityStatus {
     Available,
@@ -219,6 +232,10 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    ApplyTrackedWorkspaceLiveSyncChange {
+        context: RemoteTrackedWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+    },
     ForwardNativeInteraction {
         context: RemoteNativeInteractionContext,
         interaction: crate::session::RuntimeInteraction,
@@ -271,6 +288,9 @@ pub enum RelayPeerResponse {
         provider_diagnostic: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         git_observations: Vec<RemoteGitObservation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracked_workspace_live_sync_change:
+            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
         completion: PromptCompletion,
     },
     LeasedPromptCancelled {
@@ -288,6 +308,9 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skill_package: Option<ArrobaSkillPackage>,
+    },
+    TrackedWorkspaceLiveSyncChangeApplied {
+        target_result: crate::git_observer::TrackedWorkspaceLiveSyncTargetResult,
     },
     NativeInteractionResolved {
         resolution: crate::provider::ProviderNativeInteractionResolution,

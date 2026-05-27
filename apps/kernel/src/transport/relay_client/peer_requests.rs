@@ -293,19 +293,20 @@ pub(super) async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
-                    let git_observations = if let Some(provider_run_id) = provider_run_id.as_deref()
-                    {
-                        router
-                            .relay_observe_leased_git_after(&leased_agent_id, provider_run_id)
-                            .await
-                            .unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
+                    let (git_observations, tracked_workspace_live_sync_change) =
+                        if let Some(provider_run_id) = provider_run_id.as_deref() {
+                            router
+                                .relay_observe_leased_git_after(&leased_agent_id, provider_run_id)
+                                .await
+                                .unwrap_or_default()
+                        } else {
+                            (Vec::new(), None)
+                        };
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         provider_diagnostic,
                         git_observations,
+                        tracked_workspace_live_sync_change,
                         completion,
                     }
                 }
@@ -403,6 +404,22 @@ pub(super) async fn handle_daemon_peer_request(
                     result,
                     skill_package,
                 },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ApplyTrackedWorkspaceLiveSyncChange { context, change } => {
+            let applied = router
+                .relay_apply_tracked_workspace_live_sync_change(context, change)
+                .await;
+            match applied {
+                Ok(target_result) => {
+                    RelayPeerResponse::TrackedWorkspaceLiveSyncChangeApplied { target_result }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

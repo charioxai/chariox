@@ -275,7 +275,13 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         provider_run_id: &str,
-    ) -> Result<Vec<RemoteGitObservation>, DaemonError> {
+    ) -> Result<
+        (
+            Vec<RemoteGitObservation>,
+            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+        ),
+        DaemonError,
+    > {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {

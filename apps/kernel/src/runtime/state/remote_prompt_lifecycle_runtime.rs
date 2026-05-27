@@ -90,6 +90,7 @@ impl KernelRuntimeState {
                 provider_run_id,
                 provider_diagnostic,
                 git_observations,
+                tracked_workspace_live_sync_change,
                 ..
             }) => {
                 if let Err(error) = crate::git_observer::append_observations(
@@ -105,6 +106,13 @@ impl KernelRuntimeState {
                             "error": error.to_string(),
                         }),
                     );
+                }
+                if let Some(change) = tracked_workspace_live_sync_change {
+                    self.record_and_fanout_tracked_workspace_live_sync_change(
+                        change,
+                        Some(&remote_execution.worker_kernel_id),
+                    )
+                    .await;
                 }
                 (
                     provider_run_id.unwrap_or_else(|| "remote-provider-run-completed".to_string()),

@@ -47,7 +47,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt_id: git_context.home_prompt_id,
             turn_id: git_context.home_turn_id,
             worktree_path,
-            workspace_live_sync_tracked: false,
+            workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
             machine_id: Some(lease.machine_id),
             prompt_summary: git_context.prompt_summary,
         };
@@ -60,7 +60,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
-    ) -> Result<Vec<RemoteGitObservation>, DaemonError> {
+    ) -> Result<
+        (
+            Vec<RemoteGitObservation>,
+            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+        ),
+        DaemonError,
+    > {
         let _leased_agent = self
             .app
             .leased_agents
@@ -74,7 +80,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .remote_git_turn_snapshots
             .remove_for_provider_run(provider_run_id)
         else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
         let candidates = self.app.remote_git_turn_snapshots.candidates_for(&before);
         let after_context = crate::git_observer::GitTurnContext {
@@ -92,10 +98,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt_summary: before.prompt_summary.clone(),
         };
         let Some(after) = crate::git_observer::capture_turn_snapshot(after_context) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
-        Ok(crate::git_observer::observations_after_turn(
-            before, after, candidates,
+        let tracked_change = if before.workspace_live_sync_tracked {
+            crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+        } else {
+            None
+        };
+        Ok((
+            crate::git_observer::observations_after_turn(before, after, candidates),
+            tracked_change,
         ))
     }
 }

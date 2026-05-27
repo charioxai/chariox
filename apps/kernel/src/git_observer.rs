@@ -118,7 +118,7 @@ impl GitTurnSnapshotStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TrackedWorkspaceLiveSyncTurnChange {
+pub struct TrackedWorkspaceLiveSyncTurnChange {
     pub session_id: String,
     pub agent_id: String,
     pub provider_run_id: String,
@@ -132,7 +132,7 @@ pub(crate) struct TrackedWorkspaceLiveSyncTurnChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TrackedWorkspaceLiveSyncFileChange {
+pub struct TrackedWorkspaceLiveSyncFileChange {
     pub path: String,
     #[serde(default)]
     pub previous_path: Option<String>,
@@ -146,7 +146,7 @@ pub(crate) struct TrackedWorkspaceLiveSyncFileChange {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TrackedWorkspaceLiveSyncFileChangeKind {
+pub enum TrackedWorkspaceLiveSyncFileChangeKind {
     Added,
     Modified,
     Deleted,
@@ -200,7 +200,7 @@ impl TrackedWorkspaceLiveSyncJournal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TrackedWorkspaceLiveSyncTargetResult {
+pub struct TrackedWorkspaceLiveSyncTargetResult {
     pub session_id: String,
     pub link_id: String,
     pub link_name: String,
@@ -214,7 +214,7 @@ pub(crate) struct TrackedWorkspaceLiveSyncTargetResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TrackedWorkspaceLiveSyncPathApplyResult {
+pub struct TrackedWorkspaceLiveSyncPathApplyResult {
     pub path: String,
     pub status: TrackedWorkspaceLiveSyncApplyStatus,
     pub message: String,
@@ -222,7 +222,7 @@ pub(crate) struct TrackedWorkspaceLiveSyncPathApplyResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TrackedWorkspaceLiveSyncApplyStatus {
+pub enum TrackedWorkspaceLiveSyncApplyStatus {
     Applied,
     Rebased,
     SkippedConflict,
@@ -684,13 +684,22 @@ fn tracked_workspace_live_sync_rebase_modify(
     current_bytes: &[u8],
 ) -> TrackedWorkspaceLiveSyncPathApplyResult {
     let Ok(before) = std::str::from_utf8(before_bytes) else {
-        return tracked_workspace_live_sync_conflict(path, "binary target content changed before apply");
+        return tracked_workspace_live_sync_conflict(
+            path,
+            "binary target content changed before apply",
+        );
     };
     let Ok(after) = std::str::from_utf8(after_bytes) else {
-        return tracked_workspace_live_sync_conflict(path, "binary source content cannot be rebased");
+        return tracked_workspace_live_sync_conflict(
+            path,
+            "binary source content cannot be rebased",
+        );
     };
     let Ok(current) = std::str::from_utf8(current_bytes) else {
-        return tracked_workspace_live_sync_conflict(path, "binary target content cannot be rebased");
+        return tracked_workspace_live_sync_conflict(
+            path,
+            "binary target content cannot be rebased",
+        );
     };
     let Some(rebased) = tracked_workspace_live_sync_rebase_text(before, after, current) else {
         return tracked_workspace_live_sync_conflict(
@@ -707,7 +716,9 @@ fn tracked_workspace_live_sync_rebase_modify(
         }
     }
     match std::fs::write(target_path, rebased.as_bytes()) {
-        Ok(()) => tracked_workspace_live_sync_rebased(path, "rebased over non-overlapping target change"),
+        Ok(()) => {
+            tracked_workspace_live_sync_rebased(path, "rebased over non-overlapping target change")
+        }
         Err(error) => tracked_workspace_live_sync_failed(
             path,
             format!("failed to write rebased target content: {error}"),
@@ -725,10 +736,16 @@ fn tracked_workspace_live_sync_rebase_text(
     let current_lines = tracked_workspace_live_sync_lines(current);
     let source = tracked_workspace_live_sync_changed_range(&before_lines, &after_lines);
     let target = tracked_workspace_live_sync_changed_range(&before_lines, &current_lines);
-    if tracked_workspace_live_sync_ranges_overlap(source.before_start, source.before_end, target.before_start, target.before_end) {
+    if tracked_workspace_live_sync_ranges_overlap(
+        source.before_start,
+        source.before_end,
+        target.before_start,
+        target.before_end,
+    ) {
         return None;
     }
-    let target_delta = target.changed_end as isize - target.before_end as isize
+    let target_delta = target.changed_end as isize
+        - target.before_end as isize
         - (target.changed_start as isize - target.before_start as isize);
     let offset = if target.before_end <= source.before_start {
         target_delta
@@ -1598,11 +1615,9 @@ mod tests {
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(target.join("src")).expect("target should be created");
-        std::fs::write(target.join("src/lib.rs"), "a\nlocal\nb\nc\n")
-            .expect("target should write");
-        let encode = |value: &str| {
-            base64::engine::general_purpose::STANDARD.encode(value.as_bytes())
-        };
+        std::fs::write(target.join("src/lib.rs"), "a\nlocal\nb\nc\n").expect("target should write");
+        let encode =
+            |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
         let change = TrackedWorkspaceLiveSyncTurnChange {
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
@@ -1625,7 +1640,10 @@ mod tests {
 
         let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
 
-        assert_eq!(results[0].status, TrackedWorkspaceLiveSyncApplyStatus::Rebased);
+        assert_eq!(
+            results[0].status,
+            TrackedWorkspaceLiveSyncApplyStatus::Rebased
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
             "a\nlocal\nb\nsource\nc\n"

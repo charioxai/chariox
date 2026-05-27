@@ -223,7 +223,13 @@ pub(crate) async fn observe_relay_leased_git_after(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     provider_run_id: &str,
-) -> Result<Vec<RemoteGitObservation>, DaemonError> {
+) -> Result<
+    (
+        Vec<RemoteGitObservation>,
+        Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+    ),
+    DaemonError,
+> {
     runtime_state
         .observe_relay_leased_git_after(leased_agent_id, provider_run_id)
         .await

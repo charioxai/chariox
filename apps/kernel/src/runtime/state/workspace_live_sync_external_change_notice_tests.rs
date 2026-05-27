@@ -339,9 +339,15 @@ fn managed_whole_file_operations_move_and_delete_opaque_bytes() {
 
 #[test]
 fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
+    let root = std::env::temp_dir().join(format!(
+        "remote-whole-file-repo-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("remote test root should exist");
     let workspace = crate::io::WorkspaceIdentity::local("remote-whole-file-repo");
     let workspace_context = WorkspaceLiveSyncWorkspaceContext {
-        root: PathBuf::from("/tmp/remote-whole-file-repo"),
+        root: root.clone(),
         identity: workspace.clone(),
         generation: 0,
         identity_changed: false,
@@ -407,6 +413,7 @@ fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
         coordinator.current_content(&to_id),
         Some(&crate::io::ArtifactContent::Bytes(vec![1, 2, 3]))
     );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
