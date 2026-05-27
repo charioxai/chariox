@@ -15,7 +15,7 @@ impl KernelRuntimeOwnedState {
             &request.workflow_ref,
             request.expected_workflow_revision,
         )?;
-        self.ensure_workflow_node_owner(
+        self.ensure_workflow_node_editor(
             &request.session_id,
             &request.workflow_ref,
             &request.entry_node_id,
@@ -98,7 +98,7 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             "bind workflow endpoint",
         )?;
-        self.ensure_workflow_node_owner(
+        self.ensure_workflow_node_editor(
             &request.session_id,
             &request.workflow_ref,
             &request.entry_node_id,

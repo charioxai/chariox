@@ -17,7 +17,7 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    pub(super) fn ensure_workflow_node_owner(
+    pub(super) fn ensure_workflow_node_editor(
         &self,
         session_id: &str,
         workflow_ref: &str,
@@ -25,6 +25,7 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        let session = self.session_store.read().get_session(session_id)?;
         let workflow = self
             .session_store
             .read()
@@ -36,12 +37,18 @@ impl KernelRuntimeOwnedState {
                 workflow_id: workflow.id().to_string(),
                 node_id: node_id.to_string(),
             })?;
-        if node.owner_user_id() == user_id {
+        let full_collaboration = session
+            .collaboration_level_for_user(user_id)
+            .is_some_and(|level| level.can_prompt_agent_directly());
+        if node.owner_user_id() == user_id
+            || node.created_by_user_id() == user_id
+            || full_collaboration
+        {
             Ok(())
         } else {
             Err(Self::deny_owner(
                 user_id,
-                node.owner_user_id(),
+                node.created_by_user_id(),
                 format!("workflow node `{node_id}`"),
                 operation,
             ))
@@ -107,6 +114,7 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        let session = self.session_store.read().get_session(session_id)?;
         let workflow = self
             .session_store
             .read()
@@ -118,13 +126,19 @@ impl KernelRuntimeOwnedState {
                 workflow_id: workflow.id().to_string(),
                 edge_id: edge_id.to_string(),
             })?;
-        let from_owner = workflow
-            .node(edge.from_node_id())
-            .map(|node| node.owner_user_id());
-        let to_owner = workflow
-            .node(edge.to_node_id())
-            .map(|node| node.owner_user_id());
-        if from_owner == Some(user_id) || to_owner == Some(user_id) {
+        let full_collaboration = session
+            .collaboration_level_for_user(user_id)
+            .is_some_and(|level| level.can_prompt_agent_directly());
+        let can_edit_endpoint = |node_id: &str| {
+            workflow.node(node_id).is_some_and(|node| {
+                node.owner_user_id() == user_id || node.created_by_user_id() == user_id
+            })
+        };
+        if full_collaboration
+            || can_edit_endpoint(edge.from_node_id())
+            || can_edit_endpoint(edge.to_node_id())
+            || edge.created_by_user_id() == user_id
+        {
             Ok(())
         } else {
             Err(Self::deny_owner(

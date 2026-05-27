@@ -183,7 +183,7 @@ impl WorkflowNodeDefinition {
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {
-        if self.owner_user_id != user_id {
+        if self.owner_user_id != user_id && self.created_by_user_id != user_id {
             self.instructions = None;
         }
         self

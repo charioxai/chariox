@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::UpdateWorkflowNodeInstructionsRequest;
 
 #[tokio::test]
 async fn remote_session_requests_require_membership() {
@@ -410,17 +411,54 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         agent_id: extra_local_agent_id.clone(),
         expected_workflow_revision: None,
     });
-    let added = router
+    let collaborator_placed_local_node = match router
         .dispatch(
             remote_command_for_request(&add_local_node, Some("user-2")),
             add_local_node,
         )
         .await
-        .expect("collaborator should be able to add another user's agent as a workflow node");
-    assert!(matches!(
-        added,
-        LocalDaemonResponse::WorkflowNodeAdded { .. }
-    ));
+        .expect("collaborator should be able to add another user's agent as a workflow node")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        other => panic!("unexpected add node response: {other:?}"),
+    };
+    assert_eq!(
+        collaborator_placed_local_node.owner_user_id(),
+        DEFAULT_LOCAL_USER_ID
+    );
+    assert_eq!(collaborator_placed_local_node.created_by_user_id(), "user-2");
+
+    let update_collaborator_node =
+        LocalDaemonRequest::UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            node_id: collaborator_placed_local_node.id().to_string(),
+            instructions: Some("user-2 graph instructions".to_string()),
+            expected_workflow_revision: None,
+        });
+    router
+        .dispatch(
+            remote_command_for_request(&update_collaborator_node, Some("user-2")),
+            update_collaborator_node,
+        )
+        .await
+        .expect("collaborator should edit the node they inserted");
+
+    let create_collaborator_endpoint =
+        LocalDaemonRequest::CreateWorkflowEndpoint(CreateWorkflowEndpointRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            entry_node_id: collaborator_placed_local_node.id().to_string(),
+            alias: Some("collaborator-entry".to_string()),
+            expected_workflow_revision: None,
+        });
+    router
+        .dispatch(
+            remote_command_for_request(&create_collaborator_endpoint, Some("user-2")),
+            create_collaborator_endpoint,
+        )
+        .await
+        .expect("collaborator should create an endpoint for the node they inserted");
 
     let invoke = LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
         session_id: session_id.clone(),
@@ -483,7 +521,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
     let add_cross_owner_edge = LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
         session_id: session_id.clone(),
         workflow_ref: workflow_id.clone(),
-        from_node_id: local_node.id().to_string(),
+        from_node_id: collaborator_placed_local_node.id().to_string(),
         to_node_id: user_two_node.id().to_string(),
         handoff_schema_ref: None,
         validation_policy: None,
@@ -594,6 +632,8 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("user should join session");
     let local_agent = spawn_test_agent(&mut app, &session_id, "local-owned", "dev-stub");
+    let extra_local_agent =
+        spawn_test_agent(&mut app, &session_id, "local-owned-extra", "dev-stub");
     let user_two_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
@@ -625,6 +665,25 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
             Some("local private prompt".to_string()),
         )
         .expect("local node instructions should update");
+    let user_two_placed_local_node = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            &session_id,
+            &workflow_id,
+            extra_local_agent.id(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            "user-2".to_string(),
+            "user two placed local public".to_string(),
+        )
+        .expect("user two placed local node should be created");
+    app.sessions_mut()
+        .update_workflow_node_instructions(
+            &session_id,
+            &workflow_id,
+            user_two_placed_local_node.id(),
+            Some("user two graph prompt".to_string()),
+        )
+        .expect("user two placed node instructions should update");
     let user_two_node = app
         .sessions_mut()
         .add_workflow_node_owned(
@@ -669,7 +728,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         LocalDaemonResponse::SessionState { session, .. } => session,
         other => panic!("unexpected session response: {other:?}"),
     };
-    assert_eq!(redacted_session.agents().len(), 2);
+    assert_eq!(redacted_session.agents().len(), 3);
     let redacted_local_agent = redacted_session
         .agents()
         .iter()
@@ -677,6 +736,11 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .expect("other user's agent handle should remain workflow-selectable");
     assert_eq!(redacted_local_agent.provider(), "redacted");
     assert_eq!(redacted_local_agent.model(), None);
+    assert!(redacted_session.agents().iter().any(|agent| {
+        agent.id() == extra_local_agent.id()
+            && agent.provider() == "redacted"
+            && agent.model().is_none()
+    }));
     assert!(redacted_session
         .agents()
         .iter()
@@ -686,12 +750,19 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .iter()
         .find(|workflow| workflow.id() == workflow_id)
         .expect("workflow graph should remain visible");
-    assert_eq!(redacted_workflow.nodes().len(), 2);
+    assert_eq!(redacted_workflow.nodes().len(), 3);
     let redacted_local_node = redacted_workflow
         .node(local_node.id())
         .expect("other user's node should remain visible");
     assert_eq!(redacted_local_node.public_label(), "local public");
     assert_eq!(redacted_local_node.instructions(), None);
+    let visible_user_two_placed_local_node = redacted_workflow
+        .node(user_two_placed_local_node.id())
+        .expect("node inserted by user two should remain visible");
+    assert_eq!(
+        visible_user_two_placed_local_node.instructions(),
+        Some("user two graph prompt")
+    );
     let visible_user_two_node = redacted_workflow
         .node(user_two_node.id())
         .expect("own node should remain visible");
@@ -712,13 +783,18 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .expect("member should list workflow-selectable agent handles")
     {
         LocalDaemonResponse::AgentsListed { agents } => {
-            assert_eq!(agents.len(), 2);
+            assert_eq!(agents.len(), 3);
             let listed_local_agent = agents
                 .iter()
                 .find(|agent| agent.id() == local_agent.id())
                 .expect("other user's redacted agent handle should be listed");
             assert_eq!(listed_local_agent.provider(), "redacted");
             assert_eq!(listed_local_agent.model(), None);
+            assert!(agents.iter().any(|agent| {
+                agent.id() == extra_local_agent.id()
+                    && agent.provider() == "redacted"
+                    && agent.model().is_none()
+            }));
             assert!(agents.iter().any(|agent| agent.id() == user_two_agent.id()));
         }
         other => panic!("unexpected agents response: {other:?}"),
