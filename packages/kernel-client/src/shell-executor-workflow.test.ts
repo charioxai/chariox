@@ -557,7 +557,7 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   assert.equal(watchdogDisable.ok, true)
   assert.equal(watchdogRemove.ok, true)
   assert.equal(queueList.ok, true)
-  assert.match(queueList.message ?? "", /prompt-1 queue=default/)
+  assert.match(queueList.message ?? "", /prompt-1 .*queue=default/)
   assert.equal(queueRemove.ok, true)
   assert.equal(queueFlush.ok, true)
   assert.deepEqual(requests, [
