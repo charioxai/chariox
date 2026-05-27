@@ -327,72 +327,141 @@ impl KernelRuntimeState {
         change: &crate::git_observer::WorkspaceLiveSyncChange,
         target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
     ) {
-        if target_results.is_empty() {
-            return;
+        for message in workspace_live_sync_notice_messages(change, target_results) {
+            self.owned.record_notice(
+                &change.session_id,
+                Some(&change.provider_run_id),
+                Vec::new(),
+                message,
+            );
         }
-        let mode_label = if change.status_fingerprint == "managed_workspace_live_sync" {
-            "managed"
-        } else {
-            "tracked turn"
-        };
-        let mut applied_targets = 0usize;
-        let mut rebased_count = 0usize;
-        let mut conflict_count = 0usize;
-        let mut failed_count = 0usize;
-        for target_result in target_results {
-            let mut target_has_applied = false;
-            for path_result in &target_result.path_results {
-                match path_result.status {
-                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied => {
-                        target_has_applied = true;
-                    }
-                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {
-                        target_has_applied = true;
-                        rebased_count += 1;
-                    }
-                    crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
-                        conflict_count += 1;
-                        self.owned.record_notice(
-                            &change.session_id,
-                            Some(&change.provider_run_id),
-                            Vec::new(),
-                            format!(
-                                "Workspace live sync conflict: source agent `{}` changed `{}` but target `{}` at `{}` could not apply it: {}. Next action: assign a resolver agent to reread and reconcile the target.",
-                                change.agent_id,
-                                path_result.path,
-                                target_result.target_user_id,
-                                target_result.target_repo_root,
-                                path_result.message
-                            ),
-                        );
-                    }
-                    crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
-                        failed_count += 1;
-                    }
+    }
+}
+
+fn workspace_live_sync_notice_messages(
+    change: &crate::git_observer::WorkspaceLiveSyncChange,
+    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+) -> Vec<String> {
+    if target_results.is_empty() {
+        return Vec::new();
+    }
+    let mode_label = if change.status_fingerprint == "managed_workspace_live_sync" {
+        "managed"
+    } else {
+        "tracked turn"
+    };
+    let mut applied_targets = 0usize;
+    let mut rebased_count = 0usize;
+    let mut conflict_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut target_details = Vec::new();
+    let mut notices = Vec::new();
+    for target_result in target_results {
+        let mut target_has_applied = false;
+        for path_result in &target_result.path_results {
+            match path_result.status {
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied => {
+                    target_has_applied = true;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "applied",
+                    ));
+                }
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {
+                    target_has_applied = true;
+                    rebased_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "rebased",
+                    ));
+                }
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                    conflict_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "conflict",
+                    ));
+                    notices.push(format!(
+                        "Workspace live sync conflict: source agent `{}` changed `{}` but target user `{}` worktree `{}` could not apply it: {}. Next action: assign a resolver agent to reread and reconcile the target worktree.",
+                        change.agent_id,
+                        path_result.path,
+                        target_result.target_user_id,
+                        target_result.target_repo_root,
+                        path_result.message
+                    ));
+                }
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
+                    failed_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "failed_io",
+                    ));
+                    notices.push(format!(
+                        "Workspace live sync failed: source agent `{}` changed `{}` but target user `{}` worktree `{}` could not apply it: {}. Next action: verify the target worktree is attached and writable, then ask a resolver agent to recheck and re-edit if needed.",
+                        change.agent_id,
+                        path_result.path,
+                        target_result.target_user_id,
+                        target_result.target_repo_root,
+                        path_result.message
+                    ));
                 }
             }
-            if target_has_applied {
-                applied_targets += 1;
-            }
         }
-        self.owned.record_notice(
-            &change.session_id,
-            Some(&change.provider_run_id),
-            Vec::new(),
-            format!(
-                "Workspace live sync {} summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}.",
-                mode_label,
-                change.agent_id,
-                change.changed_paths.len(),
-                if change.changed_paths.len() == 1 { "" } else { "s" },
-                applied_targets,
-                if applied_targets == 1 { "" } else { "s" },
-                rebased_count,
-                conflict_count,
-                failed_count
-            ),
-        );
+        if target_has_applied {
+            applied_targets += 1;
+        }
     }
+    let next_action = if conflict_count > 0 || failed_count > 0 {
+        "review the listed conflict/failure notices and assign a resolver agent where needed"
+    } else {
+        "none"
+    };
+    notices.push(format!(
+        "Workspace live sync {} summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}; target results: {}; Next action: {}.",
+        mode_label,
+        change.agent_id,
+        change.changed_paths.len(),
+        if change.changed_paths.len() == 1 { "" } else { "s" },
+        applied_targets,
+        if applied_targets == 1 { "" } else { "s" },
+        rebased_count,
+        conflict_count,
+        failed_count,
+        workspace_live_sync_target_details_summary(&target_details),
+        next_action
+    ));
+    notices
+}
+
+fn workspace_live_sync_target_detail(
+    target_result: &crate::git_observer::WorkspaceLiveSyncTargetResult,
+    path_result: &crate::git_observer::WorkspaceLiveSyncPathApplyResult,
+    status: &str,
+) -> String {
+    format!(
+        "target user `{}` worktree `{}` path `{}` {}",
+        target_result.target_user_id, target_result.target_repo_root, path_result.path, status
+    )
+}
+
+fn workspace_live_sync_target_details_summary(details: &[String]) -> String {
+    const MAX_DETAILS: usize = 6;
+    if details.is_empty() {
+        return "none".to_string();
+    }
+    let mut shown = details
+        .iter()
+        .take(MAX_DETAILS)
+        .cloned()
+        .collect::<Vec<_>>();
+    if details.len() > MAX_DETAILS {
+        shown.push(format!("{} more", details.len() - MAX_DETAILS));
+    }
+    shown.join("; ")
 }
 
 fn workspace_live_sync_remote_failed_result(
@@ -414,5 +483,130 @@ fn workspace_live_sync_remote_failed_result(
             status: crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo,
             message,
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_summary_names_targets_paths_and_next_action() {
+        let messages = workspace_live_sync_notice_messages(
+            &change("managed_workspace_live_sync"),
+            &[target_result(vec![
+                path_result(
+                    "src/lib.rs",
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                    "applied cleanly",
+                ),
+                path_result(
+                    "src/main.rs",
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased,
+                    "rebased over non-overlapping target change",
+                ),
+            ])],
+        );
+
+        assert_eq!(messages.len(), 1);
+        let summary = &messages[0];
+        assert!(summary.contains("Workspace live sync managed summary"));
+        assert!(summary.contains("source agent `agent-1`"));
+        assert!(summary
+            .contains("target user `user-2` worktree `/tmp/target` path `src/lib.rs` applied"));
+        assert!(summary
+            .contains("target user `user-2` worktree `/tmp/target` path `src/main.rs` rebased"));
+        assert!(summary.contains("Next action: none."));
+    }
+
+    #[test]
+    fn workspace_live_sync_conflict_notice_names_source_target_path_and_action() {
+        let messages = workspace_live_sync_notice_messages(
+            &change("tracked_workspace_live_sync"),
+            &[target_result(vec![path_result(
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict,
+                "overlapping edits",
+            )])],
+        );
+
+        assert_eq!(messages.len(), 2);
+        let conflict = &messages[0];
+        assert!(conflict.contains("Workspace live sync conflict"));
+        assert!(conflict.contains("source agent `agent-1`"));
+        assert!(conflict.contains("changed `src/lib.rs`"));
+        assert!(conflict.contains("target user `user-2` worktree `/tmp/target`"));
+        assert!(conflict.contains("overlapping edits"));
+        assert!(conflict.contains("Next action: assign a resolver agent"));
+        assert!(messages[1].contains("conflicts=1"));
+        assert!(messages[1].contains("Next action: review the listed conflict/failure notices"));
+    }
+
+    #[test]
+    fn workspace_live_sync_failed_io_notice_names_source_target_path_and_action() {
+        let messages = workspace_live_sync_notice_messages(
+            &change("tracked_workspace_live_sync"),
+            &[target_result(vec![path_result(
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo,
+                "permission denied",
+            )])],
+        );
+
+        assert_eq!(messages.len(), 2);
+        let failure = &messages[0];
+        assert!(failure.contains("Workspace live sync failed"));
+        assert!(failure.contains("source agent `agent-1`"));
+        assert!(failure.contains("changed `src/lib.rs`"));
+        assert!(failure.contains("target user `user-2` worktree `/tmp/target`"));
+        assert!(failure.contains("permission denied"));
+        assert!(
+            failure.contains("Next action: verify the target worktree is attached and writable")
+        );
+        assert!(messages[1].contains("failed_io=1"));
+    }
+
+    fn change(status_fingerprint: &str) -> crate::git_observer::WorkspaceLiveSyncChange {
+        crate::git_observer::WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/tmp/source".to_string(),
+            worktree_path: "/tmp/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["src/lib.rs".to_string(), "src/main.rs".to_string()],
+            file_changes: Vec::new(),
+            status_fingerprint: status_fingerprint.to_string(),
+        }
+    }
+
+    fn target_result(
+        path_results: Vec<crate::git_observer::WorkspaceLiveSyncPathApplyResult>,
+    ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+        crate::git_observer::WorkspaceLiveSyncTargetResult {
+            session_id: "session-1".to_string(),
+            link_id: "link-1".to_string(),
+            link_name: "pair".to_string(),
+            source_agent_id: "agent-1".to_string(),
+            source_worktree_path: "/tmp/source".to_string(),
+            target_user_id: "user-2".to_string(),
+            target_machine_id: "machine-2".to_string(),
+            target_kernel_id: "kernel-2".to_string(),
+            target_repo_root: "/tmp/target".to_string(),
+            path_results,
+        }
+    }
+
+    fn path_result(
+        path: &str,
+        status: crate::git_observer::WorkspaceLiveSyncApplyStatus,
+        message: &str,
+    ) -> crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+        crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+            path: path.to_string(),
+            status,
+            message: message.to_string(),
+        }
     }
 }
