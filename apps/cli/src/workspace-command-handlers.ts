@@ -70,29 +70,41 @@ async function handleWorkspaceSyncCommand(
     deps.flashFooter("attach to a session before viewing workspace live sync", "error")
     return
   }
-  if (!deps.getWorkspaceLiveSyncStatus) {
-    deps.flashFooter("workspace live sync status is not available", "error")
-    return
-  }
   if (!action || action === "status") {
+    if (!deps.getWorkspaceLiveSyncStatus) {
+      deps.flashFooter("workspace live sync status is not available", "error")
+      return
+    }
     const status = await deps.getWorkspaceLiveSyncStatus()
     deps.appendNotice(formatWorkspaceLiveSyncStatus(status))
     deps.flashFooter(`workspace live sync ${status.footer_state}`, "info")
     return
   }
   if (action === "targets") {
+    if (!deps.getWorkspaceLiveSyncStatus) {
+      deps.flashFooter("workspace live sync status is not available", "error")
+      return
+    }
     const status = await deps.getWorkspaceLiveSyncStatus()
     deps.appendNotice(formatWorkspaceLiveSyncTargets(status))
     deps.flashFooter(`workspace live sync targets: ${status.targets.length}`, "info")
     return
   }
   if (action === "conflicts") {
+    if (!deps.getWorkspaceLiveSyncStatus) {
+      deps.flashFooter("workspace live sync status is not available", "error")
+      return
+    }
     const status = await deps.getWorkspaceLiveSyncStatus()
     deps.appendNotice(formatWorkspaceLiveSyncConflicts(status))
     deps.flashFooter(`workspace live sync conflicts: ${status.conflicts.length}`, "info")
     return
   }
   if (action === "ignore") {
+    if (!deps.getWorkspaceLiveSyncStatus) {
+      deps.flashFooter("workspace live sync status is not available", "error")
+      return
+    }
     const status = await deps.getWorkspaceLiveSyncStatus()
     deps.appendNotice([
       `Ignore file: ${status.ignore.ignore_file ?? "none"}`,
@@ -131,7 +143,10 @@ async function handleWorkspaceSyncCommand(
     return
   }
   if (action === "link") {
-    await attachWorkspaceLink(deps, args[0], args[1])
+    await attachWorkspaceLink(deps, args[0], args[1], {
+      usage: "/workspace sync link <name-or-id> [repo-root]",
+      success: (repoRoot, link) => `linked ${repoRoot} for workspace live sync via ${link.name}`,
+    })
     return
   }
   deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode|link", "error")
@@ -308,15 +323,23 @@ async function attachWorkspaceLink(
   deps: WorkspaceCommandHandlerDeps,
   linkRef: string | undefined,
   repoRootArg: string | undefined,
+  messages?: {
+    usage?: string
+    success?: (repoRoot: string, link: WorkspaceLinkDefinition) => string
+  },
 ): Promise<void> {
   const repoRoot = repoRootArg ? resolvePath(deps.currentWorktreeTarget(), repoRootArg) : deps.currentWorktreeTarget()
   if (!linkRef || !deps.attachWorkspaceLink) {
-    deps.flashFooter("usage: /workspace link attach <name-or-id> [repo-root]", "error")
+    deps.flashFooter(`usage: ${messages?.usage ?? "/workspace link attach <name-or-id> [repo-root]"}`, "error")
     return
   }
   const payload = await deps.attachWorkspaceLink(linkRef, repoRoot)
   if (payload.session) deps.applySessionState(payload.session)
-  deps.flashFooter(`attached ${repoRoot} to workspace link ${payload.link.name}`, "info")
+  deps.flashFooter(
+    messages?.success?.(repoRoot, payload.link)
+      ?? `attached ${repoRoot} to workspace link ${payload.link.name}`,
+    "info",
+  )
 }
 
 async function detachWorkspaceLink(
