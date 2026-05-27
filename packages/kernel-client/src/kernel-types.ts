@@ -438,6 +438,7 @@ export type AgentInstance = {
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
   substitution_timeout_ms?: number | null
+  visible_in_freeform?: boolean
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
   grid_row: number
@@ -840,7 +841,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 51
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 52
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

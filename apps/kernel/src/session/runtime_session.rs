@@ -13,13 +13,13 @@ use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
 use super::session_identity::{
-    default_session_members, default_session_owner_user_id, CollaborationLevel,
-    SessionAgentDefaults, SessionInvite, SessionMember,
+    CollaborationLevel, SessionAgentDefaults, SessionInvite, SessionMember,
+    default_session_members, default_session_owner_user_id,
 };
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
+use super::types::{DEFAULT_SESSION_MAX_AGENTS, unix_epoch_ms};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_publication::WorkflowPublicationDefinition;
@@ -363,15 +363,22 @@ impl RuntimeSession {
             self.agents.retain(|agent| {
                 collaboration_level.can_view_agent_trace() || agent.owner_user_id() == user_id
             });
+            for agent in &mut self.agents {
+                agent.set_visible_in_freeform(visible_agent_ids.contains(agent.id()));
+            }
         } else {
             self.agents = self
                 .agents
                 .into_iter()
                 .map(|agent| {
                     if agent.owner_user_id() == user_id {
+                        let mut agent = agent;
+                        agent.set_visible_in_freeform(true);
                         agent
                     } else {
-                        agent.redacted_parameters()
+                        let mut agent = agent.redacted_parameters();
+                        agent.set_visible_in_freeform(visible_agent_ids.contains(agent.id()));
+                        agent
                     }
                 })
                 .collect();

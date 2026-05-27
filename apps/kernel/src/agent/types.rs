@@ -134,6 +134,11 @@ pub struct AgentInstance {
     last_substitution: Option<AgentSubstitutionRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
+    #[serde(
+        default = "default_visible_in_freeform",
+        skip_serializing_if = "is_default_visible_in_freeform"
+    )]
+    visible_in_freeform: bool,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -178,6 +183,7 @@ impl AgentInstance {
             active_substitute_index: None,
             last_substitution: None,
             substitution_timeout_ms: None,
+            visible_in_freeform: true,
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -340,6 +346,14 @@ impl AgentInstance {
 
     pub fn last_activity_at_ms(&self) -> u64 {
         self.last_activity_at_ms
+    }
+
+    pub fn visible_in_freeform(&self) -> bool {
+        self.visible_in_freeform
+    }
+
+    pub fn set_visible_in_freeform(&mut self, visible: bool) {
+        self.visible_in_freeform = visible;
     }
 
     pub fn redacted_parameters(mut self) -> Self {
@@ -630,6 +644,14 @@ fn default_agent_owner_user_id() -> String {
     DEFAULT_LOCAL_USER_ID.to_string()
 }
 
+fn default_visible_in_freeform() -> bool {
+    true
+}
+
+fn is_default_visible_in_freeform(value: &bool) -> bool {
+    *value
+}
+
 /// Calculates grid layout for agents based on count.
 /// Layout progression:
 /// - 1 agent: full screen (2x2)
@@ -681,7 +703,7 @@ pub fn generate_agent_ref() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_agent_layout, AgentInstance, AgentSubstituteProfile, GridPosition};
+    use super::{AgentInstance, AgentSubstituteProfile, GridPosition, calculate_agent_layout};
 
     #[test]
     fn calculate_agent_layout_expands_past_six_agents() {

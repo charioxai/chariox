@@ -426,7 +426,10 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         collaborator_placed_local_node.owner_user_id(),
         DEFAULT_LOCAL_USER_ID
     );
-    assert_eq!(collaborator_placed_local_node.created_by_user_id(), "user-2");
+    assert_eq!(
+        collaborator_placed_local_node.created_by_user_id(),
+        "user-2"
+    );
 
     let update_collaborator_node =
         LocalDaemonRequest::UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest {
@@ -736,15 +739,19 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .expect("other user's agent handle should remain workflow-selectable");
     assert_eq!(redacted_local_agent.provider(), "redacted");
     assert_eq!(redacted_local_agent.model(), None);
+    assert_eq!(redacted_local_agent.visible_in_freeform(), false);
     assert!(redacted_session.agents().iter().any(|agent| {
         agent.id() == extra_local_agent.id()
             && agent.provider() == "redacted"
             && agent.model().is_none()
+            && !agent.visible_in_freeform()
     }));
-    assert!(redacted_session
+    let visible_user_two_agent = redacted_session
         .agents()
         .iter()
-        .any(|agent| agent.id() == user_two_agent.id()));
+        .find(|agent| agent.id() == user_two_agent.id())
+        .expect("own agent should remain visible");
+    assert_eq!(visible_user_two_agent.visible_in_freeform(), true);
     let redacted_workflow = redacted_session
         .workflows()
         .iter()
@@ -790,12 +797,18 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
                 .expect("other user's redacted agent handle should be listed");
             assert_eq!(listed_local_agent.provider(), "redacted");
             assert_eq!(listed_local_agent.model(), None);
+            assert_eq!(listed_local_agent.visible_in_freeform(), false);
             assert!(agents.iter().any(|agent| {
                 agent.id() == extra_local_agent.id()
                     && agent.provider() == "redacted"
                     && agent.model().is_none()
+                    && !agent.visible_in_freeform()
             }));
-            assert!(agents.iter().any(|agent| agent.id() == user_two_agent.id()));
+            assert!(
+                agents.iter().any(|agent| {
+                    agent.id() == user_two_agent.id() && agent.visible_in_freeform()
+                })
+            );
         }
         other => panic!("unexpected agents response: {other:?}"),
     }
