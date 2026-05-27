@@ -107,7 +107,7 @@ test("workspace sync link uses sync-specific attach wording", async () => {
   await runWorkspace(deps, "/workspace sync link")
 
   assert.deepEqual(attached, [["shared", "/repo/peer"]])
-  assert.equal(footers[0], "info:linked /repo/peer for workspace live sync via shared")
+  assert.equal(footers[0], "info:linked /repo/peer for workspace live sync via shared; recommended mode: managed")
   assert.equal(footers[1], "error:usage: /workspace sync link <name-or-id> [repo-root]")
 })
 

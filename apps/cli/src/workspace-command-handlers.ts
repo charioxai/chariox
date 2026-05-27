@@ -150,7 +150,7 @@ async function handleWorkspaceSyncCommand(
   if (action === "link") {
     await attachWorkspaceLink(deps, args[0], args[1], {
       usage: "/workspace sync link <name-or-id> [repo-root]",
-      success: (repoRoot, link) => `linked ${repoRoot} for workspace live sync via ${link.name}`,
+      success: (repoRoot, link) => `linked ${repoRoot} for workspace live sync via ${link.name}; recommended mode: managed`,
     })
     return
   }
@@ -342,7 +342,7 @@ async function attachWorkspaceLink(
   if (payload.session) deps.applySessionState(payload.session)
   deps.flashFooter(
     messages?.success?.(repoRoot, payload.link)
-      ?? `attached ${repoRoot} to workspace link ${payload.link.name}`,
+      ?? `attached ${repoRoot} to workspace link ${payload.link.name}; enroll with /workspace sync enable managed (recommended)`,
     "info",
   )
 }

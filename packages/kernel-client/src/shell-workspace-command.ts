@@ -86,7 +86,7 @@ export async function executeWorkspaceCommand(
       const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
       return {
         ok: true,
-        message: `attached ${repoRoot} to workspace link ${payload.link.name}`,
+        message: `attached ${repoRoot} to workspace link ${payload.link.name}; enroll with \`workspace sync enable managed\` (recommended)`,
         data: payload,
         contextUpdates: { sessionId: payload.session.id },
       }
@@ -198,7 +198,7 @@ async function executeWorkspaceSyncCommand(
     const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
     return {
       ok: true,
-      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}`,
+      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}; recommended mode: managed`,
       data: payload,
       contextUpdates: { sessionId: payload.session.id },
     }

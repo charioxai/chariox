@@ -562,7 +562,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(createResult.message ?? "", /created workspace link shared-repo/)
   assert.match(listResult.message ?? "", /attachments=1/)
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
-  assert.match(attachResult.message ?? "", /attached \/repo/)
+  assert.match(attachResult.message ?? "", /workspace sync enable managed.*recommended/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
   assert.match(syncResult.message ?? "", /source=agent-1 target=local:\/repo/)
   assert.match(syncTargetsResult.message ?? "", /ready shared-repo: \/repo/)
@@ -571,7 +571,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(modeResult.message ?? "", /mode set to tracked/)
   assert.match(enableResult.message ?? "", /enabled: managed/)
   assert.match(disableResult.message ?? "", /disabled/)
-  assert.match(syncLinkResult.message ?? "", /linked \/repo/)
+  assert.match(syncLinkResult.message ?? "", /recommended mode: managed/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.deepEqual(requests, [
     { CreateWorkspaceLink: { session_id: "session-1", name: "shared-repo" } },
