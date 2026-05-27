@@ -84,7 +84,12 @@ export function issueCloudRelayClientTokenRequest(targetDaemonAlias: string, cli
 
 export function createCloudSessionInviteRequest(
   sessionId: string,
-  options: { displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null } = {},
+  options: {
+    displayName?: string | null
+    expiresInMs?: number | null
+    maxUses?: number | null
+    collaborationLevel?: "private" | "transparent" | "full"
+  } = {},
 ) {
   return {
     CreateCloudSessionInvite: {
@@ -92,6 +97,7 @@ export function createCloudSessionInviteRequest(
       display_name: options.displayName ?? null,
       expires_in_ms: options.expiresInMs ?? null,
       max_uses: options.maxUses ?? null,
+      collaboration_level: options.collaborationLevel ?? "private",
     },
   }
 }

@@ -2,6 +2,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { RelayCloudProfile } from "./preferences.js"
 import {
   handleCloudSessionCommand,
+  parseCollaborationLevel,
   type CloudSessionCommandHandlerDeps,
 } from "./cloud-session-command-handlers.js"
 import {
@@ -212,17 +213,23 @@ async function createRelayInvite(deps: CloudCommandHandlerDeps, args: string[]):
     deps.flashFooter("relay invite creation is unavailable in this build", "error")
     return
   }
+  const collaborationLevel = parseCollaborationLevel(args)
+  if (!collaborationLevel) {
+    deps.flashFooter("usage: /relay invite create [max-uses|--max-uses n] [--level private|transparent|full]", "error")
+    return
+  }
   const maxUsesIndex = args.findIndex((value) => value === "--max-uses")
   const maxUses = parsePositiveInt(maxUsesIndex >= 0 ? args[maxUsesIndex + 1] : args[0]) ?? 1
   if (maxUses <= 0) {
-    deps.flashFooter("usage: /relay invite create [max-uses|--max-uses n]", "error")
+    deps.flashFooter("usage: /relay invite create [max-uses|--max-uses n] [--level private|transparent|full]", "error")
     return
   }
-  const local = await deps.createSessionInvite(deps.sessionState().id, null, maxUses)
+  const local = await deps.createSessionInvite(deps.sessionState().id, null, maxUses, collaborationLevel)
   deps.applySessionState(local.session)
   deps.appendNotice([
     "relay session invite",
     `invite_token=${local.invite.invite_token}`,
+    `level=${collaborationLevel}`,
     "share this token with a user already connected to the same relay",
   ].join("\n"))
   deps.flashFooter("relay invite created", "info")

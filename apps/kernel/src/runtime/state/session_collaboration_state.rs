@@ -26,6 +26,7 @@ impl KernelRuntimeState {
         created_by_user_id: String,
         expires_at_ms: Option<u64>,
         max_uses: Option<u32>,
+        collaboration_level: crate::session::CollaborationLevel,
     ) -> Result<
         (
             crate::session::RuntimeSession,
@@ -39,6 +40,7 @@ impl KernelRuntimeState {
             created_by_user_id,
             expires_at_ms,
             max_uses,
+            collaboration_level,
         )?;
         self.owned.session_projection.update(session.clone());
         Ok((session, invite))

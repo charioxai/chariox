@@ -342,6 +342,27 @@ impl AgentInstance {
         self.last_activity_at_ms
     }
 
+    pub fn redacted_parameters(mut self) -> Self {
+        self.provider = "redacted".to_string();
+        self.model = None;
+        self.effort = None;
+        self.primary_provider = None;
+        self.primary_model = None;
+        self.primary_effort = None;
+        self.execution_mode_override = None;
+        self.permission_level_override = None;
+        self.workspace_id = None;
+        self.worktree_id = None;
+        self.remote_execution = None;
+        self.provider_resume_state = ProviderResumeState::default();
+        self.extension_grants.clear();
+        self.substitutes.clear();
+        self.active_substitute_index = None;
+        self.last_substitution = None;
+        self.substitution_timeout_ms = None;
+        self
+    }
+
     pub fn set_state(&mut self, state: AgentState) {
         self.state = state;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();

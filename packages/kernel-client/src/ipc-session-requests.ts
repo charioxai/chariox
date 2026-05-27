@@ -61,12 +61,14 @@ export function createSessionInviteRequest(
   sessionId: string,
   expiresInMs: number | null = null,
   maxUses: number | null = null,
+  collaborationLevel: "private" | "transparent" | "full" = "private",
 ) {
   return {
     CreateSessionInvite: {
       session_id: sessionId,
       expires_in_ms: expiresInMs,
       max_uses: maxUses,
+      collaboration_level: collaborationLevel,
     },
   }
 }

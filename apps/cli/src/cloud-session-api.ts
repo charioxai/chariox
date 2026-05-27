@@ -1,4 +1,4 @@
-import type { RuntimeSession } from "./cli-types.js"
+import type { CollaborationLevel, RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
   acceptCloudSessionInviteRequest,
@@ -25,9 +25,10 @@ export async function createSessionInvite(
   sessionId: string,
   expiresInMs: number | null,
   maxUses: number | null,
+  collaborationLevel: CollaborationLevel = "private",
 ): Promise<LocalSessionInviteCreated> {
   const response = await client.send<Record<string, unknown>>(
-    createSessionInviteRequest(sessionId, expiresInMs, maxUses),
+    createSessionInviteRequest(sessionId, expiresInMs, maxUses, collaborationLevel),
   )
   return expectVariant<LocalSessionInviteCreated>(response, "SessionInviteCreated")
 }
@@ -44,7 +45,12 @@ export async function joinSessionInvite(
 export async function createCloudSessionInvite(
   client: LocalIpcClient,
   sessionId: string,
-  inviteOptions: { displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null },
+  inviteOptions: {
+    displayName?: string | null
+    expiresInMs?: number | null
+    maxUses?: number | null
+    collaborationLevel?: CollaborationLevel
+  },
 ): Promise<Record<string, unknown>> {
   const response = await client.send<Record<string, unknown>>(
     createCloudSessionInviteRequest(sessionId, inviteOptions),

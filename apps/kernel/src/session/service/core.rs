@@ -218,6 +218,7 @@ impl SessionService {
         created_by_user_id: String,
         expires_at_ms: Option<u64>,
         max_uses: Option<u32>,
+        collaboration_level: CollaborationLevel,
     ) -> Result<(RuntimeSession, SessionInvite), DaemonError> {
         let session =
             self.store
@@ -240,6 +241,7 @@ impl SessionService {
             unix_epoch_ms(),
             expires_at_ms,
             max_uses,
+            collaboration_level,
         );
         let invite = session.add_invite(invite);
         session.touch();
@@ -259,7 +261,7 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        let invited_by_user_id = {
+        let (invited_by_user_id, collaboration_level) = {
             let invite =
                 session
                     .invite_mut(invite_id)
@@ -292,9 +294,12 @@ impl SessionService {
                 });
             }
             invite.mark_used();
-            Some(invite.created_by_user_id().to_string())
+            (
+                Some(invite.created_by_user_id().to_string()),
+                invite.collaboration_level(),
+            )
         };
-        let member = session.add_member(user_id, invited_by_user_id);
+        let member = session.add_member(user_id, invited_by_user_id, collaboration_level);
         session.touch();
         Ok((session.clone(), member))
     }

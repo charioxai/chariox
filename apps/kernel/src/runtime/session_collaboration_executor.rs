@@ -90,6 +90,7 @@ pub(crate) async fn execute_create_session_invite_request(
         created_by_user_id,
         expires_at_ms,
         request.max_uses.or(Some(1)),
+        request.collaboration_level,
     )?;
     let invite_token = encode_session_invite_token(&SessionInviteToken {
         version: 1,

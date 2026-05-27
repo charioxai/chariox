@@ -182,13 +182,9 @@ pub(crate) fn projected_session_inspection_response(
                     Ok(session) => session,
                     Err(error) => return Some(Err(error)),
                 };
+            let session = session.redacted_for_user(caller_user_id);
             Some(Ok(LocalDaemonResponse::AgentsListed {
-                agents: session
-                    .agents()
-                    .iter()
-                    .filter(|agent| agent.owner_user_id() == caller_user_id)
-                    .cloned()
-                    .collect(),
+                agents: session.agents().to_vec(),
             }))
         }
         LocalDaemonRequest::ListWorkflows(request) => {

@@ -13,8 +13,8 @@ use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
 use super::session_identity::{
-    default_session_members, default_session_owner_user_id, SessionAgentDefaults, SessionInvite,
-    SessionMember,
+    default_session_members, default_session_owner_user_id, CollaborationLevel,
+    SessionAgentDefaults, SessionInvite, SessionMember,
 };
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
@@ -173,7 +173,12 @@ impl RuntimeSession {
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         let owner_user_id = owner_user_id.into();
         self.owner_user_id = owner_user_id.clone();
-        self.members = vec![SessionMember::new(owner_user_id, 0, None)];
+        self.members = vec![SessionMember::new(
+            owner_user_id,
+            0,
+            None,
+            CollaborationLevel::Full,
+        )];
     }
 
     pub fn members(&self) -> &[SessionMember] {
@@ -190,10 +195,32 @@ impl RuntimeSession {
             .any(|member| member.user_id() == user_id)
     }
 
+    pub fn collaboration_level_for_user(&self, user_id: &str) -> Option<CollaborationLevel> {
+        if self.owner_user_id == user_id {
+            return Some(CollaborationLevel::Full);
+        }
+        self.members
+            .iter()
+            .find(|member| member.user_id() == user_id)
+            .map(|member| member.collaboration_level())
+    }
+
+    pub fn can_prompt_agent_owned_by(
+        &self,
+        caller_user_id: &str,
+        agent_owner_user_id: &str,
+    ) -> bool {
+        caller_user_id == agent_owner_user_id
+            || self
+                .collaboration_level_for_user(caller_user_id)
+                .is_some_and(|level| level.can_prompt_agent_directly())
+    }
+
     pub fn add_member(
         &mut self,
         user_id: impl Into<String>,
         invited_by_user_id: Option<String>,
+        collaboration_level: CollaborationLevel,
     ) -> SessionMember {
         let user_id = user_id.into();
         if let Some(member) = self
@@ -204,7 +231,12 @@ impl RuntimeSession {
         {
             return member;
         }
-        let member = SessionMember::new(user_id, unix_epoch_ms(), invited_by_user_id);
+        let member = SessionMember::new(
+            user_id,
+            unix_epoch_ms(),
+            invited_by_user_id,
+            collaboration_level,
+        );
         self.members.push(member.clone());
         member
     }
@@ -292,6 +324,9 @@ impl RuntimeSession {
     }
 
     pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        let collaboration_level = self
+            .collaboration_level_for_user(user_id)
+            .unwrap_or(CollaborationLevel::Private);
         let total_agent_count = self.agents.len();
         let owned_agent_count = self
             .agents
@@ -319,24 +354,50 @@ impl RuntimeSession {
             .filter(|agent| agent.owner_user_id() == user_id)
             .map(|agent| agent.id().to_string())
             .collect::<BTreeSet<_>>();
-        self.agents.retain(|agent| agent.owner_user_id() == user_id);
+        let visible_agent_ids = if collaboration_level.can_view_agent_trace() {
+            self.agents
+                .iter()
+                .map(|agent| agent.id().to_string())
+                .collect::<BTreeSet<_>>()
+        } else {
+            owned_agent_ids.clone()
+        };
+        if collaboration_level.can_view_agent_parameters() {
+            self.agents.retain(|agent| {
+                collaboration_level.can_view_agent_trace() || agent.owner_user_id() == user_id
+            });
+        } else {
+            self.agents = self
+                .agents
+                .into_iter()
+                .map(|agent| {
+                    if agent.owner_user_id() == user_id {
+                        agent
+                    } else {
+                        agent.redacted_parameters()
+                    }
+                })
+                .collect();
+        }
         if self
             .focused_agent_id
             .as_ref()
-            .is_some_and(|agent_id| !owned_agent_ids.contains(agent_id))
+            .is_some_and(|agent_id| !visible_agent_ids.contains(agent_id))
         {
             self.focused_agent_id = None;
         }
-        if has_unowned_agents {
+        if has_unowned_agents && !collaboration_level.can_view_agent_trace() {
             self.active_provider_run_id = None;
         }
         self.prompt_runtime
-            .retain_agent_ids(&owned_agent_ids, self.focused_agent_id.as_deref());
-        self.workflows = self
-            .workflows
-            .into_iter()
-            .map(|workflow| workflow.redacted_for_user(user_id))
-            .collect();
+            .retain_agent_ids(&visible_agent_ids, self.focused_agent_id.as_deref());
+        if !collaboration_level.can_view_agent_trace() {
+            self.workflows = self
+                .workflows
+                .into_iter()
+                .map(|workflow| workflow.redacted_for_user(user_id))
+                .collect();
+        }
         self.workflow_publications
             .retain(|publication| publication.created_by_user_id() == user_id);
         self

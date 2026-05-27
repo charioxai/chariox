@@ -201,6 +201,7 @@ fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
                 "local".to_string(),
                 None,
                 Some(2),
+                crate::session::CollaborationLevel::Private,
             )
             .expect("invite should be created");
         sessions

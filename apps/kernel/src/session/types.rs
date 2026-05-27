@@ -12,7 +12,8 @@ pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 pub use super::session_config::SessionConfigState;
 pub use super::session_identity::{
-    CreateSessionRequest, SessionAgentDefaults, SessionInvite, SessionMember, DEFAULT_LOCAL_USER_ID,
+    CollaborationLevel, CreateSessionRequest, SessionAgentDefaults, SessionInvite, SessionMember,
+    DEFAULT_LOCAL_USER_ID,
 };
 pub use super::session_lifecycle::{SchedulerState, SessionExecutionMode, SessionStatus};
 pub use super::workflow_canvas::{

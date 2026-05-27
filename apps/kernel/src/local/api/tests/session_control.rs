@@ -132,6 +132,7 @@ fn local_request_api_manages_session_invites_and_members() {
                 session_id: session_id.clone(),
                 expires_in_ms: None,
                 max_uses: Some(1),
+                collaboration_level: crate::session::CollaborationLevel::Private,
             },
         ))
         .expect("session invite create should succeed")

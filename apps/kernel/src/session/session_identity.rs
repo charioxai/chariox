@@ -14,6 +14,34 @@ fn default_session_invite_max_uses() -> Option<u32> {
     Some(1)
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollaborationLevel {
+    Private,
+    Transparent,
+    Full,
+}
+
+impl Default for CollaborationLevel {
+    fn default() -> Self {
+        Self::Private
+    }
+}
+
+impl CollaborationLevel {
+    pub fn can_view_agent_trace(self) -> bool {
+        matches!(self, Self::Transparent | Self::Full)
+    }
+
+    pub fn can_view_agent_parameters(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    pub fn can_prompt_agent_directly(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAgentDefaults {
     pub provider: String,
@@ -139,6 +167,8 @@ pub struct SessionMember {
     user_id: String,
     joined_at_ms: u64,
     invited_by_user_id: Option<String>,
+    #[serde(default)]
+    collaboration_level: CollaborationLevel,
 }
 
 impl SessionMember {
@@ -146,16 +176,18 @@ impl SessionMember {
         user_id: impl Into<String>,
         joined_at_ms: u64,
         invited_by_user_id: Option<String>,
+        collaboration_level: CollaborationLevel,
     ) -> Self {
         Self {
             user_id: user_id.into(),
             joined_at_ms,
             invited_by_user_id,
+            collaboration_level,
         }
     }
 
     pub fn local() -> Self {
-        Self::new(DEFAULT_LOCAL_USER_ID, 0, None)
+        Self::new(DEFAULT_LOCAL_USER_ID, 0, None, CollaborationLevel::Full)
     }
 
     pub fn user_id(&self) -> &str {
@@ -168,6 +200,10 @@ impl SessionMember {
 
     pub fn invited_by_user_id(&self) -> Option<&str> {
         self.invited_by_user_id.as_deref()
+    }
+
+    pub fn collaboration_level(&self) -> CollaborationLevel {
+        self.collaboration_level
     }
 }
 
@@ -183,6 +219,8 @@ pub struct SessionInvite {
     #[serde(default)]
     used_count: u32,
     revoked_at_ms: Option<u64>,
+    #[serde(default)]
+    collaboration_level: CollaborationLevel,
 }
 
 impl SessionInvite {
@@ -193,6 +231,7 @@ impl SessionInvite {
         created_at_ms: u64,
         expires_at_ms: Option<u64>,
         max_uses: Option<u32>,
+        collaboration_level: CollaborationLevel,
     ) -> Self {
         Self {
             invite_id: invite_id.into(),
@@ -203,6 +242,7 @@ impl SessionInvite {
             max_uses,
             used_count: 0,
             revoked_at_ms: None,
+            collaboration_level,
         }
     }
 
@@ -236,6 +276,10 @@ impl SessionInvite {
 
     pub fn revoked_at_ms(&self) -> Option<u64> {
         self.revoked_at_ms
+    }
+
+    pub fn collaboration_level(&self) -> CollaborationLevel {
+        self.collaboration_level
     }
 
     pub fn is_revoked(&self) -> bool {

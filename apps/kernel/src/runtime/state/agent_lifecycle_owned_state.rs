@@ -28,6 +28,26 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn ensure_agent_prompt_access(
+        &self,
+        agent_id: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let session = self.session_store.get_session(agent.session_id())?;
+        if session.can_prompt_agent_owned_by(user_id, agent.owner_user_id()) {
+            Ok(agent)
+        } else {
+            Err(DaemonError::OwnershipAccessDenied {
+                user_id: user_id.to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+                resource: format!("agent `{agent_id}`"),
+                operation,
+            })
+        }
+    }
+
     pub(super) fn ensure_agent_ref_owner(
         &self,
         agent_ref: &str,

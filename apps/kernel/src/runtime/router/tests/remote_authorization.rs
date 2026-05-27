@@ -70,6 +70,7 @@ async fn remote_session_list_is_filtered_to_memberships() {
             DEFAULT_LOCAL_USER_ID.to_string(),
             None,
             Some(1),
+            crate::session::CollaborationLevel::Private,
         )
         .expect("invite should be created");
     app.sessions_mut()
@@ -115,6 +116,7 @@ async fn remote_owned_session_objects_record_caller_user() {
             DEFAULT_LOCAL_USER_ID.to_string(),
             None,
             Some(1),
+            crate::session::CollaborationLevel::Private,
         )
         .expect("invite should be created");
     app.sessions_mut()
@@ -317,6 +319,9 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
     let session_id = session.id().to_string();
     let local_agent = spawn_test_agent(&mut app, &session_id, "local-owned", "dev-stub");
     let local_agent_id = local_agent.id().to_string();
+    let extra_local_agent =
+        spawn_test_agent(&mut app, &session_id, "local-owned-extra", "dev-stub");
+    let extra_local_agent_id = extra_local_agent.id().to_string();
     let workflow = app
         .sessions_mut()
         .create_workflow(&session_id, Some("authz-flow".to_string()))
@@ -358,6 +363,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
                 DEFAULT_LOCAL_USER_ID.to_string(),
                 None,
                 Some(1),
+                crate::session::CollaborationLevel::Private,
             )
             .expect("invite should be created");
         app.sessions_mut()
@@ -400,20 +406,20 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
     let add_local_node = LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
         session_id: session_id.clone(),
         workflow_ref: workflow_id.clone(),
-        agent_id: local_agent_id.clone(),
+        agent_id: extra_local_agent_id.clone(),
         expected_workflow_revision: None,
     });
-    assert_ownership_denied(
-        router
-            .dispatch(
-                remote_command_for_request(&add_local_node, Some("user-2")),
-                add_local_node,
-            )
-            .await
-            .expect_err("other user should not add local agent as node"),
-        "user-2",
-        DEFAULT_LOCAL_USER_ID,
-    );
+    let added = router
+        .dispatch(
+            remote_command_for_request(&add_local_node, Some("user-2")),
+            add_local_node,
+        )
+        .await
+        .expect("collaborator should be able to add another user's agent as a workflow node");
+    assert!(matches!(
+        added,
+        LocalDaemonResponse::WorkflowNodeAdded { .. }
+    ));
 
     let invoke = LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
         session_id: session_id.clone(),
@@ -515,6 +521,53 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
 }
 
 #[tokio::test]
+async fn full_collaboration_invite_allows_prompting_other_users_agents() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-full-collab",
+            "worktree-full-collab",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let local_agent = spawn_test_agent(&mut app, &session_id, "local-owned", "dev-stub");
+    let local_agent_id = local_agent.id().to_string();
+    let (_, invite) = app
+        .sessions_mut()
+        .create_session_invite(
+            &session_id,
+            "invite-user-2-full".to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+            Some(1),
+            crate::session::CollaborationLevel::Full,
+        )
+        .expect("invite should be created");
+    app.sessions_mut()
+        .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+        .expect("user should join session");
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id,
+        attachment_id: "remote-attachment".to_string(),
+        target_agent_id: Some(local_agent_id),
+        prompt: "allowed by full collaboration".to_string(),
+        attachments: Vec::new(),
+    });
+    let error = router
+        .dispatch(remote_command_for_request(&submit, Some("user-2")), submit)
+        .await
+        .expect_err("prompt should reach runtime and fail only because no provider run exists");
+    assert!(
+        !matches!(error, DaemonError::OwnershipAccessDenied { .. }),
+        "full collaboration should pass prompt ownership checks"
+    );
+}
+
+#[tokio::test]
 async fn remote_session_projection_redacts_other_users_private_agent_and_workflow_state() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
@@ -533,6 +586,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
             DEFAULT_LOCAL_USER_ID.to_string(),
             None,
             Some(1),
+            crate::session::CollaborationLevel::Private,
         )
         .expect("invite should be created");
     app.sessions_mut()
@@ -612,8 +666,18 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         LocalDaemonResponse::SessionState { session, .. } => session,
         other => panic!("unexpected session response: {other:?}"),
     };
-    assert_eq!(redacted_session.agents().len(), 1);
-    assert_eq!(redacted_session.agents()[0].id(), user_two_agent.id());
+    assert_eq!(redacted_session.agents().len(), 2);
+    let redacted_local_agent = redacted_session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == local_agent.id())
+        .expect("other user's agent handle should remain workflow-selectable");
+    assert_eq!(redacted_local_agent.provider(), "redacted");
+    assert_eq!(redacted_local_agent.model(), None);
+    assert!(redacted_session
+        .agents()
+        .iter()
+        .any(|agent| agent.id() == user_two_agent.id()));
     let redacted_workflow = redacted_session
         .workflows()
         .iter()
@@ -642,11 +706,17 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
             list_agents,
         )
         .await
-        .expect("member should list own agents")
+        .expect("member should list workflow-selectable agent handles")
     {
         LocalDaemonResponse::AgentsListed { agents } => {
-            assert_eq!(agents.len(), 1);
-            assert_eq!(agents[0].id(), user_two_agent.id());
+            assert_eq!(agents.len(), 2);
+            let listed_local_agent = agents
+                .iter()
+                .find(|agent| agent.id() == local_agent.id())
+                .expect("other user's redacted agent handle should be listed");
+            assert_eq!(listed_local_agent.provider(), "redacted");
+            assert_eq!(listed_local_agent.model(), None);
+            assert!(agents.iter().any(|agent| agent.id() == user_two_agent.id()));
         }
         other => panic!("unexpected agents response: {other:?}"),
     }

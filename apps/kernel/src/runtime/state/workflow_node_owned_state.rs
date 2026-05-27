@@ -13,25 +13,15 @@ impl KernelRuntimeOwnedState {
             &request.workflow_ref,
             request.expected_workflow_revision,
         )?;
-        let agent = if let Some(agent) = self
+        if !self
             .agent_store
             .get_session_agents(&request.session_id)
             .into_iter()
-            .find(|agent| agent.id() == request.agent_id)
+            .any(|agent| agent.id() == request.agent_id)
         {
-            agent
-        } else {
             return Err(DaemonError::AgentNotFound {
                 agent_id: request.agent_id,
             });
-        };
-        if agent.owner_user_id() != caller_user_id {
-            return Err(Self::deny_owner(
-                caller_user_id,
-                agent.owner_user_id(),
-                format!("agent `{}`", request.agent_id),
-                "add workflow node",
-            ));
         }
         let node = self.session_store.write().add_workflow_node_owned(
             &request.session_id,

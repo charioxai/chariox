@@ -246,6 +246,7 @@ export type SessionMember = {
   user_id: string
   joined_at_ms: number
   invited_by_user_id?: string | null
+  collaboration_level?: CollaborationLevel
 }
 
 export type SessionInvite = {
@@ -257,7 +258,10 @@ export type SessionInvite = {
   max_uses?: number | null
   used_count: number
   revoked_at_ms?: number | null
+  collaboration_level?: CollaborationLevel
 }
+
+export type CollaborationLevel = "private" | "transparent" | "full"
 
 export type AgentPromptState = {
   active_prompt: PromptQueueItem | null
@@ -836,7 +840,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 49
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 50
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

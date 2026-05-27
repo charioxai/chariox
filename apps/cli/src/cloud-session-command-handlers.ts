@@ -1,4 +1,4 @@
-import type { RuntimeSession } from "./cli-types.js"
+import type { CollaborationLevel, RuntimeSession } from "./cli-types.js"
 import type { RelayCloudProfile } from "./preferences.js"
 
 type CloudSessionInvitePayload = {
@@ -24,6 +24,7 @@ export type CloudSessionCommandHandlerDeps = {
     sessionId: string,
     expiresInMs: number | null,
     maxUses: number | null,
+    collaborationLevel?: CollaborationLevel,
   ) => Promise<CloudSessionInvitePayload>
   joinSessionInvite?: (
     inviteToken: string,
@@ -31,7 +32,12 @@ export type CloudSessionCommandHandlerDeps = {
   ) => Promise<CloudSessionJoinPayload>
   createCloudSessionInvite?: (
     sessionId: string,
-    options: { displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null },
+    options: {
+      displayName?: string | null
+      expiresInMs?: number | null
+      maxUses?: number | null
+      collaborationLevel?: CollaborationLevel
+    },
   ) => Promise<Record<string, unknown>>
   acceptCloudSessionInvite?: (inviteToken: string) => Promise<Record<string, unknown>>
   listCloudSessionMembers?: (sessionId: string) => Promise<Record<string, unknown>>
@@ -77,18 +83,24 @@ async function createCloudInvite(
     deps.flashFooter("cloud invite creation is unavailable in this build", "error")
     return
   }
+  const collaborationLevel = parseCollaborationLevel(args)
+  if (!collaborationLevel) {
+    deps.flashFooter("usage: /cloud invite create [max-uses|--max-uses n] [--level private|transparent|full]", "error")
+    return
+  }
   const maxUsesIndex = args.findIndex((value) => value === "--max-uses")
   const maxUses = parsePositiveInt(maxUsesIndex >= 0 ? args[maxUsesIndex + 1] : args[0]) ?? 1
   if (maxUses <= 0) {
-    deps.flashFooter("usage: /cloud invite create [max-uses|--max-uses n]", "error")
+    deps.flashFooter("usage: /cloud invite create [max-uses|--max-uses n] [--level private|transparent|full]", "error")
     return
   }
   const session = deps.sessionState()
-  const local = await deps.createSessionInvite(session.id, null, maxUses)
+  const local = await deps.createSessionInvite(session.id, null, maxUses, collaborationLevel)
   deps.applySessionState(local.session)
   const cloud = await deps.createCloudSessionInvite(session.id, {
     displayName: session.alias ?? session.id,
     maxUses,
+    collaborationLevel,
   })
   const cloudInvite = cloud.invite as { invite_id?: string; invite_token?: string }
   if (!cloudInvite.invite_token) {
@@ -103,6 +115,7 @@ async function createCloudInvite(
       `url=${inviteUrl}`,
       `cloud_invite=${cloudInvite.invite_token}`,
       `local_invite=${local.invite.invite_token}`,
+      `level=${collaborationLevel}`,
       `cloud_invite_id=${cloudInvite.invite_id ?? "-"}`,
       opened ? "browser=opened" : "browser=manual",
     ].join("\n"),
@@ -205,4 +218,12 @@ function parsePositiveInt(value: string | undefined): number | null | undefined 
   if (value === undefined) return undefined
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+export function parseCollaborationLevel(args: readonly string[]): CollaborationLevel | null {
+  const levelIndex = args.findIndex((value) => value === "--level")
+  const raw = levelIndex >= 0 ? args[levelIndex + 1] : undefined
+  if (raw === undefined) return "private"
+  if (raw === "private" || raw === "transparent" || raw === "full") return raw
+  return null
 }

@@ -14,8 +14,8 @@ use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
 };
 use super::{
-    unix_epoch_ms, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeSession,
-    SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
+    unix_epoch_ms, CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem,
+    RuntimeSession, SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,

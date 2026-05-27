@@ -409,6 +409,16 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_owner(agent_id, caller_user_id, operation)
     }
+
+    pub(crate) async fn ensure_agent_prompt_access(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.owned
+            .ensure_agent_prompt_access(agent_id, caller_user_id, operation)
+    }
 }
 
 fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {

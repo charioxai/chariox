@@ -115,6 +115,7 @@ pub(crate) async fn create_cloud_session_invite(
             "displayName": request.display_name,
             "expiresInMs": request.expires_in_ms,
             "maxUses": request.max_uses,
+            "collaborationLevel": request.collaboration_level,
         }),
     )
     .await?;

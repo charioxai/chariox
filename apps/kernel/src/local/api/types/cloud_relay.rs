@@ -73,6 +73,8 @@ pub struct CreateCloudSessionInviteRequest {
     pub expires_in_ms: Option<u64>,
     #[serde(default)]
     pub max_uses: Option<u32>,
+    #[serde(default)]
+    pub collaboration_level: crate::session::CollaborationLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

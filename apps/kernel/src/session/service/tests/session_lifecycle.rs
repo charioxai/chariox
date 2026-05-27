@@ -80,6 +80,7 @@ fn manages_session_membership_invites() {
             DEFAULT_LOCAL_USER_ID.to_string(),
             None,
             Some(1),
+            crate::session::CollaborationLevel::Private,
         )
         .expect("member should create invite");
     assert_eq!(session.invites().len(), 1);
@@ -95,6 +96,10 @@ fn manages_session_membership_invites() {
         .expect("invite should be joinable");
     assert_eq!(member.user_id(), "user-2");
     assert_eq!(member.invited_by_user_id(), Some(DEFAULT_LOCAL_USER_ID));
+    assert_eq!(
+        member.collaboration_level(),
+        crate::session::CollaborationLevel::Private
+    );
     assert!(session.has_member("user-2"));
     assert_eq!(session.invites()[0].used_count(), 1);
 

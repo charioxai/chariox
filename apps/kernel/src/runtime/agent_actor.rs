@@ -90,7 +90,7 @@ impl AgentRuntime {
             .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
             .await?;
         self.store
-            .ensure_agent_owner(&agent_id, &caller_user_id, "submit prompt")
+            .ensure_agent_prompt_access(&agent_id, &caller_user_id, "submit prompt")
             .await?;
         request.target_agent_id = Some(agent_id.clone());
         let command_trace = CommandTrace::from_command(command);
@@ -198,6 +198,17 @@ impl AgentRuntimeStore {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
             .ensure_agent_owner(agent_id, caller_user_id, operation)
+            .await
+    }
+
+    async fn ensure_agent_prompt_access(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.state
+            .ensure_agent_prompt_access(agent_id, caller_user_id, operation)
             .await
     }
 
