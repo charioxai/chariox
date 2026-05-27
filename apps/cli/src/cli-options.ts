@@ -215,6 +215,7 @@ function printUsage() {
     "  /variant <name>       select the model variant",
     "  /workspace [path]     show or set the next-session workspace path",
     "  /workspace link ...   manage workspace links for the attached session",
+    "  /workspace sync ...   show workspace live sync status, targets, conflicts, and ignore rules",
     "  /worktree [path]      show or set the next-session worktree path",
     "  /worktree create <branch> [directory] [--from <ref>] create a named git worktree",
     "  /worktree name [a]    set or clear the current worktree display name",

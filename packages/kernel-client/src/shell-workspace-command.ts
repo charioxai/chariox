@@ -3,16 +3,19 @@ import { resolve as resolvePath } from "node:path"
 import type {
   RuntimeSession,
   WorkspaceLinkDefinition,
+  WorkspaceLiveSyncStatus,
 } from "./kernel-types.js"
 import {
   attachWorkspaceLinkRequest,
   createWorkspaceLinkRequest,
   detachWorkspaceLinkRequest,
+  getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatWorkspaceLiveSyncStatus,
   formatWorkspaceLinkDetails,
   formatWorkspaceLinks,
 } from "./shell-workspace-format.js"
@@ -29,8 +32,11 @@ export async function executeWorkspaceCommand(
   deps: ShellWorkspaceCommandDeps,
 ): Promise<ShellCommandResult> {
   const [resource, action, ...args] = parsed.args
+  if (resource === "sync") {
+    return executeWorkspaceSyncCommand(action, args, context, deps)
+  }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace link create|list|show|attach|detach" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|mode|enable|disable or workspace link create|list|show|attach|detach" }
   }
   const sessionId = context.sessionId
   if (!sessionId) {
@@ -102,6 +108,64 @@ export async function executeWorkspaceCommand(
     default:
       return { ok: false, message: "usage: workspace link create|list|show|attach|detach" }
   }
+}
+
+async function executeWorkspaceSyncCommand(
+  action: string | undefined,
+  args: string[],
+  context: ShellContext,
+  deps: ShellWorkspaceCommandDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId
+  if (!sessionId) {
+    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
+  }
+  if (!action || action === "status") {
+    const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
+    const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
+    return { ok: true, message: formatWorkspaceLiveSyncStatus(payload.status), data: payload }
+  }
+  if (action === "targets") {
+    const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
+    const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
+    return {
+      ok: true,
+      message: payload.status.targets.length === 0
+        ? "no workspace live sync targets"
+        : payload.status.targets.map((target) => `${target.status} ${target.link_name}: ${target.repo_root}`).join("\n"),
+      data: payload,
+    }
+  }
+  if (action === "conflicts") {
+    const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
+    const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
+    return {
+      ok: true,
+      message: payload.status.conflicts.length === 0
+        ? "no workspace live sync conflicts"
+        : payload.status.conflicts.map((conflict) => `${conflict.path}: ${conflict.next_action}`).join("\n"),
+      data: payload,
+    }
+  }
+  if (action === "ignore") {
+    const response = await deps.client.send(getWorkspaceLiveSyncStatusRequest(sessionId))
+    const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
+    return {
+      ok: true,
+      message: [
+        `ignore=${payload.status.ignore.ignore_file ?? "none"}`,
+        ...payload.status.ignore.force_excludes.map((pattern) => `- ${pattern}`),
+      ].join("\n"),
+      data: payload,
+    }
+  }
+  if (["mode", "enable", "disable", "link"].includes(action)) {
+    return { ok: false, message: `workspace sync ${action} is not wired in arroba-shell yet; use config workspace-live-sync and workspace link commands` }
+  }
+  if (args.length > 0) {
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore" }
+  }
+  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

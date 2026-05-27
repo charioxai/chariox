@@ -1,6 +1,7 @@
 import type {
   RuntimeSession,
   WorkspaceLinkDefinition,
+  WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
@@ -35,6 +36,7 @@ export type WorkspaceCommandHandlerDeps = {
   showWorkspaceLink?: (linkRef: string) => Promise<WorkspaceLinkDefinition>
   attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
+  getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
 }
@@ -44,6 +46,10 @@ export async function handleWorkspaceSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
 ): Promise<void> {
   const [resource, action, ...args] = command.args
+  if (resource === "sync") {
+    await handleWorkspaceSyncCommand(deps, action, args)
+    return
+  }
   if (resource && resource !== "link") {
     setWorkspaceTarget(deps, [resource, action, ...args].filter(Boolean).join(" "))
     return
@@ -53,6 +59,53 @@ export async function handleWorkspaceSlashCommand(
     return
   }
   await handleWorkspaceLinkCommand(deps, action, args)
+}
+
+async function handleWorkspaceSyncCommand(
+  deps: WorkspaceCommandHandlerDeps,
+  action: string | undefined,
+  _args: string[],
+): Promise<void> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("attach to a session before viewing workspace live sync", "error")
+    return
+  }
+  if (!deps.getWorkspaceLiveSyncStatus) {
+    deps.flashFooter("workspace live sync status is not available", "error")
+    return
+  }
+  if (!action || action === "status") {
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.appendNotice(formatWorkspaceLiveSyncStatus(status))
+    deps.flashFooter(`workspace live sync ${status.footer_state}`, "info")
+    return
+  }
+  if (action === "targets") {
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.appendNotice(formatWorkspaceLiveSyncTargets(status))
+    deps.flashFooter(`workspace live sync targets: ${status.targets.length}`, "info")
+    return
+  }
+  if (action === "conflicts") {
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.appendNotice(formatWorkspaceLiveSyncConflicts(status))
+    deps.flashFooter(`workspace live sync conflicts: ${status.conflicts.length}`, "info")
+    return
+  }
+  if (action === "ignore") {
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.appendNotice([
+      `Ignore file: ${status.ignore.ignore_file ?? "none"}`,
+      ...status.ignore.force_excludes.map((pattern) => `- ${pattern}`),
+    ].join("\n"))
+    deps.flashFooter("workspace live sync ignore rules", "info")
+    return
+  }
+  if (["mode", "enable", "disable", "link"].includes(action)) {
+    deps.flashFooter(`use /config workspace-live-sync or /workspace link for ${action}`, "error")
+    return
+  }
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore", "error")
 }
 
 export async function handleWorktreeSlashCommand(
@@ -183,6 +236,36 @@ function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): string {
     lines.push(`- ${attachment.user_id} ${attachment.repo_root}${branch}`)
   }
   return lines.join("\n")
+}
+
+function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
+  return [
+    `Workspace live sync: ${status.mode} footer=${status.footer_state}`,
+    `Targets: ${status.targets.length}`,
+    `Conflicts: ${status.conflicts.length}`,
+    `Ignore: ${status.ignore.ignore_file ?? "none"}`,
+    formatWorkspaceLiveSyncTargets(status),
+    formatWorkspaceLiveSyncConflicts(status),
+  ].filter(Boolean).join("\n")
+}
+
+function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string {
+  if (status.targets.length === 0) {
+    return "No workspace live sync targets."
+  }
+  return status.targets.map((target) => {
+    const branch = target.branch ? ` branch=${target.branch}` : ""
+    return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
+  }).join("\n")
+}
+
+function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): string {
+  if (status.conflicts.length === 0) {
+    return "No workspace live sync conflicts."
+  }
+  return status.conflicts.map((conflict) => (
+    `- ${conflict.path} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`
+  )).join("\n")
 }
 
 async function attachWorkspaceLink(

@@ -5,9 +5,11 @@ use rand::RngCore;
 use crate::error::DaemonError;
 use crate::local::{
     AttachWorkspaceLinkRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
-    DetachWorkspaceLinkRequest, JoinSessionInviteRequest, ListSessionMembersRequest,
-    ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse, RevokeSessionInviteRequest,
-    SessionInviteRecord, ShowWorkspaceLinkRequest,
+    DetachWorkspaceLinkRequest, GetWorkspaceLiveSyncStatusRequest, JoinSessionInviteRequest,
+    ListSessionMembersRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
+    RevokeSessionInviteRequest, SessionInviteRecord, ShowWorkspaceLinkRequest,
+    WorkspaceLiveSyncFooterState, WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus,
+    WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::invite_tokens::{
@@ -57,6 +59,14 @@ pub(crate) async fn execute_session_collaboration_request(
         }
         LocalDaemonRequest::DetachWorkspaceLink(request) => {
             execute_detach_workspace_link_request(runtime_state, command, request).await
+        }
+        LocalDaemonRequest::GetWorkspaceLiveSyncStatus(request) => {
+            execute_get_workspace_live_sync_status_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "session collaboration request",
@@ -225,6 +235,66 @@ pub(crate) async fn execute_detach_workspace_link_request(
         link,
         detached,
         session,
+    })
+}
+
+pub(crate) async fn execute_get_workspace_live_sync_status_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: GetWorkspaceLiveSyncStatusRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let mode = config_projection
+        .snapshot()
+        .provider_workspace_live_sync_mode("default");
+    let links = runtime_state.list_workspace_links(&request.session_id)?;
+    let mut targets = Vec::new();
+    for link in links {
+        for attachment in link.attachments() {
+            targets.push(WorkspaceLiveSyncTargetStatus {
+                link_id: link.link_id().to_string(),
+                link_name: link.name().to_string(),
+                user_id: attachment.user_id().to_string(),
+                machine_id: attachment.machine_id().to_string(),
+                kernel_id: attachment.kernel_id().to_string(),
+                repo_root: attachment.repo_root().to_string(),
+                branch: attachment.branch().map(str::to_string),
+                repo_fingerprint: attachment.repo_fingerprint().map(str::to_string),
+                status: WorkspaceLiveSyncTargetState::Ready,
+                attached_at_ms: attachment.attached_at_ms(),
+            });
+        }
+    }
+    let footer_state = match mode {
+        crate::config::WorkspaceLiveSyncMode::Managed => WorkspaceLiveSyncFooterState::Managed,
+        crate::config::WorkspaceLiveSyncMode::Tracked => WorkspaceLiveSyncFooterState::Tracked,
+        crate::config::WorkspaceLiveSyncMode::Unrestricted => WorkspaceLiveSyncFooterState::Off,
+    };
+    Ok(LocalDaemonResponse::WorkspaceLiveSyncStatus {
+        status: WorkspaceLiveSyncStatus {
+            session_id: request.session_id,
+            mode,
+            footer_state,
+            targets,
+            conflicts: Vec::new(),
+            ignore: WorkspaceLiveSyncIgnoreStatus {
+                ignore_file: Some(".arrobaignore".to_string()),
+                force_excludes: vec![
+                    ".git/**".to_string(),
+                    ".arroba/**".to_string(),
+                    ".arrobaignore".to_string(),
+                    ".env*".to_string(),
+                    "node_modules/**".to_string(),
+                    "target/**".to_string(),
+                    ".next/**".to_string(),
+                    "dist/**".to_string(),
+                    "build/**".to_string(),
+                    ".venv/**".to_string(),
+                    "venv/**".to_string(),
+                    "__pycache__/**".to_string(),
+                    ".pytest_cache/**".to_string(),
+                ],
+            },
+        },
     })
 }
 

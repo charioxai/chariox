@@ -1,12 +1,14 @@
 import type {
   RuntimeSession,
   WorkspaceLinkDefinition,
+  WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
   attachWorkspaceLinkRequest,
   createWorkspaceLinkRequest,
   detachWorkspaceLinkRequest,
+  getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
@@ -65,4 +67,12 @@ export async function detachWorkspaceLink(
     detachWorkspaceLinkRequest(sessionId, linkRef, repoRoot ?? null),
   )
   return expectVariant<WorkspaceLinkPayload & { detached: unknown[] }>(response, "WorkspaceLinkDetached")
+}
+
+export async function getWorkspaceLiveSyncStatus(
+  client: LocalIpcClient,
+  sessionId: string,
+): Promise<WorkspaceLiveSyncStatus> {
+  const response = await client.send<Record<string, unknown>>(getWorkspaceLiveSyncStatusRequest(sessionId))
+  return expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus").status
 }

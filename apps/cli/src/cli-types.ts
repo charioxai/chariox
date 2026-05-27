@@ -334,6 +334,39 @@ export type WorkspaceLinkDefinition = {
   attachments?: WorkspaceLinkAttachment[]
 }
 
+export type WorkspaceLiveSyncTargetStatus = {
+  link_id: string
+  link_name: string
+  user_id: string
+  machine_id: string
+  kernel_id: string
+  repo_root: string
+  branch?: string | null
+  repo_fingerprint?: string | null
+  status: "ready" | "degraded" | "conflict"
+  attached_at_ms: number
+}
+
+export type WorkspaceLiveSyncStatus = {
+  session_id: string
+  mode: "managed" | "tracked" | "unrestricted"
+  footer_state: "off" | "managed" | "tracked" | "syncing" | "conflict" | "degraded"
+  targets: WorkspaceLiveSyncTargetStatus[]
+  conflicts: Array<{
+    conflict_id: string
+    link_id: string
+    source_agent_id: string
+    target_user_id: string
+    target_repo_root: string
+    path: string
+    next_action: string
+  }>
+  ignore: {
+    ignore_file?: string | null
+    force_excludes: string[]
+  }
+}
+
 export type AgentPromptState = {
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]

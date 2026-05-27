@@ -133,6 +133,7 @@ import {
   attachWorkspaceLink,
   createWorkspaceLink,
   detachWorkspaceLink,
+  getWorkspaceLiveSyncStatus,
   listWorkspaceLinks,
   showWorkspaceLink,
 } from "./workspace-link-api.js"
@@ -505,6 +506,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     showWorkspaceLink: (linkRef) => showWorkspaceLink(client, sessionState().id, linkRef),
     attachWorkspaceLink: (linkRef, repoRoot) => attachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
     detachWorkspaceLink: (linkRef, repoRoot) => detachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
+    getWorkspaceLiveSyncStatus: () => getWorkspaceLiveSyncStatus(client, sessionState().id),
     openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,

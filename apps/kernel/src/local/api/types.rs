@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 54;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 55;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -68,6 +68,7 @@ pub enum LocalDaemonRequest {
     ShowWorkspaceLink(ShowWorkspaceLinkRequest),
     AttachWorkspaceLink(AttachWorkspaceLinkRequest),
     DetachWorkspaceLink(DetachWorkspaceLinkRequest),
+    GetWorkspaceLiveSyncStatus(GetWorkspaceLiveSyncStatusRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
@@ -316,6 +317,9 @@ pub enum LocalDaemonResponse {
         link: WorkspaceLinkDefinition,
         detached: Vec<WorkspaceLinkAttachment>,
         session: RuntimeSession,
+    },
+    WorkspaceLiveSyncStatus {
+        status: WorkspaceLiveSyncStatus,
     },
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,

@@ -455,7 +455,7 @@ test("executeShellCommand manages session invites and members", async () => {
   assert.match(membersResult.message ?? "", /Session members/)
   assert.match(revokeResult.message ?? "", /revoked session invite invite-1/)
   assert.deepEqual(requests, [
-    { CreateSessionInvite: { session_id: "session-1", expires_in_ms: null, max_uses: 1 } },
+    { CreateSessionInvite: { session_id: "session-1", expires_in_ms: null, max_uses: 1, collaboration_level: "private" } },
     { JoinSessionInvite: { invite_token: "arroba-session-invite-v1.token", user_id: "ana" } },
     { AttachToSession: { session_id: "session-1", client_id: "shell-ana", capability_level: "FullTerminal" } },
     { ListSessionMembers: { session_id: "session-1" } },
@@ -486,6 +486,25 @@ test("executeShellCommand manages workspace links", async () => {
       attached_at_ms: 200,
     }],
   }
+  const syncStatus = {
+    session_id: "session-1",
+    mode: "tracked",
+    footer_state: "tracked",
+    targets: [{
+      link_id: link.link_id,
+      link_name: link.name,
+      user_id: "local",
+      machine_id: "machine-1",
+      kernel_id: "kernel-1",
+      repo_root: "/repo",
+      branch: null,
+      repo_fingerprint: null,
+      status: "ready",
+      attached_at_ms: 200,
+    }],
+    conflicts: [],
+    ignore: { ignore_file: ".arrobaignore", force_excludes: [".git/**"] },
+  }
   const requests: Record<string, unknown>[] = []
   const fake = {
     client: {
@@ -506,6 +525,9 @@ test("executeShellCommand manages workspace links", async () => {
         if ("DetachWorkspaceLink" in request) {
           return { WorkspaceLinkDetached: { link, detached: attached.attachments, session } }
         }
+        if ("GetWorkspaceLiveSyncStatus" in request) {
+          return { WorkspaceLiveSyncStatus: { status: syncStatus } }
+        }
         throw new Error("unexpected request")
       },
     },
@@ -516,18 +538,21 @@ test("executeShellCommand manages workspace links", async () => {
   const listResult = await executeShellCommand(parseShellCommand("workspace link list"), context, { client: fake.client })
   const showResult = await executeShellCommand(parseShellCommand("workspace link show shared-repo"), context, { client: fake.client })
   const attachResult = await executeShellCommand(parseShellCommand("workspace link attach shared-repo"), context, { client: fake.client })
+  const syncResult = await executeShellCommand(parseShellCommand("workspace sync status"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
 
   assert.match(createResult.message ?? "", /created workspace link shared-repo/)
   assert.match(listResult.message ?? "", /attachments=1/)
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
   assert.match(attachResult.message ?? "", /attached \/repo/)
+  assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.deepEqual(requests, [
     { CreateWorkspaceLink: { session_id: "session-1", name: "shared-repo" } },
     { ListWorkspaceLinks: { session_id: "session-1" } },
     { ShowWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
+    { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
   ])
 })

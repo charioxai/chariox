@@ -67,6 +67,27 @@ fn local_request_api_manages_session_workspace_links() {
     };
     assert_eq!(attached.attachments().len(), 1);
 
+    let status = match harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
+            GetWorkspaceLiveSyncStatusRequest {
+                session_id: session_id.clone(),
+            },
+        ))
+        .expect("workspace live sync status should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLiveSyncStatus { status } => status,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(status.session_id, session_id);
+    assert_eq!(status.targets.len(), 1);
+    assert_eq!(status.targets[0].repo_root, "/tmp/arroba-worktree-a");
+    assert!(status.conflicts.is_empty());
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
+        .any(|pattern| pattern == ".git/**"));
+
     let shown = match harness
         .dispatch(LocalDaemonRequest::ShowWorkspaceLink(
             ShowWorkspaceLinkRequest {

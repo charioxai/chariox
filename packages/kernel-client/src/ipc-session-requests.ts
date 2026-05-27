@@ -145,6 +145,14 @@ export function detachWorkspaceLinkRequest(sessionId: string, linkRef: string, r
   }
 }
 
+export function getWorkspaceLiveSyncStatusRequest(sessionId: string) {
+  return {
+    GetWorkspaceLiveSyncStatus: {
+      session_id: sessionId,
+    },
+  }
+}
+
 export function endSessionRequest(sessionId: string) {
   return {
     EndSession: {

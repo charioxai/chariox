@@ -284,7 +284,8 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceLinks(_)
             | LocalDaemonRequest::ShowWorkspaceLink(_)
             | LocalDaemonRequest::AttachWorkspaceLink(_)
-            | LocalDaemonRequest::DetachWorkspaceLink(_)) => {
+            | LocalDaemonRequest::DetachWorkspaceLink(_)
+            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => {
                 execute_session_collaboration_request(
                     &self.runtime_state,
                     &self.config_projection,

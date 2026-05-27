@@ -242,6 +242,47 @@ export type WorkspaceLinkDefinition = {
   attachments?: WorkspaceLinkAttachment[]
 }
 
+export type WorkspaceLiveSyncFooterState = "off" | "managed" | "tracked" | "syncing" | "conflict" | "degraded"
+
+export type WorkspaceLiveSyncTargetState = "ready" | "degraded" | "conflict"
+
+export type WorkspaceLiveSyncTargetStatus = {
+  link_id: string
+  link_name: string
+  user_id: string
+  machine_id: string
+  kernel_id: string
+  repo_root: string
+  branch?: string | null
+  repo_fingerprint?: string | null
+  status: WorkspaceLiveSyncTargetState
+  attached_at_ms: number
+}
+
+export type WorkspaceLiveSyncConflictSummary = {
+  conflict_id: string
+  link_id: string
+  source_agent_id: string
+  target_user_id: string
+  target_repo_root: string
+  path: string
+  next_action: string
+}
+
+export type WorkspaceLiveSyncIgnoreStatus = {
+  ignore_file?: string | null
+  force_excludes: string[]
+}
+
+export type WorkspaceLiveSyncStatus = {
+  session_id: string
+  mode: "managed" | "tracked" | "unrestricted"
+  footer_state: WorkspaceLiveSyncFooterState
+  targets: WorkspaceLiveSyncTargetStatus[]
+  conflicts: WorkspaceLiveSyncConflictSummary[]
+  ignore: WorkspaceLiveSyncIgnoreStatus
+}
+
 export type SessionMember = {
   user_id: string
   joined_at_ms: number
@@ -841,7 +882,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 54
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 55
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

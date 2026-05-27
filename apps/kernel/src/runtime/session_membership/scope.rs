@@ -69,6 +69,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::DetachWorkspaceLink(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetWorkspaceLiveSyncStatus(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
