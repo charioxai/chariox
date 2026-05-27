@@ -502,7 +502,15 @@ test("executeShellCommand manages workspace links", async () => {
       status: "ready",
       attached_at_ms: 200,
     }],
-    conflicts: [],
+    conflicts: [{
+      conflict_id: "conflict-1",
+      link_id: link.link_id,
+      source_agent_id: "agent-1",
+      target_user_id: "local",
+      target_repo_root: "/repo",
+      path: "src/app.ts",
+      next_action: "reconcile target",
+    }],
     ignore: { ignore_file: ".arrobaignore", force_excludes: [".git/**"] },
   }
   const requests: Record<string, unknown>[] = []
@@ -542,6 +550,9 @@ test("executeShellCommand manages workspace links", async () => {
   const showResult = await executeShellCommand(parseShellCommand("workspace link show shared-repo"), context, { client: fake.client })
   const attachResult = await executeShellCommand(parseShellCommand("workspace link attach shared-repo"), context, { client: fake.client })
   const syncResult = await executeShellCommand(parseShellCommand("workspace sync status"), context, { client: fake.client })
+  const syncTargetsResult = await executeShellCommand(parseShellCommand("workspace sync targets"), context, { client: fake.client })
+  const syncConflictsResult = await executeShellCommand(parseShellCommand("workspace sync conflicts"), context, { client: fake.client })
+  const syncIgnoreResult = await executeShellCommand(parseShellCommand("workspace sync ignore"), context, { client: fake.client })
   const modeResult = await executeShellCommand(parseShellCommand("workspace sync mode tracked"), context, { client: fake.client })
   const enableResult = await executeShellCommand(parseShellCommand("workspace sync enable managed"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
@@ -553,6 +564,10 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
   assert.match(attachResult.message ?? "", /attached \/repo/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
+  assert.match(syncResult.message ?? "", /source=agent-1 target=local:\/repo/)
+  assert.match(syncTargetsResult.message ?? "", /ready shared-repo: \/repo/)
+  assert.match(syncConflictsResult.message ?? "", /src\/app\.ts source=agent-1 target=local:\/repo: reconcile target/)
+  assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)
   assert.match(modeResult.message ?? "", /mode set to tracked/)
   assert.match(enableResult.message ?? "", /enabled: managed/)
   assert.match(disableResult.message ?? "", /disabled/)
@@ -563,6 +578,9 @@ test("executeShellCommand manages workspace links", async () => {
     { ListWorkspaceLinks: { session_id: "session-1" } },
     { ShowWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
+    { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
+    { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
+    { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "tracked" } },
     { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },

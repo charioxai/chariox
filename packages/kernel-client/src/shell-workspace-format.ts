@@ -36,7 +36,7 @@ export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): 
     lines.push(`- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`)
   }
   for (const conflict of status.conflicts) {
-    lines.push(`! ${conflict.path} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`)
+    lines.push(`! ${conflict.path} source=${conflict.source_agent_id} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`)
   }
   return lines.join("\n")
 }

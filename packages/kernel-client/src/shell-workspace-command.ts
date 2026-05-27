@@ -144,7 +144,9 @@ async function executeWorkspaceSyncCommand(
       ok: true,
       message: payload.status.conflicts.length === 0
         ? "no workspace live sync conflicts"
-        : payload.status.conflicts.map((conflict) => `${conflict.path}: ${conflict.next_action}`).join("\n"),
+        : payload.status.conflicts.map((conflict) => (
+          `${conflict.path} source=${conflict.source_agent_id} target=${conflict.target_user_id}:${conflict.target_repo_root}: ${conflict.next_action}`
+        )).join("\n"),
       data: payload,
     }
   }

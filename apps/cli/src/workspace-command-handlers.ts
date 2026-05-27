@@ -315,7 +315,7 @@ function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): stri
     return "No workspace live sync conflicts."
   }
   return status.conflicts.map((conflict) => (
-    `- ${conflict.path} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`
+    `- ${conflict.path} source=${conflict.source_agent_id} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`
   )).join("\n")
 }
 
