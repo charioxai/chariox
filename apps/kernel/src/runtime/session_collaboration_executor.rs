@@ -326,7 +326,8 @@ fn workspace_live_sync_target_status_from_results(
     {
         for path_result in &target_result.path_results {
             match path_result.status {
-                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied => {}
+                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied
+                | crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased => {}
                 crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
                     return WorkspaceLiveSyncTargetState::Conflict;
                 }

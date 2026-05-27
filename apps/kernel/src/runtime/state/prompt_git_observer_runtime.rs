@@ -193,6 +193,7 @@ impl KernelRuntimeState {
             return;
         }
         let mut applied_targets = 0usize;
+        let mut rebased_count = 0usize;
         let mut conflict_count = 0usize;
         let mut failed_count = 0usize;
         for target_result in target_results {
@@ -201,6 +202,10 @@ impl KernelRuntimeState {
                 match path_result.status {
                     crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied => {
                         target_has_applied = true;
+                    }
+                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased => {
+                        target_has_applied = true;
+                        rebased_count += 1;
                     }
                     crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
                         conflict_count += 1;
@@ -232,12 +237,13 @@ impl KernelRuntimeState {
             Some(&change.provider_run_id),
             Vec::new(),
             format!(
-                "Workspace live sync tracked turn summary: source agent `{}` changed {} path{}; applied to {} target{}; conflicts={}; failed_io={}.",
+                "Workspace live sync tracked turn summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}.",
                 change.agent_id,
                 change.changed_paths.len(),
                 if change.changed_paths.len() == 1 { "" } else { "s" },
                 applied_targets,
                 if applied_targets == 1 { "" } else { "s" },
+                rebased_count,
                 conflict_count,
                 failed_count
             ),

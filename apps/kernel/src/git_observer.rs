@@ -224,6 +224,7 @@ pub(crate) struct TrackedWorkspaceLiveSyncPathApplyResult {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TrackedWorkspaceLiveSyncApplyStatus {
     Applied,
+    Rebased,
     SkippedConflict,
     FailedIo,
 }
@@ -658,7 +659,13 @@ fn tracked_workspace_live_sync_apply_modify(
         Ok(current) if current == before_bytes => {
             tracked_workspace_live_sync_write_file(path, target_path, &after_bytes)
         }
-        Ok(_) => tracked_workspace_live_sync_conflict(path, "target content changed before apply"),
+        Ok(current) => tracked_workspace_live_sync_rebase_modify(
+            path,
+            target_path,
+            &before_bytes,
+            &after_bytes,
+            &current,
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             tracked_workspace_live_sync_conflict(path, "target path is missing")
         }
@@ -667,6 +674,130 @@ fn tracked_workspace_live_sync_apply_modify(
             format!("failed to read target path before apply: {error}"),
         ),
     }
+}
+
+fn tracked_workspace_live_sync_rebase_modify(
+    path: &str,
+    target_path: &Path,
+    before_bytes: &[u8],
+    after_bytes: &[u8],
+    current_bytes: &[u8],
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let Ok(before) = std::str::from_utf8(before_bytes) else {
+        return tracked_workspace_live_sync_conflict(path, "binary target content changed before apply");
+    };
+    let Ok(after) = std::str::from_utf8(after_bytes) else {
+        return tracked_workspace_live_sync_conflict(path, "binary source content cannot be rebased");
+    };
+    let Ok(current) = std::str::from_utf8(current_bytes) else {
+        return tracked_workspace_live_sync_conflict(path, "binary target content cannot be rebased");
+    };
+    let Some(rebased) = tracked_workspace_live_sync_rebase_text(before, after, current) else {
+        return tracked_workspace_live_sync_conflict(
+            path,
+            "target content changed in an overlapping area before apply",
+        );
+    };
+    if let Some(parent) = target_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return tracked_workspace_live_sync_failed(
+                path,
+                format!("failed to create target directory: {error}"),
+            );
+        }
+    }
+    match std::fs::write(target_path, rebased.as_bytes()) {
+        Ok(()) => tracked_workspace_live_sync_rebased(path, "rebased over non-overlapping target change"),
+        Err(error) => tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to write rebased target content: {error}"),
+        ),
+    }
+}
+
+fn tracked_workspace_live_sync_rebase_text(
+    before: &str,
+    after: &str,
+    current: &str,
+) -> Option<String> {
+    let before_lines = tracked_workspace_live_sync_lines(before);
+    let after_lines = tracked_workspace_live_sync_lines(after);
+    let current_lines = tracked_workspace_live_sync_lines(current);
+    let source = tracked_workspace_live_sync_changed_range(&before_lines, &after_lines);
+    let target = tracked_workspace_live_sync_changed_range(&before_lines, &current_lines);
+    if tracked_workspace_live_sync_ranges_overlap(source.before_start, source.before_end, target.before_start, target.before_end) {
+        return None;
+    }
+    let target_delta = target.changed_end as isize - target.before_end as isize
+        - (target.changed_start as isize - target.before_start as isize);
+    let offset = if target.before_end <= source.before_start {
+        target_delta
+    } else {
+        0
+    };
+    let current_start = (source.before_start as isize + offset).try_into().ok()?;
+    let current_end = (source.before_end as isize + offset).try_into().ok()?;
+    if current_start > current_end || current_end > current_lines.len() {
+        return None;
+    }
+    let mut rebased = Vec::new();
+    rebased.extend_from_slice(&current_lines[..current_start]);
+    rebased.extend_from_slice(&after_lines[source.changed_start..source.changed_end]);
+    rebased.extend_from_slice(&current_lines[current_end..]);
+    Some(rebased.concat())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrackedWorkspaceLiveSyncTextChangeRange {
+    before_start: usize,
+    before_end: usize,
+    changed_start: usize,
+    changed_end: usize,
+}
+
+fn tracked_workspace_live_sync_changed_range(
+    before: &[String],
+    changed: &[String],
+) -> TrackedWorkspaceLiveSyncTextChangeRange {
+    let mut prefix = 0usize;
+    while prefix < before.len() && prefix < changed.len() && before[prefix] == changed[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix + prefix < before.len()
+        && suffix + prefix < changed.len()
+        && before[before.len() - 1 - suffix] == changed[changed.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    TrackedWorkspaceLiveSyncTextChangeRange {
+        before_start: prefix,
+        before_end: before.len() - suffix,
+        changed_start: prefix,
+        changed_end: changed.len() - suffix,
+    }
+}
+
+fn tracked_workspace_live_sync_ranges_overlap(
+    left_start: usize,
+    left_end: usize,
+    right_start: usize,
+    right_end: usize,
+) -> bool {
+    if left_start == left_end {
+        return right_start <= left_start && left_start <= right_end;
+    }
+    if right_start == right_end {
+        return left_start <= right_start && right_start <= left_end;
+    }
+    left_start < right_end && right_start < left_end
+}
+
+fn tracked_workspace_live_sync_lines(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        return Vec::new();
+    }
+    value.split_inclusive('\n').map(str::to_string).collect()
 }
 
 fn tracked_workspace_live_sync_apply_delete(
@@ -808,6 +939,17 @@ fn tracked_workspace_live_sync_applied(
     TrackedWorkspaceLiveSyncPathApplyResult {
         path: path.to_string(),
         status: TrackedWorkspaceLiveSyncApplyStatus::Applied,
+        message: message.into(),
+    }
+}
+
+fn tracked_workspace_live_sync_rebased(
+    path: &str,
+    message: impl Into<String>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    TrackedWorkspaceLiveSyncPathApplyResult {
+        path: path.to_string(),
+        status: TrackedWorkspaceLiveSyncApplyStatus::Rebased,
         message: message.into(),
     }
 }
@@ -1140,6 +1282,8 @@ mod tests {
         apply_tracked_workspace_live_sync_change_to_target, capture_turn_snapshot,
         observe_after_turn, tracked_workspace_live_sync_change_after_turn, GitTurnContext,
         GitTurnSnapshot, GitTurnSnapshotStore, TrackedWorkspaceLiveSyncApplyStatus,
+        TrackedWorkspaceLiveSyncFileChange, TrackedWorkspaceLiveSyncFileChangeKind,
+        TrackedWorkspaceLiveSyncTurnChange,
     };
 
     #[test]
@@ -1443,6 +1587,50 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_apply_target_rebases_non_overlapping_text_changes() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-rebase-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(target.join("src")).expect("target should be created");
+        std::fs::write(target.join("src/lib.rs"), "a\nlocal\nb\nc\n")
+            .expect("target should write");
+        let encode = |value: &str| {
+            base64::engine::general_purpose::STANDARD.encode(value.as_bytes())
+        };
+        let change = TrackedWorkspaceLiveSyncTurnChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["src/lib.rs".to_string()],
+            file_changes: vec![TrackedWorkspaceLiveSyncFileChange {
+                path: "src/lib.rs".to_string(),
+                previous_path: None,
+                kind: TrackedWorkspaceLiveSyncFileChangeKind::Modified,
+                before_content_base64: Some(encode("a\nb\nc\n")),
+                after_content_base64: Some(encode("a\nb\nsource\nc\n")),
+                binary: false,
+            }],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(results[0].status, TrackedWorkspaceLiveSyncApplyStatus::Rebased);
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
+            "a\nlocal\nb\nsource\nc\n"
+        );
+
         let _ = std::fs::remove_dir_all(&target);
     }
 
