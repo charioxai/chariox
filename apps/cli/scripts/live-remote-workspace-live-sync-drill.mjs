@@ -113,6 +113,8 @@ function daemonEnv({
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: historyDir,
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
   }
 }
 
@@ -344,7 +346,7 @@ async function main() {
       '--kernel', homeKernelUrl,
       '--no-spawn-daemon',
       '--machine-ref', workerMachineId,
-      '--history-dir', workerHistoryDir,
+      '--history-dir', homeHistoryDir,
       '--providers', options.providers.join(','),
       '--model', options.model,
       ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
