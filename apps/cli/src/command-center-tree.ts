@@ -370,16 +370,10 @@ export const COMMAND_TREE: CommandNode[] = [
         value: "/config workspace-live-sync ",
         children: [
           {
-            id: "config-workspace-live-sync-managed",
-            label: "managed",
-            description: "Use managed workspace live sync for supported provider runs",
-            value: "/config workspace-live-sync managed",
-          },
-          {
-            id: "config-workspace-live-sync-tracked",
-            label: "tracked",
-            description: "Track provider file changes for workspace live sync without write fencing",
-            value: "/config workspace-live-sync tracked",
+            id: "config-workspace-live-sync-required",
+            label: "required",
+            description: "Require workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync required",
           },
           {
             id: "config-workspace-live-sync-unrestricted",

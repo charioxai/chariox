@@ -50,7 +50,7 @@ export async function handleConfigSlashCommand(
     return
   }
   deps.flashFooter(
-    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync managed|tracked|unrestricted",
+    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync required|unrestricted",
     "error",
   )
 }
@@ -166,13 +166,13 @@ async function setWorkspaceLiveSyncMode(
     deps.flashFooter("user config updates are unavailable in this build", "error")
     return
   }
-  const mode = modeValue ?? "managed"
-  if (rest.length > 0 || !["managed", "tracked", "unrestricted", "on", "off"].includes(mode)) {
-    deps.flashFooter("usage: /config workspace-live-sync managed|tracked|unrestricted|on|off", "error")
+  const mode = modeValue ?? "required"
+  if (rest.length > 0 || !["required", "unrestricted"].includes(mode)) {
+    deps.flashFooter("usage: /config workspace-live-sync required|unrestricted", "error")
     return
   }
-  const normalizedMode = mode === "on" ? "managed" : mode === "off" ? "unrestricted" : mode
+  const normalizedMode = mode === "required" ? "managed" : "unrestricted"
   const payload = await deps.setUserConfigValue("providers.workspace_live_sync", normalizedMode)
   appendUserConfigEffects(deps, payload)
-  deps.flashFooter(`workspace live sync set to ${normalizedMode}`, "info")
+  deps.flashFooter(`workspace live sync set to ${mode}`, "info")
 }

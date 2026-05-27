@@ -79,17 +79,17 @@ export async function executeConfigCommand(
     }
   }
   if (action === "workspace-live-sync") {
-    const mode = keyPath ?? "managed"
-    if (rest.length > 0 || !["managed", "tracked", "unrestricted", "on", "off"].includes(mode)) {
-      return { ok: false, message: "usage: config workspace-live-sync managed|tracked|unrestricted|on|off" }
+    const mode = keyPath ?? "required"
+    if (rest.length > 0 || !["required", "unrestricted"].includes(mode)) {
+      return { ok: false, message: "usage: config workspace-live-sync required|unrestricted" }
     }
-    const normalizedMode = mode === "on" ? "managed" : mode === "off" ? "unrestricted" : mode
+    const normalizedMode = mode === "required" ? "managed" : "unrestricted"
     const configPath = "providers.workspace_live_sync"
     const response = await deps.client.send(setUserConfigValueRequest(configPath, normalizedMode))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
-      message: configMutationMessage(`workspace live sync set to ${normalizedMode}`, payload),
+      message: configMutationMessage(`workspace live sync set to ${mode}`, payload),
       data: payload,
     }
   }

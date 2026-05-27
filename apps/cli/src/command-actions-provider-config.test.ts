@@ -149,8 +149,8 @@ test("config command renders kernel mutation effects", async () => {
   })
   await handlers.handleConfigCommand({
     kind: "config",
-    raw: "/config workspace-live-sync off",
-    args: ["workspace-live-sync", "off"],
+    raw: "/config workspace-live-sync unrestricted",
+    args: ["workspace-live-sync", "unrestricted"],
   })
 
   assert.deepEqual(updates, [{ path: "providers.workspace_live_sync", value: "unrestricted" }])
