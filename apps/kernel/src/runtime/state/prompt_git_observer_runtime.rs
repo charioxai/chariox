@@ -331,6 +331,11 @@ impl KernelRuntimeState {
         if target_results.is_empty() {
             return;
         }
+        let mode_label = if change.status_fingerprint == "managed_workspace_live_sync" {
+            "managed"
+        } else {
+            "tracked turn"
+        };
         let mut applied_targets = 0usize;
         let mut rebased_count = 0usize;
         let mut conflict_count = 0usize;
@@ -376,7 +381,8 @@ impl KernelRuntimeState {
             Some(&change.provider_run_id),
             Vec::new(),
             format!(
-                "Workspace live sync tracked turn summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}.",
+                "Workspace live sync {} summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}.",
+                mode_label,
                 change.agent_id,
                 change.changed_paths.len(),
                 if change.changed_paths.len() == 1 { "" } else { "s" },
