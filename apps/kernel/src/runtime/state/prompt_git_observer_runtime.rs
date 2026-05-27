@@ -100,6 +100,7 @@ impl KernelRuntimeState {
                     let changed_path_count = change.changed_paths.len();
                     let target_results =
                         self.apply_tracked_workspace_live_sync_change_to_link_targets(&change);
+                    self.record_tracked_workspace_live_sync_notices(&change, &target_results);
                     tracked_workspace_live_sync_journal.append(change);
                     tracked_workspace_live_sync_journal.record_target_results(target_results);
                     crate::logging::info_with_fields(
@@ -181,5 +182,65 @@ impl KernelRuntimeState {
                 }
             })
             .collect()
+    }
+
+    fn record_tracked_workspace_live_sync_notices(
+        &self,
+        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+    ) {
+        if target_results.is_empty() {
+            return;
+        }
+        let mut applied_targets = 0usize;
+        let mut conflict_count = 0usize;
+        let mut failed_count = 0usize;
+        for target_result in target_results {
+            let mut target_has_applied = false;
+            for path_result in &target_result.path_results {
+                match path_result.status {
+                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied => {
+                        target_has_applied = true;
+                    }
+                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                        conflict_count += 1;
+                        self.owned.record_notice(
+                            &change.session_id,
+                            Some(&change.provider_run_id),
+                            Vec::new(),
+                            format!(
+                                "Workspace live sync conflict: source agent `{}` changed `{}` but target `{}` at `{}` could not apply it: {}. Next action: assign a resolver agent to reread and reconcile the target.",
+                                change.agent_id,
+                                path_result.path,
+                                target_result.target_user_id,
+                                target_result.target_repo_root,
+                                path_result.message
+                            ),
+                        );
+                    }
+                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo => {
+                        failed_count += 1;
+                    }
+                }
+            }
+            if target_has_applied {
+                applied_targets += 1;
+            }
+        }
+        self.owned.record_notice(
+            &change.session_id,
+            Some(&change.provider_run_id),
+            Vec::new(),
+            format!(
+                "Workspace live sync tracked turn summary: source agent `{}` changed {} path{}; applied to {} target{}; conflicts={}; failed_io={}.",
+                change.agent_id,
+                change.changed_paths.len(),
+                if change.changed_paths.len() == 1 { "" } else { "s" },
+                applied_targets,
+                if applied_targets == 1 { "" } else { "s" },
+                conflict_count,
+                failed_count
+            ),
+        );
     }
 }
