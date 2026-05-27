@@ -260,6 +260,9 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
     ) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+        if let Some(message) = self.forwarded_tracked_workspace_live_sync_rejection(&context) {
+            return tracked_workspace_live_sync_remote_failed_result(&context, message);
+        }
         let path_results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
             &change,
             std::path::Path::new(&context.target_repo_root),
@@ -280,6 +283,44 @@ impl KernelRuntimeState {
             .tracked_workspace_live_sync_journal
             .record_target_results(vec![target_result.clone()]);
         target_result
+    }
+
+    fn forwarded_tracked_workspace_live_sync_rejection(
+        &self,
+        context: &crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
+    ) -> Option<String> {
+        let config = self.owned.config_projection.snapshot();
+        if context.target_kernel_id != config.daemon_id {
+            return Some(format!(
+                "target kernel `{}` does not match local kernel `{}`",
+                context.target_kernel_id, config.daemon_id
+            ));
+        }
+        let target_root =
+            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
+        let target_is_known = self
+            .owned
+            .session_store
+            .list_all_sessions()
+            .iter()
+            .any(|session| {
+                crate::session::normalize_workspace_link_repo_root(session.worktree_id())
+                    == target_root
+                    || session.workspace_links().iter().any(|link| {
+                        link.attachments().iter().any(|attachment| {
+                            attachment.kernel_id() == config.daemon_id
+                                && attachment.repo_root() == target_root.as_str()
+                        })
+                    })
+            });
+        if target_is_known {
+            None
+        } else {
+            Some(format!(
+                "target repo root `{}` is not attached to this kernel",
+                context.target_repo_root
+            ))
+        }
     }
 
     fn record_tracked_workspace_live_sync_notices(

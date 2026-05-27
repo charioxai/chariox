@@ -57,6 +57,7 @@ pub use types::{
     WorkspaceLinkAttachment, WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
+pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 
 pub(crate) fn is_false(value: &bool) -> bool {
     !*value
