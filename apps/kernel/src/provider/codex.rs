@@ -326,6 +326,10 @@ mod tests {
         assert!(launch
             .pty_args
             .iter()
+            .any(|arg| arg == "mcp_servers.arroba.startup_timeout_sec=90"));
+        assert!(launch
+            .pty_args
+            .iter()
             .any(|arg| arg == "mcp_servers.arroba.tool_timeout_sec=15"));
         assert!(launch
             .pty_args
