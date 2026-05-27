@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
@@ -335,20 +336,18 @@ fn workspace_live_sync_target_status_from_results(
     repo_root: &str,
 ) -> WorkspaceLiveSyncTargetState {
     let mut has_failure = false;
-    for target_result in target_results
-        .iter()
-        .filter(|result| result.target_repo_root == repo_root)
+    for (_, path_result) in workspace_live_sync_latest_path_results(target_results)
+        .into_iter()
+        .filter(|(target_result, _)| target_result.target_repo_root == repo_root)
     {
-        for path_result in &target_result.path_results {
-            match path_result.status {
-                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
-                | crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {}
-                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
-                    return WorkspaceLiveSyncTargetState::Conflict;
-                }
-                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
-                    has_failure = true;
-                }
+        match path_result.status {
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+            | crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {}
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                return WorkspaceLiveSyncTargetState::Conflict;
+            }
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
+                has_failure = true;
             }
         }
     }
@@ -363,31 +362,52 @@ fn workspace_live_sync_conflicts_from_results(
     target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
 ) -> Vec<WorkspaceLiveSyncConflictSummary> {
     let mut conflicts = Vec::new();
-    for target_result in target_results {
-        for path_result in &target_result.path_results {
-            if path_result.status
-                != crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict
-            {
-                continue;
-            }
-            conflicts.push(WorkspaceLiveSyncConflictSummary {
-                conflict_id: format!(
-                    "{}:{}:{}",
-                    target_result.link_id, target_result.target_repo_root, path_result.path
-                ),
-                link_id: target_result.link_id.clone(),
-                source_agent_id: target_result.source_agent_id.clone(),
-                target_user_id: target_result.target_user_id.clone(),
-                target_repo_root: target_result.target_repo_root.clone(),
-                path: path_result.path.clone(),
-                next_action: format!(
-                    "{}. Reread the target and ask a resolver agent to reconcile.",
-                    path_result.message
-                ),
-            });
+    for (target_result, path_result) in workspace_live_sync_latest_path_results(target_results) {
+        if path_result.status != crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict
+        {
+            continue;
         }
+        conflicts.push(WorkspaceLiveSyncConflictSummary {
+            conflict_id: format!(
+                "{}:{}:{}",
+                target_result.link_id, target_result.target_repo_root, path_result.path
+            ),
+            link_id: target_result.link_id.clone(),
+            source_agent_id: target_result.source_agent_id.clone(),
+            target_user_id: target_result.target_user_id.clone(),
+            target_repo_root: target_result.target_repo_root.clone(),
+            path: path_result.path.clone(),
+            next_action: format!(
+                "{}. Reread the target and ask a resolver agent to reconcile.",
+                path_result.message
+            ),
+        });
     }
     conflicts
+}
+
+fn workspace_live_sync_latest_path_results(
+    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+) -> Vec<(
+    &crate::git_observer::WorkspaceLiveSyncTargetResult,
+    &crate::git_observer::WorkspaceLiveSyncPathApplyResult,
+)> {
+    let mut seen = BTreeSet::new();
+    let mut latest = Vec::new();
+    for target_result in target_results.iter().rev() {
+        for path_result in target_result.path_results.iter().rev() {
+            let key = (
+                target_result.link_id.as_str(),
+                target_result.target_repo_root.as_str(),
+                path_result.path.as_str(),
+            );
+            if seen.insert(key) {
+                latest.push((target_result, path_result));
+            }
+        }
+    }
+    latest.reverse();
+    latest
 }
 
 fn random_hex_id() -> String {
@@ -458,5 +478,90 @@ mod tests {
             ),
             WorkspaceLiveSyncFooterState::Degraded
         );
+    }
+
+    #[test]
+    fn workspace_live_sync_status_uses_latest_result_for_target_path() {
+        let results = vec![
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict,
+                "overlap",
+            ),
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-b",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                "applied after reconciliation",
+            ),
+        ];
+
+        assert_eq!(
+            workspace_live_sync_target_status_from_results(&results, "/repo/target"),
+            WorkspaceLiveSyncTargetState::Ready
+        );
+        assert!(workspace_live_sync_conflicts_from_results(&results).is_empty());
+    }
+
+    #[test]
+    fn workspace_live_sync_status_keeps_latest_unresolved_conflict() {
+        let results = vec![
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                "applied first",
+            ),
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-b",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict,
+                "new overlap",
+            ),
+        ];
+
+        assert_eq!(
+            workspace_live_sync_target_status_from_results(&results, "/repo/target"),
+            WorkspaceLiveSyncTargetState::Conflict
+        );
+        let conflicts = workspace_live_sync_conflicts_from_results(&results);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].source_agent_id, "agent-b");
+        assert_eq!(conflicts[0].path, "src/lib.rs");
+    }
+
+    fn target_result(
+        link_id: &str,
+        target_repo_root: &str,
+        source_agent_id: &str,
+        path: &str,
+        status: crate::git_observer::WorkspaceLiveSyncApplyStatus,
+        message: &str,
+    ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+        crate::git_observer::WorkspaceLiveSyncTargetResult {
+            session_id: "session-1".to_string(),
+            link_id: link_id.to_string(),
+            link_name: "shared".to_string(),
+            source_agent_id: source_agent_id.to_string(),
+            source_worktree_path: "/repo/source".to_string(),
+            target_user_id: "user-2".to_string(),
+            target_machine_id: "machine-2".to_string(),
+            target_kernel_id: "kernel-2".to_string(),
+            target_repo_root: target_repo_root.to_string(),
+            path_results: vec![crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+                path: path.to_string(),
+                status,
+                message: message.to_string(),
+            }],
+        }
     }
 }
