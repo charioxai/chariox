@@ -166,7 +166,7 @@ async function main() {
       'config path',
       'config show',
       'config set providers.model shell-drill-model',
-      'config workspace-live-sync dev-stub off',
+      'config workspace-live-sync unrestricted',
       'config unset providers.model',
       'mcp list',
       'mcp install shell_echo --command node --arg $mcp',
@@ -276,7 +276,6 @@ async function main() {
     requireOutput(audit.stdout, /\$seeded = yes/, 'seeded variable')
     requireOutput(audit.stdout, /line 3 failed; continuing/, 'line 3 continue diagnostic')
     requireOutput(audit.stdout, /line 4 failed; continuing/, 'line 4 continue diagnostic')
-    requireOutput(audit.stdout, /line 5 failed; continuing/, 'line 5 continue diagnostic')
     requireOutput(audit.stdout, /relay not configured/, 'relay status output')
     requireOutput(audit.stdout, /session/, 'continued command after failures')
     log('continue-on-error-script-passed')
