@@ -401,51 +401,49 @@ impl KernelRuntimeState {
                 context.target_kernel_id, config.daemon_id
             ));
         }
-        let target_root =
-            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
-        let target_is_known = self
-            .owned
-            .session_store
-            .list_all_sessions()
-            .iter()
-            .any(|session| {
-                crate::session::normalize_workspace_link_repo_root(session.worktree_id())
-                    == target_root
-                    || session.workspace_links().iter().any(|link| {
-                        link.attachments().iter().any(|attachment| {
-                            attachment.kernel_id() == config.daemon_id
-                                && attachment.repo_root() == target_root.as_str()
-                        })
-                    })
-            });
-        if target_is_known {
+        if self
+            .forwarded_workspace_live_sync_target_attachment(context, &config.daemon_id)
+            .is_some()
+        {
             None
         } else {
             Some(format!(
-                "target repo root `{}` is not attached to this kernel",
-                context.target_repo_root
+                "target repo root `{}` is not attached to workspace live sync link `{}` on this kernel",
+                context.target_repo_root, context.link_id
             ))
         }
     }
 
-    fn forwarded_workspace_live_sync_identity_conflict(
+    fn forwarded_workspace_live_sync_target_attachment(
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
-    ) -> Option<String> {
+        local_kernel_id: &str,
+    ) -> Option<crate::session::WorkspaceLinkAttachment> {
         let target_root =
             crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
-        let config = self.owned.config_projection.snapshot();
-        let attachment = self
-            .owned
+        self.owned
             .session_store
             .list_all_sessions()
             .into_iter()
             .flat_map(|session| session.workspace_links().to_vec())
             .flat_map(|link| link.attachments().to_vec())
             .find(|attachment| {
-                attachment.kernel_id() == config.daemon_id
-                    && attachment.repo_root() == target_root.as_str()
-            })?;
+                forwarded_workspace_live_sync_attachment_matches_context(
+                    attachment,
+                    context,
+                    local_kernel_id,
+                    &target_root,
+                )
+            })
+    }
+
+    fn forwarded_workspace_live_sync_identity_conflict(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+    ) -> Option<String> {
+        let config = self.owned.config_projection.snapshot();
+        let attachment =
+            self.forwarded_workspace_live_sync_target_attachment(context, &config.daemon_id)?;
         crate::git_observer::workspace_live_sync_identity_conflict(
             std::path::Path::new(&context.target_repo_root),
             attachment.branch(),
@@ -685,6 +683,17 @@ fn workspace_live_sync_should_skip_source_attachment(
     attachment.repo_root() == source_repo_root && attachment.kernel_id() == source_kernel_id
 }
 
+fn forwarded_workspace_live_sync_attachment_matches_context(
+    attachment: &crate::session::WorkspaceLinkAttachment,
+    context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+    local_kernel_id: &str,
+    normalized_target_root: &str,
+) -> bool {
+    attachment.link_id() == context.link_id
+        && attachment.kernel_id() == local_kernel_id
+        && attachment.repo_root() == normalized_target_root
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +795,69 @@ mod tests {
             &same_kernel_other_path,
             &source_root,
             "kernel-source"
+        ));
+    }
+
+    #[test]
+    fn forwarded_workspace_live_sync_apply_requires_matching_link_attachment() {
+        let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
+            home_session_id: "session-1".to_string(),
+            link_id: "link-1".to_string(),
+            link_name: "pair".to_string(),
+            source_agent_id: "agent-1".to_string(),
+            source_worktree_path: "/tmp/source".to_string(),
+            target_user_id: "user-2".to_string(),
+            target_machine_id: "machine-2".to_string(),
+            target_kernel_id: "kernel-target".to_string(),
+            target_repo_root: "/tmp/target/".to_string(),
+        };
+        let normalized_target_root =
+            crate::session::normalize_workspace_link_repo_root("/tmp/target/");
+        let linked_target = crate::session::WorkspaceLinkAttachment::new(
+            "link-1",
+            "user-2",
+            "machine-2",
+            "kernel-target",
+            "/tmp/target",
+            Some("main".to_string()),
+            None,
+        );
+        let wrong_link_same_root = crate::session::WorkspaceLinkAttachment::new(
+            "link-2",
+            "user-2",
+            "machine-2",
+            "kernel-target",
+            "/tmp/target",
+            Some("main".to_string()),
+            None,
+        );
+        let wrong_kernel_same_link = crate::session::WorkspaceLinkAttachment::new(
+            "link-1",
+            "user-2",
+            "machine-2",
+            "other-kernel",
+            "/tmp/target",
+            Some("main".to_string()),
+            None,
+        );
+
+        assert!(forwarded_workspace_live_sync_attachment_matches_context(
+            &linked_target,
+            &context,
+            "kernel-target",
+            &normalized_target_root,
+        ));
+        assert!(!forwarded_workspace_live_sync_attachment_matches_context(
+            &wrong_link_same_root,
+            &context,
+            "kernel-target",
+            &normalized_target_root,
+        ));
+        assert!(!forwarded_workspace_live_sync_attachment_matches_context(
+            &wrong_kernel_same_link,
+            &context,
+            "kernel-target",
+            &normalized_target_root,
         ));
     }
 
