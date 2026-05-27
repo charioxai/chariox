@@ -176,7 +176,11 @@ impl KernelRuntimeState {
         &self,
         change: &crate::git_observer::WorkspaceLiveSyncChange,
     ) -> Option<crate::session::WorkspaceLinkDefinition> {
-        let session = self.owned.session_store.get_session(&change.session_id).ok()?;
+        let session = self
+            .owned
+            .session_store
+            .get_session(&change.session_id)
+            .ok()?;
         let source_root = std::path::Path::new(&change.worktree_path);
         session.workspace_link_for_repo_root(source_root).cloned()
     }
@@ -188,11 +192,16 @@ impl KernelRuntimeState {
         link: &crate::session::WorkspaceLinkDefinition,
     ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
         let config = self.config_snapshot().await;
+        let source_kernel_id = source_kernel_id.unwrap_or(&config.daemon_id);
+        let source_repo_root =
+            crate::session::normalize_workspace_link_repo_root(change.worktree_path.clone());
         let mut results = Vec::new();
         for attachment in link.attachments() {
-            if attachment.repo_root() == change.worktree_path
-                && source_kernel_id.is_none_or(|kernel_id| kernel_id == attachment.kernel_id())
-            {
+            if workspace_live_sync_should_skip_source_attachment(
+                attachment,
+                &source_repo_root,
+                source_kernel_id,
+            ) {
                 continue;
             }
             if attachment.kernel_id() == config.daemon_id {
@@ -614,6 +623,14 @@ fn workspace_live_sync_identity_conflict_path_results(
         .collect()
 }
 
+fn workspace_live_sync_should_skip_source_attachment(
+    attachment: &crate::session::WorkspaceLinkAttachment,
+    source_repo_root: &str,
+    source_kernel_id: &str,
+) -> bool {
+    attachment.repo_root() == source_repo_root && attachment.kernel_id() == source_kernel_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +711,30 @@ mod tests {
         assert!(messages[1].contains("failed_io=1"));
     }
 
+    #[test]
+    fn workspace_live_sync_source_attachment_skip_requires_same_root_and_kernel() {
+        let source = attachment("/tmp/source", "kernel-source");
+        let same_path_remote_kernel = attachment("/tmp/source/", "kernel-remote");
+        let same_kernel_other_path = attachment("/tmp/target", "kernel-source");
+        let source_root = crate::session::normalize_workspace_link_repo_root("/tmp/source/");
+
+        assert!(workspace_live_sync_should_skip_source_attachment(
+            &source,
+            &source_root,
+            "kernel-source"
+        ));
+        assert!(!workspace_live_sync_should_skip_source_attachment(
+            &same_path_remote_kernel,
+            &source_root,
+            "kernel-source"
+        ));
+        assert!(!workspace_live_sync_should_skip_source_attachment(
+            &same_kernel_other_path,
+            &source_root,
+            "kernel-source"
+        ));
+    }
+
     fn change(status_fingerprint: &str) -> crate::git_observer::WorkspaceLiveSyncChange {
         crate::git_observer::WorkspaceLiveSyncChange {
             session_id: "session-1".to_string(),
@@ -724,6 +765,18 @@ mod tests {
             target_repo_root: "/tmp/target".to_string(),
             path_results,
         }
+    }
+
+    fn attachment(repo_root: &str, kernel_id: &str) -> crate::session::WorkspaceLinkAttachment {
+        crate::session::WorkspaceLinkAttachment::new(
+            "link-1",
+            "user-1",
+            "machine-1",
+            kernel_id,
+            repo_root,
+            Some("main".to_string()),
+            Some("repo-fingerprint".to_string()),
+        )
     }
 
     fn path_result(

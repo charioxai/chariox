@@ -1,9 +1,8 @@
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest,
-    SetUserConfigValueRequest, SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest,
-    UserConfigMutationEffect,
+    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
+    SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest, UserConfigMutationEffect,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;

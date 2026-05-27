@@ -9,10 +9,11 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
             session_id: "session-1".to_string(),
         },
     );
-    let mode_request =
-        LocalDaemonRequest::SetWorkspaceLiveSyncMode(crate::local::SetWorkspaceLiveSyncModeRequest {
+    let mode_request = LocalDaemonRequest::SetWorkspaceLiveSyncMode(
+        crate::local::SetWorkspaceLiveSyncModeRequest {
             mode: crate::config::WorkspaceLiveSyncMode::Tracked,
-        });
+        },
+    );
     let response = LocalDaemonResponse::WorkspaceLiveSyncStatus {
         status: crate::local::WorkspaceLiveSyncStatus {
             session_id: "session-1".to_string(),
