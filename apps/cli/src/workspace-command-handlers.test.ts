@@ -45,15 +45,15 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   }
   const notices: string[] = []
   const footers: string[] = []
-  const configUpdates: Array<[string, string]> = []
+  const modeUpdates: string[] = []
   const statusUpdates: string[] = []
   const deps = workspaceDeps({
     getWorkspaceLiveSyncStatus: async () => status,
     setWorkspaceLiveSyncStatus: (nextStatus) => {
       if (nextStatus) statusUpdates.push(nextStatus.footer_state)
     },
-    setUserConfigValue: async (path, value) => {
-      configUpdates.push([path, value])
+    setWorkspaceLiveSyncMode: async (mode) => {
+      modeUpdates.push(mode)
     },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
@@ -72,11 +72,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
-  assert.deepEqual(configUpdates, [
-    ["providers.workspace_live_sync", "tracked"],
-    ["providers.workspace_live_sync", "managed"],
-    ["providers.workspace_live_sync", "unrestricted"],
-  ])
+  assert.deepEqual(modeUpdates, ["tracked", "managed", "unrestricted"])
   assert.deepEqual(footers.slice(-3), [
     "info:workspace live sync mode set to tracked",
     "info:workspace live sync enabled: managed",

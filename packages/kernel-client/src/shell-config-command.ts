@@ -11,6 +11,7 @@ import {
   registerCredentialRequest,
   removeCredentialRequest,
   setCredentialSecretRequest,
+  setWorkspaceLiveSyncModeRequest,
   setUserConfigValueRequest,
   unsetUserConfigValueRequest,
   upsertCredentialRequest,
@@ -84,8 +85,7 @@ export async function executeConfigCommand(
       return { ok: false, message: "usage: config workspace-live-sync required|unrestricted" }
     }
     const normalizedMode = mode === "required" ? "managed" : "unrestricted"
-    const configPath = "providers.workspace_live_sync"
-    const response = await deps.client.send(setUserConfigValueRequest(configPath, normalizedMode))
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(normalizedMode))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,

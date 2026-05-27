@@ -59,6 +59,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::GetUserConfigSchema(_)
             | LocalDaemonRequest::SetUserConfigValue(_)
+            | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)) => {

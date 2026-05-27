@@ -823,7 +823,7 @@ public final class ArrobaAppModel {
     private func setWorkspaceLiveSyncMode(_ mode: String) async {
         await perform("Updating workspace live sync") {
             let response = try await client.send(
-                .setUserConfigValue(path: "providers.workspace_live_sync", value: mode),
+                .setWorkspaceLiveSyncMode(mode: mode),
                 to: try endpointURL()
             )
             guard case .userConfigUpdated = response else {

@@ -13,6 +13,11 @@ pub struct SetUserConfigValueRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkspaceLiveSyncModeRequest {
+    pub mode: crate::config::WorkspaceLiveSyncMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsetUserConfigValueRequest {
     pub path: String,
 }

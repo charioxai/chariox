@@ -140,6 +140,21 @@ test("config command renders kernel mutation effects", async () => {
         ],
       }
     },
+    setWorkspaceLiveSyncMode: async (mode: "managed" | "tracked" | "unrestricted") => {
+      updates.push({ path: "providers.workspace_live_sync", value: mode })
+      return {
+        path: "/home/.arroba/config.toml",
+        config: { version: 1, providers: { workspace_live_sync: mode } },
+        effects: [
+          {
+            kind: "provider_reload",
+            path: "providers.workspace_live_sync",
+            message: "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+            provider_reload: { reloaded: 1, deferred: 0, unaffected: 0 },
+          },
+        ],
+      }
+    },
   }))
 
   await handlers.handleConfigCommand({

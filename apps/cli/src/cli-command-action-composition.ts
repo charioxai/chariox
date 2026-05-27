@@ -26,6 +26,7 @@ import {
   getUserConfig,
   getUserConfigSchema,
   setCredentialSecret,
+  setWorkspaceLiveSyncMode,
   setUserConfigValue,
   unsetUserConfigValue,
 } from "./config-api.js"
@@ -401,6 +402,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
+    setWorkspaceLiveSyncMode: (mode) => setWorkspaceLiveSyncMode(client, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
     listRemoteMachines: () => listRemoteMachines(client),

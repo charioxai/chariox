@@ -134,16 +134,15 @@ import Testing
     let modeData = try KernelProtocolCodec.encodeRequestFrame(
         KernelRequestFrame(
             requestID: "request-workspace-sync-mode",
-            request: .setUserConfigValue(path: "providers.workspace_live_sync", value: "tracked")
+            request: .setWorkspaceLiveSyncMode(mode: "tracked")
         )
     )
     let modeObject = try #require(
         JSONSerialization.jsonObject(with: modeData) as? [String: Any]
     )
     let modeRequest = try #require(modeObject["request"] as? [String: Any])
-    let modePayload = try #require(modeRequest["SetUserConfigValue"] as? [String: Any])
-    #expect(modePayload["path"] as? String == "providers.workspace_live_sync")
-    #expect(modePayload["value"] as? String == "tracked")
+    let modePayload = try #require(modeRequest["SetWorkspaceLiveSyncMode"] as? [String: Any])
+    #expect(modePayload["mode"] as? String == "tracked")
 
     let linkData = try KernelProtocolCodec.encodeRequestFrame(
         KernelRequestFrame(

@@ -68,7 +68,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 57);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 58);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),

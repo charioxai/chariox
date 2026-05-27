@@ -13,6 +13,7 @@ export type ConfigCommandHandlerDeps = {
   getUserConfig?: () => Promise<ArrobaUserConfigPayload>
   getUserConfigSchema?: () => Promise<ArrobaUserConfigSchemaPayload>
   setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
+  setWorkspaceLiveSyncMode?: (mode: "managed" | "tracked" | "unrestricted") => Promise<ArrobaUserConfigPayload>
   unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
 }
 
@@ -162,8 +163,8 @@ async function setWorkspaceLiveSyncMode(
   modeValue: string | undefined,
   rest: string[],
 ): Promise<void> {
-  if (!deps.setUserConfigValue) {
-    deps.flashFooter("user config updates are unavailable in this build", "error")
+  if (!deps.setWorkspaceLiveSyncMode) {
+    deps.flashFooter("workspace live sync mode updates are unavailable in this build", "error")
     return
   }
   const mode = modeValue ?? "required"
@@ -172,7 +173,7 @@ async function setWorkspaceLiveSyncMode(
     return
   }
   const normalizedMode = mode === "required" ? "managed" : "unrestricted"
-  const payload = await deps.setUserConfigValue("providers.workspace_live_sync", normalizedMode)
+  const payload = await deps.setWorkspaceLiveSyncMode(normalizedMode)
   appendUserConfigEffects(deps, payload)
   deps.flashFooter(`workspace live sync set to ${mode}`, "info")
 }

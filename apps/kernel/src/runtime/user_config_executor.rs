@@ -1,8 +1,9 @@
 use crate::error::DaemonError;
 use crate::local::{
     DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    UnsetUserConfigValueRequest, UserConfigMutationEffect,
+    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest,
+    SetUserConfigValueRequest, SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest,
+    UserConfigMutationEffect,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -22,6 +23,9 @@ pub(crate) async fn execute_user_config_request(
         }
         LocalDaemonRequest::SetUserConfigValue(request) => {
             execute_set_user_config_value_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::SetWorkspaceLiveSyncMode(request) => {
+            execute_set_workspace_live_sync_mode_request(runtime_state, request).await
         }
         LocalDaemonRequest::UnsetUserConfigValue(request) => {
             execute_unset_user_config_value_request(runtime_state, request).await
@@ -67,6 +71,30 @@ pub(crate) async fn execute_set_user_config_value_request(
         UserConfigMutation::Set {
             path: request.path,
             value: request.value,
+        },
+    )
+    .await?;
+    Ok(LocalDaemonResponse::UserConfigUpdated {
+        path: config.user_config_path().clone(),
+        config: config.user_config,
+        effects,
+    })
+}
+
+pub(crate) async fn execute_set_workspace_live_sync_mode_request(
+    runtime_state: &KernelRuntimeState,
+    request: SetWorkspaceLiveSyncModeRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (config, effects) = apply_user_config_mutation(
+        runtime_state,
+        UserConfigMutation::Set {
+            path: "providers.workspace_live_sync".to_string(),
+            value: match request.mode {
+                crate::config::WorkspaceLiveSyncMode::Managed => "managed",
+                crate::config::WorkspaceLiveSyncMode::Tracked => "tracked",
+                crate::config::WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
+            }
+            .to_string(),
         },
     )
     .await?;

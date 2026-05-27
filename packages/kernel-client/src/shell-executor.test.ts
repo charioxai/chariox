@@ -536,7 +536,7 @@ test("executeShellCommand manages workspace links", async () => {
         if ("GetWorkspaceLiveSyncStatus" in request) {
           return { WorkspaceLiveSyncStatus: { status: syncStatus } }
         }
-        if ("SetUserConfigValue" in request) {
+        if ("SetWorkspaceLiveSyncMode" in request) {
           return { UserConfigUpdated: { config: { version: 1 }, effects: [] } }
         }
         throw new Error("unexpected request")
@@ -582,9 +582,9 @@ test("executeShellCommand manages workspace links", async () => {
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "tracked" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "unrestricted" } },
+    { SetWorkspaceLiveSyncMode: { mode: "tracked" } },
+    { SetWorkspaceLiveSyncMode: { mode: "managed" } },
+    { SetWorkspaceLiveSyncMode: { mode: "unrestricted" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
   ])

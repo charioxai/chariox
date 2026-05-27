@@ -131,6 +131,8 @@ test("executeShellCommand mutates user config", async () => {
         }
         const setConfig = "SetUserConfigValue" in request
           ? request.SetUserConfigValue as { path?: string }
+          : "SetWorkspaceLiveSyncMode" in request
+            ? { path: "providers.workspace_live_sync" }
           : null
         return {
           UserConfigUpdated: {
@@ -178,7 +180,7 @@ test("executeShellCommand mutates user config", async () => {
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
+    { SetWorkspaceLiveSyncMode: { mode: "managed" } },
   ])
 })
 

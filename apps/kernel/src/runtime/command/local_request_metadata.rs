@@ -87,6 +87,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("workspace_live_sync.status", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::SetWorkspaceLiveSyncMode(_) => {
+            LocalRequestMetadata::new("workspace_live_sync.mode", Normal)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -243,6 +246,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AttachWorkspaceLink(_) => "workspace_link.attach",
         LocalDaemonRequest::DetachWorkspaceLink(_) => "workspace_link.detach",
         LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_) => "workspace_live_sync.status",
+        LocalDaemonRequest::SetWorkspaceLiveSyncMode(_) => "workspace_live_sync.mode",
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",

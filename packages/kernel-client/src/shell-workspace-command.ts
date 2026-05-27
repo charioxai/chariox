@@ -11,7 +11,7 @@ import {
   detachWorkspaceLinkRequest,
   getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
-  setUserConfigValueRequest,
+  setWorkspaceLiveSyncModeRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
@@ -170,14 +170,14 @@ async function executeWorkspaceSyncCommand(
     if (mode === "unrestricted") {
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
-    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(mode))
     return { ok: true, message: `workspace live sync enabled: ${mode}`, data: response }
   }
   if (action === "disable") {
     if (args.length > 0) {
       return { ok: false, message: "usage: workspace sync disable" }
     }
-    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", "unrestricted"))
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest("unrestricted"))
     return { ok: true, message: "workspace live sync disabled", data: response }
   }
   if (action === "mode") {
@@ -185,7 +185,7 @@ async function executeWorkspaceSyncCommand(
     if (!mode || args.length !== 1) {
       return { ok: false, message: "usage: workspace sync mode managed|tracked|unrestricted" }
     }
-    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(mode))
     return { ok: true, message: `workspace live sync mode set to ${mode}`, data: response }
   }
   if (action === "link") {

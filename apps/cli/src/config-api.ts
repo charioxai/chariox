@@ -7,6 +7,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import {
   getUserConfigRequest,
   getUserConfigSchemaRequest,
+  setWorkspaceLiveSyncModeRequest,
   setUserConfigValueRequest,
   setCredentialSecretRequest,
   unsetUserConfigValueRequest,
@@ -29,6 +30,14 @@ export async function setUserConfigValue(
   value: string,
 ): Promise<ArrobaUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(setUserConfigValueRequest(path, value))
+  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+}
+
+export async function setWorkspaceLiveSyncMode(
+  client: LocalIpcClient,
+  mode: "managed" | "tracked" | "unrestricted",
+): Promise<ArrobaUserConfigPayload> {
+  const response = await client.send<Record<string, unknown>>(setWorkspaceLiveSyncModeRequest(mode))
   return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
 }
 

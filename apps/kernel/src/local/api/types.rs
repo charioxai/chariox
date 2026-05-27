@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 57;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 58;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -134,6 +134,7 @@ pub enum LocalDaemonRequest {
     GetUserConfig(GetUserConfigRequest),
     GetUserConfigSchema(GetUserConfigSchemaRequest),
     SetUserConfigValue(SetUserConfigValueRequest),
+    SetWorkspaceLiveSyncMode(SetWorkspaceLiveSyncModeRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
     DeleteCredentialSecret(DeleteCredentialSecretRequest),

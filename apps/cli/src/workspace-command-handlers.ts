@@ -38,6 +38,7 @@ export type WorkspaceCommandHandlerDeps = {
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
   setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
+  setWorkspaceLiveSyncMode?: (mode: "managed" | "tracked" | "unrestricted") => Promise<unknown>
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
 }
@@ -120,30 +121,30 @@ async function handleWorkspaceSyncCommand(
   }
   if (action === "enable") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
-    if (!mode || mode === "unrestricted" || args.length > 1 || !deps.setUserConfigValue) {
+    if (!mode || mode === "unrestricted" || args.length > 1 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
     }
-    await deps.setUserConfigValue("providers.workspace_live_sync", mode)
+    await deps.setWorkspaceLiveSyncMode(mode)
     deps.flashFooter(`workspace live sync enabled: ${mode}`, "info")
     return
   }
   if (action === "disable") {
-    if (args.length > 0 || !deps.setUserConfigValue) {
+    if (args.length > 0 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync disable", "error")
       return
     }
-    await deps.setUserConfigValue("providers.workspace_live_sync", "unrestricted")
+    await deps.setWorkspaceLiveSyncMode("unrestricted")
     deps.flashFooter("workspace live sync disabled", "info")
     return
   }
   if (action === "mode") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
-    if (!mode || args.length !== 1 || !deps.setUserConfigValue) {
+    if (!mode || args.length !== 1 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync mode managed|tracked|unrestricted", "error")
       return
     }
-    await deps.setUserConfigValue("providers.workspace_live_sync", mode)
+    await deps.setWorkspaceLiveSyncMode(mode)
     deps.flashFooter(`workspace live sync mode set to ${mode}`, "info")
     return
   }

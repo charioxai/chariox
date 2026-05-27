@@ -505,6 +505,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
     case getWorkspaceLiveSyncStatus(sessionID: String)
     case attachWorkspaceLink(sessionID: String, linkRef: String, repoRoot: String?)
+    case setWorkspaceLiveSyncMode(mode: String)
     case setUserConfigValue(path: String, value: String)
     case getSessionHistory(sessionID: String, agentID: String?, roundCount: Int, maxChars: Int)
     case spawnAgent(sessionID: String, alias: String?, provider: String, model: String?, effort: String?, worktreeID: String?)
@@ -634,6 +635,11 @@ public enum LocalDaemonRequest: Encodable, Sendable {
             try container.encode(
                 AttachWorkspaceLinkPayload(sessionID: sessionID, linkRef: linkRef, repoRoot: repoRoot),
                 forKey: DynamicCodingKey("AttachWorkspaceLink")
+            )
+        case let .setWorkspaceLiveSyncMode(mode):
+            try container.encode(
+                SetWorkspaceLiveSyncModePayload(mode: mode),
+                forKey: DynamicCodingKey("SetWorkspaceLiveSyncMode")
             )
         case let .setUserConfigValue(path, value):
             try container.encode(
@@ -1176,6 +1182,10 @@ private struct AttachWorkspaceLinkPayload: Encodable {
 private struct SetUserConfigValuePayload: Encodable {
     let path: String
     let value: String
+}
+
+private struct SetWorkspaceLiveSyncModePayload: Encodable {
+    let mode: String
 }
 
 private struct UpdateSessionConfigPayload: Encodable {

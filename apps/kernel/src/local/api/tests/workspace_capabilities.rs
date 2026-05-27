@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
+    let harness = LocalRouterTestHarness::new();
+
+    let updated = match harness
+        .dispatch(LocalDaemonRequest::SetWorkspaceLiveSyncMode(
+            SetWorkspaceLiveSyncModeRequest {
+                mode: crate::config::WorkspaceLiveSyncMode::Tracked,
+            },
+        ))
+        .expect("workspace live sync mode update should succeed")
+    {
+        LocalDaemonResponse::UserConfigUpdated {
+            config, effects, ..
+        } => {
+            assert_eq!(
+                effects.first().map(|effect| effect.path.as_str()),
+                Some("providers.workspace_live_sync")
+            );
+            config
+        }
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(
+        updated.providers.workspace_live_sync.mode,
+        crate::config::WorkspaceLiveSyncMode::Tracked
+    );
+}
+
+#[test]
 fn local_request_api_manages_session_workspace_links() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
