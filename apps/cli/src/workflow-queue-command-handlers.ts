@@ -31,63 +31,69 @@ export async function handleWorkflowQueueCommand(
   deps: WorkflowQueueCommandDeps,
   args: readonly string[],
 ): Promise<void> {
-  const action = args[1]?.trim().toLowerCase() ?? "list"
+  const parsed = parseWorkflowQueueArgs(args)
+  if (parsed.error) {
+    deps.flashFooter("usage: /workflow queue [--workflow <workflow-ref>] [list|create|rename|priority|edit|move|remove|clear]", "error")
+    return
+  }
+  const workflowRef = parsed.workflowRef ?? currentWorkflowRef(deps)
+  const action = parsed.args[1]?.trim().toLowerCase() ?? "list"
   if (action === "list") {
-    await listQueuesAndPrompts(deps)
+    await listQueuesAndPrompts(deps, workflowRef)
     return
   }
   if (action === "create") {
-    const alias = args[2]
-    const priority = Number(args[3] ?? "0")
+    const alias = parsed.args[2]
+    const priority = Number(parsed.args[3] ?? "0")
     if (!alias || !Number.isFinite(priority)) {
-      deps.flashFooter("usage: /workflow queue create <alias> [priority]", "error")
+      deps.flashFooter("usage: /workflow queue create [--workflow <workflow-ref>] <alias> [priority]", "error")
       return
     }
     if (!deps.createWorkflowPromptQueue) {
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.createWorkflowPromptQueue(currentWorkflowRef(deps), alias, priority)
+    const payload = await deps.createWorkflowPromptQueue(workflowRef, alias, priority)
     deps.applySessionState(payload.session)
     deps.flashFooter(`created workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
   }
   if (action === "priority") {
-    const queueRef = args[2]
-    const priority = Number(args[3])
+    const queueRef = parsed.args[2]
+    const priority = Number(parsed.args[3])
     if (!queueRef || !Number.isFinite(priority)) {
-      deps.flashFooter("usage: /workflow queue priority <queue-ref> <priority>", "error")
+      deps.flashFooter("usage: /workflow queue priority [--workflow <workflow-ref>] <queue-ref> <priority>", "error")
       return
     }
     if (!deps.updateWorkflowPromptQueue) {
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.updateWorkflowPromptQueue(currentWorkflowRef(deps), queueRef, { priority })
+    const payload = await deps.updateWorkflowPromptQueue(workflowRef, queueRef, { priority })
     deps.applySessionState(payload.session)
     deps.flashFooter(`updated workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
   }
   if (action === "rename") {
-    const queueRef = args[2]
-    const alias = args[3]
+    const queueRef = parsed.args[2]
+    const alias = parsed.args[3]
     if (!queueRef || !alias) {
-      deps.flashFooter("usage: /workflow queue rename <queue-ref> <alias>", "error")
+      deps.flashFooter("usage: /workflow queue rename [--workflow <workflow-ref>] <queue-ref> <alias>", "error")
       return
     }
     if (!deps.updateWorkflowPromptQueue) {
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.updateWorkflowPromptQueue(currentWorkflowRef(deps), queueRef, { alias })
+    const payload = await deps.updateWorkflowPromptQueue(workflowRef, queueRef, { alias })
     deps.applySessionState(payload.session)
     deps.flashFooter(`renamed workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
   }
   if (action === "remove") {
-    const queueItemRef = args[2]
+    const queueItemRef = parsed.args[2]
     if (!queueItemRef) {
-      deps.flashFooter("usage: /workflow queue remove <queue-item-ref>", "error")
+      deps.flashFooter("usage: /workflow queue remove [--workflow <workflow-ref>] <queue-item-ref>", "error")
       return
     }
     if (!deps.removeQueuedWorkflowPrompt) {
@@ -100,10 +106,10 @@ export async function handleWorkflowQueueCommand(
     return
   }
   if (action === "edit") {
-    const queueItemRef = args[2]
-    const prompt = args.slice(3).join(" ").trim()
+    const queueItemRef = parsed.args[2]
+    const prompt = parsed.args.slice(3).join(" ").trim()
     if (!queueItemRef || !prompt) {
-      deps.flashFooter("usage: /workflow queue edit <queue-item-ref> <prompt>", "error")
+      deps.flashFooter("usage: /workflow queue edit [--workflow <workflow-ref>] <queue-item-ref> <prompt>", "error")
       return
     }
     if (!deps.updateQueuedWorkflowPrompt) {
@@ -116,10 +122,10 @@ export async function handleWorkflowQueueCommand(
     return
   }
   if (action === "move") {
-    const queueItemRef = args[2]
-    const queueRef = args[3]
+    const queueItemRef = parsed.args[2]
+    const queueRef = parsed.args[3]
     if (!queueItemRef || !queueRef) {
-      deps.flashFooter("usage: /workflow queue move <queue-item-ref> <queue-ref>", "error")
+      deps.flashFooter("usage: /workflow queue move [--workflow <workflow-ref>] <queue-item-ref> <queue-ref>", "error")
       return
     }
     if (!deps.updateQueuedWorkflowPrompt) {
@@ -132,12 +138,12 @@ export async function handleWorkflowQueueCommand(
     return
   }
   if (action === "flush" || action === "clear") {
-    const queueRef = args[2] ?? "default"
+    const queueRef = parsed.args[2] ?? "default"
     if (!deps.clearWorkflowPromptQueue) {
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.clearWorkflowPromptQueue(currentWorkflowRef(deps), queueRef)
+    const payload = await deps.clearWorkflowPromptQueue(workflowRef, queueRef)
     deps.applySessionState(payload.session)
     deps.flashFooter(
       payload.queued_prompts.length === 0
@@ -150,23 +156,25 @@ export async function handleWorkflowQueueCommand(
   deps.flashFooter("usage: /workflow queue [list|create|rename|priority|edit|move|remove|clear]", "error")
 }
 
-async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps): Promise<void> {
+async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps, workflowRef: string | null): Promise<void> {
   if (!deps.listWorkflowPromptQueues || !deps.listQueuedWorkflowPrompts) {
     deps.flashFooter("workflow queue commands unavailable", "error")
     return
   }
   const [queues, prompts] = await Promise.all([
-    deps.listWorkflowPromptQueues(currentWorkflowRef(deps)),
+    deps.listWorkflowPromptQueues(workflowRef),
     deps.listQueuedWorkflowPrompts(),
   ])
+  const workflowIds = new Set(queues.map((queue) => queue.workflow_id))
+  const workflowPrompts = prompts.filter((prompt) => workflowIds.has(prompt.workflow_id))
   const queueSummary = queues.map((queue) => {
-    const depth = prompts.filter((prompt) => prompt.queue_id === queue.id).length
+    const depth = workflowPrompts.filter((prompt) => prompt.workflow_id === queue.workflow_id && prompt.queue_id === queue.id).length
     return `${formatWorkflowPromptQueue(queue)} depth=${depth}`
   })
   deps.flashFooter(
     queueSummary.length === 0
       ? "workflow queues unavailable"
-      : `workflow queues: ${queueSummary.join(", ")}${prompts.length ? `; prompts: ${prompts.map(formatWorkflowQueuedPrompt).join(", ")}` : ""}`,
+      : `workflow queues: ${queueSummary.join(", ")}${workflowPrompts.length ? `; prompts: ${workflowPrompts.map(formatWorkflowQueuedPrompt).join(", ")}` : ""}`,
     "info",
   )
 }
@@ -183,5 +191,27 @@ export function formatWorkflowQueuedPrompt(prompt: WorkflowQueuedPrompt): string
   const text = prompt.prompt && prompt.prompt.trim() !== ""
     ? ` prompt=${JSON.stringify(prompt.prompt.length > 50 ? `${prompt.prompt.slice(0, 50)}...` : prompt.prompt)}`
     : ""
-  return `${prompt.id} [${prompt.source}] queue=${prompt.queue_id} endpoint=${prompt.endpoint_id} status=${prompt.status}${text}`
+  return `${prompt.id} [${prompt.source}] workflow=${prompt.workflow_id} queue=${prompt.queue_id} endpoint=${prompt.endpoint_id} status=${prompt.status}${text}`
+}
+
+function parseWorkflowQueueArgs(args: readonly string[]): { args: string[]; workflowRef?: string; error?: boolean } {
+  const normalized: string[] = []
+  let workflowRef: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (value === undefined) {
+      continue
+    }
+    if (value === "--workflow") {
+      const next = args[index + 1]?.trim()
+      if (!next) {
+        return { args: normalized, error: true }
+      }
+      workflowRef = next
+      index += 1
+      continue
+    }
+    normalized.push(value)
+  }
+  return { args: normalized, ...(workflowRef ? { workflowRef } : {}) }
 }

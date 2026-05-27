@@ -95,8 +95,12 @@ export async function executeWorkflowQueueCommand(
   deps: ShellWorkflowAutomationCommandDeps,
 ): Promise<ShellCommandResult> {
   const sessionId = context.sessionId!
-  const action = args[0] ?? "list"
-  const workflowRef = context.workflowId ?? null
+  const parsed = parseWorkflowQueueArgs(args)
+  if (parsed.error) {
+    return { ok: false, message: "usage: workflow queue [--workflow <workflow-ref>] [list|create|priority|edit|move|clear|remove]" }
+  }
+  const action = parsed.args[0] ?? "list"
+  const workflowRef = parsed.workflowRef ?? context.workflowId ?? null
   if (action === "list") {
     const [queueResponse, promptResponse] = await Promise.all([
       deps.client.send(listWorkflowPromptQueuesRequest(sessionId, workflowRef)),
@@ -104,56 +108,80 @@ export async function executeWorkflowQueueCommand(
     ])
     const queues = expectVariant<{ queues: WorkflowPromptQueueDefinition[] }>(queueResponse, "WorkflowPromptQueuesListed").queues
     const queuedPrompts = expectVariant<{ queued_prompts: WorkflowQueuedPrompt[] }>(promptResponse, "QueuedWorkflowPromptsListed").queued_prompts
-    return { ok: true, message: `${formatWorkflowPromptQueues(queues, queuedPrompts)}${queuedPrompts.length ? `\n${formatWorkflowQueuedPrompts(queuedPrompts)}` : ""}`, data: { queues, queued_prompts: queuedPrompts } }
+    const workflowIds = new Set(queues.map((queue) => queue.workflow_id))
+    const workflowPrompts = queuedPrompts.filter((prompt) => workflowIds.has(prompt.workflow_id))
+    return { ok: true, message: `${formatWorkflowPromptQueues(queues, workflowPrompts)}${workflowPrompts.length ? `\n${formatWorkflowQueuedPrompts(workflowPrompts)}` : ""}`, data: { queues, queued_prompts: workflowPrompts } }
   }
   if (action === "create") {
-    const alias = args[1]
-    const priority = Number(args[2] ?? "0")
-    if (!alias || !Number.isFinite(priority)) return { ok: false, message: "usage: workflow queue create <alias> [priority]" }
+    const alias = parsed.args[1]
+    const priority = Number(parsed.args[2] ?? "0")
+    if (!alias || !Number.isFinite(priority)) return { ok: false, message: "usage: workflow queue create [--workflow <workflow-ref>] <alias> [priority]" }
     const response = await deps.client.send(createWorkflowPromptQueueRequest(sessionId, workflowRef, alias, priority))
     const payload = expectVariant<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>(response, "WorkflowPromptQueueCreated")
     return { ok: true, message: `created workflow queue ${payload.queue.id} (${payload.queue.alias})`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "priority") {
-    const queueRef = args[1]
-    const priority = Number(args[2])
-    if (!queueRef || !Number.isFinite(priority)) return { ok: false, message: "usage: workflow queue priority <queue-ref> <priority>" }
+    const queueRef = parsed.args[1]
+    const priority = Number(parsed.args[2])
+    if (!queueRef || !Number.isFinite(priority)) return { ok: false, message: "usage: workflow queue priority [--workflow <workflow-ref>] <queue-ref> <priority>" }
     const response = await deps.client.send(updateWorkflowPromptQueueRequest(sessionId, workflowRef, queueRef, { priority }))
     const payload = expectVariant<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>(response, "WorkflowPromptQueueUpdated")
     return { ok: true, message: `updated workflow queue ${payload.queue.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "flush" || action === "clear") {
-    const queueRef = args[1] ?? "default"
+    const queueRef = parsed.args[1] ?? "default"
     const response = await deps.client.send(clearWorkflowPromptQueueRequest(sessionId, workflowRef, queueRef))
     const payload = expectVariant<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>(response, "WorkflowPromptQueueCleared")
     return { ok: true, message: payload.queued_prompts.length === 0 ? `workflow queue ${queueRef} already empty` : `cleared ${payload.queued_prompts.length} queued workflow prompt${payload.queued_prompts.length === 1 ? "" : "s"}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "remove") {
-    const queueItemRef = args[1]
+    const queueItemRef = parsed.args[1]
     if (!queueItemRef) {
-      return { ok: false, message: "usage: workflow queue remove <queue-item-ref>" }
+      return { ok: false, message: "usage: workflow queue remove [--workflow <workflow-ref>] <queue-item-ref>" }
     }
     const response = await deps.client.send(removeQueuedWorkflowPromptRequest(sessionId, queueItemRef))
     const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptRemoved")
     return { ok: true, message: `removed queued workflow prompt ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "edit") {
-    const queueItemRef = args[1]
-    const prompt = args.slice(2).join(" ").trim()
-    if (!queueItemRef || !prompt) return { ok: false, message: "usage: workflow queue edit <queue-item-ref> <prompt>" }
+    const queueItemRef = parsed.args[1]
+    const prompt = parsed.args.slice(2).join(" ").trim()
+    if (!queueItemRef || !prompt) return { ok: false, message: "usage: workflow queue edit [--workflow <workflow-ref>] <queue-item-ref> <prompt>" }
     const response = await deps.client.send(updateQueuedWorkflowPromptRequest(sessionId, queueItemRef, { prompt }))
     const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptUpdated")
     return { ok: true, message: `updated queued workflow prompt ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   if (action === "move") {
-    const queueItemRef = args[1]
-    const queueRef = args[2]
-    if (!queueItemRef || !queueRef) return { ok: false, message: "usage: workflow queue move <queue-item-ref> <queue-ref>" }
+    const queueItemRef = parsed.args[1]
+    const queueRef = parsed.args[2]
+    if (!queueItemRef || !queueRef) return { ok: false, message: "usage: workflow queue move [--workflow <workflow-ref>] <queue-item-ref> <queue-ref>" }
     const response = await deps.client.send(updateQueuedWorkflowPromptRequest(sessionId, queueItemRef, { queueRef }))
     const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptUpdated")
     return { ok: true, message: `moved queued workflow prompt ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
   }
   return { ok: false, message: "usage: workflow queue [list|create|priority|edit|move|clear|remove]" }
+}
+
+function parseWorkflowQueueArgs(args: readonly string[]): { args: string[]; workflowRef?: string; error?: boolean } {
+  const normalized: string[] = []
+  let workflowRef: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (value === undefined) {
+      continue
+    }
+    if (value === "--workflow") {
+      const next = args[index + 1]?.trim()
+      if (!next) {
+        return { args: normalized, error: true }
+      }
+      workflowRef = next
+      index += 1
+      continue
+    }
+    normalized.push(value)
+  }
+  return { args: normalized, ...(workflowRef ? { workflowRef } : {}) }
 }
 
 function parseWatchdogIntervalSeconds(value: string | undefined): number | null {

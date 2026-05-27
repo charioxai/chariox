@@ -92,8 +92,8 @@ export function formatWorkflowPromptQueues(
     return "workflow queues unavailable"
   }
   return queues.map((queue) => {
-    const depth = queuedPrompts.filter((prompt) => prompt.queue_id === queue.id).length
-    return `${queue.id} (${queue.alias}) priority=${queue.priority} enabled=${String(queue.enabled)} depth=${depth}`
+    const depth = queuedPrompts.filter((prompt) => prompt.workflow_id === queue.workflow_id && prompt.queue_id === queue.id).length
+    return `${queue.id} (${queue.alias}) workflow=${queue.workflow_id} priority=${queue.priority} enabled=${String(queue.enabled)} depth=${depth}`
   }).join("\n")
 }
 
@@ -102,6 +102,6 @@ export function formatWorkflowQueuedPrompts(queuedPrompts: WorkflowQueuedPrompt[
     return "workflow queue is empty"
   }
   return queuedPrompts.map((queued) => (
-    `${queued.id} queue=${queued.queue_id} endpoint=${queued.endpoint_id} source=${queued.source} status=${queued.status}`
+    `${queued.id} workflow=${queued.workflow_id} queue=${queued.queue_id} endpoint=${queued.endpoint_id} source=${queued.source} status=${queued.status}`
   )).join("\n")
 }

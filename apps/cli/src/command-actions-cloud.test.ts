@@ -609,22 +609,24 @@ test("cloud invite create pairs cloud and local session invite tokens", async ()
       assert.match(url, /local_invite=local-token/)
       return false
     },
-    createSessionInvite: async (sessionId: string, _expiresInMs: number | null, maxUses: number | null) => {
+    createSessionInvite: async (sessionId: string, _expiresInMs: number | null, maxUses: number | null, collaborationLevel?: string | null) => {
       assert.equal(sessionId, "session-1")
       assert.equal(maxUses, 2)
+      assert.equal(collaborationLevel, "full")
       return {
         invite: { invite_token: "local-token", invite: { invite_id: "local-invite-1" } },
         session: makeSession(),
       }
     },
-    createCloudSessionInvite: async (sessionId: string, options: { maxUses?: number | null }) => {
+    createCloudSessionInvite: async (sessionId: string, options: { maxUses?: number | null; collaborationLevel?: string | null }) => {
       assert.equal(sessionId, "session-1")
       assert.equal(options.maxUses, 2)
+      assert.equal(options.collaborationLevel, "full")
       return { invite: { invite_id: "cloud-invite-1", invite_token: "cloud-token" } }
     },
   }))
 
-  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud invite create 2", args: ["invite", "create", "2"] })
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud invite create 2 --level full", args: ["invite", "create", "2", "--level", "full"] })
 
   assert.match(notices.at(-1) ?? "", /local_invite=local-token/)
   assert.equal(flashed.at(-1), "cloud invite created")

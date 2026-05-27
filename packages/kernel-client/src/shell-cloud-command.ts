@@ -1,4 +1,5 @@
 import type {
+  CollaborationLevel,
   CloudCollaborator,
   CloudSessionMember,
   RuntimeSession,
@@ -40,11 +41,16 @@ export async function executeCloudCommand(
     if (!context.sessionId) {
       return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
     }
-    const maxUses = args[0] ? Number.parseInt(args[0], 10) : 1
-    if (!Number.isFinite(maxUses) || maxUses <= 0) {
-      return { ok: false, message: "usage: cloud invite create [max-uses]" }
+    const collaborationLevel = parseCollaborationLevel(args)
+    if (!collaborationLevel) {
+      return { ok: false, message: "usage: cloud invite create [max-uses|--max-uses n] [--level private|transparent|full]" }
     }
-    const localResponse = await deps.client.send(createSessionInviteRequest(context.sessionId, null, maxUses))
+    const maxUsesIndex = args.findIndex((value) => value === "--max-uses")
+    const maxUses = parsePositiveInt(maxUsesIndex >= 0 ? args[maxUsesIndex + 1] : args[0]) ?? 1
+    if (!Number.isFinite(maxUses) || maxUses <= 0) {
+      return { ok: false, message: "usage: cloud invite create [max-uses|--max-uses n] [--level private|transparent|full]" }
+    }
+    const localResponse = await deps.client.send(createSessionInviteRequest(context.sessionId, null, maxUses, collaborationLevel))
     const local = expectVariant<{ invite: { invite: SessionInvite; invite_token: string }; session: RuntimeSession }>(
       localResponse,
       "SessionInviteCreated",
@@ -52,6 +58,7 @@ export async function executeCloudCommand(
     const cloudResponse = await deps.client.send(createCloudSessionInviteRequest(context.sessionId, {
       displayName: local.session.alias ?? local.session.id,
       maxUses,
+      collaborationLevel,
     }))
     const cloud = expectVariant<{ invite: { invite_token: string; invite_id: string } }>(
       cloudResponse,
@@ -63,6 +70,7 @@ export async function executeCloudCommand(
         `cloud invite ${cloud.invite.invite_id}`,
         `cloud_invite=${cloud.invite.invite_token}`,
         `local_invite=${local.invite.invite_token}`,
+        `level=${collaborationLevel}`,
       ].join("\n"),
       data: { cloud, local },
       contextUpdates: { sessionId: local.session.id, agentId: local.session.focused_agent_id ?? undefined },
@@ -123,6 +131,20 @@ export async function executeCloudCommand(
     }
   }
   return { ok: false, message: "usage: cloud invite create|accept | cloud members | cloud collaborators | cloud status" }
+}
+
+function parsePositiveInt(value: string | undefined): number | null | undefined {
+  if (value === undefined) return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+export function parseCollaborationLevel(args: readonly string[]): CollaborationLevel | null {
+  const levelIndex = args.findIndex((value) => value === "--level")
+  const raw = levelIndex >= 0 ? args[levelIndex + 1] : undefined
+  if (raw === undefined) return "private"
+  if (raw === "private" || raw === "transparent" || raw === "full") return raw
+  return null
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

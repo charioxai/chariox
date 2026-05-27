@@ -11,13 +11,47 @@ import {
 test("workflow queue command lists queues and queued prompts", async () => {
   const harness = createHarness({
     listWorkflowPromptQueues: async () => [queue()],
-    listQueuedWorkflowPrompts: async () => [queuedPrompt({ prompt: "x".repeat(60) })],
+    listQueuedWorkflowPrompts: async () => [
+      queuedPrompt({ prompt: "x".repeat(60) }),
+      queuedPrompt({ id: "prompt-other", workflow_id: "workflow-2" }),
+    ],
   })
 
   await handleWorkflowQueueCommand(harness.deps, ["queue", "list"])
 
   assert.match(harness.calls.at(-1) ?? "", /workflow queues: default\(default\) priority=0 depth=1/)
   assert.match(harness.calls.at(-1) ?? "", /prompts: prompt-1/)
+  assert.doesNotMatch(harness.calls.at(-1) ?? "", /prompt-other/)
+})
+
+test("workflow queue command accepts explicit workflow refs", async () => {
+  const calls: string[] = []
+  const harness = createHarness({
+    selectedWorkflowId: () => "workflow-selected",
+    listWorkflowPromptQueues: async (workflowRef) => {
+      calls.push(`list:${workflowRef}`)
+      return [queue({ workflow_id: workflowRef ?? "missing" })]
+    },
+    listQueuedWorkflowPrompts: async () => [queuedPrompt({ workflow_id: "workflow-explicit" })],
+    createWorkflowPromptQueue: async (workflowRef, alias, priority) => {
+      calls.push(`create:${workflowRef}:${alias}:${priority}`)
+      return { queue: queue({ workflow_id: workflowRef ?? "missing", alias, priority }), session: runtimeSession() }
+    },
+    clearWorkflowPromptQueue: async (workflowRef, queueRef) => {
+      calls.push(`clear:${workflowRef}:${queueRef}`)
+      return { queued_prompts: [], session: runtimeSession() }
+    },
+  })
+
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "--workflow", "workflow-explicit", "list"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "create", "--workflow", "workflow-explicit", "urgent", "9"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "clear", "--workflow", "workflow-explicit", "default"])
+
+  assert.deepEqual(calls, [
+    "list:workflow-explicit",
+    "create:workflow-explicit:urgent:9",
+    "clear:workflow-explicit:default",
+  ])
 })
 
 test("workflow queue command clears and applies the returned session", async () => {
@@ -62,7 +96,7 @@ test("workflow queue command validates action usage", async () => {
   await handleWorkflowQueueCommand(harness.deps, ["queue", "unknown"])
 
   assert.deepEqual(harness.calls, [
-    "footer:error:usage: /workflow queue remove <queue-item-ref>",
+    "footer:error:usage: /workflow queue remove [--workflow <workflow-ref>] <queue-item-ref>",
     "footer:error:usage: /workflow queue [list|create|rename|priority|edit|move|remove|clear]",
   ])
 })
@@ -70,7 +104,7 @@ test("workflow queue command validates action usage", async () => {
 test("formatWorkflowQueuedPrompt omits empty optional fields", () => {
   assert.equal(
     formatWorkflowQueuedPrompt(queuedPrompt({ source: "watchdog", prompt: "", watchdog_id: null })),
-    "prompt-1 [watchdog] queue=default endpoint=endpoint-1 status=queued",
+    "prompt-1 [watchdog] workflow=workflow-1 queue=default endpoint=endpoint-1 status=queued",
   )
 })
 

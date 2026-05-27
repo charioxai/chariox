@@ -85,7 +85,7 @@ export async function handleRelaySlashCommand(
     deps.flashFooter("relay disabled", "info")
     return
   }
-  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable | /relay invite create [max-uses] | /relay invite accept <token> | /relay members", "error")
+  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable | /relay invite create [max-uses] [--level private|transparent|full] | /relay invite accept <token> | /relay members", "error")
 }
 
 export async function handleCloudSlashCommand(
@@ -113,7 +113,7 @@ export async function handleCloudSlashCommand(
   if (await handleCloudSessionCommand(deps, profile, area, action, args)) {
     return
   }
-  deps.flashFooter("usage: /cloud [open|link|status] | /cloud invite create [max-uses] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
+  deps.flashFooter("usage: /cloud [open|link|status] | /cloud invite create [max-uses] [--level private|transparent|full] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
 }
 
 export async function handleCollabSlashCommand(
@@ -201,7 +201,7 @@ async function handleRelayInviteCommand(
     await acceptRelayInvite(deps, args)
     return
   }
-  deps.flashFooter("usage: /relay invite create [max-uses] | /relay invite accept <token>", "error")
+  deps.flashFooter("usage: /relay invite create [max-uses] [--level private|transparent|full] | /relay invite accept <token>", "error")
 }
 
 async function createRelayInvite(deps: CloudCommandHandlerDeps, args: string[]): Promise<void> {

@@ -907,7 +907,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(
     flashedMessage,
-    'workflow queues: default(default) priority=0 depth=1; prompts: queued-1 [manual] queue=default endpoint=entry status=queued prompt="later prompt from endpoint invocation"',
+    'workflow queues: default(default) priority=0 depth=1; prompts: queued-1 [manual] workflow=workflow-1 queue=default endpoint=entry status=queued prompt="later prompt from endpoint invocation"',
   )
 
   await handlers.handleWorkflowCommand({

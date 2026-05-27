@@ -30,6 +30,7 @@ test("cloud invite references parse urls and plain tokens", () => {
 test("cloud session invite create pairs cloud and local invite tokens", async () => {
   const currentSession = session({ alias: "review-session" })
   let createdMaxUses: number | null | undefined
+  let createdLevel: string | null | undefined
   let cloudDisplayName: string | null | undefined
   let openedUrl: string | null = null
   let notice = ""
@@ -46,8 +47,9 @@ test("cloud session invite create pairs cloud and local invite tokens", async ()
       openedUrl = url
       return false
     },
-    createSessionInvite: async (_sessionId, _expiresInMs, maxUses) => {
+    createSessionInvite: async (_sessionId, _expiresInMs, maxUses, collaborationLevel) => {
       createdMaxUses = maxUses
+      createdLevel = collaborationLevel
       return {
         invite: { invite_token: "local-token", invite: { invite_id: "local-invite" } },
         session: currentSession,
@@ -55,12 +57,14 @@ test("cloud session invite create pairs cloud and local invite tokens", async ()
     },
     createCloudSessionInvite: async (_sessionId, options) => {
       cloudDisplayName = options.displayName
+      assert.equal(options.collaborationLevel, "transparent")
       return { invite: { invite_id: "cloud-invite", invite_token: "cloud-token" } }
     },
-  }, profile(), "invite", "create", ["--max-uses", "2"])
+  }, profile(), "invite", "create", ["--max-uses", "2", "--level", "transparent"])
 
   assert.equal(handled, true)
   assert.equal(createdMaxUses, 2)
+  assert.equal(createdLevel, "transparent")
   assert.equal(cloudDisplayName, "review-session")
   assert.equal(openedUrl, "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token")
   assert.match(notice, /cloud_invite_id=cloud-invite/)
