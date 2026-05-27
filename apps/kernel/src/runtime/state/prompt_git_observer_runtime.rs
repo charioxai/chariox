@@ -147,28 +147,46 @@ impl KernelRuntimeState {
         change: crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
     ) {
-        let target_results = self
-            .apply_workspace_live_sync_change_to_link_targets(&change, source_kernel_id)
-            .await;
+        let link = self.workspace_live_sync_link_for_change(&change);
+        let target_results = match link.as_ref() {
+            Some(link) => {
+                self.apply_workspace_live_sync_change_to_link_targets(
+                    &change,
+                    source_kernel_id,
+                    link,
+                )
+                .await
+            }
+            None => Vec::new(),
+        };
         self.record_workspace_live_sync_notices(&change, &target_results);
-        self.owned.workspace_live_sync_journal.append(change);
+        if let Some(link) = link {
+            self.owned.workspace_live_sync_journal.append_for_link(
+                link.link_id(),
+                link.name(),
+                change,
+            );
+        }
         self.owned
             .workspace_live_sync_journal
             .record_target_results(target_results);
+    }
+
+    fn workspace_live_sync_link_for_change(
+        &self,
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
+    ) -> Option<crate::session::WorkspaceLinkDefinition> {
+        let session = self.owned.session_store.get_session(&change.session_id).ok()?;
+        let source_root = std::path::Path::new(&change.worktree_path);
+        session.workspace_link_for_repo_root(source_root).cloned()
     }
 
     async fn apply_workspace_live_sync_change_to_link_targets(
         &self,
         change: &crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
+        link: &crate::session::WorkspaceLinkDefinition,
     ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
-        let Ok(session) = self.owned.session_store.get_session(&change.session_id) else {
-            return Vec::new();
-        };
-        let source_root = std::path::Path::new(&change.worktree_path);
-        let Some(link) = session.workspace_link_for_repo_root(source_root).cloned() else {
-            return Vec::new();
-        };
         let config = self.config_snapshot().await;
         let mut results = Vec::new();
         for attachment in link.attachments() {

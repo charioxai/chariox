@@ -160,17 +160,35 @@ pub(crate) struct WorkspaceLiveSyncJournal {
 
 #[derive(Debug, Clone, Default)]
 struct WorkspaceLiveSyncJournalState {
-    entries: Vec<WorkspaceLiveSyncChange>,
+    entries: Vec<WorkspaceLiveSyncJournalEntry>,
+    next_sequence_by_link: BTreeMap<String, u64>,
     target_results: Vec<WorkspaceLiveSyncTargetResult>,
 }
 
 impl WorkspaceLiveSyncJournal {
-    pub(crate) fn append(&self, change: WorkspaceLiveSyncChange) {
-        self.inner
+    pub(crate) fn append_for_link(
+        &self,
+        link_id: &str,
+        link_name: &str,
+        change: WorkspaceLiveSyncChange,
+    ) -> WorkspaceLiveSyncJournalEntry {
+        let mut state = self
+            .inner
             .lock()
-            .expect("workspace live sync journal mutex poisoned")
-            .entries
-            .push(change);
+            .expect("workspace live sync journal mutex poisoned");
+        let next_sequence = state
+            .next_sequence_by_link
+            .entry(link_id.to_string())
+            .or_insert(1);
+        let entry = WorkspaceLiveSyncJournalEntry {
+            sequence: *next_sequence,
+            link_id: link_id.to_string(),
+            link_name: link_name.to_string(),
+            change,
+        };
+        *next_sequence += 1;
+        state.entries.push(entry.clone());
+        entry
     }
 
     pub(crate) fn record_target_results(&self, results: Vec<WorkspaceLiveSyncTargetResult>) {
@@ -197,6 +215,29 @@ impl WorkspaceLiveSyncJournal {
             .cloned()
             .collect()
     }
+
+    #[cfg(test)]
+    pub(crate) fn entries_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<WorkspaceLiveSyncJournalEntry> {
+        self.inner
+            .lock()
+            .expect("workspace live sync journal mutex poisoned")
+            .entries
+            .iter()
+            .filter(|entry| entry.change.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceLiveSyncJournalEntry {
+    pub sequence: u64,
+    pub link_id: String,
+    pub link_name: String,
+    pub change: WorkspaceLiveSyncChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1458,7 +1499,7 @@ mod tests {
         workspace_live_sync_git_branch, workspace_live_sync_identity_conflict,
         workspace_live_sync_repo_fingerprint, GitTurnContext, GitTurnSnapshot,
         GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
-        WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
+        WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind, WorkspaceLiveSyncJournal,
     };
 
     #[test]
@@ -2094,6 +2135,40 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_journal_assigns_ordered_sequences_per_link() {
+        let journal = WorkspaceLiveSyncJournal::default();
+        let change = || WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/repo".to_string(),
+            worktree_path: "/repo".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["src/lib.rs".to_string()],
+            file_changes: Vec::new(),
+            status_fingerprint: "managed_workspace_live_sync".to_string(),
+        };
+
+        let first = journal.append_for_link("link-a", "shared-a", change());
+        let second = journal.append_for_link("link-a", "shared-a", change());
+        let other_link = journal.append_for_link("link-b", "shared-b", change());
+
+        assert_eq!(first.sequence, 1);
+        assert_eq!(second.sequence, 2);
+        assert_eq!(other_link.sequence, 1);
+        let entries = journal.entries_for_session("session-1");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.link_id.as_str(), entry.sequence))
+                .collect::<Vec<_>>(),
+            vec![("link-a", 1), ("link-a", 2), ("link-b", 1)]
+        );
     }
 
     fn tracked_snapshot(is_dirty: bool, status_fingerprint: &str) -> GitTurnSnapshot {
