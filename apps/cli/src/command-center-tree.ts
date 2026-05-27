@@ -315,6 +315,10 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "workspace-sync-targets", label: "sync targets", description: "List workspace live sync targets", value: "/workspace sync targets" },
       { id: "workspace-sync-conflicts", label: "sync conflicts", description: "List workspace live sync conflicts", value: "/workspace sync conflicts" },
       { id: "workspace-sync-ignore", label: "sync ignore", description: "Show workspace live sync ignore rules", value: "/workspace sync ignore" },
+      { id: "workspace-sync-enable", label: "sync enable", description: "Enable workspace live sync", value: "/workspace sync enable managed" },
+      { id: "workspace-sync-disable", label: "sync disable", description: "Disable workspace live sync", value: "/workspace sync disable" },
+      { id: "workspace-sync-mode", label: "sync mode", description: "Set workspace live sync mode", value: "/workspace sync mode " },
+      { id: "workspace-sync-link", label: "sync link", description: "Attach this worktree to a sync link", value: "/workspace sync link " },
     ],
   },
   {

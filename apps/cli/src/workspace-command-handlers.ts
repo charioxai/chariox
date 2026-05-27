@@ -64,7 +64,7 @@ export async function handleWorkspaceSlashCommand(
 async function handleWorkspaceSyncCommand(
   deps: WorkspaceCommandHandlerDeps,
   action: string | undefined,
-  _args: string[],
+  args: string[],
 ): Promise<void> {
   if (!deps.isAttached()) {
     deps.flashFooter("attach to a session before viewing workspace live sync", "error")
@@ -101,11 +101,47 @@ async function handleWorkspaceSyncCommand(
     deps.flashFooter("workspace live sync ignore rules", "info")
     return
   }
-  if (["mode", "enable", "disable", "link"].includes(action)) {
-    deps.flashFooter(`use /config workspace-live-sync or /workspace link for ${action}`, "error")
+  if (action === "enable") {
+    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
+    if (!mode || mode === "unrestricted" || args.length > 1 || !deps.setUserConfigValue) {
+      deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
+      return
+    }
+    await deps.setUserConfigValue("providers.workspace_live_sync", mode)
+    deps.flashFooter(`workspace live sync enabled: ${mode}`, "info")
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore", "error")
+  if (action === "disable") {
+    if (args.length > 0 || !deps.setUserConfigValue) {
+      deps.flashFooter("usage: /workspace sync disable", "error")
+      return
+    }
+    await deps.setUserConfigValue("providers.workspace_live_sync", "unrestricted")
+    deps.flashFooter("workspace live sync disabled", "info")
+    return
+  }
+  if (action === "mode") {
+    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
+    if (!mode || args.length !== 1 || !deps.setUserConfigValue) {
+      deps.flashFooter("usage: /workspace sync mode managed|tracked|unrestricted", "error")
+      return
+    }
+    await deps.setUserConfigValue("providers.workspace_live_sync", mode)
+    deps.flashFooter(`workspace live sync mode set to ${mode}`, "info")
+    return
+  }
+  if (action === "link") {
+    await attachWorkspaceLink(deps, args[0], args[1])
+    return
+  }
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode|link", "error")
+}
+
+function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
+  if (value === "on") return "managed"
+  if (value === "off") return "unrestricted"
+  if (value === "managed" || value === "tracked" || value === "unrestricted") return value
+  return null
 }
 
 export async function handleWorktreeSlashCommand(

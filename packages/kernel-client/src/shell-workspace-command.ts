@@ -11,6 +11,7 @@ import {
   detachWorkspaceLinkRequest,
   getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
+  setUserConfigValueRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
@@ -159,13 +160,51 @@ async function executeWorkspaceSyncCommand(
       data: payload,
     }
   }
-  if (["mode", "enable", "disable", "link"].includes(action)) {
-    return { ok: false, message: `workspace sync ${action} is not wired in arroba-shell yet; use config workspace-live-sync and workspace link commands` }
+  if (action === "enable") {
+    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
+    if (!mode || args.length > 1) {
+      return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
+    }
+    if (mode === "unrestricted") {
+      return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
+    }
+    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
+    return { ok: true, message: `workspace live sync enabled: ${mode}`, data: response }
+  }
+  if (action === "disable") {
+    if (args.length > 0) {
+      return { ok: false, message: "usage: workspace sync disable" }
+    }
+    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", "unrestricted"))
+    return { ok: true, message: "workspace live sync disabled", data: response }
+  }
+  if (action === "mode") {
+    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
+    if (!mode || args.length !== 1) {
+      return { ok: false, message: "usage: workspace sync mode managed|tracked|unrestricted" }
+    }
+    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
+    return { ok: true, message: `workspace live sync mode set to ${mode}`, data: response }
+  }
+  if (action === "link") {
+    const linkRef = args[0]
+    const repoRoot = args[1] ? resolvePath(context.worktree, args[1]) : context.worktree
+    if (!linkRef || args.length > 2) {
+      return { ok: false, message: "usage: workspace sync link <name-or-id> [repo-root]" }
+    }
+    const response = await deps.client.send(attachWorkspaceLinkRequest(sessionId, linkRef, repoRoot))
+    const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
+    return {
+      ok: true,
+      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}`,
+      data: payload,
+      contextUpdates: { sessionId: payload.session.id },
+    }
   }
   if (args.length > 0) {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|enable|disable|mode|link" }
   }
-  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore" }
+  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|enable|disable|mode|link" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
@@ -173,4 +212,11 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
+  if (value === "on") return "managed"
+  if (value === "off") return "unrestricted"
+  if (value === "managed" || value === "tracked" || value === "unrestricted") return value
+  return null
 }

@@ -528,6 +528,9 @@ test("executeShellCommand manages workspace links", async () => {
         if ("GetWorkspaceLiveSyncStatus" in request) {
           return { WorkspaceLiveSyncStatus: { status: syncStatus } }
         }
+        if ("SetUserConfigValue" in request) {
+          return { UserConfigUpdated: { config: { version: 1 }, effects: [] } }
+        }
         throw new Error("unexpected request")
       },
     },
@@ -539,6 +542,10 @@ test("executeShellCommand manages workspace links", async () => {
   const showResult = await executeShellCommand(parseShellCommand("workspace link show shared-repo"), context, { client: fake.client })
   const attachResult = await executeShellCommand(parseShellCommand("workspace link attach shared-repo"), context, { client: fake.client })
   const syncResult = await executeShellCommand(parseShellCommand("workspace sync status"), context, { client: fake.client })
+  const modeResult = await executeShellCommand(parseShellCommand("workspace sync mode tracked"), context, { client: fake.client })
+  const enableResult = await executeShellCommand(parseShellCommand("workspace sync enable managed"), context, { client: fake.client })
+  const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
+  const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
 
   assert.match(createResult.message ?? "", /created workspace link shared-repo/)
@@ -546,6 +553,10 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
   assert.match(attachResult.message ?? "", /attached \/repo/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
+  assert.match(modeResult.message ?? "", /mode set to tracked/)
+  assert.match(enableResult.message ?? "", /enabled: managed/)
+  assert.match(disableResult.message ?? "", /disabled/)
+  assert.match(syncLinkResult.message ?? "", /linked \/repo/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.deepEqual(requests, [
     { CreateWorkspaceLink: { session_id: "session-1", name: "shared-repo" } },
@@ -553,6 +564,10 @@ test("executeShellCommand manages workspace links", async () => {
     { ShowWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "tracked" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "unrestricted" } },
+    { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
   ])
 })
