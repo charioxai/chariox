@@ -22,6 +22,25 @@ impl WorkflowProgression {
         crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(app, session_id, agent_id)
     }
 
+    fn preflight_local_provider_runs(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), DaemonError> {
+        let mut seen_agents = BTreeSet::new();
+        for node in workflow.nodes() {
+            if !seen_agents.insert(node.agent_id().to_string()) {
+                continue;
+            }
+            let agent = app.agents().get_agent(node.agent_id())?;
+            if agent.remote_execution().is_some() {
+                continue;
+            }
+            Self::ensure_provider_run(app, session_id, node.agent_id())?;
+        }
+        Ok(())
+    }
+
     fn validate_agents(
         app: &DaemonApp,
         session_id: &str,
@@ -220,6 +239,7 @@ impl DaemonApp {
             queued_prompt.endpoint_id(),
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
+        WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)?;
         let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
             session_id,
             workflow.id(),

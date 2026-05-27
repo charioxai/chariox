@@ -89,6 +89,89 @@ fn invoke_workflow_node(
 }
 
 #[test]
+fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, first_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-preflight");
+    let second_agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("second-scheduler-agent")
+                .with_model("test-model")
+                .with_worktree("worktree-scheduler"),
+        )
+        .expect("second agent should spawn")
+        .id()
+        .to_string();
+    let workflow_id = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("wf-scheduler-preflight".to_string()))
+        .expect("workflow should exist")
+        .id()
+        .to_string();
+    let first_node_id = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), &workflow_id, &first_agent_id)
+        .expect("first node should be added")
+        .id()
+        .to_string();
+    let second_node_id = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), &workflow_id, &second_agent_id)
+        .expect("second node should be added")
+        .id()
+        .to_string();
+    app.sessions_mut()
+        .add_workflow_edge(
+            session.id(),
+            &workflow_id,
+            &first_node_id,
+            &second_node_id,
+            None,
+            None,
+        )
+        .expect("workflow edge should be added");
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &first_node_id,
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should exist");
+
+    let workflow_run = app
+        .invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("start".to_string()),
+        )
+        .expect("workflow should invoke")
+        .0;
+
+    let first_provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &first_agent_id)
+        .expect("entry agent provider should be preflighted");
+    let second_provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &second_agent_id)
+        .expect("downstream agent provider should be preflighted");
+    assert_ne!(first_provider_run.id(), second_provider_run.id());
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_provider_run_id(),
+        Some(first_provider_run.id()),
+        "entry node should remain the active workflow provider after preflight"
+    );
+    assert_eq!(workflow_run.node_runs().len(), 1);
+    assert_eq!(workflow_run.node_runs()[0].node_id(), first_node_id);
+}
+
+#[test]
 fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
