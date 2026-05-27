@@ -459,6 +459,56 @@ fn workflow_prompt_queue_arbitration_prefers_highest_priority_across_workflows()
 }
 
 #[test]
+fn workflow_prompt_queue_update_rejects_duplicate_alias_within_workflow() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = workflow_with_endpoint(&mut service, session.id(), "queues", "agent-1");
+    let first = service
+        .create_workflow_prompt_queue(
+            session.id(),
+            workflow.workflow.id(),
+            "review".to_string(),
+            1,
+        )
+        .expect("first queue should create");
+    let second = service
+        .create_workflow_prompt_queue(
+            session.id(),
+            workflow.workflow.id(),
+            "urgent".to_string(),
+            2,
+        )
+        .expect("second queue should create");
+
+    let error = service
+        .update_workflow_prompt_queue(
+            session.id(),
+            workflow.workflow.id(),
+            second.id(),
+            Some("review".to_string()),
+            None,
+            None,
+        )
+        .expect_err("renaming to an existing alias should fail");
+
+    assert!(matches!(
+        error,
+        DaemonError::InvalidWorkflowGraphReference { .. }
+    ));
+    let unchanged = service
+        .resolve_workflow_prompt_queue_ref(session.id(), workflow.workflow.id(), second.id())
+        .expect("second queue should still resolve by id");
+    assert_eq!(unchanged, second.id());
+    let first_still_resolves = service
+        .resolve_workflow_prompt_queue_ref(session.id(), workflow.workflow.id(), first.alias())
+        .expect("first queue alias should still resolve");
+    assert_eq!(first_still_resolves, first.id());
+}
+
+#[test]
 fn workflow_console_supports_append_read_and_clear() {
     let mut service = SessionService::new(&test_config());
     let session = service

@@ -25,11 +25,9 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        let session = self.session_store.read().get_session(session_id)?;
-        let workflow = self
-            .session_store
-            .read()
-            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id)?;
+        let workflow = sessions.resolve_workflow_ref(session_id, workflow_ref)?;
         let node = workflow
             .node(node_id)
             .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
@@ -63,11 +61,9 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
-            session_id,
-            workflow_ref,
-            endpoint_ref,
-        )?;
+        let sessions = self.session_store.read();
+        let endpoint =
+            sessions.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
         if endpoint.owner_user_id() == user_id {
             Ok(())
         } else {
@@ -89,10 +85,8 @@ impl KernelRuntimeOwnedState {
         let Some(expected_revision) = expected_revision else {
             return Ok(());
         };
-        let workflow = self
-            .session_store
-            .read()
-            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let sessions = self.session_store.read();
+        let workflow = sessions.resolve_workflow_ref(session_id, workflow_ref)?;
         let current_revision = workflow.revision();
         if current_revision == expected_revision {
             Ok(())
@@ -114,11 +108,9 @@ impl KernelRuntimeOwnedState {
         user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        let session = self.session_store.read().get_session(session_id)?;
-        let workflow = self
-            .session_store
-            .read()
-            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id)?;
+        let workflow = sessions.resolve_workflow_ref(session_id, workflow_ref)?;
         let edge = workflow
             .edge(edge_id)
             .ok_or_else(|| DaemonError::WorkflowEdgeNotFound {

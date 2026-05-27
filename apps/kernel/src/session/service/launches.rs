@@ -132,6 +132,7 @@ impl SessionService {
         priority: Option<i32>,
         enabled: Option<bool>,
     ) -> Result<WorkflowPromptQueueDefinition, DaemonError> {
+        let alias = alias.map(normalize_workflow_queue_alias).transpose()?;
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
@@ -142,6 +143,30 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        if let Some(alias) = alias.as_deref() {
+            let queue_id = session
+                .workflow_prompt_queue(&workflow_id, queue_ref)
+                .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                    reference: queue_ref.to_string(),
+                    message: "workflow prompt queue was not found",
+                })?
+                .id()
+                .to_string();
+            if session
+                .workflow_prompt_queues_for_workflow(&workflow_id)
+                .iter()
+                .any(|queue| queue.alias() == alias && queue.id() != queue_id)
+            {
+                return Err(DaemonError::InvalidWorkflowGraphReference {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                    reference: alias.to_string(),
+                    message: "workflow prompt queue alias already exists",
+                });
+            }
+        }
         let queue = session
             .workflow_prompt_queue_mut(&workflow_id, queue_ref)
             .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
@@ -151,7 +176,7 @@ impl SessionService {
                 message: "workflow prompt queue was not found",
             })?;
         if let Some(alias) = alias {
-            queue.set_alias(normalize_workflow_queue_alias(alias)?);
+            queue.set_alias(alias);
         }
         if let Some(priority) = priority {
             queue.set_priority(priority);

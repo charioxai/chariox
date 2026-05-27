@@ -352,7 +352,9 @@ impl AgentInstance {
         self.visible_in_freeform
     }
 
-    pub fn set_visible_in_freeform(&mut self, visible: bool) {
+    /// Projection-only collaborator visibility hint. Authoritative agent ownership and prompting
+    /// rights remain session policy; durable state must not treat this as an access-control source.
+    pub(crate) fn set_visible_in_freeform(&mut self, visible: bool) {
         self.visible_in_freeform = visible;
     }
 

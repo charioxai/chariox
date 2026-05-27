@@ -188,41 +188,51 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<WorkflowLaunchOutcome>, DaemonError> {
-        let Some(queued_prompt) = self
-            .sessions_mut()
-            .dequeue_next_workflow_prompt(session_id)?
-        else {
-            return Ok(None);
-        };
-        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-            let _ = self
+        loop {
+            let Some(queued_prompt) = self
                 .sessions_mut()
-                .mark_workflow_watchdog_pending_started(session_id, watchdog_id);
-        }
-        let outcome = self.invoke_queued_workflow_prompt(session_id, queued_prompt.clone());
-        match outcome {
-            Ok(outcome) => Ok(Some(outcome)),
-            Err(error) => {
-                if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-                    let _ = self.sessions_mut().mark_workflow_watchdog_failed(
-                        session_id,
-                        watchdog_id,
-                        error.to_string(),
-                    );
+                .dequeue_next_workflow_prompt(session_id)?
+            else {
+                return Ok(None);
+            };
+            if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+                let _ = self
+                    .sessions_mut()
+                    .mark_workflow_watchdog_pending_started(session_id, watchdog_id);
+            }
+            let outcome = self.invoke_queued_workflow_prompt(session_id, queued_prompt.clone());
+            match outcome {
+                Ok(outcome) => return Ok(Some(outcome)),
+                Err(error) => {
+                    self.record_failed_queued_workflow_prompt(session_id, &queued_prompt, &error);
                 }
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachments().list_session_attachment_ids(session_id),
-                    format!(
-                        "Queued workflow prompt `{}` failed: {}",
-                        queued_prompt.id(),
-                        error
-                    ),
-                );
-                Ok(None)
             }
         }
+    }
+
+    fn record_failed_queued_workflow_prompt(
+        &mut self,
+        session_id: &str,
+        queued_prompt: &WorkflowQueuedPrompt,
+        error: &DaemonError,
+    ) {
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+            let _ = self.sessions_mut().mark_workflow_watchdog_failed(
+                session_id,
+                watchdog_id,
+                error.to_string(),
+            );
+        }
+        self.record_notice(
+            session_id,
+            None,
+            self.attachments().list_session_attachment_ids(session_id),
+            format!(
+                "Queued workflow prompt `{}` failed: {}",
+                queued_prompt.id(),
+                error
+            ),
+        );
     }
 
     fn invoke_queued_workflow_prompt(
@@ -442,12 +452,15 @@ mod tests {
     fn queued_workflow_prompt_preserves_agent_runtime_context() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(crate::session::CreateSessionRequest::new(
                 "workspace-1",
                 "worktree-1",
             ))
             .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .expect("workflow-capable agent should be created");
         app.agents
             .set_agent_runtime_profile(
                 agent.id(),
@@ -497,5 +510,96 @@ mod tests {
             Some("thread-1"),
             "queued workflow delivery must not flush provider runtime context"
         );
+    }
+
+    #[test]
+    fn queued_workflow_scheduler_continues_after_invalid_candidate() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .expect("workflow-capable agent should be created");
+        let bad_workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("bad".to_string()))
+            .expect("bad workflow should be created");
+        let bad_node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), bad_workflow.id(), "missing-agent")
+            .expect("bad workflow node should be created");
+        let bad_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                bad_workflow.id(),
+                bad_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("bad endpoint should be created");
+        let good_workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("good".to_string()))
+            .expect("good workflow should be created");
+        let good_node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), good_workflow.id(), agent.id())
+            .expect("good workflow node should be created");
+        let good_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                good_workflow.id(),
+                good_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("good endpoint should be created");
+        let high = app
+            .sessions_mut()
+            .create_workflow_prompt_queue(session.id(), bad_workflow.id(), "high".to_string(), 10)
+            .expect("high queue should be created");
+        let low = app
+            .sessions_mut()
+            .create_workflow_prompt_queue(session.id(), good_workflow.id(), "low".to_string(), 1)
+            .expect("low queue should be created");
+        app.sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                bad_workflow.id(),
+                bad_endpoint.id(),
+                Some("bad".to_string()),
+                Some(high.id()),
+                WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("bad prompt should queue");
+        app.sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                good_workflow.id(),
+                good_endpoint.id(),
+                Some("good".to_string()),
+                Some(low.id()),
+                WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("good prompt should queue");
+
+        let outcome = app
+            .start_next_queued_workflow_prompt(session.id())
+            .expect("scheduler should continue past invalid queued prompt")
+            .expect("good queued prompt should start");
+
+        match outcome {
+            WorkflowLaunchOutcome::Started { workflow, .. } => {
+                assert_eq!(workflow.id(), good_workflow.id());
+            }
+            WorkflowLaunchOutcome::Enqueued { .. } => panic!("expected queued prompt to start"),
+        }
     }
 }
