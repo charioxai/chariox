@@ -31,7 +31,7 @@ Rules:
 - no new app-lock fallback for a hot path after an owned store can answer the same question
 - no broad "keep compatibility working" slice; every slice must move one runtime owner to the new system and remove the matching old app helper
 - `DaemonApp` is allowed as a bootstrap/shutdown/test composition shell while the cutover is in progress, but not as the command-state owner
-- M4.6 managed artifact I/O now owns provider-session file writes; the current coarse `WorkspaceCoordinator` still guards visible file-writing/provider/workflow dispatch work at worktree scope
+- Workspace Live Sync managed mode now owns provider-session file writes; the current coarse `WorkspaceCoordinator` still guards visible file-writing/provider/workflow dispatch work at worktree scope
 
 Current event replay is a bounded in-memory recent-event buffer. It supports reconnect-friendly local behavior, but it is not yet a durable event log.
 
@@ -310,7 +310,7 @@ Current closure status:
 
 - Closed: the seven ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion all route command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
 - Closed: the M4.5 dead-code purge removed the now-unused app-backed helper surfaces, obsolete runtime-tool dispatcher, workflow console app wrappers, remote-lease helper, projection-removal helper, and stale test-only compatibility calls left behind by the direct cutover.
-- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. M4.6 now owns managed artifact I/O for Arroba-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Workspace Live Sync managed mode now owns artifact writes for Arroba-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
 
 ## Cutover Completion Plan
 
@@ -354,7 +354,7 @@ These tests do not prove actor ownership is complete. They specifically prevent 
 
 ### Compatibility Facade Retirement Checklist
 
-Retiring the facade is separate from managed artifact I/O. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; M4.6 owns provider-session artifact writes through workspace live sync.
+Retiring the facade is separate from Workspace Live Sync. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; Workspace Live Sync managed mode owns provider-session artifact writes.
 
 Work the retirement in this order:
 
@@ -570,9 +570,9 @@ Required policies:
 
 ## Worktree and Collision Coordination
 
-M4.5 introduces the runtime boundary for workspace coordination. M4.6 builds on it with managed artifact I/O for Arroba-managed provider sessions.
+M4.5 introduces the runtime boundary for workspace coordination. Workspace Live Sync managed mode builds on it for Arroba-managed provider sessions.
 
-The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Managed artifact I/O is the conflict-control architecture for supported Arroba-launched provider sessions; independent external processes remain outside that guarantee.
+The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Workspace Live Sync managed mode is the conflict-control architecture for supported Arroba-launched provider sessions; independent external processes remain outside that guarantee.
 
 Minimum `WorkspaceCoordinator` responsibilities:
 

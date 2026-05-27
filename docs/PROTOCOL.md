@@ -567,7 +567,7 @@ Screenshot capture MUST write only into daemon-chosen session artifact locations
 
 ## 5.0.1 Workspace live sync Coordination
 
-The kernel owns managed artifact I/O for Arroba-launched provider sessions. Supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
+The kernel owns Workspace Live Sync for Arroba-launched provider sessions. In managed mode, supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 
 macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under the canonical worktree path while still allowing provider state/cache/temp writes outside the worktree. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
 

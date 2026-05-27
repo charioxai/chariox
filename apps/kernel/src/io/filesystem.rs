@@ -190,7 +190,7 @@ fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), Artifa
     {
         return Err(ArtifactEditError::InvalidOperation {
             message: format!(
-                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through managed artifact I/O",
+                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through Workspace Live Sync managed tools",
                 crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH
             ),
         });

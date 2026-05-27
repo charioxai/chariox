@@ -51,7 +51,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
         return Err(DaemonError::LocalTransport {
             operation: "runtime_tool_apply_patch",
             message: format!(
-                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through managed artifact I/O",
+                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through Workspace Live Sync managed tools",
                 crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH
             ),
         });

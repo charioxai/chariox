@@ -190,7 +190,7 @@ Current implementation note:
 - the current OpenCode adapter is already a provider-endpoint integration example
 - the current local CLI transport is now a long-lived WebSocket subscription with pushed kernel events
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
-- the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while M4.6 managed artifact I/O owns fine-grained text coordination and opaque whole-file coordination for Arroba-managed provider sessions
+- the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while Workspace Live Sync managed mode owns fine-grained text coordination and opaque whole-file coordination for Arroba-managed provider sessions
 
 ### 3.3.1.1 Target Kernel Runtime Implementation Model
 
@@ -242,7 +242,7 @@ M4.5 implementation contract:
 - the first event-log slice may be in-memory, but replay retention and replay-gap behavior must be explicit
 - events should not be described as daemon-restart durable until persisted event streams or equivalent projection checkpoints exist
 - projections must expose `projection_version`, `last_event_id`, and `generated_at_ms`
-- coarse worktree claim coordination belongs to the kernel boundary before parallel remote workflow scale-out; M4.6 managed artifact I/O now owns provider-session reads/writes, with remaining future coordination limited to port claims, optional integration checks, policy commands for unsafe mode, and post-v1 artifact-specific region models
+- coarse worktree claim coordination belongs to the kernel boundary before parallel remote workflow scale-out; Workspace Live Sync managed mode now owns provider-session reads/writes, with remaining future coordination limited to port claims, optional integration checks, policy commands for unsafe mode, and post-v1 artifact-specific region models
 
 Current M4.5 implementation status:
 
@@ -276,7 +276,7 @@ Current M4.5 implementation status:
 - Warmed session projections now serve agent and workflow inspection reads, including `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowPrompts`, without taking the compatibility app lock.
 - Workflow runtime-tool calls now republish session and agent-runtime projections after recording tool-call state, so MCP/relay acknowledgements and output submissions keep warmed workflow inspection reads current even when they do not enter through the router workflow lane.
 - `DaemonHealthProjection` now exposes session command lanes, agent command lanes, provider runtime operation lanes, session projection counts, active/queued prompt counts, provider-catalog cache status, kernel websocket transport pressure, workspace worktree-collision state, active workspace operation claims, and projection-invariant drift between warmed session prompt state and the agent-runtime prompt read model without taking the compatibility app lock.
-- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts are not workspace-wide claims, so independent sessions can run prompts in the same worktree; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. M4.6 managed artifact I/O handles Arroba-managed provider-session file reads/writes through runtime/MCP tools, using fine-grained text coordination and opaque whole-file coordination for non-text artifacts.
+- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts are not workspace-wide claims, so independent sessions can run prompts in the same worktree; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. Workspace Live Sync managed mode handles Arroba-managed provider-session file reads/writes through runtime/MCP tools, using fine-grained text coordination and opaque whole-file coordination for non-text artifacts.
 - Relay-client daemon/workflow requests now normalize into `KernelCommandSource::RelayClient` commands and dispatch through `CommandRouter`, so proxied clients share actor admission, projection refresh, and overload behavior with local IPC/kernel transport instead of bypassing the runtime through `DaemonApp::handle_local_request`. Workflow validation and acknowledgement requests are no longer rejected by the relay transport before reaching the workflow lane.
 - Runtime migration slices are gated by [IMPLEMENTATION_INVARIANTS.md](/Users/miguel/arroba/docs/ops/IMPLEMENTATION_INVARIANTS.md): ownership, projection refresh, cleanup, overload, health, and tests must be explicit for runtime and coordination work.
 - `DaemonApp` now remains as bootstrap/composition scaffolding, not the command-state owner. Follow-up architecture work should keep removing stale compatibility wording and continue tightening projection correctness around provider output, workflow progression, and session lifecycle edges.
@@ -512,7 +512,7 @@ Baseline responsibilities:
 Near-term practical rule:
 
 - keep current worktree-level coordination as the near-term guardrail while the kernel refactor completes
-- use M4.6 managed artifact I/O for Arroba-managed provider-session writes; keep port claims, integration/merge checks, and post-v1 artifact-specific region models as future coordination work
+- use Workspace Live Sync managed mode for Arroba-managed provider-session writes; keep port claims, integration/merge checks, and post-v1 artifact-specific region models as future coordination work
 - the kernel should own integration policy rather than delegating all conflict discovery to late Git merges or human PR review
 
 Scope rule:
