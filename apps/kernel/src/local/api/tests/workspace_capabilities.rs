@@ -117,6 +117,16 @@ fn local_request_api_manages_session_workspace_links() {
         .force_excludes
         .iter()
         .any(|pattern| pattern == ".git/**"));
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
+        .any(|pattern| pattern == ".codex/**"));
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
+        .any(|pattern| pattern == ".cache/**"));
 
     let shown = match harness
         .dispatch(LocalDaemonRequest::ShowWorkspaceLink(

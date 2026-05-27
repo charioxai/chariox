@@ -998,14 +998,21 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
         || path.starts_with(".git/")
         || path == ".arroba"
         || path.starts_with(".arroba/")
-        || path == ".env"
-        || path.starts_with(".env.")
     {
         return true;
     }
+    if path.split('/').any(|part| part.starts_with(".env")) {
+        return true;
+    }
     let forced_dirs = [
+        ".codex",
+        ".opencode",
+        ".claude",
+        ".cursor",
         "node_modules",
         "target",
+        ".cache",
+        ".turbo",
         ".next",
         "dist",
         "build",
@@ -1013,6 +1020,11 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
         "venv",
         "__pycache__",
         ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".gradle",
+        ".m2",
+        ".pnpm-store",
     ];
     path.split('/')
         .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))
@@ -1559,7 +1571,7 @@ mod tests {
         let before = tracked_snapshot(false, "");
         let after = tracked_snapshot(
             true,
-            " M .env\n M .arroba/state.json\n M node_modules/pkg/index.js\n M src/lib.rs",
+            " M .env\n M .envrc\n M config/.env.local\n M .arroba/state.json\n M .codex/session.json\n M .opencode/state.json\n M .claude/settings.json\n M .cache/tool/output.json\n M .turbo/cache.json\n M node_modules/pkg/index.js\n M src/lib.rs",
         );
 
         let change = tracked_workspace_live_sync_change_after_turn(&before, &after)

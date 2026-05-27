@@ -323,12 +323,18 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     {
         return true;
     }
-    if path == ".env" || path.starts_with(".env.") {
+    if path.split('/').any(|part| part.starts_with(".env")) {
         return true;
     }
     let forced_dirs = [
+        ".codex",
+        ".opencode",
+        ".claude",
+        ".cursor",
         "node_modules",
         "target",
+        ".cache",
+        ".turbo",
         ".next",
         "dist",
         "build",
@@ -336,6 +342,11 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
         "venv",
         "__pycache__",
         ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".gradle",
+        ".m2",
+        ".pnpm-store",
     ];
     path.split('/')
         .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))

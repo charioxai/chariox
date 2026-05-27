@@ -612,8 +612,21 @@ fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
         ".arrobaignore",
         ".env",
         ".env.local",
+        ".envrc",
+        "config/.env.local",
+        ".codex/session.json",
+        ".opencode/state.json",
+        ".claude/settings.json",
+        ".cursor/index.json",
         "node_modules/pkg/index.js",
         "target/debug/app",
+        ".cache/tool/output.json",
+        ".turbo/cache.json",
+        ".mypy_cache/module.json",
+        ".ruff_cache/module.json",
+        ".gradle/caches/module.bin",
+        ".m2/repository/artifact.jar",
+        ".pnpm-store/v3/files/index",
     ] {
         assert!(
             workspace_live_sync_reject_ignored_path(
