@@ -365,7 +365,8 @@ async function main() {
     const user1 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-1')
     const user2 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-2')
     const user3 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-3')
-    clients.push(user1, user2, user3)
+    const user4 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-4')
+    clients.push(user1, user2, user3, user4)
 
     const created = unwrap(
       await user1.send(requests.createSessionRequest(workspace, workspace)),
@@ -382,8 +383,13 @@ async function main() {
       await user1.send(requests.createSessionInviteRequest(session.id, null, 1, 'full')),
       'SessionInviteCreated',
     )
+    const transparentInvite = unwrap(
+      await user1.send(requests.createSessionInviteRequest(session.id, null, 1, 'transparent')),
+      'SessionInviteCreated',
+    )
     await user2.send(requests.joinSessionInviteRequest(privateInvite.invite.invite_token, 'user-2'))
     await user3.send(requests.joinSessionInviteRequest(fullInvite.invite.invite_token, 'user-3'))
+    await user4.send(requests.joinSessionInviteRequest(transparentInvite.invite.invite_token, 'user-4'))
 
     const attachment1 = unwrap(
       await user1.send(requests.attachToSessionRequest(session.id, `freeform-user-1-${process.pid}`)),
@@ -395,6 +401,10 @@ async function main() {
     ).attachment
     const attachment3 = unwrap(
       await user3.send(requests.attachToSessionRequest(session.id, `freeform-user-3-${process.pid}`)),
+      'SessionAttached',
+    ).attachment
+    const attachment4 = unwrap(
+      await user4.send(requests.attachToSessionRequest(session.id, `freeform-user-4-${process.pid}`)),
       'SessionAttached',
     ).attachment
 
@@ -417,6 +427,7 @@ async function main() {
     const user1Agents = unwrap(await user1.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     const user2Agents = unwrap(await user2.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     const user3Agents = unwrap(await user3.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
+    const user4Agents = unwrap(await user4.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     assert(
       user1Agents.length >= 1
         && user1Agents.some((agent) => agent.id === agent1.id),
@@ -426,6 +437,11 @@ async function main() {
     assert(user2Agents.some((agent) => agent.id === agent2.id), 'user-2 should include its own freeform agent', user2Agents)
     assert(user2Agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted'), 'private user should see redacted owner handle', user2Agents)
     assert(user3Agents.some((agent) => agent.id === agent1.id && agent.provider !== 'redacted'), 'full collaborator should see owner agent details', user3Agents)
+    assert(
+      user4Agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted' && agent.visible_in_freeform !== false),
+      'transparent user should see other-user panes/traces with redacted parameters',
+      user4Agents,
+    )
 
     const user1Prompt = unwrap(
       await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Reply with exactly USER1_FREEFORM_OK and nothing else.', [])),
@@ -437,6 +453,11 @@ async function main() {
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
       'private user-2 submitting to user-1 freeform agent',
+      'owned by `user-1`',
+    )
+    await expectReject(
+      user4.send(requests.submitPromptRequest(session.id, attachment4.id, agent1.id, 'Transparent cross-user freeform prompt should fail.', [])),
+      'transparent user-4 submitting to user-1 freeform agent',
       'owned by `user-1`',
     )
 
@@ -461,19 +482,26 @@ async function main() {
     const state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     const state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     const state3 = unwrap(await user3.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    const state4 = unwrap(await user4.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     assert(state1.agents.some((agent) => agent.id === agent1.id), 'user-1 projection should retain own agent', state1.agents)
     assert(state2.agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted'), 'private user projection should redact user-1 agent details', state2.agents)
     assert(state3.agents.some((agent) => agent.id === agent1.id && agent.provider !== 'redacted'), 'full user projection should expose user-1 agent details', state3.agents)
+    assert(
+      state4.agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted' && agent.visible_in_freeform !== false),
+      'transparent user projection should show other-user panes with redacted parameters',
+      state4.agents,
+    )
 
     for (const [label, state, ownedCount, otherCount] of [
       ['user-1', state1, 2, 1],
       ['user-2', state2, 1, 2],
       ['user-3', state3, 0, 3],
+      ['user-4', state4, 0, 3],
     ]) {
       assert(state.collaboration_agent_counts?.owned_agent_count === ownedCount, `${label} owned agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.other_user_agent_count === otherCount, `${label} collaborator agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.total_agent_count === 3, `${label} total agent count mismatch`, state.collaboration_agent_counts)
-      assert(state.collaboration_agent_counts?.collaborator_count === 2, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.collaborator_count === 3, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
     }
 
     console.log(JSON.stringify({
@@ -494,12 +522,14 @@ async function main() {
         user3: user3CompletionCount,
       },
       assertions: [
-        'three users share one scoped-relay freeform session',
+        'four users share one scoped-relay freeform session',
         'private invite sees redacted collaborator agent handles',
+        'transparent invite sees other-user panes/traces with parameters redacted',
         'full invite sees collaborator agent details',
         'collaboration agent counts report aggregate other-user agents without identities',
         'actual-model freeform prompt submit succeeds for owned agent',
         'private freeform prompt submit rejects another user agent',
+        'transparent freeform prompt submit rejects another user agent',
         'full freeform prompt submit can prompt another user agent',
         'session state projection redacts other-user agent details for private invitees',
       ],
