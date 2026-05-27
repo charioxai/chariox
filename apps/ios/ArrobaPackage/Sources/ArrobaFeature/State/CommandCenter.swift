@@ -448,6 +448,13 @@ public enum CommandCenterCatalog {
             submitsImmediately: false
         ),
         CommandCenterItem(
+            id: "workspace-sync-link",
+            label: "sync link",
+            detail: "Enroll this worktree in a workspace live sync link",
+            value: "/workspace sync link ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
             id: "workspace-sync-conflicts",
             label: "sync conflicts",
             detail: "Show workspace live sync conflicts",

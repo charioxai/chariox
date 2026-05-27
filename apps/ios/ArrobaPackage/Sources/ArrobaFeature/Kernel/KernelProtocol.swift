@@ -504,6 +504,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case cancelActivePrompt(sessionID: String, attachmentID: String)
     case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
     case getWorkspaceLiveSyncStatus(sessionID: String)
+    case attachWorkspaceLink(sessionID: String, linkRef: String, repoRoot: String?)
     case setUserConfigValue(path: String, value: String)
     case getSessionHistory(sessionID: String, agentID: String?, roundCount: Int, maxChars: Int)
     case spawnAgent(sessionID: String, alias: String?, provider: String, model: String?, effort: String?, worktreeID: String?)
@@ -628,6 +629,11 @@ public enum LocalDaemonRequest: Encodable, Sendable {
             try container.encode(
                 GetWorkspaceLiveSyncStatusPayload(sessionID: sessionID),
                 forKey: DynamicCodingKey("GetWorkspaceLiveSyncStatus")
+            )
+        case let .attachWorkspaceLink(sessionID, linkRef, repoRoot):
+            try container.encode(
+                AttachWorkspaceLinkPayload(sessionID: sessionID, linkRef: linkRef, repoRoot: repoRoot),
+                forKey: DynamicCodingKey("AttachWorkspaceLink")
             )
         case let .setUserConfigValue(path, value):
             try container.encode(
@@ -843,6 +849,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case promptCancelled
     case interactionResponded(interactionID: String, session: RuntimeSession)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
+    case workspaceLinkAttached(session: RuntimeSession)
     case userConfigUpdated(path: String, effects: [UserConfigMutationEffect])
     case sessionHistory([SessionHistoryPageEntry])
     case agentSpawned(AgentInstance)
@@ -937,6 +944,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLiveSyncStatus" }) {
             let payload = try container.decode(WorkspaceLiveSyncStatusPayload.self, forKey: key)
             self = .workspaceLiveSyncStatus(payload.status)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLinkAttached" }) {
+            let payload = try container.decode(WorkspaceLinkAttachedPayload.self, forKey: key)
+            self = .workspaceLinkAttached(session: payload.session)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "UserConfigUpdated" }) {
@@ -1142,6 +1154,22 @@ private struct GetWorkspaceLiveSyncStatusPayload: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
+    }
+}
+
+private struct AttachWorkspaceLinkPayload: Encodable {
+    let sessionID: String
+    let linkRef: String
+    let repoRoot: String?
+    let branch: String? = nil
+    let repoFingerprint: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case linkRef = "link_ref"
+        case repoRoot = "repo_root"
+        case branch
+        case repoFingerprint = "repo_fingerprint"
     }
 }
 
@@ -1392,6 +1420,10 @@ private struct SessionConfigUpdatedPayload: Decodable, Equatable, Sendable {
 
 private struct WorkspaceLiveSyncStatusPayload: Decodable, Equatable, Sendable {
     let status: WorkspaceLiveSyncStatus
+}
+
+private struct WorkspaceLinkAttachedPayload: Decodable, Equatable, Sendable {
+    let session: RuntimeSession
 }
 
 private struct UserConfigUpdatedPayload: Decodable, Equatable, Sendable {

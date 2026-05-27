@@ -659,6 +659,7 @@ import Testing
     let client = SequencedMockKernelClient(responses: [
         .workspaceLiveSyncStatus(status),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
+        .workspaceLinkAttached(session: session),
     ])
     let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.workspaceSync")!
     defaults.removePersistentDomain(forName: "ArrobaAppModelTests.workspaceSync")
@@ -676,6 +677,12 @@ import Testing
 
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = managed")
+
+    model.promptDraft = "/workspace sync link shared"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync linked shared -> /repo")
 }
 
 @MainActor
@@ -742,6 +749,7 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/agent focus bui", session: session).first?.value == "/agent focus agent-1")
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-status"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-link"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
     #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))

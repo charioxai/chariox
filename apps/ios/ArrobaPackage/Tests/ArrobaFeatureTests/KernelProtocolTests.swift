@@ -144,6 +144,21 @@ import Testing
     let modePayload = try #require(modeRequest["SetUserConfigValue"] as? [String: Any])
     #expect(modePayload["path"] as? String == "providers.workspace_live_sync")
     #expect(modePayload["value"] as? String == "tracked")
+
+    let linkData = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-workspace-sync-link",
+            request: .attachWorkspaceLink(sessionID: "session-1", linkRef: "shared", repoRoot: "/repo")
+        )
+    )
+    let linkObject = try #require(
+        JSONSerialization.jsonObject(with: linkData) as? [String: Any]
+    )
+    let linkRequest = try #require(linkObject["request"] as? [String: Any])
+    let linkPayload = try #require(linkRequest["AttachWorkspaceLink"] as? [String: Any])
+    #expect(linkPayload["session_id"] as? String == "session-1")
+    #expect(linkPayload["link_ref"] as? String == "shared")
+    #expect(linkPayload["repo_root"] as? String == "/repo")
 }
 
 @Test func workspaceLiveSyncResponsesDecode() throws {

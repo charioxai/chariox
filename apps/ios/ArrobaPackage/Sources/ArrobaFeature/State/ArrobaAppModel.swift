@@ -787,11 +787,16 @@ public final class ArrobaAppModel {
             }
             await setWorkspaceLiveSyncMode(mode)
         case "link":
-            connectionState = .failed
-            statusMessage = "workspace sync link is not available in iOS yet"
+            guard let linkRef = args.dropFirst().first?.nilIfBlank else {
+                connectionState = .failed
+                statusMessage = "usage: /workspace sync link <name-or-id> [repo-root]"
+                return
+            }
+            let repoRoot = args.dropFirst(2).joined(separator: " ").nilIfBlank
+            await attachWorkspaceLiveSyncLink(linkRef: linkRef, repoRoot: repoRoot)
         default:
             connectionState = .failed
-            statusMessage = "usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode"
+            statusMessage = "usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode|link"
         }
     }
 
@@ -827,6 +832,29 @@ public final class ArrobaAppModel {
             appendCommandNotice("Workspace live sync mode = \(mode)")
             promptDraft = ""
             return "Workspace live sync set to \(mode)."
+        }
+    }
+
+    private func attachWorkspaceLiveSyncLink(linkRef: String, repoRoot: String?) async {
+        guard let session = selectedSession else {
+            connectionState = .failed
+            statusMessage = "Select a session before linking workspace live sync."
+            return
+        }
+        let targetRoot = repoRoot ?? session.worktreeID
+        await perform("Linking workspace live sync") {
+            let response = try await client.send(
+                .attachWorkspaceLink(sessionID: session.id, linkRef: linkRef, repoRoot: targetRoot),
+                to: try endpointURL()
+            )
+            guard case let .workspaceLinkAttached(updatedSession) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            upsert(updatedSession)
+            selectedSessionID = updatedSession.id
+            appendCommandNotice("Workspace live sync linked \(linkRef) -> \(targetRoot)")
+            promptDraft = ""
+            return "Workspace live sync linked."
         }
     }
 
