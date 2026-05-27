@@ -296,7 +296,7 @@ mod tests {
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
-                .with_workspace_live_sync_required()
+                .with_workspace_live_sync_managed()
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
                     "http://127.0.0.1:43120/mcp",
                     "token-123",
@@ -486,7 +486,7 @@ mod tests {
         std::env::set_var("ARROBA_CODEX_PORT", "43144");
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
-                .with_workspace_live_sync_required();
+                .with_workspace_live_sync_managed();
 
         let launch = plan_codex_launch(Some(&request)).expect("workspace live sync launch should resolve");
 

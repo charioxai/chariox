@@ -325,6 +325,14 @@ impl RuntimeProviderRun {
         self.write_access_mode.requires_workspace_live_sync()
     }
 
+    pub fn tracks_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.tracks_workspace_live_sync()
+    }
+
+    pub fn uses_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.uses_workspace_live_sync()
+    }
+
     pub fn resume_state(&self) -> &ProviderResumeState {
         &self.resume_state
     }

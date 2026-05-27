@@ -116,7 +116,7 @@ test("config command renders kernel mutation effects", async () => {
         {
           path: "providers.workspace_live_sync",
           value_type: "enum",
-          allowed_values: ["required", "unrestricted"],
+          allowed_values: ["managed", "tracked", "unrestricted"],
           settable: true,
           unsettable: true,
           effect: "provider_reload",
@@ -129,7 +129,7 @@ test("config command renders kernel mutation effects", async () => {
       updates.push({ path, value })
       return {
         path: "/home/.arroba/config.toml",
-        config: { version: 1, providers: { workspace_live_sync: value as "required" | "unrestricted" } },
+        config: { version: 1, providers: { workspace_live_sync: value as "managed" | "tracked" | "unrestricted" } },
         effects: [
           {
             kind: "provider_reload",
@@ -155,7 +155,7 @@ test("config command renders kernel mutation effects", async () => {
 
   assert.deepEqual(updates, [{ path: "providers.workspace_live_sync", value: "unrestricted" }])
   assert.deepEqual(notices, [
-    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|unrestricted)",
+    "providers.workspace_live_sync (enum; live; provider_reload unset values=managed|tracked|unrestricted)",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
   ])
   assert.deepEqual(flashes, ["listed 1 config key", "workspace live sync set to unrestricted"])

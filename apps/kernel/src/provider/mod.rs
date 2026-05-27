@@ -72,7 +72,7 @@ pub(crate) use run_actor::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use types::provider_requires_workspace_live_sync_by_default;
+pub(crate) use types::provider_workspace_live_sync_mode_by_default;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
     ProviderClientInterface, ProviderRunState,

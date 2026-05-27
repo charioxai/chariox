@@ -118,7 +118,7 @@ test("executeShellCommand mutates user config", async () => {
                 {
                   path: "providers.workspace_live_sync",
                   value_type: "enum",
-                  allowed_values: ["required", "unrestricted"],
+                  allowed_values: ["managed", "tracked", "unrestricted"],
                   settable: true,
                   unsettable: true,
                   effect: "provider_reload",
@@ -135,7 +135,7 @@ test("executeShellCommand mutates user config", async () => {
         return {
           UserConfigUpdated: {
             path: "/home/.arroba/config.json",
-            config: { version: 1, providers: { workspace_live_sync: "required" } },
+            config: { version: 1, providers: { workspace_live_sync: "managed" } },
             effects: setConfig?.path === "providers.workspace_live_sync"
               ? [
                   {
@@ -170,7 +170,7 @@ test("executeShellCommand mutates user config", async () => {
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
   assert.equal(workspaceLiveSyncResult.ok, true)
-  assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
+  assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
   assert.match(workspaceLiveSyncResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
@@ -178,7 +178,7 @@ test("executeShellCommand mutates user config", async () => {
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
   ])
 })
 

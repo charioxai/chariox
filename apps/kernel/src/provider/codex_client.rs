@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_permission_policy_uses_read_only_sandbox() {
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );
@@ -284,7 +284,7 @@ mod tests {
     fn workspace_live_sync_client_does_not_approve_codex_filesystem_writes() {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
-            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncRequired);
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged);
         let message = JsonRpcMessage {
             id: Some(json!(1)),
             method: Some("item/permissions/requestApproval".to_string()),
@@ -314,7 +314,7 @@ mod tests {
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );
@@ -386,7 +386,7 @@ mod tests {
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
             .with_mcp_servers(&[server]);
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );

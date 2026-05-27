@@ -175,7 +175,7 @@ mod tests {
     fn execution_path_instructions_select_managed_block_for_required_runs() {
         let managed_request =
             LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4")
-                .with_workspace_live_sync_required();
+                .with_workspace_live_sync_managed();
         let managed = RuntimeProviderRun::new("provider-run-2", &managed_request, launch_result());
         let prompt = apply_execution_path_instructions("hello", &managed);
 

@@ -485,7 +485,7 @@ mod tests {
             "default",
             "anthropic/claude-sonnet-4",
         )
-        .with_workspace_live_sync_required();
+        .with_workspace_live_sync_managed();
 
         let launch =
             plan_opencode_launch(Some(&request)).expect("workspace live sync launch should resolve");

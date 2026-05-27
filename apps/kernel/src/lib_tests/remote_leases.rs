@@ -161,7 +161,7 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     config.user_config.providers.workspace_live_sync =
-        crate::config::WorkspaceLiveSyncConfig::from_mode(crate::config::WorkspaceLiveSyncMode::Required);
+        crate::config::WorkspaceLiveSyncConfig::from_mode(crate::config::WorkspaceLiveSyncMode::Managed);
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")

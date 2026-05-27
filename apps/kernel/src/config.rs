@@ -210,6 +210,17 @@ impl DaemonConfig {
         self.user_config.providers.workspace_live_sync.requires_workspace_live_sync()
     }
 
+    pub fn provider_tracks_workspace_live_sync(&self, _provider: &str) -> bool {
+        self.user_config.providers.workspace_live_sync.tracks_workspace_live_sync()
+    }
+
+    pub fn provider_workspace_live_sync_mode(
+        &self,
+        _provider: &str,
+    ) -> crate::config::WorkspaceLiveSyncMode {
+        self.user_config.providers.workspace_live_sync.mode
+    }
+
     pub fn max_workflow_queues_per_workflow(&self) -> Option<usize> {
         self.user_config
             .workflow
@@ -825,12 +836,13 @@ service = "arroba-test"
     }
 
     #[test]
-    fn workspace_live_sync_policy_defaults_to_unrestricted() {
+    fn workspace_live_sync_policy_defaults_to_managed() {
         let config = DaemonConfig::new("daemon", "machine", "tester");
 
-        assert!(!config.provider_requires_workspace_live_sync("codex"));
-        assert!(!config.provider_requires_workspace_live_sync("opencode"));
-        assert!(!config.provider_requires_workspace_live_sync("default"));
+        assert!(config.provider_requires_workspace_live_sync("codex"));
+        assert!(config.provider_requires_workspace_live_sync("opencode"));
+        assert!(config.provider_requires_workspace_live_sync("default"));
+        assert!(!config.provider_tracks_workspace_live_sync("codex"));
     }
 
     #[test]
@@ -856,6 +868,12 @@ service = "arroba-test"
             WorkspaceLiveSyncMode::Unrestricted
         );
 
+        config
+            .set_user_config_value("providers.workspace_live_sync", "tracked")
+            .expect("tracked workspace live sync policy should update");
+        assert!(!config.provider_requires_workspace_live_sync("opencode"));
+        assert!(config.provider_tracks_workspace_live_sync("opencode"));
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -870,7 +888,10 @@ service = "arroba-test"
         assert!(workspace_live_sync.settable);
         assert!(workspace_live_sync.unsettable);
         assert_eq!(workspace_live_sync.effect, "provider_reload");
-        assert_eq!(workspace_live_sync.allowed_values, vec!["required", "unrestricted"]);
+        assert_eq!(
+            workspace_live_sync.allowed_values,
+            vec!["managed", "tracked", "unrestricted"]
+        );
         assert!(schema
             .iter()
             .any(|entry| entry.path == "ui.worktree_aliases.<alias>"));
@@ -901,35 +922,7 @@ service = "arroba-test"
                 ..
             }
         ));
-        assert!(!config.provider_requires_workspace_live_sync("codex"));
-    }
-
-    #[test]
-    fn legacy_per_provider_workspace_live_sync_config_loads_into_global_mode() {
-        let path = std::env::temp_dir().join(format!(
-            "arroba-user-config-legacy-workspace-live-sync-test-{}-{}.toml",
-            std::process::id(),
-            generate_identity_suffix()
-        ));
-        std::fs::write(
-            &path,
-            r#"version = 1
-
-[providers]
-default = "opencode"
-
-[providers.workspace_live_sync]
-default = "required"
-opencode = "unrestricted"
-codex = "required"
-"#,
-        )
-        .expect("legacy workspace live sync config should write");
-
-        let loaded = load_user_config_from_path(&path);
-        assert_eq!(loaded.providers.workspace_live_sync.mode, WorkspaceLiveSyncMode::Required);
-
-        let _ = std::fs::remove_file(path);
+        assert!(config.provider_requires_workspace_live_sync("codex"));
     }
 
     #[test]

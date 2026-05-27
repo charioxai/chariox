@@ -219,7 +219,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("workspace fixture should exist");
         let request =
             LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "model")
-                .with_workspace_live_sync_required()
+                .with_workspace_live_sync_managed()
                 .with_working_directory(workspace.clone());
         let launch = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,

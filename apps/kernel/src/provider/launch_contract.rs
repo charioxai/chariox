@@ -206,7 +206,8 @@ impl fmt::Display for AgentPermissionLevel {
 pub enum ProviderWriteAccessMode {
     #[default]
     Unrestricted,
-    WorkspaceLiveSyncRequired,
+    WorkspaceLiveSyncManaged,
+    WorkspaceLiveSyncTracked,
 }
 
 impl ProviderWriteAccessMode {
@@ -215,7 +216,23 @@ impl ProviderWriteAccessMode {
     }
 
     pub fn requires_workspace_live_sync(&self) -> bool {
-        matches!(self, Self::WorkspaceLiveSyncRequired)
+        matches!(self, Self::WorkspaceLiveSyncManaged)
+    }
+
+    pub fn tracks_workspace_live_sync(&self) -> bool {
+        matches!(self, Self::WorkspaceLiveSyncTracked)
+    }
+
+    pub fn uses_workspace_live_sync(&self) -> bool {
+        self.requires_workspace_live_sync() || self.tracks_workspace_live_sync()
+    }
+
+    pub fn from_config_mode(mode: crate::config::WorkspaceLiveSyncMode) -> Self {
+        match mode {
+            crate::config::WorkspaceLiveSyncMode::Managed => Self::WorkspaceLiveSyncManaged,
+            crate::config::WorkspaceLiveSyncMode::Tracked => Self::WorkspaceLiveSyncTracked,
+            crate::config::WorkspaceLiveSyncMode::Unrestricted => Self::Unrestricted,
+        }
     }
 }
 
@@ -287,8 +304,13 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_workspace_live_sync_required(mut self) -> Self {
-        self.write_access_mode = ProviderWriteAccessMode::WorkspaceLiveSyncRequired;
+    pub fn with_workspace_live_sync_managed(mut self) -> Self {
+        self.write_access_mode = ProviderWriteAccessMode::WorkspaceLiveSyncManaged;
+        self
+    }
+
+    pub fn with_workspace_live_sync_mode(mut self, mode: crate::config::WorkspaceLiveSyncMode) -> Self {
+        self.write_access_mode = ProviderWriteAccessMode::from_config_mode(mode);
         self
     }
 
@@ -304,6 +326,14 @@ impl LaunchProviderRequest {
 
     pub fn requires_workspace_live_sync(&self) -> bool {
         self.write_access_mode.requires_workspace_live_sync()
+    }
+
+    pub fn tracks_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.tracks_workspace_live_sync()
+    }
+
+    pub fn uses_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.uses_workspace_live_sync()
     }
 
     pub fn with_resume_state(mut self, resume_state: ProviderResumeState) -> Self {
@@ -356,13 +386,25 @@ mod tests {
     use super::LaunchProviderRequest;
 
     #[test]
-    fn launch_request_tracks_required_workspace_live_sync_mode() {
+    fn launch_request_tracks_managed_workspace_live_sync_mode() {
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
-                .with_workspace_live_sync_required();
+                .with_workspace_live_sync_managed();
 
         assert!(request.requires_workspace_live_sync());
         let json = serde_json::to_value(&request).expect("request should serialize");
-        assert_eq!(json["write_access_mode"], "workspace_live_sync_required");
+        assert_eq!(json["write_access_mode"], "workspace_live_sync_managed");
+    }
+
+    #[test]
+    fn launch_request_tracks_tracked_workspace_live_sync_mode() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked);
+
+        assert!(!request.requires_workspace_live_sync());
+        assert!(request.tracks_workspace_live_sync());
+        let json = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(json["write_access_mode"], "workspace_live_sync_tracked");
     }
 }

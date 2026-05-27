@@ -70,7 +70,7 @@ fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
     let mut providers = ProviderProcessService::new();
 
     let error = providers
-        .start_run_provider_only(launch_request(session.id(), "sonnet").with_workspace_live_sync_required())
+        .start_run_provider_only(launch_request(session.id(), "sonnet").with_workspace_live_sync_managed())
         .expect_err("dev-stub cannot enforce workspace live sync writes");
 
     match error {

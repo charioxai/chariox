@@ -37,7 +37,7 @@ pub struct WorkspaceLiveSyncConfig {
 impl Default for WorkspaceLiveSyncConfig {
     fn default() -> Self {
         Self {
-            mode: WorkspaceLiveSyncMode::Unrestricted,
+            mode: WorkspaceLiveSyncMode::Managed,
         }
     }
 }
@@ -49,6 +49,10 @@ impl WorkspaceLiveSyncConfig {
 
     pub fn requires_workspace_live_sync(&self) -> bool {
         self.mode.requires_workspace_live_sync()
+    }
+
+    pub fn tracks_workspace_live_sync(&self) -> bool {
+        self.mode.tracks_workspace_live_sync()
     }
 
     pub(super) fn validate(&self) -> Result<(), DaemonError> {
@@ -71,23 +75,29 @@ impl From<WorkspaceLiveSyncConfig> for WorkspaceLiveSyncMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceLiveSyncMode {
-    Required,
+    Managed,
+    Tracked,
     Unrestricted,
 }
 
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "required" | "on" | "true" | "1" => Ok(Self::Required),
+            "managed" | "on" | "true" | "1" => Ok(Self::Managed),
+            "tracked" => Ok(Self::Tracked),
             "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
                 field: "providers.workspace_live_sync",
-                message: "value must be `required` or `unrestricted`",
+                message: "value must be `managed`, `tracked`, or `unrestricted`",
             }),
         }
     }
 
     pub fn requires_workspace_live_sync(&self) -> bool {
-        matches!(self, Self::Required)
+        matches!(self, Self::Managed)
+    }
+
+    pub fn tracks_workspace_live_sync(&self) -> bool {
+        matches!(self, Self::Tracked)
     }
 }

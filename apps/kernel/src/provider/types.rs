@@ -2,11 +2,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) fn provider_requires_workspace_live_sync_by_default(
+pub(crate) fn provider_workspace_live_sync_mode_by_default(
     provider: &str,
     config: &crate::config::DaemonConfig,
-) -> bool {
-    config.provider_requires_workspace_live_sync(provider)
+) -> crate::config::WorkspaceLiveSyncMode {
+    config.provider_workspace_live_sync_mode(provider)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

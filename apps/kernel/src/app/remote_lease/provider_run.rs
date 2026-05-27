@@ -99,12 +99,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 request = request.with_variant(run.variant().map(str::to_string));
             }
         }
-        if crate::provider::provider_requires_workspace_live_sync_by_default(
-            &leased_agent.provider,
-            self.app.config(),
-        ) {
-            request = request.with_workspace_live_sync_required();
-        }
+        request = request.with_workspace_live_sync_mode(
+            crate::provider::provider_workspace_live_sync_mode_by_default(
+                &leased_agent.provider,
+                self.app.config(),
+            ),
+        );
         let run = self.app.launch_provider(request)?;
         Ok(run.id().to_string())
     }

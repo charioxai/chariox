@@ -54,9 +54,9 @@ impl KernelRuntimeState {
                 launch_request =
                     launch_request.with_working_directory(std::path::PathBuf::from(worktree_id));
             }
-            if crate::provider::provider_requires_workspace_live_sync_by_default(provider, &config) {
-                launch_request = launch_request.with_workspace_live_sync_required();
-            }
+            launch_request = launch_request.with_workspace_live_sync_mode(
+                crate::provider::provider_workspace_live_sync_mode_by_default(provider, &config),
+            );
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
             owned.record_notice(

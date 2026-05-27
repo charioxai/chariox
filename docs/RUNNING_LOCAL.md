@@ -486,10 +486,17 @@ version = 1
 default = "opencode"
 model = "default"
 account_profile = "default"
-workspace_live_sync = "required"
+workspace_live_sync = "managed"
 ```
 
-To relax the policy for all managed providers:
+To track agent writes without provider write fencing:
+
+```toml
+[providers]
+workspace_live_sync = "tracked"
+```
+
+To disable the policy for all managed providers:
 
 ```toml
 [providers]
@@ -515,7 +522,7 @@ You can also modify the same TOML through the CLI:
 /config show
 /config path
 /config set providers.workspace_live_sync unrestricted
-/config workspace-live-sync required
+/config workspace-live-sync managed
 /config unset providers.workspace_live_sync
 ```
 

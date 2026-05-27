@@ -167,9 +167,9 @@ impl KernelRuntimeState {
             .with_owner_user_id(run.owner_user_id().to_string())
             .with_variant(run.variant().map(str::to_string))
             .with_resume_state(run.resume_state().clone());
-            if crate::provider::provider_requires_workspace_live_sync_by_default(run.provider(), &config) {
-                launch_request = launch_request.with_workspace_live_sync_required();
-            }
+            launch_request = launch_request.with_workspace_live_sync_mode(
+                crate::provider::provider_workspace_live_sync_mode_by_default(run.provider(), &config),
+            );
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
             if ProviderLaunchFingerprint::from_run(&run)

@@ -19,7 +19,7 @@ pub(super) fn codex_permission_policy(
     permission_level: AgentPermissionLevel,
 ) -> CodexPermissionPolicy {
     match write_access_mode {
-        ProviderWriteAccessMode::Unrestricted => {
+        ProviderWriteAccessMode::Unrestricted | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => {
             let yolo_build = execution_mode == AgentExecutionMode::Build
                 && permission_level == AgentPermissionLevel::Yolo;
             CodexPermissionPolicy {
@@ -40,7 +40,7 @@ pub(super) fn codex_permission_policy(
                 config_overrides: BTreeMap::new(),
             }
         }
-        ProviderWriteAccessMode::WorkspaceLiveSyncRequired => {
+        ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
             let mut config_overrides = BTreeMap::new();
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
