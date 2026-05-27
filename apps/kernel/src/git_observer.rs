@@ -381,7 +381,9 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     if before.repo_root != after.repo_root || before.worktree_path != after.worktree_path {
         return None;
     }
-    let path_changes = tracked_workspace_live_sync_path_changes(&after.status_fingerprint);
+    let worktree_path = PathBuf::from(&before.worktree_path);
+    let path_changes =
+        tracked_workspace_live_sync_path_changes(&after.status_fingerprint, &worktree_path);
     let changed_paths = path_changes
         .iter()
         .map(|change| change.path.clone())
@@ -414,7 +416,9 @@ struct WorkspaceLiveSyncTrackedPathChange {
 
 fn tracked_workspace_live_sync_path_changes(
     status_fingerprint: &str,
+    worktree_path: &Path,
 ) -> Vec<WorkspaceLiveSyncTrackedPathChange> {
+    let ignore_patterns = workspace_live_sync_ignore_patterns(worktree_path);
     let mut paths = BTreeMap::new();
     for line in status_fingerprint.lines() {
         let line = line.trim_end();
@@ -431,7 +435,12 @@ fn tracked_workspace_live_sync_path_changes(
         } else {
             (None, tracked_workspace_live_sync_unquote_path(raw_path))
         };
-        if path.is_empty() || workspace_live_sync_force_excluded_path(&path) {
+        if path.is_empty()
+            || workspace_live_sync_excluded_path(&path, &ignore_patterns)
+            || previous_path
+                .as_deref()
+                .is_some_and(|path| workspace_live_sync_excluded_path(path, &ignore_patterns))
+        {
             continue;
         }
         let kind = if status == "??" {
@@ -997,6 +1006,86 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
         .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))
 }
 
+fn workspace_live_sync_excluded_path(path: &str, ignore_patterns: &[String]) -> bool {
+    workspace_live_sync_force_excluded_path(path)
+        || ignore_patterns
+            .iter()
+            .any(|pattern| workspace_live_sync_ignore_pattern_matches(pattern, path))
+}
+
+fn workspace_live_sync_ignore_patterns(worktree_path: &Path) -> Vec<String> {
+    let ignore_path = worktree_path.join(".arrobaignore");
+    if !ignore_path.exists() {
+        let seed = match std::fs::read_to_string(worktree_path.join(".gitignore")) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(_) => String::new(),
+        };
+        let _ = std::fs::write(&ignore_path, seed);
+    }
+    std::fs::read_to_string(&ignore_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(workspace_live_sync_normalize_ignore_pattern)
+        .collect()
+}
+
+fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+        return None;
+    }
+    let directory = trimmed.ends_with('/');
+    let mut pattern = trimmed
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if pattern.is_empty() {
+        return None;
+    }
+    if directory {
+        pattern.push('/');
+    }
+    Some(pattern)
+}
+
+fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool {
+    let directory_pattern = pattern.ends_with('/');
+    let pattern = pattern.trim_end_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern.contains('/') {
+        return workspace_live_sync_wildcard_match(pattern, path)
+            || path
+                .strip_prefix(pattern)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+            || (directory_pattern && path == pattern);
+    }
+    path.split('/')
+        .any(|part| workspace_live_sync_wildcard_match(pattern, part))
+}
+
+fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == value {
+        return true;
+    }
+    let Some((head, tail)) = pattern.split_once('*') else {
+        return false;
+    };
+    if !value.starts_with(head) {
+        return false;
+    }
+    let remainder = &value[head.len()..];
+    if !tail.contains('*') {
+        return tail.is_empty() || remainder.ends_with(tail);
+    }
+    (0..=remainder.len()).any(|index| workspace_live_sync_wildcard_match(tail, &remainder[index..]))
+}
+
 pub(crate) fn append_observations(
     history: &OperationalHistoryStore,
     observations: Vec<RemoteGitObservation>,
@@ -1397,6 +1486,61 @@ mod tests {
             .expect("allowed tracked path should remain");
 
         assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_filters_arrobaignore_patterns() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-ignore-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(root.join("ignored")).expect("temp worktree should be created");
+        std::fs::write(root.join(".gitignore"), "ignored/\n*.secret\n")
+            .expect("gitignore should write");
+        let mut before = tracked_snapshot(false, "");
+        before.repo_root = root.display().to_string();
+        before.worktree_path = root.display().to_string();
+        let mut after =
+            tracked_snapshot(true, " M ignored/file.txt\n M src/lib.rs\n?? token.secret");
+        after.repo_root = root.display().to_string();
+        after.worktree_path = root.display().to_string();
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("allowed tracked path should remain");
+
+        assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".arrobaignore"))
+                .expect(".arrobaignore should initialize"),
+            "ignored/\n*.secret\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_filters_renames_from_ignored_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-ignore-rename-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temp worktree should be created");
+        std::fs::write(root.join(".arrobaignore"), "ignored/\n").expect("ignore should write");
+        let mut before = tracked_snapshot(false, "");
+        before.repo_root = root.display().to_string();
+        before.worktree_path = root.display().to_string();
+        let mut after = tracked_snapshot(true, "R  ignored/old.txt -> src/new.txt\n M src/lib.rs");
+        after.repo_root = root.display().to_string();
+        after.worktree_path = root.display().to_string();
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("allowed tracked path should remain");
+
+        assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
