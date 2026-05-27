@@ -1375,10 +1375,10 @@ mod tests {
     use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
     use super::{
-        apply_workspace_live_sync_change_to_target, capture_turn_snapshot, observe_after_turn,
-        tracked_workspace_live_sync_change_after_turn, GitTurnContext, GitTurnSnapshot,
-        GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
-        WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
+        apply_workspace_live_sync_change_to_target, capture_turn_snapshot, git_output,
+        observe_after_turn, tracked_workspace_live_sync_change_after_turn, GitTurnContext,
+        GitTurnSnapshot, GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus,
+        WorkspaceLiveSyncChange, WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
     };
 
     #[test]
@@ -1652,6 +1652,13 @@ mod tests {
         run_git(&source, &["commit", "-m", "seed commit"]);
         std::fs::write(target.join("src/lib.rs"), "old\n").expect("target should write");
         std::fs::write(target.join("remove.txt"), "remove\n").expect("target should write");
+        run_git(&target, &["init"]);
+        run_git(&target, &["config", "user.email", "agent@example.com"]);
+        run_git(&target, &["config", "user.name", "Agent"]);
+        run_git(&target, &["add", "."]);
+        run_git(&target, &["commit", "-m", "target seed"]);
+        let target_head_before =
+            git_output(&target, &["rev-parse", "HEAD"]).expect("target head should be readable");
 
         let before = capture_turn_snapshot(GitTurnContext {
             workspace_live_sync_tracked: true,
@@ -1683,6 +1690,13 @@ mod tests {
             "added\n"
         );
         assert!(!target.join("remove.txt").exists());
+        assert_eq!(
+            git_output(&target, &["rev-parse", "HEAD"]).expect("target head should be readable"),
+            target_head_before
+        );
+        assert!(git_output(&target, &["status", "--porcelain"])
+            .expect("target status should be readable")
+            .contains("src/lib.rs"));
 
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&target);
