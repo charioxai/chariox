@@ -179,6 +179,16 @@ impl KernelRuntimeState {
             }
             if attachment.kernel_id() == config.daemon_id {
                 let target_root = std::path::Path::new(attachment.repo_root());
+                if let Some(message) = crate::git_observer::workspace_live_sync_identity_conflict(
+                    target_root,
+                    attachment.branch(),
+                    attachment.repo_fingerprint(),
+                ) {
+                    results.push(workspace_live_sync_identity_conflict_result(
+                        change, &link, attachment, message,
+                    ));
+                    continue;
+                }
                 let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
                     change,
                     target_root,
@@ -262,6 +272,9 @@ impl KernelRuntimeState {
         if let Some(message) = self.forwarded_workspace_live_sync_rejection(&context) {
             return workspace_live_sync_remote_failed_result(&context, message);
         }
+        if let Some(message) = self.forwarded_workspace_live_sync_identity_conflict(&context) {
+            return workspace_live_sync_remote_conflict_result(&context, &change, message);
+        }
         let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
             &change,
             std::path::Path::new(&context.target_repo_root),
@@ -320,6 +333,31 @@ impl KernelRuntimeState {
                 context.target_repo_root
             ))
         }
+    }
+
+    fn forwarded_workspace_live_sync_identity_conflict(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+    ) -> Option<String> {
+        let target_root =
+            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
+        let config = self.owned.config_projection.snapshot();
+        let attachment = self
+            .owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| session.workspace_links().to_vec())
+            .flat_map(|link| link.attachments().to_vec())
+            .find(|attachment| {
+                attachment.kernel_id() == config.daemon_id
+                    && attachment.repo_root() == target_root.as_str()
+            })?;
+        crate::git_observer::workspace_live_sync_identity_conflict(
+            std::path::Path::new(&context.target_repo_root),
+            attachment.branch(),
+            attachment.repo_fingerprint(),
+        )
     }
 
     fn record_workspace_live_sync_notices(
@@ -484,6 +522,66 @@ fn workspace_live_sync_remote_failed_result(
             message,
         }],
     }
+}
+
+fn workspace_live_sync_remote_conflict_result(
+    context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+    change: &crate::git_observer::WorkspaceLiveSyncChange,
+    message: String,
+) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+    crate::git_observer::WorkspaceLiveSyncTargetResult {
+        session_id: context.home_session_id.clone(),
+        link_id: context.link_id.clone(),
+        link_name: context.link_name.clone(),
+        source_agent_id: context.source_agent_id.clone(),
+        source_worktree_path: context.source_worktree_path.clone(),
+        target_user_id: context.target_user_id.clone(),
+        target_machine_id: context.target_machine_id.clone(),
+        target_kernel_id: context.target_kernel_id.clone(),
+        target_repo_root: context.target_repo_root.clone(),
+        path_results: workspace_live_sync_identity_conflict_path_results(change, message),
+    }
+}
+
+fn workspace_live_sync_identity_conflict_result(
+    change: &crate::git_observer::WorkspaceLiveSyncChange,
+    link: &crate::session::WorkspaceLinkDefinition,
+    attachment: &crate::session::WorkspaceLinkAttachment,
+    message: String,
+) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+    crate::git_observer::WorkspaceLiveSyncTargetResult {
+        session_id: change.session_id.clone(),
+        link_id: link.link_id().to_string(),
+        link_name: link.name().to_string(),
+        source_agent_id: change.agent_id.clone(),
+        source_worktree_path: change.worktree_path.clone(),
+        target_user_id: attachment.user_id().to_string(),
+        target_machine_id: attachment.machine_id().to_string(),
+        target_kernel_id: attachment.kernel_id().to_string(),
+        target_repo_root: attachment.repo_root().to_string(),
+        path_results: workspace_live_sync_identity_conflict_path_results(change, message),
+    }
+}
+
+fn workspace_live_sync_identity_conflict_path_results(
+    change: &crate::git_observer::WorkspaceLiveSyncChange,
+    message: String,
+) -> Vec<crate::git_observer::WorkspaceLiveSyncPathApplyResult> {
+    let paths = if change.changed_paths.is_empty() {
+        vec!["*".to_string()]
+    } else {
+        change.changed_paths.clone()
+    };
+    paths
+        .into_iter()
+        .map(
+            |path| crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+                path,
+                status: crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict,
+                message: message.clone(),
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

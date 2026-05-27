@@ -1337,7 +1337,73 @@ fn git_worktree_metadata(
     metadata
 }
 
-fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn workspace_live_sync_git_branch(worktree: &Path) -> Option<String> {
+    let branch = git_output(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch.to_string())
+    }
+}
+
+pub(crate) fn workspace_live_sync_repo_fingerprint(worktree: &Path) -> Option<String> {
+    git_output(worktree, &["config", "--get", "remote.origin.url"])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            git_output(worktree, &["rev-parse", "--git-common-dir"]).map(|value| {
+                let git_dir = value.trim();
+                let path = Path::new(git_dir);
+                let absolute = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    worktree.join(path)
+                };
+                normalize_path(absolute)
+            })
+        })
+}
+
+pub(crate) fn workspace_live_sync_identity_conflict(
+    target_root: &Path,
+    expected_branch: Option<&str>,
+    expected_repo_fingerprint: Option<&str>,
+) -> Option<String> {
+    if let Some(expected_branch) = expected_branch {
+        match workspace_live_sync_git_branch(target_root) {
+            Some(current_branch) if current_branch == expected_branch => {}
+            Some(current_branch) => {
+                return Some(format!(
+                    "target branch changed from `{expected_branch}` to `{current_branch}`"
+                ));
+            }
+            None => {
+                return Some(format!(
+                    "target branch `{expected_branch}` could not be verified"
+                ));
+            }
+        }
+    }
+    if let Some(expected_repo_fingerprint) = expected_repo_fingerprint {
+        match workspace_live_sync_repo_fingerprint(target_root) {
+            Some(current_fingerprint) if current_fingerprint == expected_repo_fingerprint => {}
+            Some(current_fingerprint) => {
+                return Some(format!(
+                    "target repo identity changed from `{expected_repo_fingerprint}` to `{current_fingerprint}`"
+                ));
+            }
+            None => {
+                return Some(format!(
+                    "target repo identity `{expected_repo_fingerprint}` could not be verified"
+                ));
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(worktree)
@@ -1376,9 +1442,11 @@ mod tests {
 
     use super::{
         apply_workspace_live_sync_change_to_target, capture_turn_snapshot, git_output,
-        observe_after_turn, tracked_workspace_live_sync_change_after_turn, GitTurnContext,
-        GitTurnSnapshot, GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus,
-        WorkspaceLiveSyncChange, WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
+        observe_after_turn, tracked_workspace_live_sync_change_after_turn,
+        workspace_live_sync_git_branch, workspace_live_sync_identity_conflict,
+        workspace_live_sync_repo_fingerprint, GitTurnContext, GitTurnSnapshot,
+        GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
+        WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
     };
 
     #[test]
@@ -1832,6 +1900,48 @@ mod tests {
             WorkspaceLiveSyncApplyStatus::SkippedConflict
         );
         assert!(!target.join(".env.local").exists());
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_identity_conflict_detects_branch_drift() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-identity-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&target).expect("target should be created");
+        run_git(&target, &["init"]);
+        run_git(&target, &["config", "user.email", "agent@example.com"]);
+        run_git(&target, &["config", "user.name", "Agent"]);
+        std::fs::write(target.join("README.md"), "seed\n").expect("target should write");
+        run_git(&target, &["add", "."]);
+        run_git(&target, &["commit", "-m", "seed"]);
+        run_git(&target, &["checkout", "-b", "sync-main"]);
+        let fingerprint =
+            workspace_live_sync_repo_fingerprint(&target).expect("fingerprint should resolve");
+
+        assert_eq!(
+            workspace_live_sync_git_branch(&target).as_deref(),
+            Some("sync-main")
+        );
+        assert!(workspace_live_sync_identity_conflict(
+            &target,
+            Some("sync-main"),
+            Some(fingerprint.as_str()),
+        )
+        .is_none());
+
+        run_git(&target, &["checkout", "-b", "other"]);
+
+        let conflict = workspace_live_sync_identity_conflict(
+            &target,
+            Some("sync-main"),
+            Some(fingerprint.as_str()),
+        )
+        .expect("branch drift should conflict");
+        assert!(conflict.contains("target branch changed"));
 
         let _ = std::fs::remove_dir_all(&target);
     }

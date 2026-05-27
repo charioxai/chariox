@@ -135,6 +135,79 @@ fn local_request_api_manages_session_workspace_links() {
 }
 
 #[test]
+fn attach_workspace_link_infers_git_identity_when_missing() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-workspace-link-identity-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("temp repo should be created");
+    run_git(&root, &["init"]);
+    run_git(&root, &["config", "user.email", "agent@example.com"]);
+    run_git(&root, &["config", "user.name", "Agent"]);
+    std::fs::write(root.join("README.md"), "seed\n").expect("seed should write");
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "seed"]);
+    run_git(&root, &["checkout", "-b", "sync-main"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy()),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let session_id = session.id().to_string();
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceLink(
+            CreateWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                name: "shared-repo".to_string(),
+            },
+        ))
+        .expect("workspace link create should succeed");
+
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachWorkspaceLink(
+            AttachWorkspaceLinkRequest {
+                session_id,
+                link_ref: "shared".to_string(),
+                repo_root: Some(root.to_string_lossy().to_string()),
+                branch: None,
+                repo_fingerprint: None,
+            },
+        ))
+        .expect("workspace link attach should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkAttached { attachment, .. } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(attachment.branch(), Some("sync-main"));
+    assert!(attachment.repo_fingerprint().is_some());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn run_git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn local_request_api_runs_shell_command_capability() {
     let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");

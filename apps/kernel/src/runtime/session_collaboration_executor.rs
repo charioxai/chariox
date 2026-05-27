@@ -202,6 +202,13 @@ pub(crate) async fn execute_attach_workspace_link_request(
             .worktree_id()
             .to_string()
     };
+    let repo_root_path = std::path::Path::new(&repo_root);
+    let branch = request
+        .branch
+        .or_else(|| crate::git_observer::workspace_live_sync_git_branch(repo_root_path));
+    let repo_fingerprint = request
+        .repo_fingerprint
+        .or_else(|| crate::git_observer::workspace_live_sync_repo_fingerprint(repo_root_path));
     let (session, link, attachment) = runtime_state.attach_workspace_link(
         &request.session_id,
         &request.link_ref,
@@ -209,8 +216,8 @@ pub(crate) async fn execute_attach_workspace_link_request(
         machine_id,
         kernel_id,
         repo_root,
-        request.branch,
-        request.repo_fingerprint,
+        branch,
+        repo_fingerprint,
     )?;
     Ok(LocalDaemonResponse::WorkspaceLinkAttached {
         link,
