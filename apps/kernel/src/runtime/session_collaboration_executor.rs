@@ -8,8 +8,8 @@ use crate::local::{
     DetachWorkspaceLinkRequest, GetWorkspaceLiveSyncStatusRequest, JoinSessionInviteRequest,
     ListSessionMembersRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     RevokeSessionInviteRequest, SessionInviteRecord, ShowWorkspaceLinkRequest,
-    WorkspaceLiveSyncFooterState, WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus,
-    WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
+    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncIgnoreStatus,
+    WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::invite_tokens::{
@@ -247,9 +247,14 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
         .snapshot()
         .provider_workspace_live_sync_mode("default");
     let links = runtime_state.list_workspace_links(&request.session_id)?;
+    let target_results = runtime_state.workspace_live_sync_target_results(&request.session_id);
     let mut targets = Vec::new();
     for link in links {
         for attachment in link.attachments() {
+            let result_status = workspace_live_sync_target_status_from_results(
+                &target_results,
+                attachment.repo_root(),
+            );
             targets.push(WorkspaceLiveSyncTargetStatus {
                 link_id: link.link_id().to_string(),
                 link_name: link.name().to_string(),
@@ -259,15 +264,27 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
                 repo_root: attachment.repo_root().to_string(),
                 branch: attachment.branch().map(str::to_string),
                 repo_fingerprint: attachment.repo_fingerprint().map(str::to_string),
-                status: WorkspaceLiveSyncTargetState::Ready,
+                status: result_status,
                 attached_at_ms: attachment.attached_at_ms(),
             });
         }
     }
-    let footer_state = match mode {
-        crate::config::WorkspaceLiveSyncMode::Managed => WorkspaceLiveSyncFooterState::Managed,
-        crate::config::WorkspaceLiveSyncMode::Tracked => WorkspaceLiveSyncFooterState::Tracked,
-        crate::config::WorkspaceLiveSyncMode::Unrestricted => WorkspaceLiveSyncFooterState::Off,
+    let conflicts = workspace_live_sync_conflicts_from_results(&target_results);
+    let degraded = target_results.iter().any(|target_result| {
+        target_result.path_results.iter().any(|path_result| {
+            path_result.status == crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo
+        })
+    });
+    let footer_state = if !conflicts.is_empty() {
+        WorkspaceLiveSyncFooterState::Conflict
+    } else if degraded {
+        WorkspaceLiveSyncFooterState::Degraded
+    } else {
+        match mode {
+            crate::config::WorkspaceLiveSyncMode::Managed => WorkspaceLiveSyncFooterState::Managed,
+            crate::config::WorkspaceLiveSyncMode::Tracked => WorkspaceLiveSyncFooterState::Tracked,
+            crate::config::WorkspaceLiveSyncMode::Unrestricted => WorkspaceLiveSyncFooterState::Off,
+        }
     };
     Ok(LocalDaemonResponse::WorkspaceLiveSyncStatus {
         status: WorkspaceLiveSyncStatus {
@@ -275,7 +292,7 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             mode,
             footer_state,
             targets,
-            conflicts: Vec::new(),
+            conflicts,
             ignore: WorkspaceLiveSyncIgnoreStatus {
                 ignore_file: Some(".arrobaignore".to_string()),
                 force_excludes: vec![
@@ -296,6 +313,65 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             },
         },
     })
+}
+
+fn workspace_live_sync_target_status_from_results(
+    target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+    repo_root: &str,
+) -> WorkspaceLiveSyncTargetState {
+    let mut has_failure = false;
+    for target_result in target_results
+        .iter()
+        .filter(|result| result.target_repo_root == repo_root)
+    {
+        for path_result in &target_result.path_results {
+            match path_result.status {
+                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied => {}
+                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                    return WorkspaceLiveSyncTargetState::Conflict;
+                }
+                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo => {
+                    has_failure = true;
+                }
+            }
+        }
+    }
+    if has_failure {
+        WorkspaceLiveSyncTargetState::Degraded
+    } else {
+        WorkspaceLiveSyncTargetState::Ready
+    }
+}
+
+fn workspace_live_sync_conflicts_from_results(
+    target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+) -> Vec<WorkspaceLiveSyncConflictSummary> {
+    let mut conflicts = Vec::new();
+    for target_result in target_results {
+        for path_result in &target_result.path_results {
+            if path_result.status
+                != crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict
+            {
+                continue;
+            }
+            conflicts.push(WorkspaceLiveSyncConflictSummary {
+                conflict_id: format!(
+                    "{}:{}:{}",
+                    target_result.link_id, target_result.target_repo_root, path_result.path
+                ),
+                link_id: target_result.link_id.clone(),
+                source_agent_id: target_result.source_agent_id.clone(),
+                target_user_id: target_result.target_user_id.clone(),
+                target_repo_root: target_result.target_repo_root.clone(),
+                path: path_result.path.clone(),
+                next_action: format!(
+                    "{}. Reread the target and ask a resolver agent to reconcile.",
+                    path_result.message
+                ),
+            });
+        }
+    }
+    conflicts
 }
 
 fn random_hex_id() -> String {

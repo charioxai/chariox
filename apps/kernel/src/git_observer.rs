@@ -155,7 +155,13 @@ pub(crate) enum TrackedWorkspaceLiveSyncFileChangeKind {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TrackedWorkspaceLiveSyncJournal {
-    inner: Arc<Mutex<Vec<TrackedWorkspaceLiveSyncTurnChange>>>,
+    inner: Arc<Mutex<TrackedWorkspaceLiveSyncJournalState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TrackedWorkspaceLiveSyncJournalState {
+    entries: Vec<TrackedWorkspaceLiveSyncTurnChange>,
+    target_results: Vec<TrackedWorkspaceLiveSyncTargetResult>,
 }
 
 impl TrackedWorkspaceLiveSyncJournal {
@@ -163,8 +169,63 @@ impl TrackedWorkspaceLiveSyncJournal {
         self.inner
             .lock()
             .expect("tracked workspace live sync journal mutex poisoned")
+            .entries
             .push(change);
     }
+
+    pub(crate) fn record_target_results(&self, results: Vec<TrackedWorkspaceLiveSyncTargetResult>) {
+        if results.is_empty() {
+            return;
+        }
+        self.inner
+            .lock()
+            .expect("tracked workspace live sync journal mutex poisoned")
+            .target_results
+            .extend(results);
+    }
+
+    pub(crate) fn target_results_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<TrackedWorkspaceLiveSyncTargetResult> {
+        self.inner
+            .lock()
+            .expect("tracked workspace live sync journal mutex poisoned")
+            .target_results
+            .iter()
+            .filter(|result| result.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TrackedWorkspaceLiveSyncTargetResult {
+    pub session_id: String,
+    pub link_id: String,
+    pub link_name: String,
+    pub source_agent_id: String,
+    pub source_worktree_path: String,
+    pub target_user_id: String,
+    pub target_machine_id: String,
+    pub target_kernel_id: String,
+    pub target_repo_root: String,
+    pub path_results: Vec<TrackedWorkspaceLiveSyncPathApplyResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TrackedWorkspaceLiveSyncPathApplyResult {
+    pub path: String,
+    pub status: TrackedWorkspaceLiveSyncApplyStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TrackedWorkspaceLiveSyncApplyStatus {
+    Applied,
+    SkippedConflict,
+    FailedIo,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -490,6 +551,289 @@ fn tracked_workspace_live_sync_unquote_path(path: &str) -> String {
     path.trim().trim_matches('"').to_string()
 }
 
+pub(crate) fn apply_tracked_workspace_live_sync_change_to_target(
+    change: &TrackedWorkspaceLiveSyncTurnChange,
+    target_root: &Path,
+) -> Vec<TrackedWorkspaceLiveSyncPathApplyResult> {
+    change
+        .file_changes
+        .iter()
+        .map(|file_change| {
+            apply_tracked_workspace_live_sync_file_change_to_target(file_change, target_root)
+        })
+        .collect()
+}
+
+fn apply_tracked_workspace_live_sync_file_change_to_target(
+    file_change: &TrackedWorkspaceLiveSyncFileChange,
+    target_root: &Path,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let path = file_change.path.clone();
+    let target_path = match tracked_workspace_live_sync_target_path(target_root, &file_change.path)
+    {
+        Some(path) => path,
+        None => {
+            return TrackedWorkspaceLiveSyncPathApplyResult {
+                path,
+                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+                message: "workspace live sync path must be relative and cannot contain `..`"
+                    .to_string(),
+            };
+        }
+    };
+    let previous_target_path = file_change
+        .previous_path
+        .as_deref()
+        .and_then(|path| tracked_workspace_live_sync_target_path(target_root, path));
+    let before_bytes = match tracked_workspace_live_sync_decode_optional(
+        file_change.before_content_base64.as_deref(),
+    ) {
+        Ok(bytes) => bytes,
+        Err(message) => {
+            return TrackedWorkspaceLiveSyncPathApplyResult {
+                path,
+                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+                message,
+            };
+        }
+    };
+    let after_bytes = match tracked_workspace_live_sync_decode_optional(
+        file_change.after_content_base64.as_deref(),
+    ) {
+        Ok(bytes) => bytes,
+        Err(message) => {
+            return TrackedWorkspaceLiveSyncPathApplyResult {
+                path,
+                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+                message,
+            };
+        }
+    };
+    match file_change.kind {
+        TrackedWorkspaceLiveSyncFileChangeKind::Added => {
+            tracked_workspace_live_sync_apply_add(&path, &target_path, after_bytes)
+        }
+        TrackedWorkspaceLiveSyncFileChangeKind::Modified => {
+            tracked_workspace_live_sync_apply_modify(&path, &target_path, before_bytes, after_bytes)
+        }
+        TrackedWorkspaceLiveSyncFileChangeKind::Deleted => {
+            tracked_workspace_live_sync_apply_delete(&path, &target_path, before_bytes)
+        }
+        TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
+            tracked_workspace_live_sync_apply_rename(
+                &path,
+                previous_target_path.as_deref(),
+                &target_path,
+                before_bytes,
+                after_bytes,
+            )
+        }
+    }
+}
+
+fn tracked_workspace_live_sync_apply_add(
+    path: &str,
+    target_path: &Path,
+    after_bytes: Option<Vec<u8>>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let Some(after_bytes) = after_bytes else {
+        return tracked_workspace_live_sync_failed(path, "tracked add has no after content");
+    };
+    if target_path.exists() {
+        return tracked_workspace_live_sync_conflict(path, "target path already exists");
+    }
+    tracked_workspace_live_sync_write_file(path, target_path, &after_bytes)
+}
+
+fn tracked_workspace_live_sync_apply_modify(
+    path: &str,
+    target_path: &Path,
+    before_bytes: Option<Vec<u8>>,
+    after_bytes: Option<Vec<u8>>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let (Some(before_bytes), Some(after_bytes)) = (before_bytes, after_bytes) else {
+        return tracked_workspace_live_sync_failed(path, "tracked modify is missing content");
+    };
+    match std::fs::read(target_path) {
+        Ok(current) if current == before_bytes => {
+            tracked_workspace_live_sync_write_file(path, target_path, &after_bytes)
+        }
+        Ok(_) => tracked_workspace_live_sync_conflict(path, "target content changed before apply"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracked_workspace_live_sync_conflict(path, "target path is missing")
+        }
+        Err(error) => tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to read target path before apply: {error}"),
+        ),
+    }
+}
+
+fn tracked_workspace_live_sync_apply_delete(
+    path: &str,
+    target_path: &Path,
+    before_bytes: Option<Vec<u8>>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let Some(before_bytes) = before_bytes else {
+        return tracked_workspace_live_sync_failed(path, "tracked delete has no before content");
+    };
+    match std::fs::read(target_path) {
+        Ok(current) if current == before_bytes => match std::fs::remove_file(target_path) {
+            Ok(()) => tracked_workspace_live_sync_applied(path, "deleted target path"),
+            Err(error) => tracked_workspace_live_sync_failed(
+                path,
+                format!("failed to delete target path: {error}"),
+            ),
+        },
+        Ok(_) => tracked_workspace_live_sync_conflict(path, "target content changed before delete"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracked_workspace_live_sync_conflict(path, "target path is already missing")
+        }
+        Err(error) => tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to read target path before delete: {error}"),
+        ),
+    }
+}
+
+fn tracked_workspace_live_sync_apply_rename(
+    path: &str,
+    previous_target_path: Option<&Path>,
+    target_path: &Path,
+    before_bytes: Option<Vec<u8>>,
+    after_bytes: Option<Vec<u8>>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    let (Some(previous_target_path), Some(before_bytes), Some(after_bytes)) =
+        (previous_target_path, before_bytes, after_bytes)
+    else {
+        return tracked_workspace_live_sync_failed(path, "tracked rename is missing content");
+    };
+    if target_path.exists() {
+        return tracked_workspace_live_sync_conflict(path, "rename target path already exists");
+    }
+    match std::fs::read(previous_target_path) {
+        Ok(current) if current == before_bytes => {}
+        Ok(_) => {
+            return tracked_workspace_live_sync_conflict(
+                path,
+                "rename source content changed before apply",
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return tracked_workspace_live_sync_conflict(path, "rename source path is missing");
+        }
+        Err(error) => {
+            return tracked_workspace_live_sync_failed(
+                path,
+                format!("failed to read rename source before apply: {error}"),
+            );
+        }
+    }
+    if let Some(parent) = target_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return tracked_workspace_live_sync_failed(
+                path,
+                format!("failed to create target directory: {error}"),
+            );
+        }
+    }
+    if let Err(error) = std::fs::write(target_path, after_bytes) {
+        return tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to write target: {error}"),
+        );
+    }
+    match std::fs::remove_file(previous_target_path) {
+        Ok(()) => tracked_workspace_live_sync_applied(path, "renamed target path"),
+        Err(error) => tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to remove rename source after write: {error}"),
+        ),
+    }
+}
+
+fn tracked_workspace_live_sync_write_file(
+    path: &str,
+    target_path: &Path,
+    bytes: &[u8],
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    if let Some(parent) = target_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return tracked_workspace_live_sync_failed(
+                path,
+                format!("failed to create target directory: {error}"),
+            );
+        }
+    }
+    match std::fs::write(target_path, bytes) {
+        Ok(()) => tracked_workspace_live_sync_applied(path, "applied target content"),
+        Err(error) => tracked_workspace_live_sync_failed(
+            path,
+            format!("failed to write target content: {error}"),
+        ),
+    }
+}
+
+fn tracked_workspace_live_sync_decode_optional(
+    value: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    value
+        .map(|value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .map_err(|error| format!("tracked content is not valid base64: {error}"))
+        })
+        .transpose()
+}
+
+fn tracked_workspace_live_sync_target_path(target_root: &Path, path: &str) -> Option<PathBuf> {
+    let relative = Path::new(path);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    Some(target_root.join(relative))
+}
+
+fn tracked_workspace_live_sync_applied(
+    path: &str,
+    message: impl Into<String>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    TrackedWorkspaceLiveSyncPathApplyResult {
+        path: path.to_string(),
+        status: TrackedWorkspaceLiveSyncApplyStatus::Applied,
+        message: message.into(),
+    }
+}
+
+fn tracked_workspace_live_sync_conflict(
+    path: &str,
+    message: impl Into<String>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    TrackedWorkspaceLiveSyncPathApplyResult {
+        path: path.to_string(),
+        status: TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict,
+        message: message.into(),
+    }
+}
+
+fn tracked_workspace_live_sync_failed(
+    path: &str,
+    message: impl Into<String>,
+) -> TrackedWorkspaceLiveSyncPathApplyResult {
+    TrackedWorkspaceLiveSyncPathApplyResult {
+        path: path.to_string(),
+        status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+        message: message.into(),
+    }
+}
+
 fn tracked_workspace_live_sync_force_excluded_path(path: &str) -> bool {
     if path == ".arrobaignore"
         || path == ".git"
@@ -793,8 +1137,9 @@ mod tests {
     use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
     use super::{
-        capture_turn_snapshot, observe_after_turn, tracked_workspace_live_sync_change_after_turn,
-        GitTurnContext, GitTurnSnapshot, GitTurnSnapshotStore,
+        apply_tracked_workspace_live_sync_change_to_target, capture_turn_snapshot,
+        observe_after_turn, tracked_workspace_live_sync_change_after_turn, GitTurnContext,
+        GitTurnSnapshot, GitTurnSnapshotStore, TrackedWorkspaceLiveSyncApplyStatus,
     };
 
     #[test]
@@ -988,6 +1333,117 @@ mod tests {
         assert_eq!(deleted.after_content_base64, None);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_apply_target_applies_exact_base_changes() {
+        let source = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-source-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(source.join("src")).expect("source should be created");
+        std::fs::create_dir_all(target.join("src")).expect("target should be created");
+        run_git(&source, &["init"]);
+        run_git(&source, &["config", "user.email", "agent@example.com"]);
+        run_git(&source, &["config", "user.name", "Agent"]);
+        std::fs::write(source.join("src/lib.rs"), "old\n").expect("source should write");
+        std::fs::write(source.join("remove.txt"), "remove\n").expect("source should write");
+        run_git(&source, &["add", "."]);
+        run_git(&source, &["commit", "-m", "seed commit"]);
+        std::fs::write(target.join("src/lib.rs"), "old\n").expect("target should write");
+        std::fs::write(target.join("remove.txt"), "remove\n").expect("target should write");
+
+        let before = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&source, "prompt-1")
+        })
+        .expect("pre-turn snapshot should capture");
+        std::fs::write(source.join("src/lib.rs"), "new\n").expect("source should update");
+        std::fs::write(source.join("src/new.rs"), "added\n").expect("source should add");
+        std::fs::remove_file(source.join("remove.txt")).expect("source should delete");
+        let after = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&source, "prompt-1")
+        })
+        .expect("post-turn snapshot should capture");
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("tracked turn should produce a change");
+
+        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+
+        assert!(results
+            .iter()
+            .all(|result| result.status == TrackedWorkspaceLiveSyncApplyStatus::Applied));
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
+            "new\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/new.rs")).expect("target should read"),
+            "added\n"
+        );
+        assert!(!target.join("remove.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_apply_target_skips_conflicting_target() {
+        let source = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-conflict-source-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-conflict-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(source.join("src")).expect("source should be created");
+        std::fs::create_dir_all(target.join("src")).expect("target should be created");
+        run_git(&source, &["init"]);
+        run_git(&source, &["config", "user.email", "agent@example.com"]);
+        run_git(&source, &["config", "user.name", "Agent"]);
+        std::fs::write(source.join("src/lib.rs"), "old\n").expect("source should write");
+        run_git(&source, &["add", "."]);
+        run_git(&source, &["commit", "-m", "seed commit"]);
+        std::fs::write(target.join("src/lib.rs"), "target local edit\n")
+            .expect("target should write");
+
+        let before = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&source, "prompt-1")
+        })
+        .expect("pre-turn snapshot should capture");
+        std::fs::write(source.join("src/lib.rs"), "new\n").expect("source should update");
+        let after = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&source, "prompt-1")
+        })
+        .expect("post-turn snapshot should capture");
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("tracked turn should produce a change");
+
+        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(
+            results[0].status,
+            TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
+            "target local edit\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&target);
     }
 
     fn tracked_snapshot(is_dirty: bool, status_fingerprint: &str) -> GitTurnSnapshot {

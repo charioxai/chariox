@@ -98,7 +98,10 @@ impl KernelRuntimeState {
             Ok(Some(Ok((events, tracked_change)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
+                    let target_results =
+                        self.apply_tracked_workspace_live_sync_change_to_link_targets(&change);
                     tracked_workspace_live_sync_journal.append(change);
+                    tracked_workspace_live_sync_journal.record_target_results(target_results);
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
                         "recorded tracked workspace live sync turn change",
@@ -141,5 +144,42 @@ impl KernelRuntimeState {
                 }),
             ),
         }
+    }
+
+    fn apply_tracked_workspace_live_sync_change_to_link_targets(
+        &self,
+        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+    ) -> Vec<crate::git_observer::TrackedWorkspaceLiveSyncTargetResult> {
+        let Ok(session) = self.owned.session_store.get_session(&change.session_id) else {
+            return Vec::new();
+        };
+        let source_root = std::path::Path::new(&change.worktree_path);
+        let Some(link) = session.workspace_link_for_repo_root(source_root).cloned() else {
+            return Vec::new();
+        };
+        link.attachments()
+            .iter()
+            .filter(|attachment| attachment.repo_root() != change.worktree_path)
+            .map(|attachment| {
+                let target_root = std::path::Path::new(attachment.repo_root());
+                let path_results =
+                    crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
+                        change,
+                        target_root,
+                    );
+                crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+                    session_id: change.session_id.clone(),
+                    link_id: link.link_id().to_string(),
+                    link_name: link.name().to_string(),
+                    source_agent_id: change.agent_id.clone(),
+                    source_worktree_path: change.worktree_path.clone(),
+                    target_user_id: attachment.user_id().to_string(),
+                    target_machine_id: attachment.machine_id().to_string(),
+                    target_kernel_id: attachment.kernel_id().to_string(),
+                    target_repo_root: attachment.repo_root().to_string(),
+                    path_results,
+                }
+            })
+            .collect()
     }
 }
