@@ -190,15 +190,16 @@ fn remote_managed_whole_file_state(
     if let Some(current) = final_states.get(path) {
         return Ok(current.clone());
     }
-    let state = remote_workspace_live_sync_state_for_path(artifact_states, path).ok_or_else(|| {
-        DaemonError::LocalTransport {
-            operation: "remote_workspace_live_sync_whole_file_state",
-            message: format!(
-                "missing forwarded artifact state for `{}`",
-                path.to_string_lossy()
-            ),
-        }
-    })?;
+    let state =
+        remote_workspace_live_sync_state_for_path(artifact_states, path).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "remote_workspace_live_sync_whole_file_state",
+                message: format!(
+                    "missing forwarded artifact state for `{}`",
+                    path.to_string_lossy()
+                ),
+            }
+        })?;
     let current = state
         .exists
         .then(|| remote_workspace_live_sync_content_from_state(state, domain))

@@ -9,16 +9,16 @@ mod capability;
 mod capability_registry;
 mod connector;
 mod credential;
-mod workspace_live_sync_access;
-mod workspace_live_sync_local;
-mod workspace_live_sync_permission;
-mod workspace_live_sync_remote_dispatch;
 mod recall;
 mod remote_capability_sync;
 mod script;
 mod slice;
 mod workflow_authenticated;
 mod workflow_forwarding;
+mod workspace_live_sync_access;
+mod workspace_live_sync_local;
+mod workspace_live_sync_permission;
+mod workspace_live_sync_remote_dispatch;
 
 impl KernelRuntimeState {
     pub(crate) fn runtime_tool_specs_for_auth_token(

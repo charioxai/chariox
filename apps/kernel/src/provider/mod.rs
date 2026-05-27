@@ -5,7 +5,6 @@ mod codex_client;
 mod codex_runtime;
 mod command_catalog;
 mod launch_contract;
-mod workspace_live_sync_policy;
 mod mcp_proxy;
 mod opencode;
 mod opencode_binding;
@@ -18,6 +17,7 @@ mod run_actor;
 mod runtime_run;
 mod service;
 mod types;
+mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
@@ -38,10 +38,6 @@ pub use command_catalog::{
 pub use launch_contract::{
     AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderLaunchResult,
     ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
-};
-pub(crate) use workspace_live_sync_policy::{
-    native_tui_hidden_instructions_block, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
-    NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
 };
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
 pub use opencode::{
@@ -76,5 +72,9 @@ pub(crate) use types::provider_workspace_live_sync_mode_by_default;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
     ProviderClientInterface, ProviderRunState,
+};
+pub(crate) use workspace_live_sync_policy::{
+    native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
+    NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
 };
 pub(crate) use workspace_write_fence::{apply_workspace_write_fence, workspace_write_fence_active};

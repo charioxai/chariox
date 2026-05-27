@@ -542,7 +542,9 @@ mod tests {
                 workspace_root: root.clone(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
-                    path: PathBuf::from(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH),
+                    path: PathBuf::from(
+                        crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
+                    ),
                     snapshot_id: None,
                     operation: AgentEditOperation::WriteArtifact {
                         content: ArtifactContent::Text("agent override\n".to_string()),

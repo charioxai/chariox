@@ -14,7 +14,10 @@ pub(in crate::runtime::state) fn workspace_live_sync_edit_result(
                 "new_version": new_version.value(),
             });
             add_workspace_live_sync_change_payload(&mut payload, change);
-            add_workspace_live_sync_external_change_notice_payload(&mut payload, external_change_notice);
+            add_workspace_live_sync_external_change_notice_payload(
+                &mut payload,
+                external_change_notice,
+            );
             crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
         }
         crate::io::EditResult::AppliedWithWarning {
@@ -27,7 +30,10 @@ pub(in crate::runtime::state) fn workspace_live_sync_edit_result(
                 "warning": workspace_live_sync_warning_payload(warning),
             });
             add_workspace_live_sync_change_payload(&mut payload, change);
-            add_workspace_live_sync_external_change_notice_payload(&mut payload, external_change_notice);
+            add_workspace_live_sync_external_change_notice_payload(
+                &mut payload,
+                external_change_notice,
+            );
             crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
         }
         crate::io::EditResult::Rejected { reason } => {
@@ -36,7 +42,10 @@ pub(in crate::runtime::state) fn workspace_live_sync_edit_result(
                 "reason": workspace_live_sync_error_payload(reason),
                 "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through arroba.edit_artifact.",
             });
-            add_workspace_live_sync_external_change_notice_payload(&mut payload, external_change_notice);
+            add_workspace_live_sync_external_change_notice_payload(
+                &mut payload,
+                external_change_notice,
+            );
             crate::transport::runtime_tools::RuntimeToolResult { ok: false, payload }
         }
     }
@@ -86,7 +95,9 @@ pub(in crate::runtime::state) fn workspace_live_sync_external_change_notice_for_
     }
 }
 
-pub(in crate::runtime::state) fn workspace_live_sync_result_applied(result: &crate::io::EditResult) -> bool {
+pub(in crate::runtime::state) fn workspace_live_sync_result_applied(
+    result: &crate::io::EditResult,
+) -> bool {
     matches!(
         result,
         crate::io::EditResult::Applied { .. } | crate::io::EditResult::AppliedWithWarning { .. }

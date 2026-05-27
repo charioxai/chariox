@@ -12,7 +12,9 @@ pub(crate) use external_change_monitor::{
     ArtifactExternalChangeHealthSnapshot, ArtifactExternalChangeMonitor,
     ArtifactExternalChangeNotice,
 };
-pub use filesystem::{WorkspaceLiveSyncFileIo, WorkspaceLiveSyncFileReadRequest, WorkspaceLiveSyncFileWriteRequest};
+pub use filesystem::{
+    WorkspaceLiveSyncFileIo, WorkspaceLiveSyncFileReadRequest, WorkspaceLiveSyncFileWriteRequest,
+};
 pub use text::TextDocumentDomain;
 pub use types::{
     AgentEditIntent, AgentEditOperation, ArtifactContent, ArtifactDomainKind, ArtifactEditError,

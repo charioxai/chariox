@@ -21,6 +21,7 @@ impl KernelRuntimeState {
             prompt_id: dispatch.prompt_id.clone(),
             turn_id: dispatch.prompt_id.clone(),
             worktree_path,
+            workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
             machine_id: None,
             prompt_summary: crate::prompt_transcript::render_prompt_transcript(
                 &dispatch.prompt,
@@ -73,19 +74,41 @@ impl KernelRuntimeState {
             prompt_id: before.prompt_id.clone(),
             turn_id: before.turn_id.clone(),
             worktree_path: std::path::PathBuf::from(before.worktree_path.clone()),
+            workspace_live_sync_tracked: before.workspace_live_sync_tracked,
             machine_id: before.machine_id.clone(),
             prompt_summary: before.prompt_summary.clone(),
         };
         let history = self.owned.operational_history_store.clone();
+        let tracked_workspace_live_sync_journal =
+            self.owned.tracked_workspace_live_sync_journal.clone();
         let observation = tokio::task::spawn_blocking(move || {
-            let after = crate::git_observer::capture_turn_snapshot(after_context);
-            after.map(|after| {
+            let after = crate::git_observer::capture_turn_snapshot(after_context)?;
+            let tracked_change = if before.workspace_live_sync_tracked {
+                crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+            } else {
+                None
+            };
+            Some(
                 crate::git_observer::observe_after_turn(before, after, candidates, &history)
-            })
+                    .map(|events| (events, tracked_change)),
+            )
         })
         .await;
         match observation {
-            Ok(Some(Ok(events))) => {
+            Ok(Some(Ok((events, tracked_change)))) => {
+                if let Some(change) = tracked_change {
+                    let changed_path_count = change.changed_paths.len();
+                    tracked_workspace_live_sync_journal.append(change);
+                    crate::logging::info_with_fields(
+                        "daemon.workspace_live_sync",
+                        "recorded tracked workspace live sync turn change",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "prompt_id": completed_prompt.id(),
+                            "changed_path_count": changed_path_count,
+                        }),
+                    );
+                }
                 if !events.is_empty() {
                     crate::logging::info_with_fields(
                         "daemon.git_observer",

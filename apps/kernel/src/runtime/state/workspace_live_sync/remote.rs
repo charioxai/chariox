@@ -20,12 +20,13 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                 message: format!("invalid tool arguments: {error}"),
             })?;
             let path = PathBuf::from(args.path);
-            let domain =
-                KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+            let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                args.domain.as_deref(),
+            )?;
             let content = workspace_live_sync_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_workspace_live_sync_state_from_content_with_domain(
-                &path, content, domain,
-            )])
+            Ok(vec![
+                remote_workspace_live_sync_state_from_content_with_domain(&path, content, domain),
+            ])
         }
         crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
             let args = serde_json::from_value::<
@@ -48,12 +49,13 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                 message: format!("invalid tool arguments: {error}"),
             })?;
             let path = PathBuf::from(args.path);
-            let domain =
-                KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+            let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                args.domain.as_deref(),
+            )?;
             let content = workspace_live_sync_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_workspace_live_sync_state_from_content_with_domain(
-                &path, content, domain,
-            )])
+            Ok(vec![
+                remote_workspace_live_sync_state_from_content_with_domain(&path, content, domain),
+            ])
         }
         crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
             let args = serde_json::from_value::<
@@ -75,12 +77,13 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                 message: format!("invalid tool arguments: {error}"),
             })?;
             let path = PathBuf::from(args.path);
-            let domain =
-                KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+            let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                args.domain.as_deref(),
+            )?;
             let content = workspace_live_sync_read_optional_content(workspace_root, &path, domain)?;
-            Ok(vec![remote_workspace_live_sync_state_from_content_with_domain(
-                &path, content, domain,
-            )])
+            Ok(vec![
+                remote_workspace_live_sync_state_from_content_with_domain(&path, content, domain),
+            ])
         }
         crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
             let args = serde_json::from_value::<
@@ -90,8 +93,9 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                 operation: "remote_workspace_live_sync_move_state",
                 message: format!("invalid tool arguments: {error}"),
             })?;
-            let domain =
-                KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+            let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                args.domain.as_deref(),
+            )?;
             if domain == crate::io::ArtifactDomainKind::TextDocument {
                 let operations = vec![ManagedPatchOperation::Move {
                     from_path: PathBuf::from(args.from_path),
@@ -113,7 +117,9 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                         from_content,
                         domain,
                     ),
-                    remote_workspace_live_sync_state_from_content_with_domain(&to_path, to_content, domain),
+                    remote_workspace_live_sync_state_from_content_with_domain(
+                        &to_path, to_content, domain,
+                    ),
                 ])
             }
         }

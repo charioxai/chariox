@@ -62,7 +62,10 @@ fn workspace_live_sync_permission_message(
             })?;
             Ok((
                 "Workspace live sync edit approval".to_string(),
-                format!("Allow editing `{}` through Arroba workspace live sync?", args.path),
+                format!(
+                    "Allow editing `{}` through Arroba workspace live sync?",
+                    args.path
+                ),
             ))
         }
         crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
@@ -96,7 +99,10 @@ fn workspace_live_sync_permission_message(
             })?;
             Ok((
                 "Workspace live sync delete approval".to_string(),
-                format!("Allow deleting `{}` through Arroba workspace live sync?", args.path),
+                format!(
+                    "Allow deleting `{}` through Arroba workspace live sync?",
+                    args.path
+                ),
             ))
         }
         crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
@@ -125,7 +131,10 @@ fn workspace_live_sync_permission_message(
             })?;
             Ok((
                 "Workspace live sync write approval".to_string(),
-                format!("Allow writing `{}` through Arroba workspace live sync?", args.path),
+                format!(
+                    "Allow writing `{}` through Arroba workspace live sync?",
+                    args.path
+                ),
             ))
         }
         other => Err(DaemonError::LocalTransport {

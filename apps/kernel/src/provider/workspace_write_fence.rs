@@ -18,14 +18,16 @@ pub(crate) fn apply_workspace_write_fence(
     mut launch: ProviderLaunchResult,
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if !request.requires_workspace_live_sync() || launch.endpoint_mode != AgentEndpointMode::Managed {
+    if !request.requires_workspace_live_sync() || launch.endpoint_mode != AgentEndpointMode::Managed
+    {
         return Ok(launch);
     }
 
     let Some(workspace_root) = launch.working_directory.clone() else {
         return Err(DaemonError::LocalTransport {
             operation: "workspace_write_fence",
-            message: "workspace live sync provider runs require a workspace working directory".to_string(),
+            message: "workspace live sync provider runs require a workspace working directory"
+                .to_string(),
         });
     };
     let Some(program) = launch.pty_program.clone() else {

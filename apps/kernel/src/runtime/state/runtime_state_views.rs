@@ -69,7 +69,10 @@ impl KernelRuntimeState {
             active_reservations: reservations.len(),
             active_reservation_artifacts,
             workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
-            external_changes: self.owned.workspace_live_sync_external_changes.health_snapshot(),
+            external_changes: self
+                .owned
+                .workspace_live_sync_external_changes
+                .health_snapshot(),
         }
     }
 }

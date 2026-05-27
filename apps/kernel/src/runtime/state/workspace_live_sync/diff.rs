@@ -106,10 +106,12 @@ fn workspace_live_sync_diff_ops<'a>(
 fn workspace_live_sync_diff_hunks(before: &[&str], after: &[&str]) -> Vec<String> {
     const CONTEXT: usize = 3;
     let ops = workspace_live_sync_diff_ops(before, after);
-    if !ops
-        .iter()
-        .any(|op| matches!(op, WorkspaceLiveSyncDiffOp::Remove(_) | WorkspaceLiveSyncDiffOp::Add(_)))
-    {
+    if !ops.iter().any(|op| {
+        matches!(
+            op,
+            WorkspaceLiveSyncDiffOp::Remove(_) | WorkspaceLiveSyncDiffOp::Add(_)
+        )
+    }) {
         return vec![format!("@@ -1,{} +1,{} @@", before.len(), after.len())];
     }
 
@@ -133,7 +135,11 @@ fn workspace_live_sync_diff_hunks(before: &[&str], after: &[&str]) -> Vec<String
         .iter()
         .enumerate()
         .filter_map(|(idx, op)| {
-            matches!(op, WorkspaceLiveSyncDiffOp::Remove(_) | WorkspaceLiveSyncDiffOp::Add(_)).then_some(idx)
+            matches!(
+                op,
+                WorkspaceLiveSyncDiffOp::Remove(_) | WorkspaceLiveSyncDiffOp::Add(_)
+            )
+            .then_some(idx)
         })
         .collect::<Vec<_>>();
     let mut groups = Vec::new();

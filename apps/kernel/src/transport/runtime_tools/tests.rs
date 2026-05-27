@@ -189,11 +189,12 @@ mod workspace_live_sync_tests {
 
     #[test]
     fn managed_write_args_accept_text_content_shape() {
-        let args = serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
-            "path": "src/lib.rs",
-            "content_text": "hello"
-        }))
-        .expect("managed write args should parse");
+        let args =
+            serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
+                "path": "src/lib.rs",
+                "content_text": "hello"
+            }))
+            .expect("managed write args should parse");
 
         assert_eq!(args.path, "src/lib.rs");
         assert_eq!(args.content_text.as_deref(), Some("hello"));
@@ -202,12 +203,13 @@ mod workspace_live_sync_tests {
 
     #[test]
     fn managed_write_args_accept_opaque_content_shape() {
-        let args = serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
-            "path": "assets/blob.bin",
-            "content_base64": "AAEC",
-            "domain": "opaque"
-        }))
-        .expect("managed opaque write args should parse");
+        let args =
+            serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
+                "path": "assets/blob.bin",
+                "content_base64": "AAEC",
+                "domain": "opaque"
+            }))
+            .expect("managed opaque write args should parse");
 
         assert_eq!(args.path, "assets/blob.bin");
         assert_eq!(args.content_text, None);
@@ -228,10 +230,11 @@ mod workspace_live_sync_tests {
 
     #[test]
     fn managed_delete_args_accept_path_shape() {
-        let args = serde_json::from_value::<WorkspaceLiveSyncDeleteArtifactArgs>(serde_json::json!({
-            "path": "src/lib.rs"
-        }))
-        .expect("managed delete args should parse");
+        let args =
+            serde_json::from_value::<WorkspaceLiveSyncDeleteArtifactArgs>(serde_json::json!({
+                "path": "src/lib.rs"
+            }))
+            .expect("managed delete args should parse");
 
         assert_eq!(args.path, "src/lib.rs");
     }

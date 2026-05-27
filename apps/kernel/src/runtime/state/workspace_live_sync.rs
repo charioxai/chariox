@@ -5,7 +5,9 @@
 
 use super::*;
 
-pub(super) fn workspace_live_sync_read_payload(read: crate::io::ArtifactReadResult) -> serde_json::Value {
+pub(super) fn workspace_live_sync_read_payload(
+    read: crate::io::ArtifactReadResult,
+) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "artifact_id": read.artifact_id.as_str(),
         "path": read.path.to_string_lossy(),
@@ -154,8 +156,14 @@ pub(super) fn add_workspace_live_sync_whole_file_change_payload(
 
 mod diff;
 pub(super) use diff::workspace_live_sync_text_for_diff;
-use diff::{artifact_content_byte_count, workspace_live_sync_diff_workspace_path, workspace_live_sync_unified_diff};
+use diff::{
+    artifact_content_byte_count, workspace_live_sync_diff_workspace_path,
+    workspace_live_sync_unified_diff,
+};
 
 mod payload;
 pub(super) use payload::workspace_live_sync_daemon_error;
-use payload::{workspace_live_sync_domain_name, workspace_live_sync_error_payload, workspace_live_sync_warning_payload};
+use payload::{
+    workspace_live_sync_domain_name, workspace_live_sync_error_payload,
+    workspace_live_sync_warning_payload,
+};

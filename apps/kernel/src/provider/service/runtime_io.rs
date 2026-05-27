@@ -9,8 +9,8 @@ use crate::session::PromptAttachment;
 use super::super::{
     claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
-    workspace_live_sync_policy,
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
+    workspace_live_sync_policy,
 };
 use super::ProviderProcessService;
 

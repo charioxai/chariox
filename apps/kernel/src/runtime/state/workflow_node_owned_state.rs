@@ -18,8 +18,7 @@ impl KernelRuntimeOwnedState {
             .get_session_agents(&request.session_id)
             .into_iter()
             .find(|agent| agent.id() == request.agent_id)
-        else
-        {
+        else {
             return Err(DaemonError::AgentNotFound {
                 agent_id: request.agent_id,
             });

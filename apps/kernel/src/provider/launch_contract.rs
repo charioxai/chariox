@@ -309,7 +309,10 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_workspace_live_sync_mode(mut self, mode: crate::config::WorkspaceLiveSyncMode) -> Self {
+    pub fn with_workspace_live_sync_mode(
+        mut self,
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) -> Self {
         self.write_access_mode = ProviderWriteAccessMode::from_config_mode(mode);
         self
     }

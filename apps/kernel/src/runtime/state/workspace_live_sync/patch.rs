@@ -63,7 +63,9 @@ pub(in crate::runtime::state) fn apply_managed_patch_operations(
             external_change_monitor.record_external_change(&workspace_identity, path);
             let mut notices = external_change_notices.clone();
             if !notices.iter().any(|notice| notice.path == *path) {
-                notices.push(workspace_live_sync_external_change_notice_for_path(path.clone()));
+                notices.push(workspace_live_sync_external_change_notice_for_path(
+                    path.clone(),
+                ));
             }
             let mut output = managed_patch_rejected(
                 path.clone(),

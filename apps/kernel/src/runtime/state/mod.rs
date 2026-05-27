@@ -79,6 +79,7 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
+    tracked_workspace_live_sync_journal: crate::git_observer::TrackedWorkspaceLiveSyncJournal,
 }
 
 mod agent_config_owned_state;
@@ -215,7 +216,8 @@ impl KernelRuntimeState {
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
                     crate::io::ArtifactEditCoordinator::new(),
                 )),
-                workspace_live_sync_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
+                workspace_live_sync_external_changes:
+                    crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
@@ -225,6 +227,8 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
+                tracked_workspace_live_sync_journal:
+                    crate::git_observer::TrackedWorkspaceLiveSyncJournal::default(),
             },
         }
     }

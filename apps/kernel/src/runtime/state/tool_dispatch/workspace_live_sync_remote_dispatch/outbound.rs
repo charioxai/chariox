@@ -14,10 +14,11 @@ impl KernelRuntimeState {
             .await?;
         let remote_context = self
             .with_app_side_effect(|app| {
-                crate::app::RemoteLeaseRuntime::new(app).leased_workspace_live_sync_context_for_provider_run(
-                    provider_run.id(),
-                    workspace_context.identity.clone(),
-                )
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workspace_live_sync_context_for_provider_run(
+                        provider_run.id(),
+                        workspace_context.identity.clone(),
+                    )
             })
             .await;
         let Some(remote_context) = remote_context else {
@@ -60,7 +61,9 @@ impl KernelRuntimeState {
             other => {
                 return Err(DaemonError::LocalTransport {
                     operation: "forward leased workspace live sync runtime tool",
-                    message: format!("unexpected forwarded workspace live sync response: {other:?}"),
+                    message: format!(
+                        "unexpected forwarded workspace live sync response: {other:?}"
+                    ),
                 });
             }
         };

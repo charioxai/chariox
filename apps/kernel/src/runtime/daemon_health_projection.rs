@@ -55,7 +55,10 @@ pub(crate) async fn build_daemon_health_projection(
         input
             .session_projection
             .workspace_coordination_snapshot(input.workspace_coordinator.active_claims()),
-        input.runtime_state.workspace_live_sync_health_snapshot().await,
+        input
+            .runtime_state
+            .workspace_live_sync_health_snapshot()
+            .await,
         input
             .session_projection
             .invariant_snapshot(input.agent_runtime_projection),

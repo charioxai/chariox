@@ -22,7 +22,10 @@ pub(super) fn append_runtime_mcp_overrides(
         json!(CODEX_MCP_TOKEN_ENV),
     );
     overrides.insert("mcp_servers.arroba.required".to_string(), json!(true));
-    overrides.insert("mcp_servers.arroba.startup_timeout_sec".to_string(), json!(90));
+    overrides.insert(
+        "mcp_servers.arroba.startup_timeout_sec".to_string(),
+        json!(90),
+    );
     overrides.insert("mcp_servers.arroba.tool_timeout_sec".to_string(), json!(15));
 }
 

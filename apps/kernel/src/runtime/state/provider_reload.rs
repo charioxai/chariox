@@ -168,7 +168,10 @@ impl KernelRuntimeState {
             .with_variant(run.variant().map(str::to_string))
             .with_resume_state(run.resume_state().clone());
             launch_request = launch_request.with_workspace_live_sync_mode(
-                crate::provider::provider_workspace_live_sync_mode_by_default(run.provider(), &config),
+                crate::provider::provider_workspace_live_sync_mode_by_default(
+                    run.provider(),
+                    &config,
+                ),
             );
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;

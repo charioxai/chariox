@@ -113,7 +113,9 @@ fn remote_workspace_live_sync_identity_match_uses_repo_url_and_branch_not_root()
         ..home.clone()
     };
 
-    assert!(workspace_live_sync_workspace_identities_match(&home, &worker));
+    assert!(workspace_live_sync_workspace_identities_match(
+        &home, &worker
+    ));
 }
 
 #[test]
@@ -132,7 +134,9 @@ fn remote_workspace_live_sync_identity_mismatch_rejects_other_branch() {
         ..home.clone()
     };
 
-    assert!(!workspace_live_sync_workspace_identities_match(&home, &worker));
+    assert!(!workspace_live_sync_workspace_identities_match(
+        &home, &worker
+    ));
 }
 
 #[test]
@@ -144,8 +148,14 @@ fn remote_workspace_live_sync_final_apply_rejects_worker_external_change() {
     std::fs::create_dir_all(&root).expect("create root");
     let path = PathBuf::from("src.txt");
     std::fs::write(root.join(&path), "external\n").expect("write fixture");
-    let initial = vec![remote_workspace_live_sync_state(&path, Some("base\n".to_string()))];
-    let final_states = vec![remote_workspace_live_sync_state(&path, Some("agent\n".to_string()))];
+    let initial = vec![remote_workspace_live_sync_state(
+        &path,
+        Some("base\n".to_string()),
+    )];
+    let final_states = vec![remote_workspace_live_sync_state(
+        &path,
+        Some("agent\n".to_string()),
+    )];
 
     let result = apply_remote_workspace_live_sync_final_states(&root, &initial, &final_states)
         .expect("apply should return structured rejection");
@@ -204,7 +214,10 @@ fn workspace_live_sync_write_content_decodes_opaque_base64() {
 #[test]
 fn workspace_live_sync_snapshot_id_treats_create_sentinel_as_absent() {
     assert_eq!(workspace_live_sync_snapshot_id_from_arg(None), None);
-    assert_eq!(workspace_live_sync_snapshot_id_from_arg(Some(String::new())), None);
+    assert_eq!(
+        workspace_live_sync_snapshot_id_from_arg(Some(String::new())),
+        None
+    );
     assert_eq!(
         workspace_live_sync_snapshot_id_from_arg(Some("__arroba_create__".to_string())),
         None
@@ -221,7 +234,10 @@ fn workspace_live_sync_snapshot_id_treats_create_sentinel_as_absent() {
         workspace_live_sync_snapshot_id_from_arg(Some("absent".to_string())),
         None
     );
-    assert_eq!(workspace_live_sync_snapshot_id_from_arg(Some("*".to_string())), None);
+    assert_eq!(
+        workspace_live_sync_snapshot_id_from_arg(Some("*".to_string())),
+        None
+    );
     assert_eq!(
         workspace_live_sync_snapshot_id_from_arg(Some("snap:test".to_string())),
         Some(crate::io::ArtifactSnapshotId::new("snap:test"))
@@ -450,8 +466,9 @@ fn remote_managed_opaque_move_final_apply_preserves_deleted_source_domain() {
         Some("opaque")
     );
 
-    let final_apply = apply_remote_workspace_live_sync_final_states(&root, &initial_states, &final_states)
-        .expect("opaque final apply should not decode deleted source as text");
+    let final_apply =
+        apply_remote_workspace_live_sync_final_states(&root, &initial_states, &final_states)
+            .expect("opaque final apply should not decode deleted source as text");
 
     assert!(final_apply.is_none());
     assert!(!root.join("from.bin").exists());

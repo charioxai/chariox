@@ -17,8 +17,11 @@ impl KernelRuntimeState {
             .cloned()
             .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
         let identity = workspace_identity_for_root_off_thread(workspace_root.clone()).await?;
-        let identity =
-            workspace_live_sync_identity_for_session_workspace_link(identity, &session, &workspace_root);
+        let identity = workspace_live_sync_identity_for_session_workspace_link(
+            identity,
+            &session,
+            &workspace_root,
+        );
         let snapshot = self.owned.workspace_identity_monitor.observe_provider_run(
             provider_run.id(),
             workspace_root.clone(),
@@ -50,7 +53,8 @@ impl KernelRuntimeState {
         if !workspace_live_sync_tool_requires_popup(tool_name) {
             return Ok(None);
         }
-        let interaction = workspace_live_sync_permission_interaction(agent_id, tool_name, arguments)?;
+        let interaction =
+            workspace_live_sync_permission_interaction(agent_id, tool_name, arguments)?;
         let interaction_id = interaction.id().to_string();
         let resolution = self
             .create_runtime_interaction(session_id, interaction)

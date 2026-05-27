@@ -85,15 +85,20 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_content(
     path: &PathBuf,
     domain: crate::io::ArtifactDomainKind,
 ) -> Result<Option<crate::io::ArtifactContent>, DaemonError> {
-    let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
-        DaemonError::LocalTransport {
-            operation: "runtime_tool_workspace_live_sync_state",
-            message:
-                "managed paths must be workspace-relative and cannot escape the workspace root"
-                    .to_string(),
-        }
-    })?;
-    workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_workspace_live_sync_state")?;
+    let full_path =
+        workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_workspace_live_sync_state",
+                message:
+                    "managed paths must be workspace-relative and cannot escape the workspace root"
+                        .to_string(),
+            }
+        })?;
+    workspace_live_sync_reject_ignored_path(
+        workspace_root,
+        path,
+        "runtime_tool_workspace_live_sync_state",
+    )?;
     match std::fs::read(&full_path) {
         Ok(bytes) => match domain {
             crate::io::ArtifactDomainKind::TextDocument
@@ -170,15 +175,20 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
     states: &BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
 ) -> Result<(), DaemonError> {
     for (path, content) in states {
-        workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_workspace_live_sync_state")?;
-        let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
-            DaemonError::LocalTransport {
+        workspace_live_sync_reject_ignored_path(
+            workspace_root,
+            path,
+            "runtime_tool_workspace_live_sync_state",
+        )?;
+        let full_path =
+            workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
+                DaemonError::LocalTransport {
                 operation: "runtime_tool_workspace_live_sync_state",
                 message:
                     "managed paths must be workspace-relative and cannot escape the workspace root"
                         .to_string(),
             }
-        })?;
+            })?;
         match content {
             Some(crate::io::ArtifactContent::Text(text)) => {
                 if let Some(parent) = full_path.parent() {
@@ -251,7 +261,9 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
     Ok(())
 }
 
-fn workspace_live_sync_ignore_patterns(workspace_root: &PathBuf) -> Result<Vec<String>, DaemonError> {
+fn workspace_live_sync_ignore_patterns(
+    workspace_root: &PathBuf,
+) -> Result<Vec<String>, DaemonError> {
     let ignore_path = workspace_root.join(".arrobaignore");
     if !ignore_path.exists() {
         let seed = match std::fs::read_to_string(workspace_root.join(".gitignore")) {
@@ -269,10 +281,11 @@ fn workspace_live_sync_ignore_patterns(workspace_root: &PathBuf) -> Result<Vec<S
             message: format!("failed to initialize `.arrobaignore`: {error}"),
         })?;
     }
-    let contents = std::fs::read_to_string(&ignore_path).map_err(|error| DaemonError::LocalTransport {
-        operation: "workspace_live_sync_ignore",
-        message: format!("failed to read `.arrobaignore`: {error}"),
-    })?;
+    let contents =
+        std::fs::read_to_string(&ignore_path).map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace_live_sync_ignore",
+            message: format!("failed to read `.arrobaignore`: {error}"),
+        })?;
     Ok(contents
         .lines()
         .filter_map(workspace_live_sync_normalize_ignore_pattern)
@@ -290,7 +303,8 @@ fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String
             _ => {
                 return Err(DaemonError::LocalTransport {
                     operation: "workspace_live_sync_ignore",
-                    message: "workspace live sync paths must be relative and cannot contain `..`".to_string(),
+                    message: "workspace live sync paths must be relative and cannot contain `..`"
+                        .to_string(),
                 });
             }
         }
@@ -302,7 +316,11 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     if path == ".arrobaignore" {
         return true;
     }
-    if path == ".git" || path.starts_with(".git/") || path == ".arroba" || path.starts_with(".arroba/") {
+    if path == ".git"
+        || path.starts_with(".git/")
+        || path == ".arroba"
+        || path.starts_with(".arroba/")
+    {
         return true;
     }
     if path == ".env" || path.starts_with(".env.") {
@@ -329,14 +347,13 @@ fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {
         return None;
     }
     let directory = trimmed.ends_with('/');
-    let mut pattern =
-        trimmed
-            .trim_start_matches('/')
-            .trim_end_matches('/')
-            .split('/')
-            .filter(|part| !part.is_empty() && *part != ".")
-            .collect::<Vec<_>>()
-            .join("/");
+    let mut pattern = trimmed
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
     if pattern.is_empty() {
         return None;
     }
@@ -359,7 +376,8 @@ fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool
                 .is_some_and(|suffix| suffix.starts_with('/'))
             || (directory_pattern && path == pattern);
     }
-    path.split('/').any(|part| workspace_live_sync_wildcard_match(pattern, part))
+    path.split('/')
+        .any(|part| workspace_live_sync_wildcard_match(pattern, part))
 }
 
 fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {

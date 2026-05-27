@@ -19,7 +19,8 @@ pub(super) fn codex_permission_policy(
     permission_level: AgentPermissionLevel,
 ) -> CodexPermissionPolicy {
     match write_access_mode {
-        ProviderWriteAccessMode::Unrestricted | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => {
+        ProviderWriteAccessMode::Unrestricted
+        | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => {
             let yolo_build = execution_mode == AgentExecutionMode::Build
                 && permission_level == AgentPermissionLevel::Yolo;
             CodexPermissionPolicy {

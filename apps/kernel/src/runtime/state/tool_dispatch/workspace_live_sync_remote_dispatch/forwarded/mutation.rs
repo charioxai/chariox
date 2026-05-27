@@ -10,13 +10,15 @@ pub(super) fn dispatch_forwarded_apply_patch(
     artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
 ) -> ForwardedWorkspaceLiveSyncResult {
-    let args =
-        serde_json::from_value::<crate::transport::runtime_tools::WorkspaceLiveSyncApplyPatchArgs>(arguments)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "forwarded_workspace_live_sync_apply_patch",
-                message: format!("invalid tool arguments: {error}"),
-            })?;
-    let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+    let args = serde_json::from_value::<
+        crate::transport::runtime_tools::WorkspaceLiveSyncApplyPatchArgs,
+    >(arguments)
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "forwarded_workspace_live_sync_apply_patch",
+        message: format!("invalid tool arguments: {error}"),
+    })?;
+    let domain =
+        KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     if domain != crate::io::ArtifactDomainKind::TextDocument {
         return Err(DaemonError::LocalTransport {
             operation: "forwarded_workspace_live_sync_apply_patch",
@@ -44,15 +46,15 @@ pub(super) fn dispatch_forwarded_delete(
     artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
 ) -> ForwardedWorkspaceLiveSyncResult {
-    let args =
-        serde_json::from_value::<crate::transport::runtime_tools::WorkspaceLiveSyncDeleteArtifactArgs>(
-            arguments,
-        )
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "forwarded_workspace_live_sync_delete_artifact",
-            message: format!("invalid tool arguments: {error}"),
-        })?;
-    let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+    let args = serde_json::from_value::<
+        crate::transport::runtime_tools::WorkspaceLiveSyncDeleteArtifactArgs,
+    >(arguments)
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "forwarded_workspace_live_sync_delete_artifact",
+        message: format!("invalid tool arguments: {error}"),
+    })?;
+    let domain =
+        KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     if domain == crate::io::ArtifactDomainKind::TextDocument {
         apply_remote_managed_patch_operations(
             coordinator,
@@ -88,14 +90,15 @@ pub(super) fn dispatch_forwarded_move(
     artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
 ) -> ForwardedWorkspaceLiveSyncResult {
-    let args = serde_json::from_value::<crate::transport::runtime_tools::WorkspaceLiveSyncMoveArtifactArgs>(
-        arguments,
-    )
+    let args = serde_json::from_value::<
+        crate::transport::runtime_tools::WorkspaceLiveSyncMoveArtifactArgs,
+    >(arguments)
     .map_err(|error| DaemonError::LocalTransport {
         operation: "forwarded_workspace_live_sync_move_artifact",
         message: format!("invalid tool arguments: {error}"),
     })?;
-    let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+    let domain =
+        KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     let (old_text, new_text) = args.normalized_text_transform_fields();
     if domain == crate::io::ArtifactDomainKind::TextDocument {
         apply_remote_managed_patch_operations(

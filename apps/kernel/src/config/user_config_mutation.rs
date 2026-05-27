@@ -1,7 +1,7 @@
 use super::{
     normalized_optional, validate_config_key_path, validate_non_empty, ArrobaUserConfig,
-    ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, WorkspaceLiveSyncConfig,
-    WorkspaceLiveSyncMode, SliceImageBuildPolicy, StateBackend,
+    ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend,
+    SliceImageBuildPolicy, StateBackend, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode,
 };
 use crate::error::DaemonError;
 
@@ -365,7 +365,9 @@ impl ArrobaUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
-            "providers.workspace_live_sync" => self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::default(),
+            "providers.workspace_live_sync" => {
+                self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::default()
+            }
             "version" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "version",

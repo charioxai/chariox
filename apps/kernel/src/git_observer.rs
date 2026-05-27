@@ -23,6 +23,7 @@ pub(crate) struct GitTurnContext {
     pub prompt_id: String,
     pub turn_id: String,
     pub worktree_path: PathBuf,
+    pub workspace_live_sync_tracked: bool,
     pub machine_id: Option<String>,
     pub prompt_summary: String,
 }
@@ -47,6 +48,7 @@ pub(crate) struct GitTurnSnapshot {
     pub ahead_count: Option<u32>,
     pub status_fingerprint: String,
     pub is_dirty: bool,
+    pub workspace_live_sync_tracked: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +113,33 @@ impl GitTurnSnapshotStore {
             prompt_ids: prompt_ids.into_iter().collect(),
             turn_ids: turn_ids.into_iter().collect(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TrackedWorkspaceLiveSyncTurnChange {
+    pub session_id: String,
+    pub agent_id: String,
+    pub provider_run_id: String,
+    pub prompt_id: String,
+    pub repo_root: String,
+    pub worktree_path: String,
+    pub branch: Option<String>,
+    pub changed_paths: Vec<String>,
+    pub status_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TrackedWorkspaceLiveSyncJournal {
+    inner: Arc<Mutex<Vec<TrackedWorkspaceLiveSyncTurnChange>>>,
+}
+
+impl TrackedWorkspaceLiveSyncJournal {
+    pub(crate) fn append(&self, change: TrackedWorkspaceLiveSyncTurnChange) {
+        self.inner
+            .lock()
+            .expect("tracked workspace live sync journal mutex poisoned")
+            .push(change);
     }
 }
 
@@ -186,6 +215,7 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         .and_then(|value| value.trim().parse::<u32>().ok()),
         is_dirty: !status_fingerprint.is_empty(),
         status_fingerprint,
+        workspace_live_sync_tracked: context.workspace_live_sync_tracked,
     })
 }
 
@@ -253,6 +283,81 @@ pub(crate) fn observations_after_turn(
         ));
     }
     events
+}
+
+pub(crate) fn tracked_workspace_live_sync_change_after_turn(
+    before: &GitTurnSnapshot,
+    after: &GitTurnSnapshot,
+) -> Option<TrackedWorkspaceLiveSyncTurnChange> {
+    if before.is_dirty || before.status_fingerprint == after.status_fingerprint {
+        return None;
+    }
+    if before.repo_root != after.repo_root || before.worktree_path != after.worktree_path {
+        return None;
+    }
+    let changed_paths = tracked_workspace_live_sync_changed_paths(&after.status_fingerprint);
+    if changed_paths.is_empty() {
+        return None;
+    }
+    Some(TrackedWorkspaceLiveSyncTurnChange {
+        session_id: before.session_id.clone(),
+        agent_id: before.agent_id.clone(),
+        provider_run_id: before.provider_run_id.clone(),
+        prompt_id: before.prompt_id.clone(),
+        repo_root: before.repo_root.clone(),
+        worktree_path: before.worktree_path.clone(),
+        branch: before.branch.clone().or_else(|| after.branch.clone()),
+        changed_paths,
+        status_fingerprint: after.status_fingerprint.clone(),
+    })
+}
+
+fn tracked_workspace_live_sync_changed_paths(status_fingerprint: &str) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for line in status_fingerprint.lines() {
+        let line = line.trim_end();
+        if line.len() < 4 {
+            continue;
+        }
+        let path = line[3..]
+            .split(" -> ")
+            .last()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        if path.is_empty() || tracked_workspace_live_sync_force_excluded_path(&path) {
+            continue;
+        }
+        paths.insert(path);
+    }
+    paths.into_iter().collect()
+}
+
+fn tracked_workspace_live_sync_force_excluded_path(path: &str) -> bool {
+    if path == ".arrobaignore"
+        || path == ".git"
+        || path.starts_with(".git/")
+        || path == ".arroba"
+        || path.starts_with(".arroba/")
+        || path == ".env"
+        || path.starts_with(".env.")
+    {
+        return true;
+    }
+    let forced_dirs = [
+        "node_modules",
+        "target",
+        ".next",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+    ];
+    path.split('/')
+        .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))
 }
 
 pub(crate) fn append_observations(
@@ -529,7 +634,10 @@ mod tests {
 
     use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
-    use super::{capture_turn_snapshot, observe_after_turn, GitTurnContext, GitTurnSnapshotStore};
+    use super::{
+        capture_turn_snapshot, observe_after_turn, tracked_workspace_live_sync_change_after_turn,
+        GitTurnContext, GitTurnSnapshot, GitTurnSnapshotStore,
+    };
 
     #[test]
     fn observes_commit_and_indexes_searchable_metadata() {
@@ -610,8 +718,67 @@ mod tests {
             prompt_id: prompt_id.to_string(),
             turn_id: prompt_id.to_string(),
             worktree_path: root.to_path_buf(),
+            workspace_live_sync_tracked: false,
             machine_id: None,
             prompt_summary: "make a searchable feature".to_string(),
+        }
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_records_clean_turn_paths() {
+        let before = tracked_snapshot(false, "");
+        let after = tracked_snapshot(true, " M src/lib.rs\n?? new.txt");
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("clean tracked turn should journal changed paths");
+
+        assert_eq!(change.changed_paths, vec!["new.txt", "src/lib.rs"]);
+        assert_eq!(change.status_fingerprint, " M src/lib.rs\n?? new.txt");
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_skips_dirty_start() {
+        let before = tracked_snapshot(true, " M src/lib.rs");
+        let after = tracked_snapshot(true, " M src/lib.rs\n M src/other.rs");
+
+        assert!(tracked_workspace_live_sync_change_after_turn(&before, &after).is_none());
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_filters_forced_exclusions() {
+        let before = tracked_snapshot(false, "");
+        let after = tracked_snapshot(
+            true,
+            " M .env\n M .arroba/state.json\n M node_modules/pkg/index.js\n M src/lib.rs",
+        );
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("allowed tracked path should remain");
+
+        assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
+    }
+
+    fn tracked_snapshot(is_dirty: bool, status_fingerprint: &str) -> GitTurnSnapshot {
+        GitTurnSnapshot {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider: "dev-stub".to_string(),
+            model: "dev-git".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            provider_session_id: Some("provider-session-1".to_string()),
+            prompt_id: "prompt-1".to_string(),
+            turn_id: "prompt-1".to_string(),
+            machine_id: None,
+            prompt_summary: "make a searchable feature".to_string(),
+            repo_root: "/tmp/repo".to_string(),
+            worktree_path: "/tmp/repo".to_string(),
+            branch: Some("main".to_string()),
+            head_sha: Some("abc123".to_string()),
+            upstream_ref: None,
+            ahead_count: None,
+            status_fingerprint: status_fingerprint.to_string(),
+            is_dirty,
+            workspace_live_sync_tracked: true,
         }
     }
 

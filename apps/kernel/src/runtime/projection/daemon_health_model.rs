@@ -181,9 +181,10 @@ impl DaemonHealthProjection {
 mod tests {
     use super::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
-        WorkspaceLiveSyncHealthSnapshot, ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
+        ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
-        WorkspaceCoordinationHealthSnapshot, WorktreeClaimSnapshot,
+        WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
+        WorktreeClaimSnapshot,
     };
     use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::runtime::projection::TransportHealthSnapshot;
@@ -323,7 +324,10 @@ mod tests {
             1
         );
         assert_eq!(projection.workspace_live_sync.active_reservations, 2);
-        assert_eq!(projection.workspace_live_sync.active_reservation_artifacts, 1);
+        assert_eq!(
+            projection.workspace_live_sync.active_reservation_artifacts,
+            1
+        );
         assert_eq!(
             projection
                 .workspace_live_sync
@@ -331,7 +335,13 @@ mod tests {
                 .invalid_provider_runs,
             1
         );
-        assert_eq!(projection.workspace_live_sync.external_changes.tracked_artifacts, 4);
+        assert_eq!(
+            projection
+                .workspace_live_sync
+                .external_changes
+                .tracked_artifacts,
+            4
+        );
         assert_eq!(
             projection
                 .workspace_live_sync
@@ -339,7 +349,12 @@ mod tests {
                 .external_change_events,
             5
         );
-        assert!(projection.workspace_live_sync.external_changes.live_watcher_started);
+        assert!(
+            projection
+                .workspace_live_sync
+                .external_changes
+                .live_watcher_started
+        );
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
     }

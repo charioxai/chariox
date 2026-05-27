@@ -16,10 +16,11 @@ impl KernelRuntimeState {
             .await?;
         let remote_context = self
             .with_app_side_effect(|app| {
-                crate::app::RemoteLeaseRuntime::new(app).leased_workspace_live_sync_context_for_provider_run(
-                    provider_run.id(),
-                    workspace_context.identity.clone(),
-                )
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workspace_live_sync_context_for_provider_run(
+                        provider_run.id(),
+                        workspace_context.identity.clone(),
+                    )
             })
             .await;
         let Some(remote_context) = remote_context else {

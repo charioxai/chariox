@@ -10,14 +10,15 @@ pub(super) fn dispatch_forwarded_edit(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
 ) -> ForwardedWorkspaceLiveSyncResult {
-    let args = serde_json::from_value::<crate::transport::runtime_tools::WorkspaceLiveSyncEditArtifactArgs>(
-        arguments,
-    )
+    let args = serde_json::from_value::<
+        crate::transport::runtime_tools::WorkspaceLiveSyncEditArtifactArgs,
+    >(arguments)
     .map_err(|error| DaemonError::LocalTransport {
         operation: "forwarded_workspace_live_sync_edit_artifact",
         message: format!("invalid tool arguments: {error}"),
     })?;
-    let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+    let domain =
+        KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     if domain != crate::io::ArtifactDomainKind::TextDocument {
         return Err(DaemonError::LocalTransport {
             operation: "forwarded_workspace_live_sync_edit_artifact",
@@ -31,8 +32,11 @@ pub(super) fn dispatch_forwarded_edit(
         &path,
         "forwarded_workspace_live_sync_edit_artifact",
     )?;
-    let state =
-        forwarded_artifact_state(artifact_states, &path, "forwarded_workspace_live_sync_edit_artifact")?;
+    let state = forwarded_artifact_state(
+        artifact_states,
+        &path,
+        "forwarded_workspace_live_sync_edit_artifact",
+    )?;
     let before = remote_workspace_live_sync_text_snapshot_from_state(state);
     coordinator.read_artifact(crate::io::ArtifactReadRequest {
         workspace_identity: context.worker_workspace_identity.clone(),
@@ -71,7 +75,12 @@ pub(super) fn dispatch_forwarded_edit(
         .flatten();
     let final_states = after
         .as_ref()
-        .map(|after| vec![remote_workspace_live_sync_state(&path, Some(after.text.clone()))])
+        .map(|after| {
+            vec![remote_workspace_live_sync_state(
+                &path,
+                Some(after.text.clone()),
+            )]
+        })
         .unwrap_or_default();
     let mut output = workspace_live_sync_edit_result(
         result,
@@ -94,14 +103,15 @@ pub(super) fn dispatch_forwarded_write(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
 ) -> ForwardedWorkspaceLiveSyncResult {
-    let args = serde_json::from_value::<crate::transport::runtime_tools::WorkspaceLiveSyncWriteArtifactArgs>(
-        arguments,
-    )
+    let args = serde_json::from_value::<
+        crate::transport::runtime_tools::WorkspaceLiveSyncWriteArtifactArgs,
+    >(arguments)
     .map_err(|error| DaemonError::LocalTransport {
         operation: "forwarded_workspace_live_sync_write_artifact",
         message: format!("invalid tool arguments: {error}"),
     })?;
-    let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+    let domain =
+        KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     let path = PathBuf::from(args.path.clone());
     workspace_live_sync_reject_ignored_path(
         &workspace_context.root,
@@ -137,7 +147,10 @@ pub(super) fn dispatch_forwarded_write(
         workspace_identity: context.worker_workspace_identity.clone(),
         intent: crate::io::AgentEditIntent {
             path: path.clone(),
-            snapshot_id: workspace_live_sync_write_snapshot_id_from_arg(args.snapshot_id.clone(), &path),
+            snapshot_id: workspace_live_sync_write_snapshot_id_from_arg(
+                args.snapshot_id.clone(),
+                &path,
+            ),
             operation: crate::io::AgentEditOperation::WriteArtifact {
                 content: workspace_live_sync_write_content_from_args(
                     "forwarded_workspace_live_sync_write_artifact",

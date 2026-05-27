@@ -487,8 +487,8 @@ mod tests {
         )
         .with_workspace_live_sync_managed();
 
-        let launch =
-            plan_opencode_launch(Some(&request)).expect("workspace live sync launch should resolve");
+        let launch = plan_opencode_launch(Some(&request))
+            .expect("workspace live sync launch should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");

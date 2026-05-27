@@ -99,12 +99,14 @@ impl CodexClient {
             .cloned()
             .unwrap_or_else(|| json!({}));
         match self.write_access_mode {
-            ProviderWriteAccessMode::Unrestricted | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => json!({
+            ProviderWriteAccessMode::Unrestricted
+            | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => json!({
                 "permissions": requested_permissions,
                 "scope": "session",
             }),
             ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
-                let granted_permissions = workspace_live_sync_codex_permission_grant(&requested_permissions);
+                let granted_permissions =
+                    workspace_live_sync_codex_permission_grant(&requested_permissions);
                 json!({
                     "permissions": granted_permissions,
                     "scope": "turn",

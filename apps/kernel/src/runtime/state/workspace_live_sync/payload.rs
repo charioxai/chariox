@@ -20,7 +20,9 @@ pub(super) fn workspace_live_sync_warning_payload(
     }
 }
 
-pub(super) fn workspace_live_sync_error_payload(error: crate::io::ArtifactEditError) -> serde_json::Value {
+pub(super) fn workspace_live_sync_error_payload(
+    error: crate::io::ArtifactEditError,
+) -> serde_json::Value {
     match error {
         crate::io::ArtifactEditError::ArtifactNotTracked { path } => serde_json::json!({
             "kind": "artifact_not_tracked",
@@ -97,7 +99,9 @@ pub(super) fn workspace_live_sync_range_payload(range: crate::io::TextRange) -> 
     })
 }
 
-pub(super) fn workspace_live_sync_domain_name(domain: crate::io::ArtifactDomainKind) -> &'static str {
+pub(super) fn workspace_live_sync_domain_name(
+    domain: crate::io::ArtifactDomainKind,
+) -> &'static str {
     match domain {
         crate::io::ArtifactDomainKind::TextDocument => "text",
         crate::io::ArtifactDomainKind::StructuredDocument => "structured",

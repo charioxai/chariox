@@ -121,7 +121,8 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
         .external_change_notices(&workspace_identity, final_states.keys().cloned());
 
     for (path, before) in &before_states {
-        let latest = match workspace_live_sync_read_optional_content(&workspace_root, path, domain) {
+        let latest = match workspace_live_sync_read_optional_content(&workspace_root, path, domain)
+        {
             Ok(latest) => latest,
             Err(error) => {
                 for token in reservations {
@@ -137,7 +138,9 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
             external_change_monitor.record_external_change(&workspace_identity, path);
             let mut notices = external_change_notices.clone();
             if !notices.iter().any(|notice| notice.path == *path) {
-                notices.push(workspace_live_sync_external_change_notice_for_path(path.clone()));
+                notices.push(workspace_live_sync_external_change_notice_for_path(
+                    path.clone(),
+                ));
             }
             let mut output = managed_patch_rejected(
                 path.clone(),
@@ -148,7 +151,9 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
         }
     }
 
-    if let Err(error) = workspace_live_sync_write_final_content_states(&workspace_root, &final_states) {
+    if let Err(error) =
+        workspace_live_sync_write_final_content_states(&workspace_root, &final_states)
+    {
         let _ = workspace_live_sync_write_final_content_states(&workspace_root, &before_states);
         for token in reservations {
             coordinator.release_reservation(token);

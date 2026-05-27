@@ -20,7 +20,9 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content(
     content: Option<crate::io::ArtifactContent>,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
     match content {
-        Some(crate::io::ArtifactContent::Text(text)) => remote_workspace_live_sync_state(path, Some(text)),
+        Some(crate::io::ArtifactContent::Text(text)) => {
+            remote_workspace_live_sync_state(path, Some(text))
+        }
         Some(crate::io::ArtifactContent::Bytes(bytes)) => {
             crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
                 path: path.to_string_lossy().to_string(),
@@ -95,7 +97,9 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state_domain(
     state: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState,
 ) -> crate::io::ArtifactDomainKind {
     if let Some(domain) = state.domain.as_deref() {
-        if let Ok(domain) = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(Some(domain)) {
+        if let Ok(domain) =
+            KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(Some(domain))
+        {
             return domain;
         }
     }

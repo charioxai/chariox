@@ -128,8 +128,8 @@ mod tests {
     };
 
     use super::{
-        codex_collaboration_mode, codex_permission_policy, workspace_live_sync_codex_permission_grant,
-        parse_notification, CodexClient, CodexNotification, JsonRpcMessage,
+        codex_collaboration_mode, codex_permission_policy, parse_notification,
+        workspace_live_sync_codex_permission_grant, CodexClient, CodexNotification, JsonRpcMessage,
     };
 
     #[test]
@@ -277,7 +277,10 @@ mod tests {
             }
         });
 
-        assert_eq!(workspace_live_sync_codex_permission_grant(&requested), json!({}));
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(&requested),
+            json!({})
+        );
     }
 
     #[test]

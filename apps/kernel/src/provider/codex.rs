@@ -488,7 +488,8 @@ mod tests {
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
                 .with_workspace_live_sync_managed();
 
-        let launch = plan_codex_launch(Some(&request)).expect("workspace live sync launch should resolve");
+        let launch =
+            plan_codex_launch(Some(&request)).expect("workspace live sync launch should resolve");
 
         std::env::remove_var("ARROBA_CODEX_BIN");
         std::env::remove_var("ARROBA_CODEX_PORT");

@@ -36,7 +36,7 @@ use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
-pub use provider::{WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode, UserProviderConfig};
+pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use slices::{SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig};
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,
@@ -207,11 +207,17 @@ impl DaemonConfig {
     }
 
     pub fn provider_requires_workspace_live_sync(&self, _provider: &str) -> bool {
-        self.user_config.providers.workspace_live_sync.requires_workspace_live_sync()
+        self.user_config
+            .providers
+            .workspace_live_sync
+            .requires_workspace_live_sync()
     }
 
     pub fn provider_tracks_workspace_live_sync(&self, _provider: &str) -> bool {
-        self.user_config.providers.workspace_live_sync.tracks_workspace_live_sync()
+        self.user_config
+            .providers
+            .workspace_live_sync
+            .tracks_workspace_live_sync()
     }
 
     pub fn provider_workspace_live_sync_mode(

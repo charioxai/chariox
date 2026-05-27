@@ -23,7 +23,9 @@ impl KernelRuntimeState {
             .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
         if !workspace_context.valid {
-            return Ok(workspace_live_sync_workspace_identity_rejected(&workspace_context));
+            return Ok(workspace_live_sync_workspace_identity_rejected(
+                &workspace_context,
+            ));
         }
         let permission_level = match resolved_agent_id.as_deref() {
             Some(agent_id) => {
@@ -56,8 +58,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_read_artifact",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 let read = crate::io::WorkspaceLiveSyncFileIo::read_artifact(
                     &mut coordinator,
                     crate::io::WorkspaceLiveSyncFileReadRequest {
@@ -68,12 +71,14 @@ impl KernelRuntimeState {
                     },
                 )
                 .map_err(workspace_live_sync_daemon_error)?;
-                self.owned.workspace_live_sync_external_changes.observe_managed_read(
-                    provider_run.id(),
-                    &workspace_identity,
-                    &workspace_root,
-                    &read.path,
-                );
+                self.owned
+                    .workspace_live_sync_external_changes
+                    .observe_managed_read(
+                        provider_run.id(),
+                        &workspace_identity,
+                        &workspace_root,
+                        &read.path,
+                    );
                 let mut payload = workspace_live_sync_read_payload(read);
                 add_workspace_live_sync_workspace_payload(&mut payload, &workspace_context);
                 Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
@@ -86,8 +91,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_edit_artifact",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 if domain != crate::io::ArtifactDomainKind::TextDocument {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_edit_artifact",
@@ -139,7 +145,10 @@ impl KernelRuntimeState {
                 ) {
                     Ok(reservation) => reservation,
                     Err(mut output) => {
-                        add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
+                        add_workspace_live_sync_workspace_payload(
+                            &mut output.payload,
+                            &workspace_context,
+                        );
                         return Ok(output);
                     }
                 };
@@ -198,8 +207,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_apply_patch",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 if domain != crate::io::ArtifactDomainKind::TextDocument {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_apply_patch",
@@ -228,8 +238,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_delete_artifact",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
                     apply_managed_patch_operations(
                         &mut coordinator,
@@ -266,8 +277,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_move_artifact",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 let (old_text, new_text) = args.normalized_text_transform_fields();
                 let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
                     apply_managed_patch_operations(
@@ -315,8 +327,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_write_artifact",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let domain =
-                    KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
+                let domain = KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(
+                    args.domain.as_deref(),
+                )?;
                 let path = PathBuf::from(args.path.clone());
                 workspace_live_sync_reject_ignored_path(
                     &workspace_root,
@@ -338,7 +351,10 @@ impl KernelRuntimeState {
                 ) {
                     Ok(reservation) => reservation,
                     Err(mut output) => {
-                        add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
+                        add_workspace_live_sync_workspace_payload(
+                            &mut output.payload,
+                            &workspace_context,
+                        );
                         return Ok(output);
                     }
                 };

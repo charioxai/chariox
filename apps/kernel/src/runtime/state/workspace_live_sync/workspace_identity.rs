@@ -42,7 +42,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_workspace_identities_match(
         return !left.is_empty() && left == right && home.branch == worker.branch;
     }
     if let (Some(left), Some(right)) = (home.repo_url.as_deref(), worker.repo_url.as_deref()) {
-        return normalize_workspace_live_sync_repo_url(left) == normalize_workspace_live_sync_repo_url(right)
+        return normalize_workspace_live_sync_repo_url(left)
+            == normalize_workspace_live_sync_repo_url(right)
             && home.branch == worker.branch;
     }
     home.worktree_root_fingerprint == worker.worktree_root_fingerprint
@@ -67,7 +68,9 @@ pub(in crate::runtime::state) fn normalize_workspace_live_sync_repo_url(value: &
     value.trim().trim_end_matches(".git").to_ascii_lowercase()
 }
 
-pub(in crate::runtime::state) fn workspace_live_sync_is_arroba_source_workspace(root: &PathBuf) -> bool {
+pub(in crate::runtime::state) fn workspace_live_sync_is_arroba_source_workspace(
+    root: &PathBuf,
+) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()
         && root
             .join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)

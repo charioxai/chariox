@@ -45,9 +45,7 @@ impl KernelRuntimeOwnedState {
                 &launch_request.provider,
                 &config,
             );
-        launch_request = launch_request.with_workspace_live_sync_mode(
-            workspace_live_sync_mode,
-        );
+        launch_request = launch_request.with_workspace_live_sync_mode(workspace_live_sync_mode);
         if let Some(agent_id) = request.agent_id.clone().or_else(|| {
             self.session_store
                 .get_session(&request.session_id)

@@ -47,6 +47,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt_id: git_context.home_prompt_id,
             turn_id: git_context.home_turn_id,
             worktree_path,
+            workspace_live_sync_tracked: false,
             machine_id: Some(lease.machine_id),
             prompt_summary: git_context.prompt_summary,
         };
@@ -86,6 +87,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt_id: before.prompt_id.clone(),
             turn_id: before.turn_id.clone(),
             worktree_path: PathBuf::from(before.worktree_path.clone()),
+            workspace_live_sync_tracked: before.workspace_live_sync_tracked,
             machine_id: before.machine_id.clone(),
             prompt_summary: before.prompt_summary.clone(),
         };

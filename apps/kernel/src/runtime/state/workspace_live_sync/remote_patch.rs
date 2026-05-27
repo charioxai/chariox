@@ -216,14 +216,15 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
 
     let mut changes = Vec::new();
     for (path, after) in &final_states {
-        let before = before_states
-            .get(path)
-            .cloned()
-            .flatten()
-            .map(|text| WorkspaceLiveSyncTextSnapshot {
-                existed: true,
-                text,
-            });
+        let before =
+            before_states
+                .get(path)
+                .cloned()
+                .flatten()
+                .map(|text| WorkspaceLiveSyncTextSnapshot {
+                    existed: true,
+                    text,
+                });
         let after_snapshot = after.clone().map(|text| WorkspaceLiveSyncTextSnapshot {
             existed: true,
             text,
@@ -273,15 +274,16 @@ fn remote_managed_patch_state(
     if let Some(current) = final_states.get(path) {
         return Ok(current.clone());
     }
-    let state = remote_workspace_live_sync_state_for_path(artifact_states, path).ok_or_else(|| {
-        DaemonError::LocalTransport {
-            operation: "remote_workspace_live_sync_patch_state",
-            message: format!(
-                "missing forwarded artifact state for `{}`",
-                path.to_string_lossy()
-            ),
-        }
-    })?;
+    let state =
+        remote_workspace_live_sync_state_for_path(artifact_states, path).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "remote_workspace_live_sync_patch_state",
+                message: format!(
+                    "missing forwarded artifact state for `{}`",
+                    path.to_string_lossy()
+                ),
+            }
+        })?;
     let current = state.content_text.clone();
     before_states
         .entry(path.clone())

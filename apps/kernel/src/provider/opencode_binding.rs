@@ -67,7 +67,9 @@ pub(crate) fn initialize_opencode_runtime(
 
     let allow_native_bash = workspace_write_fence_active(run);
     let session_permission = if run.requires_workspace_live_sync() {
-        Some(opencode_workspace_live_sync_permission_rules(allow_native_bash))
+        Some(opencode_workspace_live_sync_permission_rules(
+            allow_native_bash,
+        ))
     } else {
         Some(opencode_permission_rules(run.permission_level()))
     };
@@ -287,8 +289,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        next_opencode_message_id, opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
-        OpenCodeConfiguredDefaults, OpenCodeMessage,
+        next_opencode_message_id, opencode_workspace_live_sync_permission_rules,
+        resolve_sync_selection, OpenCodeConfiguredDefaults, OpenCodeMessage,
     };
 
     fn message(provider_id: &str, model_id: &str, variant: &str) -> OpenCodeMessage {
@@ -460,7 +462,9 @@ pub(crate) fn run_opencode_utility_prompt(
     client.wait_until_healthy(Duration::from_secs(30))?;
     let allow_native_bash = workspace_write_fence_active(run);
     let session_permission = if run.requires_workspace_live_sync() {
-        Some(opencode_workspace_live_sync_permission_rules(allow_native_bash))
+        Some(opencode_workspace_live_sync_permission_rules(
+            allow_native_bash,
+        ))
     } else {
         Some(opencode_permission_rules(run.permission_level()))
     };
