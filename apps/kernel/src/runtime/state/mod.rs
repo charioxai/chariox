@@ -189,6 +189,22 @@ impl KernelRuntimeState {
         workflow_design_events: WorkflowDesignEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
+        let workspace_live_sync_journal =
+            match crate::git_observer::WorkspaceLiveSyncJournal::restore_from_durable_state(
+                &durable_state_store,
+            ) {
+                Ok(journal) => journal,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.workspace_live_sync",
+                        "failed to restore workspace live sync journal",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
+                    crate::git_observer::WorkspaceLiveSyncJournal::default()
+                }
+            };
         Self {
             app,
             owned: KernelRuntimeOwnedState {
@@ -227,8 +243,7 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
-                workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal::default(
-                ),
+                workspace_live_sync_journal,
             },
         }
     }

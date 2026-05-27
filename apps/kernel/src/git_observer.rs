@@ -166,6 +166,16 @@ struct WorkspaceLiveSyncJournalState {
 }
 
 impl WorkspaceLiveSyncJournal {
+    pub(crate) fn restore_from_durable_state(
+        store: &crate::durable_state::DurableKernelStateStore,
+    ) -> Result<Self, DaemonError> {
+        let journal = Self::default();
+        for event in store.load_events_after(0)? {
+            journal.restore_durable_event(&event)?;
+        }
+        Ok(journal)
+    }
+
     pub(crate) fn append_for_link(
         &self,
         link_id: &str,
@@ -202,6 +212,47 @@ impl WorkspaceLiveSyncJournal {
             .extend(results);
     }
 
+    fn restore_durable_event(
+        &self,
+        event: &crate::durable_state::DurableStateEvent,
+    ) -> Result<(), DaemonError> {
+        match event.kind.as_str() {
+            "workspace_live_sync.change_recorded" => {
+                let entry: WorkspaceLiveSyncJournalEntry =
+                    decode_workspace_live_sync_durable_payload_field(
+                        event,
+                        "entry",
+                        "workspace_live_sync.restore_change",
+                    )?;
+                self.restore_entry(entry);
+            }
+            "workspace_live_sync.target_results_recorded" => {
+                let target_results: Vec<WorkspaceLiveSyncTargetResult> =
+                    decode_workspace_live_sync_durable_payload_field(
+                        event,
+                        "target_results",
+                        "workspace_live_sync.restore_target_results",
+                    )?;
+                self.record_target_results(target_results);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn restore_entry(&self, entry: WorkspaceLiveSyncJournalEntry) {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("workspace live sync journal mutex poisoned");
+        let next_sequence = state
+            .next_sequence_by_link
+            .entry(entry.link_id.clone())
+            .or_insert(1);
+        *next_sequence = (*next_sequence).max(entry.sequence.saturating_add(1));
+        state.entries.push(entry);
+    }
+
     pub(crate) fn target_results_for_session(
         &self,
         session_id: &str,
@@ -232,7 +283,35 @@ impl WorkspaceLiveSyncJournal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+fn decode_workspace_live_sync_durable_payload_field<T>(
+    event: &crate::durable_state::DurableStateEvent,
+    field: &'static str,
+    operation: &'static str,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let value = event
+        .payload
+        .get(field)
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "durable state event {} ({}) missing payload field {field}",
+                event.event_id, event.kind
+            ),
+        })?;
+    serde_json::from_value(value).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "durable state event {} ({}) has invalid payload field {field}: {error}",
+            event.event_id, event.kind
+        ),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceLiveSyncJournalEntry {
     pub sequence: u64,
     pub link_id: String,
@@ -1500,6 +1579,8 @@ mod tests {
         workspace_live_sync_repo_fingerprint, GitTurnContext, GitTurnSnapshot,
         GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
         WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind, WorkspaceLiveSyncJournal,
+        WorkspaceLiveSyncJournalEntry, WorkspaceLiveSyncPathApplyResult,
+        WorkspaceLiveSyncTargetResult,
     };
 
     #[test]
@@ -2140,18 +2221,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_journal_assigns_ordered_sequences_per_link() {
         let journal = WorkspaceLiveSyncJournal::default();
-        let change = || WorkspaceLiveSyncChange {
-            session_id: "session-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            provider_run_id: "provider-run-1".to_string(),
-            prompt_id: "prompt-1".to_string(),
-            repo_root: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
-            branch: Some("main".to_string()),
-            changed_paths: vec!["src/lib.rs".to_string()],
-            file_changes: Vec::new(),
-            status_fingerprint: "managed_workspace_live_sync".to_string(),
-        };
+        let change = || workspace_live_sync_test_change("session-1");
 
         let first = journal.append_for_link("link-a", "shared-a", change());
         let second = journal.append_for_link("link-a", "shared-a", change());
@@ -2169,6 +2239,88 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("link-a", 1), ("link-a", 2), ("link-b", 1)]
         );
+    }
+
+    #[test]
+    fn workspace_live_sync_journal_restores_durable_events_and_next_sequence() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-workspace-live-sync-journal-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store =
+            crate::durable_state::DurableKernelStateStore::open(path.clone()).expect("open store");
+
+        let entry = WorkspaceLiveSyncJournalEntry {
+            sequence: 1,
+            link_id: "link-a".to_string(),
+            link_name: "shared-a".to_string(),
+            change: workspace_live_sync_test_change("session-1"),
+        };
+        let target_result = WorkspaceLiveSyncTargetResult {
+            session_id: "session-1".to_string(),
+            link_id: "link-a".to_string(),
+            link_name: "shared-a".to_string(),
+            source_agent_id: "agent-1".to_string(),
+            source_worktree_path: "/repo".to_string(),
+            target_user_id: "user-2".to_string(),
+            target_machine_id: "machine-2".to_string(),
+            target_kernel_id: "kernel-2".to_string(),
+            target_repo_root: "/target".to_string(),
+            path_results: vec![WorkspaceLiveSyncPathApplyResult {
+                path: "src/lib.rs".to_string(),
+                status: WorkspaceLiveSyncApplyStatus::Applied,
+                message: "applied cleanly".to_string(),
+            }],
+        };
+        store
+            .append_event(
+                "workspace_live_sync.change_recorded",
+                Some("session-1".to_string()),
+                serde_json::json!({ "entry": entry }),
+            )
+            .expect("change event should append");
+        store
+            .append_event(
+                "workspace_live_sync.target_results_recorded",
+                Some("session-1".to_string()),
+                serde_json::json!({ "target_results": [target_result] }),
+            )
+            .expect("target result event should append");
+
+        let journal =
+            WorkspaceLiveSyncJournal::restore_from_durable_state(&store).expect("restore journal");
+
+        assert_eq!(journal.entries_for_session("session-1").len(), 1);
+        assert_eq!(journal.target_results_for_session("session-1").len(), 1);
+        let next = journal.append_for_link(
+            "link-a",
+            "shared-a",
+            workspace_live_sync_test_change("session-1"),
+        );
+        assert_eq!(next.sequence, 2);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn workspace_live_sync_test_change(session_id: &str) -> WorkspaceLiveSyncChange {
+        WorkspaceLiveSyncChange {
+            session_id: session_id.to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/repo".to_string(),
+            worktree_path: "/repo".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["src/lib.rs".to_string()],
+            file_changes: Vec::new(),
+            status_fingerprint: "managed_workspace_live_sync".to_string(),
+        }
     }
 
     fn tracked_snapshot(is_dirty: bool, status_fingerprint: &str) -> GitTurnSnapshot {

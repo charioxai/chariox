@@ -161,12 +161,14 @@ impl KernelRuntimeState {
         };
         self.record_workspace_live_sync_notices(&change, &target_results);
         if let Some(link) = link {
-            self.owned.workspace_live_sync_journal.append_for_link(
+            let entry = self.owned.workspace_live_sync_journal.append_for_link(
                 link.link_id(),
                 link.name(),
                 change,
             );
+            self.persist_workspace_live_sync_journal_entry(&entry);
         }
+        self.persist_workspace_live_sync_target_results(&target_results);
         self.owned
             .workspace_live_sync_journal
             .record_target_results(target_results);
@@ -334,6 +336,58 @@ impl KernelRuntimeState {
         self.owned
             .workspace_live_sync_journal
             .record_target_results(vec![target_result.clone()]);
+        self.persist_workspace_live_sync_target_results(std::slice::from_ref(target_result));
+    }
+
+    fn persist_workspace_live_sync_journal_entry(
+        &self,
+        entry: &crate::git_observer::WorkspaceLiveSyncJournalEntry,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            "workspace_live_sync.change_recorded",
+            Some(entry.change.session_id.clone()),
+            serde_json::json!({
+                "entry": entry,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.workspace_live_sync",
+                "failed to persist workspace live sync journal entry",
+                serde_json::json!({
+                    "session_id": entry.change.session_id,
+                    "link_id": entry.link_id,
+                    "sequence": entry.sequence,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn persist_workspace_live_sync_target_results(
+        &self,
+        target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+    ) {
+        if target_results.is_empty() {
+            return;
+        }
+        let session_id = target_results[0].session_id.clone();
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            "workspace_live_sync.target_results_recorded",
+            Some(session_id.clone()),
+            serde_json::json!({
+                "target_results": target_results,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.workspace_live_sync",
+                "failed to persist workspace live sync target results",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "target_result_count": target_results.len(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     fn forwarded_workspace_live_sync_rejection(
