@@ -543,7 +543,7 @@ The same operations are also exposed as short aliases: `read_artifact`, `write_a
 
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 
-Remote leased agents that are working in the same repo and branch as the home session forward workspace live sync through the home kernel. If workspace identity changes while a managed run is active, workspace live sync rejects the request until the run rejoins a valid coordinated workspace.
+Remote leased agents that are working in the same repo/branch as the home session, or in worktrees explicitly attached to the same session workspace link, forward workspace live sync through the home kernel. If workspace identity changes while a managed run is active, workspace live sync rejects the request until the run rejoins a valid coordinated workspace.
 
 ## 14. Current Limitations
 

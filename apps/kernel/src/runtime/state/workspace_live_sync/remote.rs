@@ -1,7 +1,8 @@
 //! Remote workspace live sync coordination snapshots.
 //!
 //! Remote agents use these helpers to discover current artifact state and workspace identity so
-//! same-repo/same-branch workers can participate in the same collision-control protocol.
+//! same-repo/same-branch workers and explicit workspace-link peers can participate in the same
+//! collision-control protocol.
 
 use super::*;
 

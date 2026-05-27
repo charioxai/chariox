@@ -126,9 +126,9 @@ fn remote_workspace_not_coordinated_result() -> (
             "applied": false,
             "reason": {
                 "kind": "remote_workspace_not_coordinated",
-                "message": "The remote agent workspace does not match the home session repo/branch, so Arroba will not coordinate this workspace live sync operation through the home kernel."
+                "message": "The remote agent workspace does not match the home session repo/branch and is not attached to the same workspace link, so Arroba will not coordinate this workspace live sync operation through the home kernel."
             },
-            "next_action": "Move the remote agent to the same repo and branch as the home session, then retry through Arroba workspace live sync.",
+            "next_action": "Move the remote agent to the same repo/branch as the home session or attach both worktrees to the same workspace link, then retry through Arroba workspace live sync.",
         }),
     };
     (result, Vec::new())
