@@ -270,10 +270,15 @@ impl KernelRuntimeState {
         change: crate::git_observer::WorkspaceLiveSyncChange,
     ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
         if let Some(message) = self.forwarded_workspace_live_sync_rejection(&context) {
-            return workspace_live_sync_remote_failed_result(&context, message);
+            let target_result = workspace_live_sync_remote_failed_result(&context, message);
+            self.record_forwarded_workspace_live_sync_target_result(&target_result);
+            return target_result;
         }
         if let Some(message) = self.forwarded_workspace_live_sync_identity_conflict(&context) {
-            return workspace_live_sync_remote_conflict_result(&context, &change, message);
+            let target_result =
+                workspace_live_sync_remote_conflict_result(&context, &change, message);
+            self.record_forwarded_workspace_live_sync_target_result(&target_result);
+            return target_result;
         }
         let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
             &change,
@@ -291,10 +296,17 @@ impl KernelRuntimeState {
             target_repo_root: context.target_repo_root.clone(),
             path_results,
         };
+        self.record_forwarded_workspace_live_sync_target_result(&target_result);
+        target_result
+    }
+
+    fn record_forwarded_workspace_live_sync_target_result(
+        &self,
+        target_result: &crate::git_observer::WorkspaceLiveSyncTargetResult,
+    ) {
         self.owned
             .workspace_live_sync_journal
             .record_target_results(vec![target_result.clone()]);
-        target_result
     }
 
     fn forwarded_workspace_live_sync_rejection(
