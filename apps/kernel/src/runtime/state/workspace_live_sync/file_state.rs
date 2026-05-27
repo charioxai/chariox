@@ -56,6 +56,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
             ),
         });
     }
+    workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_apply_patch")?;
     Ok(())
 }
 
@@ -92,6 +93,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_content(
                     .to_string(),
         }
     })?;
+    workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_workspace_live_sync_state")?;
     match std::fs::read(&full_path) {
         Ok(bytes) => match domain {
             crate::io::ArtifactDomainKind::TextDocument
@@ -123,6 +125,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_states(
     states: &BTreeMap<PathBuf, Option<String>>,
 ) -> Result<(), DaemonError> {
     for (path, text) in states {
+        workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_apply_patch")?;
         let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
             DaemonError::LocalTransport {
                 operation: "runtime_tool_apply_patch",
@@ -167,6 +170,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
     states: &BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
 ) -> Result<(), DaemonError> {
     for (path, content) in states {
+        workspace_live_sync_reject_ignored_path(workspace_root, path, "runtime_tool_workspace_live_sync_state")?;
         let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
             DaemonError::LocalTransport {
                 operation: "runtime_tool_workspace_live_sync_state",
@@ -223,4 +227,154 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
         }
     }
     Ok(())
+}
+
+pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
+    workspace_root: &PathBuf,
+    path: &PathBuf,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let normalized = workspace_live_sync_normalized_relative_path(path)?;
+    if workspace_live_sync_force_excluded_path(&normalized)
+        || workspace_live_sync_ignore_patterns(workspace_root)?
+            .iter()
+            .any(|pattern| workspace_live_sync_ignore_pattern_matches(pattern, &normalized))
+    {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "`{}` is excluded from workspace live sync by .arrobaignore or a forced runtime exclusion",
+                path.to_string_lossy()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn workspace_live_sync_ignore_patterns(workspace_root: &PathBuf) -> Result<Vec<String>, DaemonError> {
+    let ignore_path = workspace_root.join(".arrobaignore");
+    if !ignore_path.exists() {
+        let seed = match std::fs::read_to_string(workspace_root.join(".gitignore")) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workspace_live_sync_ignore",
+                    message: format!("failed to read `.gitignore`: {error}"),
+                });
+            }
+        };
+        std::fs::write(&ignore_path, seed).map_err(|error| DaemonError::LocalTransport {
+            operation: "workspace_live_sync_ignore",
+            message: format!("failed to initialize `.arrobaignore`: {error}"),
+        })?;
+    }
+    let contents = std::fs::read_to_string(&ignore_path).map_err(|error| DaemonError::LocalTransport {
+        operation: "workspace_live_sync_ignore",
+        message: format!("failed to read `.arrobaignore`: {error}"),
+    })?;
+    Ok(contents
+        .lines()
+        .filter_map(workspace_live_sync_normalize_ignore_pattern)
+        .collect())
+}
+
+fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String, DaemonError> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(part.to_string_lossy().to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workspace_live_sync_ignore",
+                    message: "workspace live sync paths must be relative and cannot contain `..`".to_string(),
+                });
+            }
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
+    if path == ".arrobaignore" {
+        return true;
+    }
+    if path == ".git" || path.starts_with(".git/") || path == ".arroba" || path.starts_with(".arroba/") {
+        return true;
+    }
+    if path == ".env" || path.starts_with(".env.") {
+        return true;
+    }
+    let forced_dirs = [
+        "node_modules",
+        "target",
+        ".next",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+    ];
+    path.split('/')
+        .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))
+}
+
+fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+        return None;
+    }
+    let directory = trimmed.ends_with('/');
+    let mut pattern =
+        trimmed
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect::<Vec<_>>()
+            .join("/");
+    if pattern.is_empty() {
+        return None;
+    }
+    if directory {
+        pattern.push('/');
+    }
+    Some(pattern)
+}
+
+fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool {
+    let directory_pattern = pattern.ends_with('/');
+    let pattern = pattern.trim_end_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern.contains('/') {
+        return workspace_live_sync_wildcard_match(pattern, path)
+            || path
+                .strip_prefix(pattern)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+            || (directory_pattern && path == pattern);
+    }
+    path.split('/').any(|part| workspace_live_sync_wildcard_match(pattern, part))
+}
+
+fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == value {
+        return true;
+    }
+    let Some((head, tail)) = pattern.split_once('*') else {
+        return false;
+    };
+    if !value.starts_with(head) {
+        return false;
+    }
+    let remainder = &value[head.len()..];
+    if !tail.contains('*') {
+        return tail.is_empty() || remainder.ends_with(tail);
+    }
+    (0..=remainder.len()).any(|index| workspace_live_sync_wildcard_match(tail, &remainder[index..]))
 }

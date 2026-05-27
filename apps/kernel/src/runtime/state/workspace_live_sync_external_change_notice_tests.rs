@@ -537,3 +537,70 @@ fn remote_managed_patch_operations_return_move_and_delete_final_states() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn workspace_live_sync_ignore_initializes_from_gitignore() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-workspace-live-sync-ignore-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create root");
+    std::fs::write(root.join(".gitignore"), "ignored/\n*.secret\n").expect("write gitignore");
+
+    workspace_live_sync_reject_ignored_path(
+        &root,
+        &PathBuf::from("src/lib.rs"),
+        "test_workspace_live_sync_ignore",
+    )
+    .expect("ordinary file should not be ignored");
+    let initialized = std::fs::read_to_string(root.join(".arrobaignore"))
+        .expect(".arrobaignore should initialize from .gitignore");
+    assert_eq!(initialized, "ignored/\n*.secret\n");
+    assert!(workspace_live_sync_reject_ignored_path(
+        &root,
+        &PathBuf::from("ignored/file.txt"),
+        "test_workspace_live_sync_ignore",
+    )
+    .is_err());
+    assert!(workspace_live_sync_reject_ignored_path(
+        &root,
+        &PathBuf::from("nested/token.secret"),
+        "test_workspace_live_sync_ignore",
+    )
+    .is_err());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-workspace-live-sync-force-ignore-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create root");
+
+    for path in [
+        ".git/config",
+        ".arroba/logs/kernel.ndjson",
+        ".arrobaignore",
+        ".env",
+        ".env.local",
+        "node_modules/pkg/index.js",
+        "target/debug/app",
+    ] {
+        assert!(
+            workspace_live_sync_reject_ignored_path(
+                &root,
+                &PathBuf::from(path),
+                "test_workspace_live_sync_force_ignore",
+            )
+            .is_err(),
+            "{path} should be force excluded"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}

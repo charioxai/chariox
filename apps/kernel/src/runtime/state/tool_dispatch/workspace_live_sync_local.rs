@@ -119,6 +119,11 @@ impl KernelRuntimeState {
                     }
                 };
                 let path = PathBuf::from(args.path.clone());
+                workspace_live_sync_reject_ignored_path(
+                    &workspace_root,
+                    &path,
+                    "runtime_tool_edit_artifact",
+                )?;
                 let before = workspace_live_sync_text_for_diff(&workspace_root, &path, false);
                 let reservation_ranges = workspace_live_sync_reservation_ranges_for_operation(
                     &operation,
@@ -313,6 +318,11 @@ impl KernelRuntimeState {
                 let domain =
                     KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
                 let path = PathBuf::from(args.path.clone());
+                workspace_live_sync_reject_ignored_path(
+                    &workspace_root,
+                    &path,
+                    "runtime_tool_write_artifact",
+                )?;
                 let before = workspace_live_sync_text_for_diff(&workspace_root, &path, true);
                 let content = workspace_live_sync_write_content_from_args(
                     "runtime_tool_write_artifact",
