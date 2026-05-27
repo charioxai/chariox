@@ -594,6 +594,18 @@ fn apply_workspace_live_sync_file_change_to_target(
         .previous_path
         .as_deref()
         .and_then(|path| workspace_live_sync_target_path(target_root, path));
+    let ignore_patterns = workspace_live_sync_ignore_patterns(target_root);
+    if workspace_live_sync_excluded_path(&file_change.path, &ignore_patterns)
+        || file_change
+            .previous_path
+            .as_deref()
+            .is_some_and(|path| workspace_live_sync_excluded_path(path, &ignore_patterns))
+    {
+        return workspace_live_sync_conflict(
+            &path,
+            "path is ignored by target workspace live sync rules",
+        );
+    }
     let before_bytes =
         match workspace_live_sync_decode_optional(file_change.before_content_base64.as_deref()) {
             Ok(bytes) => bytes,
@@ -1725,6 +1737,88 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_apply_target_skips_ignored_target_path() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-ignore-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(target.join("ignored")).expect("target should be created");
+        std::fs::write(target.join(".arrobaignore"), "ignored/\n").expect("ignore should write");
+        let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
+        let change = WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["ignored/file.txt".to_string()],
+            file_changes: vec![WorkspaceLiveSyncFileChange {
+                path: "ignored/file.txt".to_string(),
+                previous_path: None,
+                kind: WorkspaceLiveSyncFileChangeKind::Added,
+                before_content_base64: None,
+                after_content_base64: Some(encode("secret\n")),
+                binary: false,
+            }],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(
+            results[0].status,
+            WorkspaceLiveSyncApplyStatus::SkippedConflict
+        );
+        assert!(results[0].message.contains("ignored"));
+        assert!(!target.join("ignored/file.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_apply_target_skips_forced_excluded_path() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-force-exclude-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&target).expect("target should be created");
+        let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
+        let change = WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec![".env.local".to_string()],
+            file_changes: vec![WorkspaceLiveSyncFileChange {
+                path: ".env.local".to_string(),
+                previous_path: None,
+                kind: WorkspaceLiveSyncFileChangeKind::Added,
+                before_content_base64: None,
+                after_content_base64: Some(encode("TOKEN=secret\n")),
+                binary: false,
+            }],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
+
+        assert_eq!(
+            results[0].status,
+            WorkspaceLiveSyncApplyStatus::SkippedConflict
+        );
+        assert!(!target.join(".env.local").exists());
+
         let _ = std::fs::remove_dir_all(&target);
     }
 
