@@ -48,7 +48,7 @@ function printHelp() {
     '- grants the connector to real provider agents',
     '- prompts each agent to call connector tools with fixed inputs',
     '- verifies a local API received the vault secret while the model only sees API results',
-    '- verifies each agent writes observed connector outputs to a managed artifact',
+    '- verifies each agent writes observed connector outputs through Workspace Live Sync',
   ].join('\n'))
 }
 

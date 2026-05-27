@@ -515,7 +515,7 @@ Work:
 - Apply the macOS workspace write fence to Claude child processes.
 - Deny or restrict native write tools where Claude exposes stable controls.
 - Bind Workspace Live Sync managed tools through runtime MCP.
-- Verify direct native writes fail and Arroba-managed artifact writes succeed.
+- Verify direct native writes fail and Arroba Workspace Live Sync artifact writes succeed.
 
 Live drills:
 

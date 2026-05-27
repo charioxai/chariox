@@ -349,8 +349,8 @@ Tool responses must include structured success, warning, and rejection payloads 
 ## Milestone Slices
 
 1. Define artifact identity, artifact versions, snapshots, and conflict-domain traits.
-2. Add managed artifact read tool returning snapshot/version metadata.
-3. Add managed text edit/apply-patch tool with synchronous apply/reject semantics.
+2. Add Workspace Live Sync artifact read tool returning snapshot/version metadata.
+3. Add Workspace Live Sync text edit/apply-patch tool with synchronous apply/reject semantics.
 4. Add per-artifact serialized `ArtifactEditCoordinator`.
 5. Implement `TextDocument` changed/touched region detection.
 6. Implement non-overlapping stale edit rebase for text.
@@ -370,11 +370,11 @@ Tool responses must include structured success, warning, and rejection payloads 
 ## Current Status
 
 - Landed: initial artifact identity, version, snapshot, workspace identity, edit intent, result, warning, and conflict types.
-- Landed: in-memory artifact edit coordinator foundation with managed reads, synchronous text edit application, stale non-overlap rebase, and overlap rejection.
-- Landed: filesystem-backed managed read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
-- Landed: runtime tool argument/schema definitions for managed artifact read/edit/write tools.
-- Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit/write tools backed by the provider run workspace root.
-- Landed: opaque managed reads/writes/deletes/moves use base64 payloads where content crosses process boundaries and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque operations preserve exact bytes.
+- Landed: in-memory artifact edit coordinator foundation with Workspace Live Sync reads, synchronous text edit application, stale non-overlap rebase, and overlap rejection.
+- Landed: filesystem-backed Workspace Live Sync read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
+- Landed: runtime tool argument/schema definitions for Workspace Live Sync artifact read/edit/write tools.
+- Landed: authenticated runtime/MCP dispatch wiring for Workspace Live Sync artifact read/edit/write tools backed by the provider run workspace root.
+- Landed: opaque Workspace Live Sync reads/writes/deletes/moves use base64 payloads where content crosses process boundaries and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque operations preserve exact bytes.
 - Landed: provider launch contract for required workspace live sync writes.
 - Landed: Codex required workspace live sync enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
 - Landed: OpenCode required workspace live sync enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.

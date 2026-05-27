@@ -55,7 +55,7 @@ function printHelp() {
     '- grants both scripts to real provider agents',
     '- prompts each agent to call both script tools with fixed inputs',
     '- verifies hidden tokens returned by plain run return values',
-    '- verifies the agent writes the observed values to a managed artifact',
+    '- verifies the agent writes the observed values through Workspace Live Sync',
     '',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     '  --provider PROVIDER',
