@@ -46,8 +46,12 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   const notices: string[] = []
   const footers: string[] = []
   const configUpdates: Array<[string, string]> = []
+  const statusUpdates: string[] = []
   const deps = workspaceDeps({
     getWorkspaceLiveSyncStatus: async () => status,
+    setWorkspaceLiveSyncStatus: (nextStatus) => {
+      if (nextStatus) statusUpdates.push(nextStatus.footer_state)
+    },
     setUserConfigValue: async (path, value) => {
       configUpdates.push([path, value])
     },
@@ -67,6 +71,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main/)
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
+  assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
   assert.deepEqual(configUpdates, [
     ["providers.workspace_live_sync", "tracked"],
     ["providers.workspace_live_sync", "managed"],

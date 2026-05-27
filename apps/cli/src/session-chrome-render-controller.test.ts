@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert"
 import test from "node:test"
 
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { PromptMetaPart } from "./prompt-meta.js"
 import {
   createSessionChromeRenderController,
@@ -66,6 +66,7 @@ function createDeps(overrides: {
   attached?: boolean
   promptMetaParts?: PromptMetaPart[]
   sessionStatusMode?: "idle" | "working" | "disconnected"
+  workspaceLiveSyncStatus?: WorkspaceLiveSyncStatus | null
   working?: boolean
   activeStatusLabel?: string | null
   providerActivityLabel?: string | null
@@ -89,6 +90,7 @@ function createDeps(overrides: {
     getResponseLayout: () => "split",
     getSessionStatusMode: () => overrides.sessionStatusMode ?? "idle",
     getFocusedHasPromptWork: () => false,
+    getWorkspaceLiveSyncStatus: () => overrides.workspaceLiveSyncStatus ?? null,
     getHotkeyToggleLabel: () => "?",
     getFooterFlash: () => null,
     getPromptMetaParts: () => overrides.promptMetaParts ?? [],

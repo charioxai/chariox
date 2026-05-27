@@ -4,6 +4,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   TerminalOutputRecord,
+  WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import type { ArrobaLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
@@ -36,6 +37,8 @@ type CliPollingControllerDeps = {
   appendNotice: (message: string) => void
   sessionHasPromptWork: (session: RuntimeSession) => boolean
   getSessionState: (sessionId: string) => Promise<RuntimeSession>
+  getWorkspaceLiveSyncStatus?: (sessionId: string) => Promise<WorkspaceLiveSyncStatus>
+  setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
   projectSession: (
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
@@ -136,6 +139,17 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         deps.applySessionState(projectedSession)
         if (shouldRefreshPanes || promptJustCompleted) {
           await deps.refreshAgentPanes(projectedSession)
+        }
+        if (promptJustCompleted && deps.getWorkspaceLiveSyncStatus && deps.setWorkspaceLiveSyncStatus) {
+          try {
+            deps.setWorkspaceLiveSyncStatus(await deps.getWorkspaceLiveSyncStatus(projectedSession.id))
+            deps.updateSessionChrome()
+          } catch (error) {
+            deps.logger?.warn("workspace live sync status refresh failed", {
+              error: deps.formatError(error),
+              session_id: projectedSession.id,
+            })
+          }
         }
         if (session.active_provider_run_id) {
           const activeRun = deps.getProviderRun()

@@ -9,6 +9,7 @@ import type {
   SessionHistoryCursor,
   SliceRecord,
   TranscriptEntry,
+  WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import { formatAgentLocationLabel } from "./agent-label.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
@@ -172,6 +173,7 @@ export function createCliAppState(options: {
   }))
   const [workspaceShellEntries, setWorkspaceShellEntries] = createSignal<WorkspaceShellEntry[]>([])
   const [workspaceShellEntryCounter, setWorkspaceShellEntryCounter] = createSignal(0)
+  const [workspaceLiveSyncStatus, setWorkspaceLiveSyncStatus] = createSignal<WorkspaceLiveSyncStatus | null>(null)
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
   const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<WorkflowInspectorMode>("runtime")
@@ -302,6 +304,8 @@ export function createCliAppState(options: {
     setWorkspaceShellEntries,
     workspaceShellEntryCounter,
     setWorkspaceShellEntryCounter,
+    workspaceLiveSyncStatus,
+    setWorkspaceLiveSyncStatus,
     selectedWorkflowId,
     setSelectedWorkflowId,
     selectedWorkflowNodeId,

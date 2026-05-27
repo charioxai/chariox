@@ -134,6 +134,8 @@ export function createCliAppProcessRuntimeComposition(
     attachmentState: deps.attachmentState,
     catchUpAttachedSession: deps.catchUpAttachedSession,
     getSessionState: deps.getSessionState,
+    getWorkspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus,
+    setWorkspaceLiveSyncStatus: deps.setWorkspaceLiveSyncStatus,
     tryGetProviderRun: deps.tryGetProviderRun,
     clearLocalBusyStateForAuthoritativeIdle: deps.clearLocalBusyStateForAuthoritativeIdle,
     attachToSession: deps.attachToSession,

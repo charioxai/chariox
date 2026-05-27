@@ -177,6 +177,7 @@ export type CliCommandActionCompositionDeps = {
   applyResponseLayout: AnyFn
   applySessionState: AnyFn
   refreshAgentPanes: AnyFn
+  setWorkspaceLiveSyncStatus?: AnyFn
   openWorkflowNodeInstructionsEditor: AnyFn
   closeWorkflowNodeInstructionsEditor: AnyFn
   getWorkflowNodeInstructionsDraft: AnyFn
@@ -264,6 +265,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     applyResponseLayout,
     applySessionState,
     refreshAgentPanes,
+    setWorkspaceLiveSyncStatus,
     openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,
@@ -507,6 +509,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     attachWorkspaceLink: (linkRef, repoRoot) => attachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
     detachWorkspaceLink: (linkRef, repoRoot) => detachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
     getWorkspaceLiveSyncStatus: () => getWorkspaceLiveSyncStatus(client, sessionState().id),
+    ...(setWorkspaceLiveSyncStatus ? { setWorkspaceLiveSyncStatus } : {}),
     openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,

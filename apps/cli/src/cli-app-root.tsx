@@ -135,6 +135,9 @@ import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
 import {
+  getWorkspaceLiveSyncStatus,
+} from "./workspace-link-api.js"
+import {
   computeCurrentTurnId,
   computeNextTurnId,
 } from "./transcript-preview.js"
@@ -270,6 +273,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorkspaceShellEntries,
     workspaceShellEntryCounter,
     setWorkspaceShellEntryCounter,
+    workspaceLiveSyncStatus,
+    setWorkspaceLiveSyncStatus,
     selectedWorkflowId,
     setSelectedWorkflowId,
     selectedWorkflowNodeId,
@@ -926,6 +931,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentBusyLatch,
     agentBusyLatches,
     sessionState,
+    workspaceLiveSyncStatus,
     agentLocationLabel,
     workingAnimationFrame,
     activeInteractionForAgent,
@@ -1275,6 +1281,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout,
     applySessionState,
     refreshAgentPanes,
+    setWorkspaceLiveSyncStatus,
     ...workflowActions,
     rebuildTranscript,
     requestRootRender: () => {
@@ -1463,6 +1470,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     catchUpAttachedSession: (sessionId: string, attachmentId: string, session: RuntimeSession) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
     getSessionState: (sessionId: string) => getSessionState(client, sessionId),
+    getWorkspaceLiveSyncStatus: (sessionId: string) => getWorkspaceLiveSyncStatus(client, sessionId),
+    setWorkspaceLiveSyncStatus,
     tryGetProviderRun: (providerRunId: string) => tryGetProviderRun(client, providerRunId, appLogger),
     clearLocalBusyStateForAuthoritativeIdle,
     attachToSession: (sessionId: string) => attachToSession(client, sessionId, options.clientId),
@@ -1490,6 +1499,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptHistoryAutoloadController,
     setWorkingAnimationFrame,
     sessionStatusMode,
+    workspaceLiveSyncStatus,
     renderSplitPaneFooters,
     setWaitingRoomState,
     hydrateCurrentAttachedSession,

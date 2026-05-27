@@ -97,6 +97,8 @@ export type CliBackgroundRuntimeCompositionDeps = {
   attachmentState: AnyFn
   catchUpAttachedSession: AnyFn
   getSessionState: AnyFn
+  getWorkspaceLiveSyncStatus?: AnyFn
+  setWorkspaceLiveSyncStatus?: AnyFn
   tryGetProviderRun: AnyFn
   clearLocalBusyStateForAuthoritativeIdle: AnyFn
   attachToSession: AnyFn
@@ -402,6 +404,12 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     appendNotice: (message) => deps.appendNotice(message),
     sessionHasPromptWork,
     getSessionState: deps.getSessionState,
+    ...(deps.getWorkspaceLiveSyncStatus && deps.setWorkspaceLiveSyncStatus
+      ? {
+        getWorkspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus,
+        setWorkspaceLiveSyncStatus: deps.setWorkspaceLiveSyncStatus,
+      }
+      : {}),
     projectSession: applyProviderRunProfileToSession,
     shouldRefreshAgentPanesForSessionChange: deps.shouldRefreshAgentPanesForSessionChange,
     applySessionState: deps.applySessionState,

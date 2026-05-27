@@ -1,4 +1,4 @@
-import type { AgentInstance, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -202,11 +202,15 @@ export function deriveAttachedFooterSummary(options: {
   sessionStatusMode: SessionStatusMode
   hotkeyToggleLabel: string
   focusedHasPromptWork?: boolean
+  workspaceLiveSyncStatus?: WorkspaceLiveSyncStatus | null
 }): string {
   const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
   const agentInfo = formatVisibleAgentSummary(options.session)
+  const workspaceLiveSyncInfo = options.workspaceLiveSyncStatus
+    ? ` • sync ${options.workspaceLiveSyncStatus.footer_state}`
+    : ""
 
-  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${agentInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
+  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${agentInfo}${workspaceLiveSyncInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
 }
 
 function formatVisibleAgentSummary(session: RuntimeSession): string {

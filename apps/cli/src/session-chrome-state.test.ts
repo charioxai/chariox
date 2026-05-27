@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeProviderRun, RuntimeSession, WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
   applyProviderRunProfileToSession,
@@ -211,6 +211,23 @@ test("deriveAttachedFooterSummary shows aggregate collaborator agents without id
     "Session shared-review • 3 CLIs connected • 1 visible agent • 3 collaborator agents • 2 collaborators • Ctrl+T hotkeys",
   )
   assert.doesNotMatch(summary, /user-|agent-a|owner/)
+})
+
+test("deriveAttachedFooterSummary includes workspace live sync footer state", () => {
+  const summary = deriveAttachedFooterSummary({
+    session: session({ alias: "sync-review", agents: [agent("agent-a")] }),
+    connectedClientCount: 1,
+    multiAgentMode: false,
+    responseLayout: "individual",
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+    workspaceLiveSyncStatus: workspaceLiveSyncStatus("conflict"),
+  })
+
+  assert.equal(
+    summary,
+    "Session sync-review • 1 CLI connected • 1 visible agent • sync conflict • Ctrl+T hotkeys",
+  )
 })
 
 test("deriveVisibleActivityLabel prefers active tool activity over provider activity", () => {
@@ -488,6 +505,21 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     created_at_ms: 1,
     last_activity_at_ms: 1,
     ...overrides,
+  }
+}
+
+function workspaceLiveSyncStatus(
+  footerState: WorkspaceLiveSyncStatus["footer_state"],
+): WorkspaceLiveSyncStatus {
+  return {
+    session_id: "session-1",
+    mode: footerState === "off" ? "unrestricted" : "managed",
+    footer_state: footerState,
+    targets: [],
+    conflicts: [],
+    ignore: {
+      force_excludes: [],
+    },
   }
 }
 

@@ -124,6 +124,7 @@ export type CliResponseShellCompositionDeps = {
   connectedClientCount: AnyFn
   multiAgentMode: AnyFn
   sessionStatusMode: AnyFn
+  workspaceLiveSyncStatus: AnyFn
   footerFlash: AnyFn
   promptMetaParts: AnyFn
 }
@@ -277,6 +278,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     deps.activeStatusLabel()
     deps.providerActivityLabel()
     deps.streamingAgentId()
+    deps.workspaceLiveSyncStatus()
     deps.agentBusyLatches()
     for (const agent of deps.sessionState().agents) {
       agent.is_processing
@@ -311,6 +313,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getResponseLayout: deps.multiAgentResponseLayout,
     getSessionStatusMode: deps.sessionStatusMode,
     getFocusedHasPromptWork: () => agentHasPromptWork(deps.sessionState(), deps.focusedAgentId()),
+    getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,

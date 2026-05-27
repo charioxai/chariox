@@ -6,6 +6,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   TerminalOutputRecord,
+  WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import { createCliPollingController } from "./cli-polling-controller.js"
 import type { runPollingLoop } from "./polling-effects.js"
@@ -91,6 +92,29 @@ test("cli polling controller refreshes session state and provider run metadata",
   ])
 })
 
+test("cli polling controller refreshes workspace live sync footer state after a turn completes", async () => {
+  const nextSession = session({ active_prompt: null })
+  const status = workspaceLiveSyncStatus("conflict")
+  const harness = createHarness({
+    sessionState: session({ active_prompt: activePrompt() }),
+    nextSession,
+    getWorkspaceLiveSyncStatus: async () => status,
+  })
+
+  await harness.controller.pollSessionState()
+
+  assert.equal(harness.workspaceLiveSyncStatus?.footer_state, "conflict")
+  assert.deepEqual(harness.calls, [
+    "getSessionState:session-1",
+    "activity:session_state_poll",
+    "applySessionState:session-1",
+    "refreshAgentPanes:session-1",
+    "getWorkspaceLiveSyncStatus:session-1",
+    "setWorkspaceLiveSyncStatus:conflict",
+    "updateSessionChrome",
+  ])
+})
+
 function createHarness(options: {
   attachment?: RuntimeAttachment | null
   sessionState?: RuntimeSession
@@ -100,6 +124,7 @@ function createHarness(options: {
   pollRuntimeNotices?: () => Promise<{ message: string }[]>
   shouldRefreshAgentPanesForSessionChange?: (session: RuntimeSession) => boolean
   tryGetProviderRun?: (providerRunId: string) => Promise<RuntimeProviderRun | null>
+  getWorkspaceLiveSyncStatus?: (sessionId: string) => Promise<WorkspaceLiveSyncStatus>
 } = {}) {
   const calls: string[] = []
   const loopOperations: string[] = []
@@ -111,6 +136,7 @@ function createHarness(options: {
     attachment: options.attachment === undefined ? { id: "attachment-1", session_id: "session-1" } : options.attachment,
     sessionState: options.sessionState ?? session(),
     providerRun: options.providerRun ?? null,
+    workspaceLiveSyncStatus: null as WorkspaceLiveSyncStatus | null,
     controller: null as ReturnType<typeof createCliPollingController> | null,
   }
   harness.controller = createCliPollingController({
@@ -155,6 +181,18 @@ function createHarness(options: {
       calls.push(`getSessionState:${sessionId}`)
       return options.nextSession ?? harness.sessionState
     },
+    ...(options.getWorkspaceLiveSyncStatus
+      ? {
+        getWorkspaceLiveSyncStatus: async (sessionId: string) => {
+          calls.push(`getWorkspaceLiveSyncStatus:${sessionId}`)
+          return options.getWorkspaceLiveSyncStatus!(sessionId)
+        },
+        setWorkspaceLiveSyncStatus: (status: WorkspaceLiveSyncStatus | null) => {
+          calls.push(`setWorkspaceLiveSyncStatus:${status?.footer_state ?? "null"}`)
+          harness.workspaceLiveSyncStatus = status
+        },
+      }
+      : {}),
     projectSession: (nextSession) => nextSession,
     shouldRefreshAgentPanesForSessionChange: options.shouldRefreshAgentPanesForSessionChange ?? (() => false),
     applySessionState: (nextSession) => {
@@ -223,5 +261,20 @@ function providerRun(
     usage_tokens_total: null,
     state: "running",
     ...overrides,
+  }
+}
+
+function workspaceLiveSyncStatus(
+  footerState: WorkspaceLiveSyncStatus["footer_state"],
+): WorkspaceLiveSyncStatus {
+  return {
+    session_id: "session-1",
+    mode: footerState === "off" ? "unrestricted" : "managed",
+    footer_state: footerState,
+    targets: [],
+    conflicts: [],
+    ignore: {
+      force_excludes: [],
+    },
   }
 }

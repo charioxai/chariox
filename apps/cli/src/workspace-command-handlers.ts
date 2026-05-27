@@ -37,6 +37,7 @@ export type WorkspaceCommandHandlerDeps = {
   attachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload>
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
+  setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
 }
@@ -76,6 +77,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
     deps.appendNotice(formatWorkspaceLiveSyncStatus(status))
     deps.flashFooter(`workspace live sync ${status.footer_state}`, "info")
     return
@@ -86,6 +88,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
     deps.appendNotice(formatWorkspaceLiveSyncTargets(status))
     deps.flashFooter(`workspace live sync targets: ${status.targets.length}`, "info")
     return
@@ -96,6 +99,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
     deps.appendNotice(formatWorkspaceLiveSyncConflicts(status))
     deps.flashFooter(`workspace live sync conflicts: ${status.conflicts.length}`, "info")
     return
@@ -106,6 +110,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
     deps.appendNotice([
       `Ignore file: ${status.ignore.ignore_file ?? "none"}`,
       ...status.ignore.force_excludes.map((pattern) => `- ${pattern}`),

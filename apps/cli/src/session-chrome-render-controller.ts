@@ -1,4 +1,5 @@
 import type { RuntimeSession } from "./cli-types.js"
+import type { WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { PromptMetaPart } from "./prompt-meta.js"
@@ -36,6 +37,7 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getResponseLayout: () => MultiAgentResponseLayout
   getSessionStatusMode: () => SessionStatusMode
   getFocusedHasPromptWork: () => boolean
+  getWorkspaceLiveSyncStatus: () => WorkspaceLiveSyncStatus | null
   getHotkeyToggleLabel: () => string
   getFooterFlash: () => FooterFlash | null
   getPromptMetaParts: () => PromptMetaPart[]
@@ -82,6 +84,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
           sessionStatusMode: deps.getSessionStatusMode(),
           hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
           focusedHasPromptWork: deps.getFocusedHasPromptWork(),
+          workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
         })
         : SESSION_NEW_FOOTER_HINT,
       footerFlash: deps.getFooterFlash(),
