@@ -246,6 +246,8 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
     let mode = config_projection
         .snapshot()
         .provider_workspace_live_sync_mode("default");
+    let session = runtime_state.session_snapshot(&request.session_id).await?;
+    let has_prompt_work = session.has_any_prompt_work();
     let links = runtime_state.list_workspace_links(&request.session_id)?;
     let target_results = runtime_state.workspace_live_sync_target_results(&request.session_id);
     let mut targets = Vec::new();
@@ -275,17 +277,8 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
         })
     });
-    let footer_state = if !conflicts.is_empty() {
-        WorkspaceLiveSyncFooterState::Conflict
-    } else if degraded {
-        WorkspaceLiveSyncFooterState::Degraded
-    } else {
-        match mode {
-            crate::config::WorkspaceLiveSyncMode::Managed => WorkspaceLiveSyncFooterState::Managed,
-            crate::config::WorkspaceLiveSyncMode::Tracked => WorkspaceLiveSyncFooterState::Tracked,
-            crate::config::WorkspaceLiveSyncMode::Unrestricted => WorkspaceLiveSyncFooterState::Off,
-        }
-    };
+    let footer_state =
+        workspace_live_sync_footer_state(mode, has_prompt_work, !conflicts.is_empty(), degraded);
     Ok(LocalDaemonResponse::WorkspaceLiveSyncStatus {
         status: WorkspaceLiveSyncStatus {
             session_id: request.session_id,
@@ -313,6 +306,28 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             },
         },
     })
+}
+
+fn workspace_live_sync_footer_state(
+    mode: crate::config::WorkspaceLiveSyncMode,
+    has_prompt_work: bool,
+    has_conflicts: bool,
+    degraded: bool,
+) -> WorkspaceLiveSyncFooterState {
+    if has_conflicts {
+        return WorkspaceLiveSyncFooterState::Conflict;
+    }
+    if degraded {
+        return WorkspaceLiveSyncFooterState::Degraded;
+    }
+    if has_prompt_work && mode != crate::config::WorkspaceLiveSyncMode::Unrestricted {
+        return WorkspaceLiveSyncFooterState::Syncing;
+    }
+    match mode {
+        crate::config::WorkspaceLiveSyncMode::Managed => WorkspaceLiveSyncFooterState::Managed,
+        crate::config::WorkspaceLiveSyncMode::Tracked => WorkspaceLiveSyncFooterState::Tracked,
+        crate::config::WorkspaceLiveSyncMode::Unrestricted => WorkspaceLiveSyncFooterState::Off,
+    }
 }
 
 fn workspace_live_sync_target_status_from_results(
@@ -386,4 +401,62 @@ fn current_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_footer_state_reports_syncing_for_active_managed_or_tracked_work() {
+        assert_eq!(
+            workspace_live_sync_footer_state(
+                crate::config::WorkspaceLiveSyncMode::Managed,
+                true,
+                false,
+                false,
+            ),
+            WorkspaceLiveSyncFooterState::Syncing
+        );
+        assert_eq!(
+            workspace_live_sync_footer_state(
+                crate::config::WorkspaceLiveSyncMode::Tracked,
+                true,
+                false,
+                false,
+            ),
+            WorkspaceLiveSyncFooterState::Syncing
+        );
+        assert_eq!(
+            workspace_live_sync_footer_state(
+                crate::config::WorkspaceLiveSyncMode::Unrestricted,
+                true,
+                false,
+                false,
+            ),
+            WorkspaceLiveSyncFooterState::Off
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_footer_state_prioritizes_conflict_and_degraded() {
+        assert_eq!(
+            workspace_live_sync_footer_state(
+                crate::config::WorkspaceLiveSyncMode::Managed,
+                true,
+                true,
+                true,
+            ),
+            WorkspaceLiveSyncFooterState::Conflict
+        );
+        assert_eq!(
+            workspace_live_sync_footer_state(
+                crate::config::WorkspaceLiveSyncMode::Tracked,
+                true,
+                false,
+                true,
+            ),
+            WorkspaceLiveSyncFooterState::Degraded
+        );
+    }
 }
