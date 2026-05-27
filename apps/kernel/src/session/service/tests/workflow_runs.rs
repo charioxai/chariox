@@ -1,5 +1,33 @@
 use super::*;
 
+struct TestWorkflowEndpoint {
+    workflow: crate::session::WorkflowDefinition,
+    endpoint: crate::session::WorkflowEndpointDefinition,
+}
+
+fn workflow_with_endpoint(
+    service: &mut SessionService,
+    session_id: &str,
+    alias: &str,
+    agent_id: &str,
+) -> TestWorkflowEndpoint {
+    let workflow = service
+        .create_workflow(session_id, Some(alias.to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session_id, workflow.id(), agent_id)
+        .expect("workflow node should be added");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session_id,
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    TestWorkflowEndpoint { workflow, endpoint }
+}
+
 #[test]
 fn creates_lists_resolves_and_cancels_workflow_runs() {
     let mut service = SessionService::new(&test_config());
@@ -260,7 +288,7 @@ fn workflow_prompt_queue_dispatches_by_queue_priority_then_fifo() {
         )
         .expect("second endpoint should be created");
     let urgent_queue = service
-        .create_workflow_prompt_queue(session.id(), "urgent".to_string(), -10)
+        .create_workflow_prompt_queue(session.id(), workflow.id(), "urgent".to_string(), 10)
         .expect("urgent queue should be created");
     let active = service
         .invoke_workflow_endpoint(
@@ -312,6 +340,122 @@ fn workflow_prompt_queue_dispatches_by_queue_priority_then_fifo() {
         .expect("queued workflow prompt should dequeue")
         .expect("expected queued workflow prompt");
     assert_eq!(dequeued.id(), urgent_queued.id());
+}
+
+#[test]
+fn workflow_prompt_queues_are_scoped_per_workflow_and_arbitrate_across_workflows() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let first = workflow_with_endpoint(&mut service, session.id(), "first", "agent-1");
+    let second = workflow_with_endpoint(&mut service, session.id(), "second", "agent-2");
+    let first_fast = service
+        .create_workflow_prompt_queue(session.id(), first.workflow.id(), "fast".to_string(), 5)
+        .expect("first workflow queue should create");
+    let second_fast = service
+        .create_workflow_prompt_queue(session.id(), second.workflow.id(), "fast".to_string(), 5)
+        .expect("second workflow queue should create with same alias");
+
+    let first_prompt = service
+        .enqueue_workflow_prompt(
+            session.id(),
+            first.workflow.id(),
+            first.endpoint.id(),
+            Some("first".to_string()),
+            Some(first_fast.id()),
+            WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("first prompt should queue");
+    let second_prompt = service
+        .enqueue_workflow_prompt(
+            session.id(),
+            second.workflow.id(),
+            second.endpoint.id(),
+            Some("second".to_string()),
+            Some(second_fast.id()),
+            WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("second prompt should queue");
+
+    let first_queues = service
+        .list_workflow_prompt_queues(session.id(), Some(first.workflow.id()))
+        .expect("first queues should list");
+    let second_queues = service
+        .list_workflow_prompt_queues(session.id(), Some(second.workflow.id()))
+        .expect("second queues should list");
+    assert!(first_queues
+        .iter()
+        .any(|queue| queue.id() == first_fast.id()));
+    assert!(!first_queues
+        .iter()
+        .any(|queue| queue.id() == second_fast.id()));
+    assert!(second_queues
+        .iter()
+        .any(|queue| queue.id() == second_fast.id()));
+
+    let dequeued = service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queued workflow prompt should dequeue")
+        .expect("expected queued workflow prompt");
+    assert_eq!(dequeued.id(), first_prompt.id());
+
+    let dequeued = service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queued workflow prompt should dequeue")
+        .expect("expected queued workflow prompt");
+    assert_eq!(dequeued.id(), second_prompt.id());
+}
+
+#[test]
+fn workflow_prompt_queue_arbitration_prefers_highest_priority_across_workflows() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let low = workflow_with_endpoint(&mut service, session.id(), "low", "agent-1");
+    let high = workflow_with_endpoint(&mut service, session.id(), "high", "agent-2");
+    let low_queue = service
+        .create_workflow_prompt_queue(session.id(), low.workflow.id(), "queue".to_string(), 1)
+        .expect("low queue should create");
+    let high_queue = service
+        .create_workflow_prompt_queue(session.id(), high.workflow.id(), "queue".to_string(), 10)
+        .expect("high queue should create");
+
+    let _low_prompt = service
+        .enqueue_workflow_prompt(
+            session.id(),
+            low.workflow.id(),
+            low.endpoint.id(),
+            Some("queued first".to_string()),
+            Some(low_queue.id()),
+            WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("low prompt should queue");
+    let high_prompt = service
+        .enqueue_workflow_prompt(
+            session.id(),
+            high.workflow.id(),
+            high.endpoint.id(),
+            Some("queued second".to_string()),
+            Some(high_queue.id()),
+            WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("high prompt should queue");
+
+    let dequeued = service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("queued workflow prompt should dequeue")
+        .expect("expected queued workflow prompt");
+    assert_eq!(dequeued.id(), high_prompt.id());
 }
 
 #[test]

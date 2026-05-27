@@ -754,6 +754,7 @@ export type WorkflowWatchdogDefinition = {
 
 export type WorkflowPromptQueueDefinition = {
   id: string
+  workflow_id: string
   alias: string
   priority: number
   enabled: boolean

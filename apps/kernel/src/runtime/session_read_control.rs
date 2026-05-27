@@ -304,7 +304,21 @@ pub(crate) fn projected_session_inspection_response(
                     Err(error) => return Some(Err(error)),
                 };
             Some(Ok(LocalDaemonResponse::WorkflowPromptQueuesListed {
-                queues: session.workflow_prompt_queues().to_vec(),
+                queues: match request.workflow_ref.as_deref() {
+                    Some(workflow_ref) => {
+                        let workflow_id = match projected_workflow_id(&session, Some(workflow_ref))
+                        {
+                            Ok(workflow_id) => workflow_id,
+                            Err(error) => return Some(Err(error)),
+                        };
+                        workflow_id
+                            .map(|workflow_id| {
+                                session.workflow_prompt_queues_for_workflow(&workflow_id)
+                            })
+                            .unwrap_or_default()
+                    }
+                    None => session.workflow_prompt_queues().to_vec(),
+                },
             }))
         }
         LocalDaemonRequest::ListQueuedWorkflowPrompts(request) => {

@@ -358,11 +358,15 @@ pub struct SetWorkflowIntermediateOutputSchemaRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListWorkflowPromptQueuesRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowPromptQueueRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
     pub alias: String,
     pub priority: i32,
 }
@@ -370,6 +374,8 @@ pub struct CreateWorkflowPromptQueueRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateWorkflowPromptQueueRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
     pub queue_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -382,6 +388,8 @@ pub struct UpdateWorkflowPromptQueueRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveWorkflowPromptQueueRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
     pub queue_ref: String,
 }
 
@@ -409,6 +417,8 @@ pub struct RemoveQueuedWorkflowPromptRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearWorkflowPromptQueueRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
     pub queue_ref: String,
 }
 

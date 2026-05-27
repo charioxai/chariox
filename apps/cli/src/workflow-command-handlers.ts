@@ -134,20 +134,21 @@ export type WorkflowCommandHandlerDeps = {
     workflowRef: string,
     flushAgentContextBeforeRun: boolean,
   ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
-  listWorkflowPromptQueues?: () => Promise<WorkflowPromptQueueDefinition[]>
-  createWorkflowPromptQueue?: (alias: string, priority: number) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
+  listWorkflowPromptQueues?: (workflowRef?: string | null) => Promise<WorkflowPromptQueueDefinition[]>
+  createWorkflowPromptQueue?: (workflowRef: string | null, alias: string, priority: number) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
   updateWorkflowPromptQueue?: (
+    workflowRef: string | null,
     queueRef: string,
     patch: { alias?: string | null; priority?: number | null; enabled?: boolean | null },
   ) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
-  removeWorkflowPromptQueue?: (queueRef: string) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
+  removeWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
   listQueuedWorkflowPrompts?: () => Promise<WorkflowQueuedPrompt[]>
   updateQueuedWorkflowPrompt?: (
     queueItemRef: string,
     patch: { prompt?: string | null; queueRef?: string | null },
   ) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   removeQueuedWorkflowPrompt?: (queueItemRef: string) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
-  clearWorkflowPromptQueue?: (queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
+  clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>

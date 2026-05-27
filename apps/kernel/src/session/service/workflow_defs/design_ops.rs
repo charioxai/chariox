@@ -28,18 +28,6 @@ impl SessionService {
                         .ok_or_else(|| DaemonError::SessionNotFound {
                             session_id: session_id.to_string(),
                         })?;
-                if !session.workflows().is_empty() {
-                    return Err(DaemonError::InvalidWorkflowGraphReference {
-                        session_id: session_id.to_string(),
-                        workflow_id: session
-                            .workflows()
-                            .first()
-                            .map(|workflow| workflow.id().to_string())
-                            .unwrap_or_else(|| "workflow".to_string()),
-                        reference: "workflow".to_string(),
-                        message: "sessions support exactly one workflow",
-                    });
-                }
                 Ok(session.create_workflow(definition))
             }
             crate::local::WorkflowDesignOp::WorkflowUpdate { workflow_id, patch } => {

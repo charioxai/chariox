@@ -83,10 +83,10 @@ impl KernelRuntimeOwnedState {
         request: crate::local::ListWorkflowPromptQueuesRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowPromptQueuesListed {
-            queues: self
-                .session_store
-                .read()
-                .list_workflow_prompt_queues(&request.session_id)?,
+            queues: self.session_store.read().list_workflow_prompt_queues(
+                &request.session_id,
+                request.workflow_ref.as_deref(),
+            )?,
         })
     }
 
@@ -94,8 +94,13 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::CreateWorkflowPromptQueueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow_ref = self.workflow_prompt_queue_request_workflow_ref(
+            &request.session_id,
+            request.workflow_ref.as_deref(),
+        )?;
         let queue = self.session_store.write().create_workflow_prompt_queue(
             &request.session_id,
+            &workflow_ref,
             request.alias,
             request.priority,
         )?;
@@ -107,8 +112,13 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::UpdateWorkflowPromptQueueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow_ref = self.workflow_prompt_queue_request_workflow_ref(
+            &request.session_id,
+            request.workflow_ref.as_deref(),
+        )?;
         let queue = self.session_store.write().update_workflow_prompt_queue(
             &request.session_id,
+            &workflow_ref,
             &request.queue_ref,
             request.alias,
             request.priority,
@@ -122,10 +132,15 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::RemoveWorkflowPromptQueueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let queue = self
-            .session_store
-            .write()
-            .remove_workflow_prompt_queue(&request.session_id, &request.queue_ref)?;
+        let workflow_ref = self.workflow_prompt_queue_request_workflow_ref(
+            &request.session_id,
+            request.workflow_ref.as_deref(),
+        )?;
+        let queue = self.session_store.write().remove_workflow_prompt_queue(
+            &request.session_id,
+            &workflow_ref,
+            &request.queue_ref,
+        )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowPromptQueueRemoved { queue, session })
     }
@@ -178,14 +193,46 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::ClearWorkflowPromptQueueRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let queued_prompts = self
-            .session_store
-            .write()
-            .clear_workflow_queue(&request.session_id, &request.queue_ref)?;
+        let workflow_ref = self.workflow_prompt_queue_request_workflow_ref(
+            &request.session_id,
+            request.workflow_ref.as_deref(),
+        )?;
+        let queued_prompts = self.session_store.write().clear_workflow_queue(
+            &request.session_id,
+            &workflow_ref,
+            &request.queue_ref,
+        )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowPromptQueueCleared {
             queued_prompts,
             session,
         })
+    }
+
+    fn workflow_prompt_queue_request_workflow_ref(
+        &self,
+        session_id: &str,
+        workflow_ref: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        if let Some(workflow_ref) = workflow_ref {
+            return Ok(workflow_ref.to_string());
+        }
+        let session = self.session_store.read().get_session(session_id)?;
+        let mut workflows = session.workflows().iter();
+        let Some(workflow) = workflows.next() else {
+            return Err(DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+            });
+        };
+        if workflows.next().is_some() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: "workflow".to_string(),
+                reference: "workflow".to_string(),
+                message: "workflow_ref is required when a session has multiple workflows",
+            });
+        }
+        Ok(workflow.id().to_string())
     }
 }

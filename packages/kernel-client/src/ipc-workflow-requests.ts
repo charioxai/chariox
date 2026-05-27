@@ -495,18 +495,25 @@ export function removeWorkflowWatchdogRequest(sessionId: string, watchdogRef: st
   }
 }
 
-export function listWorkflowPromptQueuesRequest(sessionId: string) {
+export function listWorkflowPromptQueuesRequest(sessionId: string, workflowRef?: string | null) {
   return {
     ListWorkflowPromptQueues: {
       session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
     },
   }
 }
 
-export function createWorkflowPromptQueueRequest(sessionId: string, alias: string, priority: number) {
+export function createWorkflowPromptQueueRequest(
+  sessionId: string,
+  workflowRef: string | null,
+  alias: string,
+  priority: number,
+) {
   return {
     CreateWorkflowPromptQueue: {
       session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
       alias,
       priority,
     },
@@ -515,12 +522,14 @@ export function createWorkflowPromptQueueRequest(sessionId: string, alias: strin
 
 export function updateWorkflowPromptQueueRequest(
   sessionId: string,
+  workflowRef: string | null,
   queueRef: string,
   patch: { alias?: string | null; priority?: number | null; enabled?: boolean | null },
 ) {
   return {
     UpdateWorkflowPromptQueue: {
       session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
       queue_ref: queueRef,
       alias: patch.alias ?? null,
       priority: patch.priority ?? null,
@@ -529,10 +538,15 @@ export function updateWorkflowPromptQueueRequest(
   }
 }
 
-export function removeWorkflowPromptQueueRequest(sessionId: string, queueRef: string) {
+export function removeWorkflowPromptQueueRequest(
+  sessionId: string,
+  workflowRef: string | null,
+  queueRef: string,
+) {
   return {
     RemoveWorkflowPromptQueue: {
       session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
       queue_ref: queueRef,
     },
   }
@@ -570,10 +584,15 @@ export function removeQueuedWorkflowPromptRequest(sessionId: string, queueItemRe
   }
 }
 
-export function clearWorkflowPromptQueueRequest(sessionId: string, queueRef: string) {
+export function clearWorkflowPromptQueueRequest(
+  sessionId: string,
+  workflowRef: string | null,
+  queueRef: string,
+) {
   return {
     ClearWorkflowPromptQueue: {
       session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
       queue_ref: queueRef,
     },
   }

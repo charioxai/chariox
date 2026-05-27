@@ -396,18 +396,6 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        if !session.workflows().is_empty() {
-            return Err(DaemonError::InvalidWorkflowGraphReference {
-                session_id: session_id.to_string(),
-                workflow_id: session
-                    .workflows()
-                    .first()
-                    .map(|workflow| workflow.id().to_string())
-                    .unwrap_or_else(|| "workflow".to_string()),
-                reference: "workflow".to_string(),
-                message: "sessions support exactly one workflow",
-            });
-        }
         Ok(session.create_workflow(workflow))
     }
 
@@ -1017,23 +1005,24 @@ impl SessionService {
     pub fn resolve_workflow_prompt_queue_ref(
         &self,
         session_id: &str,
+        workflow_id: &str,
         queue_ref: &str,
     ) -> Result<String, DaemonError> {
         let normalized_ref = queue_ref.trim().to_lowercase();
         let session = self.get_session(session_id)?;
-        if let Some(queue) = session
-            .workflow_prompt_queues()
-            .iter()
-            .find(|queue| queue.id() == normalized_ref || queue.alias() == normalized_ref)
-        {
+        if let Some(queue) = session.workflow_prompt_queues().iter().find(|queue| {
+            queue.workflow_id() == workflow_id
+                && (queue.id() == normalized_ref || queue.alias() == normalized_ref)
+        }) {
             return Ok(queue.id().to_string());
         }
         let matches = session
             .workflow_prompt_queues()
             .iter()
             .filter(|queue| {
-                queue.id().starts_with(&normalized_ref)
-                    || queue.alias().starts_with(&normalized_ref)
+                queue.workflow_id() == workflow_id
+                    && (queue.id().starts_with(&normalized_ref)
+                        || queue.alias().starts_with(&normalized_ref))
             })
             .map(|queue| queue.id().to_string())
             .collect::<Vec<_>>();
@@ -1042,7 +1031,7 @@ impl SessionService {
         }
         Err(DaemonError::InvalidWorkflowGraphReference {
             session_id: session_id.to_string(),
-            workflow_id: normalized_ref.clone(),
+            workflow_id: workflow_id.to_string(),
             reference: queue_ref.to_string(),
             message: "workflow prompt queue was not found",
         })

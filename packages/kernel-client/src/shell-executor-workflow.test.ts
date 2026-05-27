@@ -487,7 +487,7 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
   const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
   const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
   const watchdog = makeWorkflowWatchdog()
-  const queue = { id: "default", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
+  const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
   const queued = { id: "prompt-1", queue_id: "default", workflow_id: "workflow-1", endpoint_id: "endpoint-1", source: "manual" as const, status: "queued" as const, created_at_ms: 0, updated_at_ms: 0 }
   const requests: Record<string, unknown>[] = []
   const fake = {
@@ -570,10 +570,10 @@ test("executeShellCommand manages advanced workflow settings, watchdogs, and que
     { ListWorkflowWatchdogs: { session_id: "session-1", workflow_ref: "workflow-1" } },
     { SetWorkflowWatchdogEnabled: { session_id: "session-1", watchdog_ref: "watchdog-1", enabled: false } },
     { RemoveWorkflowWatchdog: { session_id: "session-1", watchdog_ref: "watchdog-1" } },
-    { ListWorkflowPromptQueues: { session_id: "session-1" } },
+    { ListWorkflowPromptQueues: { session_id: "session-1", workflow_ref: "workflow-1" } },
     { ListQueuedWorkflowPrompts: { session_id: "session-1" } },
     { RemoveQueuedWorkflowPrompt: { session_id: "session-1", queue_item_ref: "prompt-1" } },
-    { ClearWorkflowPromptQueue: { session_id: "session-1", queue_ref: "default" } },
+    { ClearWorkflowPromptQueue: { session_id: "session-1", workflow_ref: "workflow-1", queue_ref: "default" } },
   ])
 })
 

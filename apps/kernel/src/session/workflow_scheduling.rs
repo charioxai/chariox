@@ -21,6 +21,8 @@ pub enum WorkflowQueuedPromptSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPromptQueueDefinition {
     id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    workflow_id: String,
     alias: String,
     priority: i32,
     enabled: bool,
@@ -29,10 +31,16 @@ pub struct WorkflowPromptQueueDefinition {
 }
 
 impl WorkflowPromptQueueDefinition {
-    pub fn new(id: impl Into<String>, alias: impl Into<String>, priority: i32) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        alias: impl Into<String>,
+        priority: i32,
+    ) -> Self {
         let now = unix_epoch_ms();
         Self {
             id: id.into(),
+            workflow_id: workflow_id.into(),
             alias: alias.into(),
             priority,
             enabled: true,
@@ -41,12 +49,16 @@ impl WorkflowPromptQueueDefinition {
         }
     }
 
-    pub fn default_queue() -> Self {
-        Self::new("default", "default", 0)
+    pub fn default_queue(workflow_id: impl Into<String>) -> Self {
+        let workflow_id = workflow_id.into();
+        Self::new(format!("{workflow_id}:default"), workflow_id, "default", 0)
     }
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
     }
     pub fn alias(&self) -> &str {
         &self.alias

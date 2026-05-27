@@ -91,6 +91,7 @@ function createHarness(overrides: Partial<WorkflowQueueCommandDeps>) {
 function queue(overrides: Partial<WorkflowPromptQueueDefinition> = {}): WorkflowPromptQueueDefinition {
   return {
     id: "default",
+    workflow_id: "workflow-1",
     alias: "default",
     priority: 0,
     enabled: true,

@@ -59,8 +59,8 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     return payload
   }
 
-  const listWorkflowPromptQueues = async () => {
-    const response = await deps.sendRequest(listWorkflowPromptQueuesRequest(deps.sessionId()))
+  const listWorkflowPromptQueues = async (workflowRef?: string | null) => {
+    const response = await deps.sendRequest(listWorkflowPromptQueuesRequest(deps.sessionId(), workflowRef))
     const payload = expectVariant<{ queues: WorkflowPromptQueueDefinition[] }>(
       response,
       "WorkflowPromptQueuesListed",
@@ -68,9 +68,9 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     return payload.queues
   }
 
-  const createWorkflowPromptQueue = async (alias: string, priority: number) => {
+  const createWorkflowPromptQueue = async (workflowRef: string | null, alias: string, priority: number) => {
     const response = await deps.sendRequest(
-      createWorkflowPromptQueueRequest(deps.sessionId(), alias, priority),
+      createWorkflowPromptQueueRequest(deps.sessionId(), workflowRef, alias, priority),
     )
     const payload = expectVariant<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>(
       response,
@@ -81,11 +81,12 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
   }
 
   const updateWorkflowPromptQueue = async (
+    workflowRef: string | null,
     queueRef: string,
     patch: { alias?: string | null; priority?: number | null; enabled?: boolean | null },
   ) => {
     const response = await deps.sendRequest(
-      updateWorkflowPromptQueueRequest(deps.sessionId(), queueRef, patch),
+      updateWorkflowPromptQueueRequest(deps.sessionId(), workflowRef, queueRef, patch),
     )
     const payload = expectVariant<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>(
       response,
@@ -95,8 +96,8 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     return payload
   }
 
-  const removeWorkflowPromptQueue = async (queueRef: string) => {
-    const response = await deps.sendRequest(removeWorkflowPromptQueueRequest(deps.sessionId(), queueRef))
+  const removeWorkflowPromptQueue = async (workflowRef: string | null, queueRef: string) => {
+    const response = await deps.sendRequest(removeWorkflowPromptQueueRequest(deps.sessionId(), workflowRef, queueRef))
     const payload = expectVariant<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>(
       response,
       "WorkflowPromptQueueRemoved",
@@ -141,8 +142,8 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     return payload
   }
 
-  const clearWorkflowPromptQueue = async (queueRef: string) => {
-    const response = await deps.sendRequest(clearWorkflowPromptQueueRequest(deps.sessionId(), queueRef))
+  const clearWorkflowPromptQueue = async (workflowRef: string | null, queueRef: string) => {
+    const response = await deps.sendRequest(clearWorkflowPromptQueueRequest(deps.sessionId(), workflowRef, queueRef))
     const payload = expectVariant<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>(
       response,
       "WorkflowPromptQueueCleared",

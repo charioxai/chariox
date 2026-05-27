@@ -137,7 +137,7 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
-            workflow_prompt_queues: vec![WorkflowPromptQueueDefinition::default_queue()],
+            workflow_prompt_queues: Vec::new(),
             workflow_queued_prompts: VecDeque::new(),
             workflow_watchdogs: Vec::new(),
             workflow_consoles: Vec::new(),
@@ -544,7 +544,9 @@ impl RuntimeSession {
     }
 
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {
+        let workflow_id = workflow.id().to_string();
         self.workflows.push(workflow.clone());
+        self.ensure_default_workflow_prompt_queue(&workflow_id);
         workflow
     }
 
@@ -697,30 +699,61 @@ impl RuntimeSession {
         queue
     }
 
-    pub fn workflow_prompt_queue(&self, queue_id: &str) -> Option<&WorkflowPromptQueueDefinition> {
+    pub fn workflow_prompt_queues_for_workflow(
+        &self,
+        workflow_id: &str,
+    ) -> Vec<WorkflowPromptQueueDefinition> {
         self.workflow_prompt_queues
             .iter()
-            .find(|queue| queue.id() == queue_id || queue.alias() == queue_id)
+            .filter(|queue| queue.workflow_id() == workflow_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn workflow_prompt_queue(
+        &self,
+        workflow_id: &str,
+        queue_id: &str,
+    ) -> Option<&WorkflowPromptQueueDefinition> {
+        self.workflow_prompt_queues.iter().find(|queue| {
+            queue.workflow_id() == workflow_id
+                && (queue.id() == queue_id || queue.alias() == queue_id)
+        })
     }
 
     pub fn workflow_prompt_queue_mut(
         &mut self,
+        workflow_id: &str,
         queue_id: &str,
     ) -> Option<&mut WorkflowPromptQueueDefinition> {
-        self.workflow_prompt_queues
-            .iter_mut()
-            .find(|queue| queue.id() == queue_id || queue.alias() == queue_id)
+        self.workflow_prompt_queues.iter_mut().find(|queue| {
+            queue.workflow_id() == workflow_id
+                && (queue.id() == queue_id || queue.alias() == queue_id)
+        })
     }
 
     pub fn remove_workflow_prompt_queue(
         &mut self,
+        workflow_id: &str,
         queue_id: &str,
     ) -> Option<WorkflowPromptQueueDefinition> {
-        let index = self
+        let index = self.workflow_prompt_queues.iter().position(|queue| {
+            queue.workflow_id() == workflow_id
+                && (queue.id() == queue_id || queue.alias() == queue_id)
+        })?;
+        Some(self.workflow_prompt_queues.remove(index))
+    }
+
+    pub fn ensure_default_workflow_prompt_queue(&mut self, workflow_id: &str) {
+        if self
             .workflow_prompt_queues
             .iter()
-            .position(|queue| queue.id() == queue_id || queue.alias() == queue_id)?;
-        Some(self.workflow_prompt_queues.remove(index))
+            .any(|queue| queue.workflow_id() == workflow_id && queue.alias() == "default")
+        {
+            return;
+        }
+        self.workflow_prompt_queues
+            .push(WorkflowPromptQueueDefinition::default_queue(workflow_id));
     }
 
     pub fn enqueue_workflow_prompt(
@@ -787,13 +820,15 @@ impl RuntimeSession {
             .enumerate()
             .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
             .filter_map(|(index, item)| {
-                let queue = self.workflow_prompt_queue(item.queue_id())?;
+                let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 if !queue.enabled() {
                     return None;
                 }
                 Some((index, queue.priority(), item.created_at_ms()))
             })
-            .min_by_key(|(_, priority, created_at_ms)| (*priority, *created_at_ms))
+            .min_by_key(|(_, priority, created_at_ms)| {
+                (std::cmp::Reverse(*priority), *created_at_ms)
+            })
             .map(|(index, _, _)| index)?;
         let mut item = self.workflow_queued_prompts.remove(best)?;
         item.mark_dispatching();

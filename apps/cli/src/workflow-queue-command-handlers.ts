@@ -9,20 +9,22 @@ type FooterTone = "info" | "error"
 export type WorkflowQueueCommandDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   applySessionState: (session: RuntimeSession) => void
-  listWorkflowPromptQueues?: () => Promise<WorkflowPromptQueueDefinition[]>
-  createWorkflowPromptQueue?: (alias: string, priority: number) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
+  selectedWorkflowId?: () => string | null
+  listWorkflowPromptQueues?: (workflowRef?: string | null) => Promise<WorkflowPromptQueueDefinition[]>
+  createWorkflowPromptQueue?: (workflowRef: string | null, alias: string, priority: number) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
   updateWorkflowPromptQueue?: (
+    workflowRef: string | null,
     queueRef: string,
     patch: { alias?: string | null; priority?: number | null; enabled?: boolean | null },
   ) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
-  removeWorkflowPromptQueue?: (queueRef: string) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
+  removeWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queue: WorkflowPromptQueueDefinition; session: RuntimeSession }>
   listQueuedWorkflowPrompts?: () => Promise<WorkflowQueuedPrompt[]>
   updateQueuedWorkflowPrompt?: (
     queueItemRef: string,
     patch: { prompt?: string | null; queueRef?: string | null },
   ) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   removeQueuedWorkflowPrompt?: (queueItemRef: string) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
-  clearWorkflowPromptQueue?: (queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
+  clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
 }
 
 export async function handleWorkflowQueueCommand(
@@ -45,7 +47,7 @@ export async function handleWorkflowQueueCommand(
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.createWorkflowPromptQueue(alias, priority)
+    const payload = await deps.createWorkflowPromptQueue(currentWorkflowRef(deps), alias, priority)
     deps.applySessionState(payload.session)
     deps.flashFooter(`created workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
@@ -61,7 +63,7 @@ export async function handleWorkflowQueueCommand(
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.updateWorkflowPromptQueue(queueRef, { priority })
+    const payload = await deps.updateWorkflowPromptQueue(currentWorkflowRef(deps), queueRef, { priority })
     deps.applySessionState(payload.session)
     deps.flashFooter(`updated workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
@@ -77,7 +79,7 @@ export async function handleWorkflowQueueCommand(
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.updateWorkflowPromptQueue(queueRef, { alias })
+    const payload = await deps.updateWorkflowPromptQueue(currentWorkflowRef(deps), queueRef, { alias })
     deps.applySessionState(payload.session)
     deps.flashFooter(`renamed workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
@@ -135,7 +137,7 @@ export async function handleWorkflowQueueCommand(
       deps.flashFooter("workflow queue commands unavailable", "error")
       return
     }
-    const payload = await deps.clearWorkflowPromptQueue(queueRef)
+    const payload = await deps.clearWorkflowPromptQueue(currentWorkflowRef(deps), queueRef)
     deps.applySessionState(payload.session)
     deps.flashFooter(
       payload.queued_prompts.length === 0
@@ -154,7 +156,7 @@ async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps): Promise<voi
     return
   }
   const [queues, prompts] = await Promise.all([
-    deps.listWorkflowPromptQueues(),
+    deps.listWorkflowPromptQueues(currentWorkflowRef(deps)),
     deps.listQueuedWorkflowPrompts(),
   ])
   const queueSummary = queues.map((queue) => {
@@ -167,6 +169,10 @@ async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps): Promise<voi
       : `workflow queues: ${queueSummary.join(", ")}${prompts.length ? `; prompts: ${prompts.map(formatWorkflowQueuedPrompt).join(", ")}` : ""}`,
     "info",
   )
+}
+
+function currentWorkflowRef(deps: WorkflowQueueCommandDeps): string | null {
+  return deps.selectedWorkflowId?.() ?? null
 }
 
 export function formatWorkflowPromptQueue(queue: WorkflowPromptQueueDefinition): string {

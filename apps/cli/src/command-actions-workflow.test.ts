@@ -213,7 +213,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
       updated_at_ms: 1,
     },
   ]
-  const workflowPromptQueues = [{ id: "default", alias: "default", priority: 0, enabled: true, created_at_ms: 1, updated_at_ms: 1 }]
+  const workflowPromptQueues = [{ id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 1, updated_at_ms: 1 }]
   const resolvedWorkflowAgent = makeAgent({
     id: "agent-instance-1",
     agent_ref: "5f26c340",
