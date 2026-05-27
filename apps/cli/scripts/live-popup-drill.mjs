@@ -372,10 +372,10 @@ async function main() {
       focusAgentRequest,
       listRemoteMachinesRequest,
       spawnAgentRequest,
-      setUserConfigValueRequest,
+      setWorkspaceLiveSyncModeRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
-    await client.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
+    await client.send(setWorkspaceLiveSyncModeRequest('unrestricted'))
     const provider = options.providers[0] ?? 'codex'
     const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
     const session = unwrap(

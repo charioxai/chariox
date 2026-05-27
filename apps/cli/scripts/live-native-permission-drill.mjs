@@ -363,11 +363,11 @@ async function main() {
       submitPromptRequest,
       focusAgentRequest,
       updateSessionConfigRequest,
-      setUserConfigValueRequest,
+      setWorkspaceLiveSyncModeRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
 
-    await client.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
+    await client.send(setWorkspaceLiveSyncModeRequest('unrestricted'))
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `native-permission-${provider}`)), 'SessionCreated').session
     sessionId = session.id

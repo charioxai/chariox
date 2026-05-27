@@ -257,7 +257,7 @@ async function main() {
     createSessionRequest,
     endSessionRequest,
     listRemoteMachinesRequest,
-    setUserConfigValueRequest,
+    setWorkspaceLiveSyncModeRequest,
   } = requests
 
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
@@ -357,8 +357,8 @@ async function main() {
         kernelMaxMissedPongs: 10,
       })
       try {
-        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
-        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
+        await localClient.send(setWorkspaceLiveSyncModeRequest('unrestricted'))
+        await workerClient.send(setWorkspaceLiveSyncModeRequest('unrestricted'))
       } finally {
         await workerClient.close().catch(() => {})
       }
