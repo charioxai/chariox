@@ -306,7 +306,7 @@ async function main() {
       setUserConfigValueRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
-    await client.send(setUserConfigValueRequest('providers.workspace_live_sync', 'required'))
+    await client.send(setUserConfigValueRequest('providers.workspace_live_sync', 'managed'))
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `workspace-live-sync-permission-${provider}`)), 'SessionCreated').session
     const sessionId = session.id
