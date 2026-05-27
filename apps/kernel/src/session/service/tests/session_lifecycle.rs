@@ -72,6 +72,10 @@ fn manages_session_membership_invites() {
     assert_eq!(session.owner_user_id(), DEFAULT_LOCAL_USER_ID);
     assert_eq!(session.members().len(), 1);
     assert!(session.has_member(DEFAULT_LOCAL_USER_ID));
+    assert_eq!(
+        session.members()[0].collaboration_level(),
+        crate::session::CollaborationLevel::Private
+    );
 
     let (session, invite) = service
         .create_session_invite(

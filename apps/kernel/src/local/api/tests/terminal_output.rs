@@ -354,10 +354,39 @@ fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
         _ => panic!("unexpected user-2 watch result"),
     };
 
-    assert_eq!(owner_snapshot.session.agents().len(), 1);
-    assert_eq!(owner_snapshot.session.agents()[0].id(), owner_agent.id());
-    assert_eq!(user_two_snapshot.session.agents().len(), 1);
-    assert_eq!(user_two_snapshot.session.agents()[0].id(), agent_two.id());
+    assert_eq!(owner_snapshot.session.agents().len(), 3);
+    let owner_visible_agent = owner_snapshot
+        .session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == owner_agent.id())
+        .expect("owner should see own agent");
+    assert_eq!(owner_visible_agent.provider(), owner_agent.provider());
+    let owner_redacted_agent = owner_snapshot
+        .session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == agent_two.id())
+        .expect("owner should see redacted collaborator handle");
+    assert_eq!(owner_redacted_agent.provider(), "redacted");
+    assert_eq!(owner_redacted_agent.model(), None);
+
+    assert_eq!(user_two_snapshot.session.agents().len(), 3);
+    let user_two_visible_agent = user_two_snapshot
+        .session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == agent_two.id())
+        .expect("user-2 should see own agent");
+    assert_ne!(user_two_visible_agent.provider(), "redacted");
+    let user_two_redacted_owner_agent = user_two_snapshot
+        .session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == owner_agent.id())
+        .expect("user-2 should see redacted owner handle");
+    assert_eq!(user_two_redacted_owner_agent.provider(), "redacted");
+    assert_eq!(user_two_redacted_owner_agent.model(), None);
     assert_eq!(
         owner_snapshot
             .session

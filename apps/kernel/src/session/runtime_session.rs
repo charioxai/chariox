@@ -177,7 +177,7 @@ impl RuntimeSession {
             owner_user_id,
             0,
             None,
-            CollaborationLevel::Full,
+            CollaborationLevel::Private,
         )];
     }
 
@@ -196,9 +196,6 @@ impl RuntimeSession {
     }
 
     pub fn collaboration_level_for_user(&self, user_id: &str) -> Option<CollaborationLevel> {
-        if self.owner_user_id == user_id {
-            return Some(CollaborationLevel::Full);
-        }
         self.members
             .iter()
             .find(|member| member.user_id() == user_id)

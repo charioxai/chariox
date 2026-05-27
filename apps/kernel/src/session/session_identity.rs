@@ -187,7 +187,7 @@ impl SessionMember {
     }
 
     pub fn local() -> Self {
-        Self::new(DEFAULT_LOCAL_USER_ID, 0, None, CollaborationLevel::Full)
+        Self::new(DEFAULT_LOCAL_USER_ID, 0, None, CollaborationLevel::Private)
     }
 
     pub fn user_id(&self) -> &str {
