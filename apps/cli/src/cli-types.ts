@@ -784,6 +784,9 @@ export type WorkflowQueuedPrompt = {
 export type WorkflowNodeDefinition = {
   id: string
   agent_id: string
+  owner_user_id?: string
+  created_by_user_id?: string
+  public_label?: string
   instructions?: string | null
   can_complete_workflow_run?: boolean
   can_emit_intermediate_run_output?: boolean

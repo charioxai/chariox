@@ -15,6 +15,8 @@ const RELAY_SECRET = 'arroba-multi-user-workflow-drill-secret'
 const RELAY_REALM = 'multi-user-workflow-drill'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
+const DEFAULT_PROVIDER = 'codex'
+const DEFAULT_MODEL = 'gpt-5.4-mini'
 
 async function loadCliModules(runtimeDir) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
@@ -43,11 +45,15 @@ function parseArgs(argv) {
   const options = {
     workspace: DEFAULT_WORKSPACE,
     worktree: DEFAULT_WORKTREE,
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--workspace') options.workspace = argv[++index]
     else if (arg === '--worktree') options.worktree = argv[++index]
+    else if (arg === '--provider') options.provider = argv[++index]
+    else if (arg === '--model') options.model = argv[++index]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -61,7 +67,21 @@ function printHelp() {
     'Options:',
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
+    `  --provider ${DEFAULT_PROVIDER}`,
+    `  --model ${DEFAULT_MODEL}`,
   ].join('\n'))
+}
+
+function modelForProvider(provider, model) {
+  if (provider === 'opencode' && !model.includes('/')) return `openai/${opencodeCodexModel(model)}`
+  if (provider === 'codex' && !model.includes('/')) return opencodeCodexModel(model)
+  return model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
 }
 
 function base64url(input) {
@@ -388,12 +408,13 @@ async function main() {
     requireCondition(user2Sessions.some((entry) => entry.id === session.id), 'user-2 should see joined session', user2Sessions)
 
     logStep('spawn_user_owned_agents')
+    const providerModel = modelForProvider(options.provider, options.model)
     const user1Agent = unwrapVariant(
-      await user1.send(spawnAgentRequest(session.id, 'dev-stub', 'user-one-agent', 'multi-user-drill', options.worktree, 'low')),
+      await user1.send(spawnAgentRequest(session.id, options.provider, 'user-one-agent', providerModel, options.worktree, 'low')),
       'AgentSpawned',
     ).agent
     const user2Agent = unwrapVariant(
-      await user2.send(spawnAgentRequest(session.id, 'dev-stub', 'user-two-agent', 'multi-user-drill', options.worktree, 'low')),
+      await user2.send(spawnAgentRequest(session.id, options.provider, 'user-two-agent', providerModel, options.worktree, 'low')),
       'AgentSpawned',
     ).agent
     requireCondition(user1Agent.owner_user_id === 'user-1', 'user-1 agent owner mismatch', user1Agent)
@@ -401,8 +422,9 @@ async function main() {
 
     const user2Agents = unwrapVariant(await user2.send(listAgentsRequest(session.id)), 'AgentsListed').agents
     requireCondition(
-      user2Agents.length === 1 && user2Agents[0].id === user2Agent.id,
-      'user-2 should only list its own providers/agents',
+      user2Agents.some((agent) => agent.id === user2Agent.id)
+        && user2Agents.some((agent) => agent.id === user1Agent.id && agent.provider === 'redacted'),
+      'private user-2 should list its own agent plus redacted workflow-selectable owner handles',
       user2Agents,
     )
 
@@ -411,29 +433,26 @@ async function main() {
       await user1.send(createWorkflowRequest(session.id, 'multi-user-live-flow')),
       'WorkflowCreated',
     ).workflow
-    const user1Node = unwrapVariant(
-      await user1.send(addWorkflowNodeRequest(session.id, workflow.id, user1Agent.id, workflow.revision)),
-      'WorkflowNodeAdded',
-    ).node
-    await user1.send(updateWorkflowNodeInstructionsRequest(
-      session.id,
-      workflow.id,
-      user1Node.id,
-      'private prompt from user-1',
-    ))
-
-    await expectReject(
-      user2.send(addWorkflowNodeRequest(session.id, workflow.id, user1Agent.id)),
-      'user-2 adding user-1 agent as workflow node',
-      'owned by `user-1`',
-    )
-
     const resolvedBeforeUser2Node = unwrapVariant(
       await user2.send(resolveWorkflowRequest(session.id, workflow.id)),
       'WorkflowResolved',
     ).workflow
+    const user2PlacedUser1Node = unwrapVariant(
+      await user2.send(addWorkflowNodeRequest(session.id, workflow.id, user1Agent.id, resolvedBeforeUser2Node.revision)),
+      'WorkflowNodeAdded',
+    ).node
+    requireCondition(
+      user2PlacedUser1Node.agent_id === user1Agent.id && user2PlacedUser1Node.created_by_user_id === 'user-2',
+      'private user-2 should be able to add user-1 agent as a workflow node',
+      user2PlacedUser1Node,
+    )
+    const user1Node = user2PlacedUser1Node
+    const resolvedAfterSharedNode = unwrapVariant(
+      await user2.send(resolveWorkflowRequest(session.id, workflow.id)),
+      'WorkflowResolved',
+    ).workflow
     const user2Node = unwrapVariant(
-      await user2.send(addWorkflowNodeRequest(session.id, workflow.id, user2Agent.id, resolvedBeforeUser2Node.revision)),
+      await user2.send(addWorkflowNodeRequest(session.id, workflow.id, user2Agent.id, resolvedAfterSharedNode.revision)),
       'WorkflowNodeAdded',
     ).node
     await user2.send(updateWorkflowNodeInstructionsRequest(
@@ -480,11 +499,11 @@ async function main() {
       'private prompt from user-2 after revision bump',
     ))
     await expectReject(
-      user1.send(updateWorkflowNodeInstructionsRequest(
+      user2.send(updateWorkflowNodeInstructionsRequest(
         session.id,
         workflow.id,
-        user1Node.id,
-        'stale private prompt from user-1',
+        user2Node.id,
+        'stale private prompt from user-2',
         beforeStaleMutation.revision,
       )),
       'stale workflow revision mutation',
@@ -503,14 +522,20 @@ async function main() {
 
     logStep('verify_redacted_shared_projection')
     const user2State = unwrapVariant(await user2.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
-    requireCondition(user2State.agents.length === 1 && user2State.agents[0].id === user2Agent.id, 'user-2 state should redact user-1 agent', user2State.agents)
+    requireCondition(
+      user2State.agents.some((agent) => agent.id === user2Agent.id && agent.provider !== 'redacted')
+        && user2State.agents.some((agent) => agent.id === user1Agent.id && agent.provider === 'redacted'),
+      'user-2 state should retain own agent and redact user-1 agent details',
+      user2State.agents,
+    )
     const redactedWorkflow = user2State.workflows.find((entry) => entry.id === workflow.id)
     requireCondition(redactedWorkflow != null, 'user-2 should see shared workflow graph', user2State.workflows)
-    const redactedUser1Node = redactedWorkflow.nodes.find((node) => node.id === user1Node.id)
+    const placedUser1Node = redactedWorkflow.nodes.find((node) => node.id === user2PlacedUser1Node.id)
     const visibleUser2Node = redactedWorkflow.nodes.find((node) => node.id === user2Node.id)
-    requireCondition(redactedUser1Node != null, 'user-2 should see user-1 node shell', redactedWorkflow)
+    requireCondition(placedUser1Node != null, 'user-2 should see the node it created for user-1 agent', redactedWorkflow)
     requireCondition(visibleUser2Node != null, 'user-2 should see own node', redactedWorkflow)
-    requireCondition(redactedUser1Node.instructions == null, 'user-1 node instructions should be redacted from user-2', redactedUser1Node)
+    requireCondition(placedUser1Node.agent_id === user1Agent.id, 'user-2 placed node should preserve backing user-1 agent id', placedUser1Node)
+    requireCondition(placedUser1Node.instructions == null, 'user-1 backing agent node instructions should stay unset/redacted from user-2', placedUser1Node)
     requireCondition(visibleUser2Node.instructions === 'private prompt from user-2 after revision bump', 'user-2 node instructions should remain visible to owner', visibleUser2Node)
 
     console.log(JSON.stringify({
@@ -519,16 +544,18 @@ async function main() {
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId: session.id,
+      provider: options.provider,
+      model: providerModel,
       users: ['user-1', 'user-2', 'user-3'],
       workflowId: workflow.id,
       nodes: [
-        { id: user1Node.id, ownerUserId: user1Node.owner_user_id, publicLabel: user1Node.public_label },
+        { id: user2PlacedUser1Node.id, ownerUserId: user2PlacedUser1Node.owner_user_id, createdByUserId: user2PlacedUser1Node.created_by_user_id, publicLabel: user2PlacedUser1Node.public_label },
         { id: user2Node.id, ownerUserId: user2Node.owner_user_id, publicLabel: user2Node.public_label },
       ],
       assertions: [
         'session membership over scoped relay',
-        'per-user agent visibility',
-        'cannot add another user agent as node',
+        'private collaborator receives redacted workflow-selectable agent handles',
+        'private collaborator can add another user agent as node',
         'cannot invoke another user endpoint',
         'cross-owner edge allowed when touching caller node',
         'unrelated user cannot remove edge',

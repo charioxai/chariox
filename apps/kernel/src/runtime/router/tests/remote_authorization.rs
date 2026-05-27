@@ -334,6 +334,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
             &workflow_id,
             &local_agent_id,
             DEFAULT_LOCAL_USER_ID.to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
             local_agent_id.clone(),
         )
         .expect("node should be created");
@@ -612,6 +613,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
             &workflow_id,
             local_agent.id(),
             DEFAULT_LOCAL_USER_ID.to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
             "local public".to_string(),
         )
         .expect("local node should be created");
@@ -629,6 +631,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
             &session_id,
             &workflow_id,
             user_two_agent.id(),
+            "user-2".to_string(),
             "user-2".to_string(),
             "user two public".to_string(),
         )

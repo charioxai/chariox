@@ -267,7 +267,11 @@ fn workflow_runs_progress_without_terminal_pumps() {
         .expect("attachment should attach");
 
     let agent = app
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("node-a"))
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("node-a")
+                .with_model("workflow-single-turn-node"),
+        )
         .expect("agent should spawn");
     let workflow = app
         .sessions_mut()
@@ -277,6 +281,9 @@ fn workflow_runs_progress_without_terminal_pumps() {
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), agent.id())
         .expect("workflow node should be created");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("workflow node should be allowed to complete");
     let endpoint = app
         .sessions_mut()
         .create_workflow_endpoint(
@@ -320,6 +327,8 @@ fn workflow_runs_progress_without_terminal_pumps() {
         .sessions()
         .resolve_workflow_run_ref(session.id(), &run_id)
         .expect("workflow run should exist");
+    app.end_session(session.id())
+        .expect("session should end cleanly");
     assert!(
         matches!(
             run.status(),

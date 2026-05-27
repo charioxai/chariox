@@ -116,6 +116,10 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             "workflow drill node 2",
             1843,
         )),
+        "workflow-single-turn-node" => Some(dev_stub_workflow_read_through_script(
+            "workflow single turn node",
+            1842,
+        )),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
@@ -130,6 +134,7 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
         model,
         "workflow-drill-node-1"
             | "workflow-drill-node-2"
+            | "workflow-single-turn-node"
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
             | "large-output-drill"
@@ -140,6 +145,14 @@ fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {
     let payload =
         format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
     format!("sleep 1; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; sleep 300")
+}
+
+fn dev_stub_workflow_read_through_script(summary: &str, value: i64) -> String {
+    let payload =
+        format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
+    format!(
+        "stty -echo 2>/dev/null || true; printed=0; while IFS= read -r _line; do if [ \"$printed\" -eq 0 ]; then printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; printed=1; fi; done"
+    )
 }
 
 fn dev_stub_semantic_renderer_script() -> String {

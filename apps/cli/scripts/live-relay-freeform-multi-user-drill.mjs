@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { mkdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,8 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 const RELAY_ISSUER = 'arroba-relay-freeform-multi-user-drill'
 const RELAY_SECRET = 'arroba-relay-freeform-multi-user-drill-secret'
 const RELAY_REALM = 'relay-freeform-multi-user-drill'
+const DEFAULT_PROVIDER = 'codex'
+const DEFAULT_MODEL = 'gpt-5.4-mini'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function parseArgs(argv = process.argv.slice(2)) {
@@ -22,6 +24,10 @@ function parseArgs(argv = process.argv.slice(2)) {
     hetznerHost: process.env.ARROBA_COLLAB_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
     hetznerKey: process.env.ARROBA_COLLAB_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
     hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+    provider: process.env.ARROBA_COLLAB_PROVIDER ?? DEFAULT_PROVIDER,
+    model: process.env.ARROBA_COLLAB_MODEL ?? DEFAULT_MODEL,
+    timeoutMs: Number.parseInt(process.env.ARROBA_COLLAB_TIMEOUT_MS ?? '300000', 10),
+    pollMs: Number.parseInt(process.env.ARROBA_COLLAB_POLL_MS ?? '1000', 10),
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -33,6 +39,14 @@ function parseArgs(argv = process.argv.slice(2)) {
       options.hetznerKey = argv[++index]
     } else if (arg === '--hetzner-repo') {
       options.hetznerRepo = argv[++index]
+    } else if (arg === '--provider') {
+      options.provider = argv[++index]
+    } else if (arg === '--model') {
+      options.model = argv[++index]
+    } else if (arg === '--timeout-ms') {
+      options.timeoutMs = Number.parseInt(argv[++index], 10)
+    } else if (arg === '--poll-ms') {
+      options.pollMs = Number.parseInt(argv[++index], 10)
     } else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-relay-freeform-multi-user-drill.mjs [options]',
@@ -42,6 +56,10 @@ function parseArgs(argv = process.argv.slice(2)) {
         '  --hetzner-host HOST   SSH host for --hetzner-relay',
         '  --hetzner-key PATH    SSH key for --hetzner-relay',
         '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
+        `  --provider PROVIDER   Provider for live model prompts (default ${DEFAULT_PROVIDER})`,
+        `  --model MODEL         Model for live model prompts (default ${DEFAULT_MODEL})`,
+        '  --timeout-ms MS       Prompt completion timeout',
+        '  --poll-ms MS          Prompt completion poll interval',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -60,6 +78,18 @@ function assert(condition, message, details = null) {
   if (!condition) {
     throw new Error(`${message}${details == null ? '' : `\n${JSON.stringify(details, null, 2)}`}`)
   }
+}
+
+function modelForProvider(provider, model) {
+  if (provider === 'opencode' && !model.includes('/')) return `openai/${opencodeCodexModel(model)}`
+  if (provider === 'codex' && !model.includes('/')) return opencodeCodexModel(model)
+  return model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
 }
 
 function base64url(input) {
@@ -234,6 +264,43 @@ async function expectReject(promise, label, expectedText) {
   throw new Error(`${label} unexpectedly succeeded`)
 }
 
+async function subscribeForCompletions(client, sessionId, attachmentId) {
+  const events = []
+  if (typeof client.onKernelEvent === 'function') {
+    client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
+  }
+  if (typeof client.subscribeToKernelEvents === 'function') {
+    await client.subscribeToKernelEvents(sessionId, attachmentId)
+  }
+  return events
+}
+
+async function waitForCompletion(client, sessionId, attachmentId, events, previousCount, timeoutMs, pollMs, label) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const completions = events.filter((event) => event.event === 'assistant_message_completed')
+    if (completions.length > previousCount) return completions.length
+    await sleep(pollMs)
+  }
+  throw new Error(`${label} did not complete after ${timeoutMs}ms`)
+}
+
+async function waitForHistoryMarker(rootDir, sessionId, marker, timeoutMs, pollMs, label) {
+  const historyDir = path.join(rootDir, 'session-history')
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const entries = await readdir(historyDir).catch(() => [])
+    const sessionHistory = entries.filter((entry) => entry.startsWith(`${sessionId}-`) && entry.endsWith('.jsonl'))
+    for (const entry of sessionHistory) {
+      const text = await readFile(path.join(historyDir, entry), 'utf8').catch(() => '')
+      if (text.includes(marker)) return true
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`${label} did not write expected marker ${marker} after ${timeoutMs}ms`)
+}
+
 async function main() {
   const options = parseArgs()
   const rootDir = path.join(os.tmpdir(), `arroba-relay-freeform-multi-user-${process.pid}-${Date.now()}`)
@@ -307,12 +374,16 @@ async function main() {
     const session = created.session
     sessionId = session.id
     assert(session.owner_user_id === 'user-1', 'relay-created freeform session should be owned by user-1', session)
-    const invite = unwrap(
-      await user1.send(requests.createSessionInviteRequest(session.id, null, 2)),
+    const privateInvite = unwrap(
+      await user1.send(requests.createSessionInviteRequest(session.id, null, 1, 'private')),
       'SessionInviteCreated',
     )
-    await user2.send(requests.joinSessionInviteRequest(invite.invite.invite_token, 'user-2'))
-    await user3.send(requests.joinSessionInviteRequest(invite.invite.invite_token, 'user-3'))
+    const fullInvite = unwrap(
+      await user1.send(requests.createSessionInviteRequest(session.id, null, 1, 'full')),
+      'SessionInviteCreated',
+    )
+    await user2.send(requests.joinSessionInviteRequest(privateInvite.invite.invite_token, 'user-2'))
+    await user3.send(requests.joinSessionInviteRequest(fullInvite.invite.invite_token, 'user-3'))
 
     const attachment1 = unwrap(
       await user1.send(requests.attachToSessionRequest(session.id, `freeform-user-1-${process.pid}`)),
@@ -327,84 +398,81 @@ async function main() {
       'SessionAttached',
     ).attachment
 
+    const providerModel = modelForProvider(options.provider, options.model)
+    const events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
+    const events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
+    const events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
+
     const agent1 = unwrap(
-      await user1.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'freeform-user-one', 'freeform-drill-model', workspace, 'low')),
+      await user1.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-one', providerModel, workspace, 'low')),
       'AgentSpawned',
     ).agent
     const agent2 = unwrap(
-      await user2.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'freeform-user-two', 'freeform-drill-model', workspace, 'low')),
-      'AgentSpawned',
-    ).agent
-    const agent3 = unwrap(
-      await user3.send(requests.spawnAgentRequest(session.id, 'dev-stub', 'freeform-user-three', 'freeform-drill-model', workspace, 'low')),
+      await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, 'low')),
       'AgentSpawned',
     ).agent
     assert(agent1.owner_user_id === 'user-1', 'user-1 freeform agent owner mismatch', agent1)
     assert(agent2.owner_user_id === 'user-2', 'user-2 freeform agent owner mismatch', agent2)
-    assert(agent3.owner_user_id === 'user-3', 'user-3 freeform agent owner mismatch', agent3)
 
     const user1Agents = unwrap(await user1.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     const user2Agents = unwrap(await user2.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     const user3Agents = unwrap(await user3.send(requests.listAgentsRequest(session.id)), 'AgentsListed').agents
     assert(
       user1Agents.length >= 1
-        && user1Agents.every((agent) => agent.owner_user_id === 'user-1')
         && user1Agents.some((agent) => agent.id === agent1.id),
-      'user-1 should list only its own freeform agents and include its spawned drill agent',
+      'user-1 should include its spawned drill agent',
       user1Agents,
     )
-    assert(user2Agents.length === 1 && user2Agents[0].id === agent2.id, 'user-2 should list only its own freeform agent', user2Agents)
-    assert(user3Agents.length === 1 && user3Agents[0].id === agent3.id, 'user-3 should list only its own freeform agent', user3Agents)
-
-    await user1.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent1.id))
-    await user2.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent2.id))
-    await user3.send(requests.launchProviderRunRequest(session.id, 'dev-stub', 'default', 'freeform-drill-model', 'low', agent3.id))
+    assert(user2Agents.some((agent) => agent.id === agent2.id), 'user-2 should include its own freeform agent', user2Agents)
+    assert(user2Agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted'), 'private user should see redacted owner handle', user2Agents)
+    assert(user3Agents.some((agent) => agent.id === agent1.id && agent.provider !== 'redacted'), 'full collaborator should see owner agent details', user3Agents)
 
     const user1Prompt = unwrap(
-      await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Freeform user-1 prompt.', [])),
+      await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Reply with exactly USER1_FREEFORM_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user1Prompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'user-1 prompt should start for own agent', user1Prompt)
+    let user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, 0, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    await waitForHistoryMarker(rootDir, session.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
-      'user-2 submitting to user-1 freeform agent',
+      'private user-2 submitting to user-1 freeform agent',
       'owned by `user-1`',
     )
-    await user1.send(requests.completePromptRequest(session.id)).catch(() => {})
+
+    const fullPrompt = unwrap(
+      await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent1.id, 'Reply with exactly FULL_USER3_CAN_PROMPT_OWNER_AGENT and nothing else.', [])),
+      'PromptSubmitted',
+    )
+    assert(fullPrompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'full collaborator should start prompt for owner agent', fullPrompt)
+    const user3CompletionCount = await waitForCompletion(user3, session.id, attachment3.id, events3, 0, 30_000, options.pollMs, 'full collaborator cross-owner prompt')
+      .catch(() => events3.filter((event) => event.event === 'assistant_message_completed').length)
+    await waitForHistoryMarker(rootDir, session.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
+    user1CompletionCount = Math.max(user1CompletionCount, events1.filter((event) => event.event === 'assistant_message_completed').length)
 
     const user2Prompt = unwrap(
-      await user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent2.id, 'Freeform user-2 prompt.', [])),
+      await user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent2.id, 'Reply with exactly USER2_PRIVATE_OWN_AGENT_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user2Prompt.outcome?.Started?.prompt?.target_agent_id === agent2.id, 'user-2 prompt should start for own agent', user2Prompt)
-    await user2.send(requests.completePromptRequest(session.id)).catch(() => {})
-
-    const user3Prompt = unwrap(
-      await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent3.id, 'Freeform user-3 prompt.', [])),
-      'PromptSubmitted',
-    )
-    assert(user3Prompt.outcome?.Started?.prompt?.target_agent_id === agent3.id, 'user-3 prompt should start for own agent', user3Prompt)
-    await user3.send(requests.completePromptRequest(session.id)).catch(() => {})
+    const user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, 0, options.timeoutMs, options.pollMs, 'private user own prompt')
+    await waitForHistoryMarker(rootDir, session.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
 
     const state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     const state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     const state3 = unwrap(await user3.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
-    assert(
-      state1.agents.every((agent) => agent.owner_user_id === 'user-1') && state1.agents.some((agent) => agent.id === agent1.id),
-      'user-1 freeform projection should redact user-2 agents and retain user-1 agents',
-      state1.agents,
-    )
-    assert(state2.agents.length === 1 && state2.agents[0].id === agent2.id, 'user-2 freeform projection should redact user-1 agent', state2.agents)
-    assert(state3.agents.length === 1 && state3.agents[0].id === agent3.id, 'user-3 freeform projection should redact user-1/user-2 agents', state3.agents)
+    assert(state1.agents.some((agent) => agent.id === agent1.id), 'user-1 projection should retain own agent', state1.agents)
+    assert(state2.agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted'), 'private user projection should redact user-1 agent details', state2.agents)
+    assert(state3.agents.some((agent) => agent.id === agent1.id && agent.provider !== 'redacted'), 'full user projection should expose user-1 agent details', state3.agents)
 
     for (const [label, state, ownedCount, otherCount] of [
-      ['user-1', state1, 2, 2],
-      ['user-2', state2, 1, 3],
-      ['user-3', state3, 1, 3],
+      ['user-1', state1, 2, 1],
+      ['user-2', state2, 1, 2],
+      ['user-3', state3, 0, 3],
     ]) {
       assert(state.collaboration_agent_counts?.owned_agent_count === ownedCount, `${label} owned agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.other_user_agent_count === otherCount, `${label} collaborator agent count mismatch`, state.collaboration_agent_counts)
-      assert(state.collaboration_agent_counts?.total_agent_count === 4, `${label} total agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.total_agent_count === 3, `${label} total agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.collaborator_count === 2, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
     }
 
@@ -414,18 +482,26 @@ async function main() {
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId: session.id,
+      provider: options.provider,
+      model: providerModel,
       agents: [
         { id: agent1.id, ownerUserId: agent1.owner_user_id },
         { id: agent2.id, ownerUserId: agent2.owner_user_id },
-        { id: agent3.id, ownerUserId: agent3.owner_user_id },
       ],
+      completionCounts: {
+        user1: user1CompletionCount,
+        user2: user2CompletionCount,
+        user3: user3CompletionCount,
+      },
       assertions: [
         'three users share one scoped-relay freeform session',
-        'each user sees only its own agents outside workflow mode',
+        'private invite sees redacted collaborator agent handles',
+        'full invite sees collaborator agent details',
         'collaboration agent counts report aggregate other-user agents without identities',
-        'freeform prompt submit succeeds for owned agent',
-        'freeform prompt submit rejects another user agent',
-        'session state projection redacts other-user agents',
+        'actual-model freeform prompt submit succeeds for owned agent',
+        'private freeform prompt submit rejects another user agent',
+        'full freeform prompt submit can prompt another user agent',
+        'session state projection redacts other-user agent details for private invitees',
       ],
     }, null, 2))
   } finally {

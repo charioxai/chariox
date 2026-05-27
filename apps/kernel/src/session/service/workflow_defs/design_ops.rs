@@ -101,7 +101,8 @@ impl SessionService {
                     }
                 })?;
                 let mut definition = WorkflowNodeDefinition::new(node.id.clone(), node.agent_id);
-                definition.set_owner_user_id(owner_user_id);
+                definition.set_owner_user_id(owner_user_id.clone());
+                definition.set_created_by_user_id(owner_user_id);
                 if let Some(label) = node.label {
                     definition.set_public_label(label);
                 }

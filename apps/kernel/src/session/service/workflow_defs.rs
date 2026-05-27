@@ -15,6 +15,7 @@ impl SessionService {
             workflow_ref,
             agent_id,
             DEFAULT_LOCAL_USER_ID.to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
             agent_id.to_string(),
         )
     }
@@ -25,6 +26,7 @@ impl SessionService {
         workflow_ref: &str,
         agent_id: &str,
         owner_user_id: String,
+        created_by_user_id: String,
         public_label: String,
     ) -> Result<WorkflowNodeDefinition, DaemonError> {
         let workflow_id = self
@@ -58,6 +60,7 @@ impl SessionService {
         }
         let mut node = WorkflowNodeDefinition::new(next_node_id, agent_id.to_string());
         node.set_owner_user_id(owner_user_id);
+        node.set_created_by_user_id(created_by_user_id);
         node.set_public_label(public_label);
         Ok(workflow.add_node(node))
     }

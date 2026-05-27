@@ -76,6 +76,8 @@ pub struct WorkflowNodeDefinition {
     agent_id: String,
     #[serde(default = "default_workflow_owner_user_id")]
     owner_user_id: String,
+    #[serde(default = "default_workflow_owner_user_id")]
+    created_by_user_id: String,
     #[serde(default = "default_workflow_node_public_label")]
     public_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +100,7 @@ impl WorkflowNodeDefinition {
             public_label: agent_id.clone(),
             agent_id,
             owner_user_id: default_workflow_owner_user_id(),
+            created_by_user_id: default_workflow_owner_user_id(),
             instructions: None,
             can_complete_workflow_run: default_workflow_node_can_complete_workflow_run(),
             can_emit_intermediate_run_output:
@@ -119,12 +122,20 @@ impl WorkflowNodeDefinition {
         &self.owner_user_id
     }
 
+    pub fn created_by_user_id(&self) -> &str {
+        &self.created_by_user_id
+    }
+
     pub fn public_label(&self) -> &str {
         &self.public_label
     }
 
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         self.owner_user_id = owner_user_id.into();
+    }
+
+    pub fn set_created_by_user_id(&mut self, created_by_user_id: impl Into<String>) {
+        self.created_by_user_id = created_by_user_id.into();
     }
 
     pub fn set_public_label(&mut self, public_label: impl Into<String>) {
