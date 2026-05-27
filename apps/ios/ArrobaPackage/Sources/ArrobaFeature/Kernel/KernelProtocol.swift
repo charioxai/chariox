@@ -196,6 +196,86 @@ public struct RuntimeInteractionChoice: Identifiable, Equatable, Sendable, Decod
     public let style: String?
 }
 
+public struct WorkspaceLiveSyncStatus: Equatable, Sendable, Decodable {
+    public let sessionID: String
+    public let mode: String
+    public let footerState: String
+    public let targets: [WorkspaceLiveSyncTargetStatus]
+    public let conflicts: [WorkspaceLiveSyncConflictSummary]
+    public let ignore: WorkspaceLiveSyncIgnoreStatus
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case mode
+        case footerState = "footer_state"
+        case targets
+        case conflicts
+        case ignore
+    }
+}
+
+public struct WorkspaceLiveSyncTargetStatus: Equatable, Sendable, Decodable {
+    public let linkID: String
+    public let linkName: String
+    public let userID: String
+    public let machineID: String
+    public let kernelID: String
+    public let repoRoot: String
+    public let branch: String?
+    public let repoFingerprint: String?
+    public let status: String
+    public let attachedAtMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case linkID = "link_id"
+        case linkName = "link_name"
+        case userID = "user_id"
+        case machineID = "machine_id"
+        case kernelID = "kernel_id"
+        case repoRoot = "repo_root"
+        case branch
+        case repoFingerprint = "repo_fingerprint"
+        case status
+        case attachedAtMs = "attached_at_ms"
+    }
+}
+
+public struct WorkspaceLiveSyncConflictSummary: Equatable, Sendable, Decodable {
+    public let conflictID: String
+    public let linkID: String
+    public let sourceAgentID: String
+    public let targetUserID: String
+    public let targetRepoRoot: String
+    public let path: String
+    public let nextAction: String
+
+    enum CodingKeys: String, CodingKey {
+        case conflictID = "conflict_id"
+        case linkID = "link_id"
+        case sourceAgentID = "source_agent_id"
+        case targetUserID = "target_user_id"
+        case targetRepoRoot = "target_repo_root"
+        case path
+        case nextAction = "next_action"
+    }
+}
+
+public struct WorkspaceLiveSyncIgnoreStatus: Equatable, Sendable, Decodable {
+    public let ignoreFile: String?
+    public let forceExcludes: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case ignoreFile = "ignore_file"
+        case forceExcludes = "force_excludes"
+    }
+}
+
+public struct UserConfigMutationEffect: Equatable, Sendable, Decodable {
+    public let kind: String
+    public let path: String
+    public let message: String
+}
+
 public struct ProviderCatalog: Equatable, Sendable, Decodable {
     public let all: [ProviderInfo]
     public let `default`: [String: String]
@@ -423,6 +503,8 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case submitPrompt(sessionID: String, attachmentID: String, targetAgentID: String?, prompt: String)
     case cancelActivePrompt(sessionID: String, attachmentID: String)
     case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
+    case getWorkspaceLiveSyncStatus(sessionID: String)
+    case setUserConfigValue(path: String, value: String)
     case getSessionHistory(sessionID: String, agentID: String?, roundCount: Int, maxChars: Int)
     case spawnAgent(sessionID: String, alias: String?, provider: String, model: String?, effort: String?, worktreeID: String?)
     case destroyAgent(sessionID: String, agentID: String)
@@ -541,6 +623,16 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                     choiceID: choiceID
                 ),
                 forKey: DynamicCodingKey("RespondToInteraction")
+            )
+        case let .getWorkspaceLiveSyncStatus(sessionID):
+            try container.encode(
+                GetWorkspaceLiveSyncStatusPayload(sessionID: sessionID),
+                forKey: DynamicCodingKey("GetWorkspaceLiveSyncStatus")
+            )
+        case let .setUserConfigValue(path, value):
+            try container.encode(
+                SetUserConfigValuePayload(path: path, value: value),
+                forKey: DynamicCodingKey("SetUserConfigValue")
             )
         case let .getSessionHistory(sessionID, agentID, roundCount, maxChars):
             try container.encode(
@@ -750,6 +842,8 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case promptSubmitted(RuntimeSession)
     case promptCancelled
     case interactionResponded(interactionID: String, session: RuntimeSession)
+    case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
+    case userConfigUpdated(path: String, effects: [UserConfigMutationEffect])
     case sessionHistory([SessionHistoryPageEntry])
     case agentSpawned(AgentInstance)
     case agentDestroyed(AgentInstance)
@@ -838,6 +932,16 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "InteractionResponded" }) {
             let payload = try container.decode(InteractionRespondedPayload.self, forKey: key)
             self = .interactionResponded(interactionID: payload.interactionID, session: payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLiveSyncStatus" }) {
+            let payload = try container.decode(WorkspaceLiveSyncStatusPayload.self, forKey: key)
+            self = .workspaceLiveSyncStatus(payload.status)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "UserConfigUpdated" }) {
+            let payload = try container.decode(UserConfigUpdatedPayload.self, forKey: key)
+            self = .userConfigUpdated(path: payload.path, effects: payload.effects)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "SessionHistory" }) {
@@ -1031,6 +1135,19 @@ private struct GetSessionStatePayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
     }
+}
+
+private struct GetWorkspaceLiveSyncStatusPayload: Encodable {
+    let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
+}
+
+private struct SetUserConfigValuePayload: Encodable {
+    let path: String
+    let value: String
 }
 
 private struct UpdateSessionConfigPayload: Encodable {
@@ -1271,6 +1388,15 @@ private struct SessionPayload: Decodable, Equatable, Sendable {
 private struct SessionConfigUpdatedPayload: Decodable, Equatable, Sendable {
     let config: SessionConfigState
     let session: RuntimeSession
+}
+
+private struct WorkspaceLiveSyncStatusPayload: Decodable, Equatable, Sendable {
+    let status: WorkspaceLiveSyncStatus
+}
+
+private struct UserConfigUpdatedPayload: Decodable, Equatable, Sendable {
+    let path: String
+    let effects: [UserConfigMutationEffect]
 }
 
 private struct AgentPayload: Decodable, Equatable, Sendable {

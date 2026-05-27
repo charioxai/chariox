@@ -633,6 +633,52 @@ import Testing
 }
 
 @MainActor
+@Test func slashWorkspaceSyncCommandsUseKernelProtocol() async {
+    let session = RuntimeSession.fixture(id: "session-sync", lastUsedAtMs: 300)
+    let status = WorkspaceLiveSyncStatus(
+        sessionID: session.id,
+        mode: "tracked",
+        footerState: "conflict",
+        targets: [],
+        conflicts: [
+            WorkspaceLiveSyncConflictSummary(
+                conflictID: "conflict-1",
+                linkID: "link-1",
+                sourceAgentID: "agent-1",
+                targetUserID: "user-2",
+                targetRepoRoot: "/repo",
+                path: "src/app.swift",
+                nextAction: "reconcile and retry"
+            ),
+        ],
+        ignore: WorkspaceLiveSyncIgnoreStatus(
+            ignoreFile: "/repo/.arrobaignore",
+            forceExcludes: [".git/**", ".arroba/**"]
+        )
+    )
+    let client = SequencedMockKernelClient(responses: [
+        .workspaceLiveSyncStatus(status),
+        .userConfigUpdated(path: "/tmp/config.json", effects: []),
+    ])
+    let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.workspaceSync")!
+    defaults.removePersistentDomain(forName: "ArrobaAppModelTests.workspaceSync")
+    let model = ArrobaAppModel(client: client, defaults: defaults)
+    model.selectSession(session)
+    model.promptDraft = "/workspace sync conflicts"
+
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("src/app.swift") == true)
+
+    model.promptDraft = "/workspace sync mode managed"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = managed")
+}
+
+@MainActor
 @Test func respondToInteractionUpdatesSessionProjection() async {
     let interaction = RuntimeInteraction.fixture(id: "interaction-1", agentID: "agent-1")
     let session = RuntimeSession.fixture(
@@ -695,6 +741,7 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/agent", session: session).map(\.id).contains("agent-focus"))
     #expect(CommandCenterCatalog.items(matching: "/agent focus bui", session: session).first?.value == "/agent focus agent-1")
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-status"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
     #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))

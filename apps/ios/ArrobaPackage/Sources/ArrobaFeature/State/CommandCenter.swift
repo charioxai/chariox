@@ -412,6 +412,55 @@ public enum CommandCenterCatalog {
             value: "/workspace worktree ",
             submitsImmediately: false
         ),
+        CommandCenterItem(
+            id: "workspace-sync-status",
+            label: "sync status",
+            detail: "Show workspace live sync status, targets, conflicts, and ignore file",
+            value: "/workspace sync status",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-enable-managed",
+            label: "sync enable managed",
+            detail: "Enable managed workspace live sync",
+            value: "/workspace sync enable managed",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-enable-tracked",
+            label: "sync enable tracked",
+            detail: "Enable tracked workspace live sync",
+            value: "/workspace sync enable tracked",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-disable",
+            label: "sync disable",
+            detail: "Disable workspace live sync",
+            value: "/workspace sync disable",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-mode",
+            label: "sync mode",
+            detail: "Set workspace live sync mode",
+            value: "/workspace sync mode ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-conflicts",
+            label: "sync conflicts",
+            detail: "Show workspace live sync conflicts",
+            value: "/workspace sync conflicts",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-ignore",
+            label: "sync ignore",
+            detail: "Show workspace live sync ignore rules",
+            value: "/workspace sync ignore",
+            submitsImmediately: true
+        ),
     ]
 
     private static func agentFocusItems(matching input: String, session: RuntimeSession?) -> [CommandCenterItem] {

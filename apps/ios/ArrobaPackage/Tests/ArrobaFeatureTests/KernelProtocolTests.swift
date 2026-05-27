@@ -117,6 +117,116 @@ import Testing
     #expect(payload["requires_idle"] as? Bool == false)
 }
 
+@Test func workspaceLiveSyncRequestsMatchKernelShape() throws {
+    let statusData = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-workspace-sync",
+            request: .getWorkspaceLiveSyncStatus(sessionID: "session-1")
+        )
+    )
+    let statusObject = try #require(
+        JSONSerialization.jsonObject(with: statusData) as? [String: Any]
+    )
+    let statusRequest = try #require(statusObject["request"] as? [String: Any])
+    let statusPayload = try #require(statusRequest["GetWorkspaceLiveSyncStatus"] as? [String: Any])
+    #expect(statusPayload["session_id"] as? String == "session-1")
+
+    let modeData = try KernelProtocolCodec.encodeRequestFrame(
+        KernelRequestFrame(
+            requestID: "request-workspace-sync-mode",
+            request: .setUserConfigValue(path: "providers.workspace_live_sync", value: "tracked")
+        )
+    )
+    let modeObject = try #require(
+        JSONSerialization.jsonObject(with: modeData) as? [String: Any]
+    )
+    let modeRequest = try #require(modeObject["request"] as? [String: Any])
+    let modePayload = try #require(modeRequest["SetUserConfigValue"] as? [String: Any])
+    #expect(modePayload["path"] as? String == "providers.workspace_live_sync")
+    #expect(modePayload["value"] as? String == "tracked")
+}
+
+@Test func workspaceLiveSyncResponsesDecode() throws {
+    let statusJSON = """
+    {
+      "type": "response",
+      "request_id": "request-workspace-sync",
+      "response": {
+        "WorkspaceLiveSyncStatus": {
+          "status": {
+            "session_id": "session-1",
+            "mode": "tracked",
+            "footer_state": "conflict",
+            "targets": [{
+              "link_id": "link-1",
+              "link_name": "shared",
+              "user_id": "user-2",
+              "machine_id": "machine-2",
+              "kernel_id": "kernel-2",
+              "repo_root": "/repo",
+              "branch": "main",
+              "repo_fingerprint": null,
+              "status": "conflict",
+              "attached_at_ms": 42
+            }],
+            "conflicts": [{
+              "conflict_id": "conflict-1",
+              "link_id": "link-1",
+              "source_agent_id": "agent-1",
+              "target_user_id": "user-2",
+              "target_repo_root": "/repo",
+              "path": "src/app.swift",
+              "next_action": "reconcile and retry"
+            }],
+            "ignore": {
+              "ignore_file": "/repo/.arrobaignore",
+              "force_excludes": [".git/**", ".arroba/**"]
+            }
+          }
+        }
+      },
+      "error": null
+    }
+    """
+
+    let statusFrame = try KernelProtocolCodec.decodeResponseFrame(Data(statusJSON.utf8))
+    guard case let .workspaceLiveSyncStatus(status) = statusFrame.response else {
+        Issue.record("Expected WorkspaceLiveSyncStatus response")
+        return
+    }
+    #expect(status.mode == "tracked")
+    #expect(status.footerState == "conflict")
+    #expect(status.targets.first?.linkName == "shared")
+    #expect(status.conflicts.first?.path == "src/app.swift")
+    #expect(status.ignore.forceExcludes.contains(".git/**"))
+
+    let updatedJSON = """
+    {
+      "type": "response",
+      "request_id": "request-workspace-sync-mode",
+      "response": {
+        "UserConfigUpdated": {
+          "path": "/Users/test/.arroba/config.json",
+          "config": {},
+          "effects": [{
+            "kind": "provider_reload",
+            "path": "providers.workspace_live_sync",
+            "message": "workspace live sync policy updated"
+          }]
+        }
+      },
+      "error": null
+    }
+    """
+
+    let updatedFrame = try KernelProtocolCodec.decodeResponseFrame(Data(updatedJSON.utf8))
+    guard case let .userConfigUpdated(_, effects) = updatedFrame.response else {
+        Issue.record("Expected UserConfigUpdated response")
+        return
+    }
+    #expect(effects.first?.path == "providers.workspace_live_sync")
+}
+
 @Test func getProviderCatalogRequestMatchesKernelShape() throws {
     let data = try KernelProtocolCodec.encodeRequestFrame(
         KernelRequestFrame(

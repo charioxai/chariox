@@ -677,7 +677,7 @@ public final class ArrobaAppModel {
         case "/skill":
             await executeSkillCommand(Array(tokens.dropFirst()))
         case "/workspace":
-            executeWorkspaceCommand(Array(tokens.dropFirst()))
+            await executeWorkspaceCommand(Array(tokens.dropFirst()))
         default:
             connectionState = .failed
             statusMessage = "Unsupported iOS command: \(command)."
@@ -714,9 +714,11 @@ public final class ArrobaAppModel {
         }
     }
 
-    private func executeWorkspaceCommand(_ args: [String]) {
+    private func executeWorkspaceCommand(_ args: [String]) async {
         let action = args.first ?? "show"
         switch action {
+        case "sync":
+            await executeWorkspaceSyncCommand(Array(args.dropFirst()))
         case "show", "status":
             appendCommandNotice(workspaceText())
             promptDraft = ""
@@ -756,7 +758,75 @@ public final class ArrobaAppModel {
             promptDraft = ""
         default:
             connectionState = .failed
-            statusMessage = "usage: /workspace show|path <path>|worktree <path>|set <path>"
+            statusMessage = "usage: /workspace show|sync|path <path>|worktree <path>|set <path>"
+        }
+    }
+
+    private func executeWorkspaceSyncCommand(_ args: [String]) async {
+        let action = args.first ?? "status"
+        switch action {
+        case "status", "targets", "conflicts", "ignore":
+            await showWorkspaceLiveSyncStatus(filter: action)
+        case "enable":
+            let mode = args.dropFirst().first ?? "managed"
+            guard mode == "managed" || mode == "tracked" else {
+                connectionState = .failed
+                statusMessage = "usage: /workspace sync enable [managed|tracked]"
+                return
+            }
+            await setWorkspaceLiveSyncMode(mode)
+        case "disable":
+            await setWorkspaceLiveSyncMode("unrestricted")
+        case "mode":
+            guard let mode = args.dropFirst().first,
+                  ["managed", "tracked", "unrestricted"].contains(mode)
+            else {
+                connectionState = .failed
+                statusMessage = "usage: /workspace sync mode managed|tracked|unrestricted"
+                return
+            }
+            await setWorkspaceLiveSyncMode(mode)
+        case "link":
+            connectionState = .failed
+            statusMessage = "workspace sync link is not available in iOS yet"
+        default:
+            connectionState = .failed
+            statusMessage = "usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode"
+        }
+    }
+
+    private func showWorkspaceLiveSyncStatus(filter: String) async {
+        guard let session = selectedSession else {
+            connectionState = .failed
+            statusMessage = "Select a session before inspecting workspace live sync."
+            return
+        }
+        await perform("Loading workspace live sync") {
+            let response = try await client.send(
+                .getWorkspaceLiveSyncStatus(sessionID: session.id),
+                to: try endpointURL()
+            )
+            guard case let .workspaceLiveSyncStatus(status) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            appendCommandNotice(workspaceLiveSyncText(status, filter: filter))
+            promptDraft = ""
+            return "Workspace live sync \(status.mode)."
+        }
+    }
+
+    private func setWorkspaceLiveSyncMode(_ mode: String) async {
+        await perform("Updating workspace live sync") {
+            let response = try await client.send(
+                .setUserConfigValue(path: "providers.workspace_live_sync", value: mode),
+                to: try endpointURL()
+            )
+            guard case .userConfigUpdated = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            appendCommandNotice("Workspace live sync mode = \(mode)")
+            promptDraft = ""
+            return "Workspace live sync set to \(mode)."
         }
     }
 
@@ -1336,6 +1406,33 @@ public final class ArrobaAppModel {
 
     private func workspaceText() -> String {
         "Workspace\nworkspace: \(workspacePath)\nworktree: \(worktreePath)"
+    }
+
+    private func workspaceLiveSyncText(_ status: WorkspaceLiveSyncStatus, filter: String) -> String {
+        let header = "Workspace live sync\nmode: \(status.mode)\nstate: \(status.footerState)"
+        switch filter {
+        case "targets":
+            guard !status.targets.isEmpty else { return "\(header)\ntargets: none" }
+            let lines = status.targets.map { target in
+                let branch = target.branch.map { " @ \($0)" } ?? ""
+                return "- \(target.linkName) \(target.status) \(target.repoRoot)\(branch)"
+            }
+            return "\(header)\ntargets\n\(lines.joined(separator: "\n"))"
+        case "conflicts":
+            guard !status.conflicts.isEmpty else { return "\(header)\nconflicts: none" }
+            let lines = status.conflicts.map { conflict in
+                "- \(conflict.path) -> \(conflict.targetUserID): \(conflict.nextAction)"
+            }
+            return "\(header)\nconflicts\n\(lines.joined(separator: "\n"))"
+        case "ignore":
+            let ignoreFile = status.ignore.ignoreFile ?? ".arrobaignore"
+            let excludes = status.ignore.forceExcludes.isEmpty
+                ? "none"
+                : status.ignore.forceExcludes.joined(separator: ", ")
+            return "\(header)\nignore: \(ignoreFile)\nforce excludes: \(excludes)"
+        default:
+            return "\(header)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")"
+        }
     }
 
     private func resolveSession(reference: String) -> RuntimeSession? {
