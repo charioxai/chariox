@@ -78,22 +78,22 @@ export async function executeConfigCommand(
       data: payload,
     }
   }
-  if (action === "managed-io") {
+  if (action === "workspace-live-sync") {
     const mode = keyPath ?? "required"
     if (rest.length > 0 || !["required", "unrestricted", "on", "off"].includes(mode)) {
-      return { ok: false, message: "usage: config managed-io required|unrestricted|on|off" }
+      return { ok: false, message: "usage: config workspace-live-sync required|unrestricted|on|off" }
     }
     const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
-    const configPath = "providers.managed_io"
+    const configPath = "providers.workspace_live_sync"
     const response = await deps.client.send(setUserConfigValueRequest(configPath, normalizedMode))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
-      message: configMutationMessage(`managed I/O set to ${normalizedMode}`, payload),
+      message: configMutationMessage(`workspace live sync set to ${normalizedMode}`, payload),
       data: payload,
     }
   }
-  return { ok: false, message: "usage: config show|path|keys|schema|set|unset|managed-io" }
+  return { ok: false, message: "usage: config show|path|keys|schema|set|unset|workspace-live-sync" }
 }
 
 export async function executeCredentialCommand(

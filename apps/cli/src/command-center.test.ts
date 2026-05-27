@@ -36,7 +36,7 @@ test("buildCommandCenterItems includes config subcommands", () => {
 
   assert.equal(items.some((item) => item.kind === "command" && item.value === "/config show"), true)
   assert.equal(items.some((item) => item.kind === "command" && item.value === "/config path"), true)
-  assert.equal(items.some((item) => item.kind === "group" && item.value === "/config managed-io "), true)
+  assert.equal(items.some((item) => item.kind === "group" && item.value === "/config workspace-live-sync "), true)
 })
 
 test("buildCommandCenterItems filters model options", () => {

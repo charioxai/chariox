@@ -79,7 +79,7 @@ impl AgentEndpointAdapter for ManagedDevStubAdapter {
         Self::KEY
     }
 
-    fn supports_managed_io_write_enforcement(&self) -> bool {
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         true
     }
 

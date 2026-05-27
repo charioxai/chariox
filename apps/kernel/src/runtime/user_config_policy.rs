@@ -29,7 +29,7 @@ pub(crate) async fn user_config_mutation_effects(
     runtime_state: &KernelRuntimeState,
     path: &str,
 ) -> Result<Vec<UserConfigMutationEffect>, DaemonError> {
-    if path == "providers.managed_io" {
+    if path == "providers.workspace_live_sync" {
         let outcomes = runtime_state
             .apply_provider_reload_policy(ProviderReloadTrigger::UserConfigChanged {
                 path: path.to_string(),
@@ -37,10 +37,10 @@ pub(crate) async fn user_config_mutation_effects(
             .await?;
         let summary = summarize_provider_reload_outcomes(&outcomes);
         let message = if summary.reloaded == 0 && summary.deferred == 0 {
-            "managed I/O policy updated; no running provider needed reload".to_string()
+            "workspace live sync policy updated; no running provider needed reload".to_string()
         } else {
             format!(
-                "managed I/O policy updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
+                "workspace live sync policy updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
                 summary.reloaded, summary.deferred, summary.unaffected
             )
         };

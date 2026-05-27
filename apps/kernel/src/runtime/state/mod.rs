@@ -1,6 +1,6 @@
 //! Shared runtime-state facade and async orchestration wiring.
 //!
-//! Domain modules own the concrete session/provider/prompt/workflow and managed-I/O mutations.
+//! Domain modules own the concrete session/provider/prompt/workflow and workspace live sync mutations.
 //! This root keeps the public `KernelRuntimeState` entry points, shared fields, and cross-domain
 //! plumbing that would otherwise create cycles between those modules.
 
@@ -27,10 +27,10 @@ use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
-mod managed_io;
-use managed_io::*;
-mod managed_io_workspace_context;
-use managed_io_workspace_context::*;
+mod workspace_live_sync;
+use workspace_live_sync::*;
+mod workspace_live_sync_workspace_context;
+use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
 mod config_runtime_state;
@@ -69,8 +69,8 @@ struct KernelRuntimeOwnedState {
     terminal_stream: crate::terminal::TerminalStreamStore,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
-    managed_io_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
-    managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor,
+    workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
+    workspace_live_sync_external_changes: crate::io::ArtifactExternalChangeMonitor,
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
@@ -212,10 +212,10 @@ impl KernelRuntimeState {
                 terminal_stream,
                 workflow_design_events,
                 workspace_coordinator,
-                managed_io_coordinator: Arc::new(Mutex::new(
+                workspace_live_sync_coordinator: Arc::new(Mutex::new(
                     crate::io::ArtifactEditCoordinator::new(),
                 )),
-                managed_io_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
+                workspace_live_sync_external_changes: crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
@@ -293,4 +293,4 @@ pub(crate) struct CapabilityRuntimeSnapshot {
 }
 
 #[cfg(test)]
-mod managed_io_external_change_notice_tests;
+mod workspace_live_sync_external_change_notice_tests;

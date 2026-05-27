@@ -781,7 +781,7 @@ function buildMcpEchoWorkflowScenario(providers, model) {
         'Use the provider-native workflow_echo MCP tool exactly once with marker M7_WORKFLOW_ECHO_OK.',
         'The tool is usually named `workflow_echo_echo_marker`, `mcp__workflow_echo__echo_marker`, `echo_marker`, or similar.',
         'The MCP tool result must contain exactly `ECHO:M7_WORKFLOW_ECHO_OK`.',
-        `After the MCP tool call succeeds, use Arroba managed I/O to create \`outputs/${markerFile}\` with exactly \`ECHO:M7_WORKFLOW_ECHO_OK\`.`,
+        `After the MCP tool call succeeds, use Arroba workspace live sync to create \`outputs/${markerFile}\` with exactly \`ECHO:M7_WORKFLOW_ECHO_OK\`.`,
         'Then call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` with workflow_output_json exactly `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`.',
         'If the MCP is unavailable, do not write the marker and set output.message JSON exactly `{"echo":"MCP_UNAVAILABLE"}`.',
         'After the final output tool succeeds, emit one final fenced workflow JSON block with output.message JSON exactly `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}` and then stop.',

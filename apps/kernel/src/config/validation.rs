@@ -83,7 +83,7 @@ impl DaemonConfig {
 
 impl ArrobaUserConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
-        self.providers.managed_io.validate()?;
+        self.providers.workspace_live_sync.validate()?;
         self.history.validate()?;
         self.artifacts.validate()?;
         self.state.validate()?;

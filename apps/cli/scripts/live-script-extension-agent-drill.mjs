@@ -317,7 +317,7 @@ async function runProviderScenario({ client, session, attachment, workspace, out
     'You have exactly two relevant script tools: `python_vector_lookup` and `ts_sdk_lookup`.',
     'Call `python_vector_lookup` with {"query":"alpha","limit":1}.',
     'Call `ts_sdk_lookup` with {"accountId":"acct-42","multiplier":3}.',
-    `Then write ${outputRel} using Arroba managed I/O as one JSON object with these keys:`,
+    `Then write ${outputRel} using Arroba workspace live sync as one JSON object with these keys:`,
     'python_source, python_query, python_token, python_first_id, typescript_source, typescript_account, typescript_token, typescript_multiplied, typescript_first_id.',
     'Use only values returned by the script tools. Do not use placeholders and do not guess token values. Reply exactly SCRIPT_EXTENSION_AGENT_DRILL_DONE.',
   ].join('\n')

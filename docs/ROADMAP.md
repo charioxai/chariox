@@ -436,7 +436,7 @@ Implementation plan:
 
 Goal:
 
-Connect the hosted Arroba Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and managed-I/O authority.
+Connect the hosted Arroba Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and workspace live sync authority.
 
 Scope:
 
@@ -516,7 +516,7 @@ Outcomes:
 - node-level prompts and endpoint prompts are redacted from non-owners
 - caller-scoped protocol projections redact provider/model/private agent configuration before data reaches clients
 - optimistic workflow revision checks reject stale simultaneous workflow edits with a clear refresh/retry message
-- session-scoped workspace links let users explicitly coordinate managed I/O across separate worktrees, forks, branches, or repositories
+- session-scoped workspace links let users explicitly coordinate workspace live sync across separate worktrees, forks, branches, or repositories
 - `arroba-shell` supports the same collaboration and workspace-link command families as the TUI/slash-command surface
 
 Exit criteria:
@@ -528,7 +528,7 @@ Exit criteria:
 - endpoint ownership is enforced for creation, binding, and execution
 - private node and endpoint prompts remain hidden from non-owners
 - stale concurrent workflow mutations are rejected rather than merged or silently overwritten
-- workspace links coordinate managed I/O across explicitly linked repositories/worktrees
+- workspace links coordinate workspace live sync across explicitly linked repositories/worktrees
 - local and relay-backed collaboration drills pass with the same authorization and redaction behavior
 
 ## M7 - Additional Clients

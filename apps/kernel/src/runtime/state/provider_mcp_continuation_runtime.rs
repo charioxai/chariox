@@ -123,7 +123,7 @@ impl KernelRuntimeState {
             &continuation.source_attachment_id,
             &continuation.agent_id,
             format!(
-                "MCP `{}` is now loaded. Continue this request exactly:\n\n{}\n\nUse the newly available provider-native MCP tool if requested, then complete any required Arroba managed-I/O file write before replying.",
+                "MCP `{}` is now loaded. Continue this request exactly:\n\n{}\n\nUse the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.",
                 continuation.mcp_name, continuation.previous_prompt
             ),
             crate::session::PromptStatus::Queued,

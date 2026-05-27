@@ -76,7 +76,7 @@ Initial supported tool families:
 - grep/search
 - todo write
 - provider-native `apply_patch`
-- Arroba managed-I/O patch/edit/write/move/delete outputs
+- Arroba workspace live sync patch/edit/write/move/delete outputs
 
 ## Validation
 

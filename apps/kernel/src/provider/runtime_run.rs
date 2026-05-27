@@ -321,8 +321,8 @@ impl RuntimeProviderRun {
         self.touch_activity();
     }
 
-    pub fn requires_managed_io(&self) -> bool {
-        self.write_access_mode.requires_managed_io()
+    pub fn requires_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.requires_workspace_live_sync()
     }
 
     pub fn resume_state(&self) -> &ProviderResumeState {

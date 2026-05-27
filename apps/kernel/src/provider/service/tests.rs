@@ -62,7 +62,7 @@ fn launches_the_first_provider_run() {
 }
 
 #[test]
-fn rejects_managed_io_when_adapter_cannot_enforce_writes() {
+fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
     let mut sessions = sessions();
     let session = sessions
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -70,11 +70,11 @@ fn rejects_managed_io_when_adapter_cannot_enforce_writes() {
     let mut providers = ProviderProcessService::new();
 
     let error = providers
-        .start_run_provider_only(launch_request(session.id(), "sonnet").with_managed_io_required())
-        .expect_err("dev-stub cannot enforce managed I/O writes");
+        .start_run_provider_only(launch_request(session.id(), "sonnet").with_workspace_live_sync_required())
+        .expect_err("dev-stub cannot enforce workspace live sync writes");
 
     match error {
-        DaemonError::ProviderManagedIoUnsupported { adapter_key, .. } => {
+        DaemonError::ProviderWorkspaceLiveSyncUnsupported { adapter_key, .. } => {
             assert_eq!(adapter_key, "dev-stub");
         }
         other => panic!("unexpected error: {other}"),

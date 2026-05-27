@@ -41,14 +41,14 @@ fn entry(
 pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
     vec![
         entry(
-            "providers.managed_io",
+            "providers.workspace_live_sync",
             "enum",
             &["required", "unrestricted"],
             true,
             true,
             "provider_reload",
             "live",
-            "Global managed I/O write-enforcement policy for supported provider runs.",
+            "Global workspace live sync write-enforcement policy for supported provider runs.",
         ),
         entry("providers.default", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted provider default; currently not used by launch defaulting."),
         entry("providers.model", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted model default; currently not used by launch defaulting."),

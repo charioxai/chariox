@@ -20,7 +20,7 @@ pub struct RelayPromptAttachment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteManagedIoContext {
+pub struct RemoteWorkspaceLiveSyncContext {
     pub home_kernel_id: String,
     pub home_session_id: String,
     pub home_agent_id: String,
@@ -112,7 +112,7 @@ pub enum RemoteMcpAvailabilityStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteManagedIoArtifactState {
+pub struct RemoteWorkspaceLiveSyncArtifactState {
     pub path: String,
     pub exists: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,14 +208,14 @@ pub enum RelayPeerRequest {
         context: RemoteWorkflowTurnContext,
         message: String,
     },
-    ForwardManagedIoRuntimeTool {
-        context: RemoteManagedIoContext,
+    ForwardWorkspaceLiveSyncRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
-        artifact_states: Vec<RemoteManagedIoArtifactState>,
+        artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
     ForwardCapabilityRuntimeTool {
-        context: RemoteManagedIoContext,
+        context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
     },
@@ -280,9 +280,9 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
     WorkflowProviderFailureHandled,
-    ManagedIoRuntimeToolHandled {
+    WorkspaceLiveSyncRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        final_artifact_states: Vec<RemoteManagedIoArtifactState>,
+        final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,

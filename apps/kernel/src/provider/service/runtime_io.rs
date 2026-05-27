@@ -9,7 +9,7 @@ use crate::session::PromptAttachment;
 use super::super::{
     claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
-    managed_io_policy,
+    workspace_live_sync_policy,
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
 };
 use super::ProviderProcessService;
@@ -178,7 +178,7 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let prompt = managed_io_policy::apply_structured_prompt_instructions(prompt, run);
+        let prompt = workspace_live_sync_policy::apply_structured_prompt_instructions(prompt, run);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

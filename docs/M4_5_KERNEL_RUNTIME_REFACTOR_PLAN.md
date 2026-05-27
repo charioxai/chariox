@@ -327,7 +327,7 @@ Order of work:
 7. **Done.** Delete the compatibility quarantine: remove production `CompatibilityRuntimeState::with_app_mut`, remove `Arc<Mutex<DaemonApp>>` from command/runtime constructors, and leave `DaemonApp` as bootstrap/shutdown/test composition only.
 8. **Done.** Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
 9. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
-10. Return to post-M4.6 coordination last: decide port resource scopes, optional integration/mergeability checks, unsafe-mode policy commands, and artifact-specific region models beyond v1 opaque whole-file locking after the managed-I/O v1 path stays stable.
+10. Return to post-M4.6 coordination last: decide port resource scopes, optional integration/mergeability checks, unsafe-mode policy commands, and artifact-specific region models beyond v1 opaque whole-file locking after the workspace live sync v1 path stays stable.
 
 ### Current Hot-Path Lock Audit
 
@@ -343,7 +343,7 @@ Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>
 | provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
 | `runtime_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
 | `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued prompt state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
-| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 managed I/O | keep bounded/background behavior for M4.5 and route provider writes through managed I/O |
+| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 workspace live sync | keep bounded/background behavior for M4.5 and route provider writes through workspace live sync |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
 
@@ -354,7 +354,7 @@ These tests do not prove actor ownership is complete. They specifically prevent 
 
 ### Compatibility Facade Retirement Checklist
 
-Retiring the facade is separate from managed artifact I/O. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; M4.6 owns provider-session artifact writes through managed I/O.
+Retiring the facade is separate from managed artifact I/O. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; M4.6 owns provider-session artifact writes through workspace live sync.
 
 Work the retirement in this order:
 
@@ -531,7 +531,7 @@ Projection rules:
 | terminal output fanout | `AgentActor` + transport gateway | Fanout must not block provider event ingestion. |
 | workflow run progression | `WorkflowRunActor` | Owns mailbox delivery, barriers, node activation, failure state, watchdog interaction. |
 | capability jobs | `CapabilityExecutor` | Bounded queues. Reports progress/results through events. |
-| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work; M4.6 managed I/O owns provider-session artifact writes. |
+| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work; M4.6 workspace live sync owns provider-session artifact writes. |
 | relay connection state | `RelayRuntime` | Owns registration, remote subscriptions, and relay I/O without becoming workspace authority. |
 | provider catalogs/history scans/health reads | background executors + projections | Never run on the interactive command lane. |
 
@@ -594,15 +594,15 @@ Current implementation:
 
 Closed by M4.6:
 
-- final managed-I/O coordination model for Arroba-managed provider sessions
+- final workspace live sync coordination model for Arroba-managed provider sessions
 - enforced mutation control for supported providers through provider permission gates and Arroba-owned MCP/runtime tools
 - fine-grained text conflict detection plus opaque whole-file locking for non-text artifacts
-- local and remote managed-I/O coordination for matching repo/branch workspaces
+- local and remote workspace live sync coordination for matching repo/branch workspaces
 
 Still open beyond M4.6:
 
 - port claim scopes
-- a user-facing command to intentionally relax/disable managed I/O in a future unsafe/uncoordinated mode
+- a user-facing command to intentionally relax/disable workspace live sync in a future unsafe/uncoordinated mode
 - type-specific non-text artifact region models beyond v1 opaque whole-file locking
 
 Rules:
@@ -612,7 +612,7 @@ Rules:
 - Provider-run placement records the assigned worktree in runtime state.
 - Shared-session worktree mode remains allowed for single-agent or explicitly serialized work.
 - Same-worktree independent sessions must remain a product-supported collaboration mode. Provider prompts are intentionally not whole-worktree claims; deeper I/O policy needs a separate design review.
-- Keep worktree claims coarse. Use M4.6 managed I/O for provider-session artifact writes, and treat port-level enforcement as future coordination work.
+- Keep worktree claims coarse. Use M4.6 workspace live sync for provider-session artifact writes, and treat port-level enforcement as future coordination work.
 
 ## Migration Plan
 

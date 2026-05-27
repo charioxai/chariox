@@ -36,7 +36,7 @@ use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
-pub use provider::{ManagedIoConfig, ManagedIoMode, UserProviderConfig};
+pub use provider::{WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode, UserProviderConfig};
 pub use slices::{SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig};
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,
@@ -206,8 +206,8 @@ impl DaemonConfig {
         &self.user_config_path
     }
 
-    pub fn provider_requires_managed_io(&self, _provider: &str) -> bool {
-        self.user_config.providers.managed_io.requires_managed_io()
+    pub fn provider_requires_workspace_live_sync(&self, _provider: &str) -> bool {
+        self.user_config.providers.workspace_live_sync.requires_workspace_live_sync()
     }
 
     pub fn max_workflow_queues_per_workflow(&self) -> Option<usize> {
@@ -825,16 +825,16 @@ service = "arroba-test"
     }
 
     #[test]
-    fn managed_io_policy_defaults_to_unrestricted() {
+    fn workspace_live_sync_policy_defaults_to_unrestricted() {
         let config = DaemonConfig::new("daemon", "machine", "tester");
 
-        assert!(!config.provider_requires_managed_io("codex"));
-        assert!(!config.provider_requires_managed_io("opencode"));
-        assert!(!config.provider_requires_managed_io("default"));
+        assert!(!config.provider_requires_workspace_live_sync("codex"));
+        assert!(!config.provider_requires_workspace_live_sync("opencode"));
+        assert!(!config.provider_requires_workspace_live_sync("default"));
     }
 
     #[test]
-    fn managed_io_policy_can_be_changed_and_persisted_in_user_config() {
+    fn workspace_live_sync_policy_can_be_changed_and_persisted_in_user_config() {
         let path = std::env::temp_dir().join(format!(
             "arroba-user-config-test-{}-{}.toml",
             std::process::id(),
@@ -844,16 +844,16 @@ service = "arroba-test"
         config.user_config_path = path.clone();
 
         config
-            .set_user_config_value("providers.managed_io", "unrestricted")
-            .expect("managed I/O policy should update");
+            .set_user_config_value("providers.workspace_live_sync", "unrestricted")
+            .expect("workspace live sync policy should update");
 
-        assert!(!config.provider_requires_managed_io("opencode"));
-        assert!(!config.provider_requires_managed_io("codex"));
+        assert!(!config.provider_requires_workspace_live_sync("opencode"));
+        assert!(!config.provider_requires_workspace_live_sync("codex"));
 
         let loaded = load_user_config_from_path(&path);
         assert_eq!(
-            loaded.providers.managed_io.mode,
-            ManagedIoMode::Unrestricted
+            loaded.providers.workspace_live_sync.mode,
+            WorkspaceLiveSyncMode::Unrestricted
         );
 
         let _ = std::fs::remove_file(path);
@@ -862,30 +862,30 @@ service = "arroba-test"
     #[test]
     fn user_config_schema_lists_settable_kernel_owned_keys() {
         let schema = DaemonConfig::user_config_schema();
-        let managed_io = schema
+        let workspace_live_sync = schema
             .iter()
-            .find(|entry| entry.path == "providers.managed_io")
-            .expect("managed I/O schema entry should exist");
+            .find(|entry| entry.path == "providers.workspace_live_sync")
+            .expect("workspace live sync schema entry should exist");
 
-        assert!(managed_io.settable);
-        assert!(managed_io.unsettable);
-        assert_eq!(managed_io.effect, "provider_reload");
-        assert_eq!(managed_io.allowed_values, vec!["required", "unrestricted"]);
+        assert!(workspace_live_sync.settable);
+        assert!(workspace_live_sync.unsettable);
+        assert_eq!(workspace_live_sync.effect, "provider_reload");
+        assert_eq!(workspace_live_sync.allowed_values, vec!["required", "unrestricted"]);
         assert!(schema
             .iter()
             .any(|entry| entry.path == "ui.worktree_aliases.<alias>"));
     }
 
     #[test]
-    fn managed_io_policy_rejects_per_provider_setter_keys() {
+    fn workspace_live_sync_policy_rejects_per_provider_setter_keys() {
         let mut config = DaemonConfig::new("daemon", "machine", "tester");
 
         let set_error = config
-            .set_user_config_value("providers.managed_io.codex", "unrestricted")
-            .expect_err("per-provider managed I/O setters should be rejected");
+            .set_user_config_value("providers.workspace_live_sync.codex", "unrestricted")
+            .expect_err("per-provider workspace live sync setters should be rejected");
         let unset_error = config
-            .unset_user_config_value("providers.managed_io.codex")
-            .expect_err("per-provider managed I/O unsets should be rejected");
+            .unset_user_config_value("providers.workspace_live_sync.codex")
+            .expect_err("per-provider workspace live sync unsets should be rejected");
 
         assert!(matches!(
             set_error,
@@ -901,13 +901,13 @@ service = "arroba-test"
                 ..
             }
         ));
-        assert!(!config.provider_requires_managed_io("codex"));
+        assert!(!config.provider_requires_workspace_live_sync("codex"));
     }
 
     #[test]
-    fn legacy_per_provider_managed_io_config_loads_into_global_mode() {
+    fn legacy_per_provider_workspace_live_sync_config_loads_into_global_mode() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-user-config-legacy-managed-io-test-{}-{}.toml",
+            "arroba-user-config-legacy-workspace-live-sync-test-{}-{}.toml",
             std::process::id(),
             generate_identity_suffix()
         ));
@@ -918,16 +918,16 @@ service = "arroba-test"
 [providers]
 default = "opencode"
 
-[providers.managed_io]
+[providers.workspace_live_sync]
 default = "required"
 opencode = "unrestricted"
 codex = "required"
 "#,
         )
-        .expect("legacy managed I/O config should write");
+        .expect("legacy workspace live sync config should write");
 
         let loaded = load_user_config_from_path(&path);
-        assert_eq!(loaded.providers.managed_io.mode, ManagedIoMode::Required);
+        assert_eq!(loaded.providers.workspace_live_sync.mode, WorkspaceLiveSyncMode::Required);
 
         let _ = std::fs::remove_file(path);
     }

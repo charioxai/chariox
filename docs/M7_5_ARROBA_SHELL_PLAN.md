@@ -40,7 +40,7 @@ These should be executable from both the TUI slash-command surface and `arroba-s
 - `agent spawn|list|focus|delete|cycle`
 - `machine list|kernels|approve|forget|rename`
 - `relay status|configure`
-- `config show|set|unset|managed-io`
+- `config show|set|unset|workspace-live-sync`
 - `mcp install|list|show|import|grant|revoke|grants`
 - `skill install|list|show|import|grant|revoke|grants`
 - `workflow new|list|show|run|runs|cancel|resume`
@@ -287,7 +287,7 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
   - `workflow edge add|remove`
   - `workflow endpoint new|alias|bind`
 - Implemented config mutation coverage in the shared executor:
-  - `config path|set|unset|managed-io`
+  - `config path|set|unset|workspace-live-sync`
 - Implemented workflow advanced coverage in the shared executor:
   - `workflow flush-context|max-turns|run-output-schema|intermediate-output-schema`
   - `workflow node can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns`

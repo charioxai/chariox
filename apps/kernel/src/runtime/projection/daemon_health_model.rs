@@ -81,7 +81,7 @@ pub struct WorkspaceCoordinationHealthSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedIoHealthSnapshot {
+pub struct WorkspaceLiveSyncHealthSnapshot {
     pub active_reservations: usize,
     pub active_reservation_artifacts: usize,
     pub workspace_identity:
@@ -89,7 +89,7 @@ pub struct ManagedIoHealthSnapshot {
     pub external_changes: crate::io::ArtifactExternalChangeHealthSnapshot,
 }
 
-impl Default for ManagedIoHealthSnapshot {
+impl Default for WorkspaceLiveSyncHealthSnapshot {
     fn default() -> Self {
         Self {
             active_reservations: 0,
@@ -128,7 +128,7 @@ pub struct DaemonHealthProjection {
     pub transport: super::TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
-    pub managed_io: ManagedIoHealthSnapshot,
+    pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
 }
 
@@ -147,7 +147,7 @@ impl DaemonHealthProjection {
         transport: super::TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
-        managed_io: ManagedIoHealthSnapshot,
+        workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
         projection_invariants: ProjectionInvariantHealthSnapshot,
     ) -> Self {
         // Compatibility: legacy clients may still read prompt counts from the
@@ -171,7 +171,7 @@ impl DaemonHealthProjection {
             transport,
             terminal_stream,
             workspace_coordination,
-            managed_io,
+            workspace_live_sync,
             projection_invariants,
         }
     }
@@ -181,7 +181,7 @@ impl DaemonHealthProjection {
 mod tests {
     use super::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
-        ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
+        WorkspaceLiveSyncHealthSnapshot, ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
         WorkspaceCoordinationHealthSnapshot, WorktreeClaimSnapshot,
     };
@@ -262,7 +262,7 @@ mod tests {
                 }],
                 active_operation_claims: Vec::new(),
             },
-            ManagedIoHealthSnapshot {
+            WorkspaceLiveSyncHealthSnapshot {
                 active_reservations: 2,
                 active_reservation_artifacts: 1,
                 workspace_identity:
@@ -322,24 +322,24 @@ mod tests {
             projection.workspace_coordination.worktree_collisions.len(),
             1
         );
-        assert_eq!(projection.managed_io.active_reservations, 2);
-        assert_eq!(projection.managed_io.active_reservation_artifacts, 1);
+        assert_eq!(projection.workspace_live_sync.active_reservations, 2);
+        assert_eq!(projection.workspace_live_sync.active_reservation_artifacts, 1);
         assert_eq!(
             projection
-                .managed_io
+                .workspace_live_sync
                 .workspace_identity
                 .invalid_provider_runs,
             1
         );
-        assert_eq!(projection.managed_io.external_changes.tracked_artifacts, 4);
+        assert_eq!(projection.workspace_live_sync.external_changes.tracked_artifacts, 4);
         assert_eq!(
             projection
-                .managed_io
+                .workspace_live_sync
                 .external_changes
                 .external_change_events,
             5
         );
-        assert!(projection.managed_io.external_changes.live_watcher_started);
+        assert!(projection.workspace_live_sync.external_changes.live_watcher_started);
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
     }

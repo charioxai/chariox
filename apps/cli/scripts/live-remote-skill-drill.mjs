@@ -446,8 +446,8 @@ async function main() {
       'description: Remote skill drill; read the asset and report its token.',
       'short-description: Remote skill drill',
       '---',
-      'When asked to use this skill, read `assets/checklist.txt` under the provided `materialized_root` using Arroba managed I/O if filesystem reads are not directly available.',
-      'Write `outputs/remote-skill-provider.txt` through Arroba managed I/O with the exact asset token and the exact phrase REMOTE_SKILL_DRILL_OK.',
+      'When asked to use this skill, read `assets/checklist.txt` under the provided `materialized_root` using Arroba workspace live sync if filesystem reads are not directly available.',
+      'Write `outputs/remote-skill-provider.txt` through Arroba workspace live sync with the exact asset token and the exact phrase REMOTE_SKILL_DRILL_OK.',
       '',
     ].join('\n'), 'utf8')
     await writeFile(path.join(sourceSkill, 'assets', 'checklist.txt'), 'REMOTE_SKILL_ASSET_TOKEN=asset-remote-skill-ok\n', 'utf8')

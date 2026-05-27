@@ -205,12 +205,12 @@ async function createDeterministicSkill(rootDir) {
   await writeFile(path.join(skillDir, 'SKILL.md'), [
     '---',
     'name: m7-drill-marker',
-    'description: Use when asked to prove Arroba same-turn skill loading or M7 skill request behavior. Writes deterministic marker files through Arroba managed I/O.',
+    'description: Use when asked to prove Arroba same-turn skill loading or M7 skill request behavior. Writes deterministic marker files through Arroba workspace live sync.',
     '---',
     '',
     '# M7 Drill Marker',
     '',
-    'When this skill is active, use Arroba managed I/O tools only.',
+    'When this skill is active, use Arroba workspace live sync tools only.',
     '',
     'If asked for the same-turn marker, write `outputs/same-turn-skill.txt` with exactly:',
     '',
@@ -699,7 +699,7 @@ async function main() {
         await client.send(submitPromptRequest(session.id, attachment.id, grantedAgent.agent.id, [
           `Use the ${markerSkillName} skill.`,
           'Follow the pre-granted marker instruction from that skill.',
-          'Use only Arroba managed I/O to write the required marker file.',
+          'Use only Arroba workspace live sync to write the required marker file.',
           'When done, reply exactly M7_PREGRANTED_SKILL_DONE.',
         ].join('\n'), []))
         await waitForCompletionCount({
@@ -731,7 +731,7 @@ async function main() {
           `First call \`list_extensions\` with {"kind":"skill"} and find ${JSON.stringify(markerSkillName)}.`,
           `Then call \`request_extension\` with {"kind":"skill","name":${JSON.stringify(markerSkillName)}}.`,
           'Read the returned skill.body and follow its same-turn marker instruction immediately.',
-          'Use only Arroba managed I/O to write the required marker file.',
+          'Use only Arroba workspace live sync to write the required marker file.',
           'When done, reply exactly M7_SAME_TURN_SKILL_DONE.',
         ].join('\n'), []))
         await waitForCompletionCount({
@@ -808,7 +808,7 @@ async function main() {
             'The echo tool is usually named `echo_echo_marker`, `mcp__echo__echo_marker`, or similar.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
             'Prefer a non-mutating Playwright browser snapshot/title/text tool first; navigating to https://example.com is optional and may require approval.',
-            'After both an echo MCP call and a Playwright/browser MCP tool call complete successfully, use Arroba managed I/O to write `outputs/playwright-mcp-user.txt` with exactly `M7_PLAYWRIGHT_MCP_USER_OK`.',
+            'After both an echo MCP call and a Playwright/browser MCP tool call complete successfully, use Arroba workspace live sync to write `outputs/playwright-mcp-user.txt` with exactly `M7_PLAYWRIGHT_MCP_USER_OK`.',
             'Then reply exactly M7_PLAYWRIGHT_MCP_USER_DONE.',
             'If either MCP is unavailable, reply exactly M7_MULTI_MCP_UNAVAILABLE and do not write the marker file.',
           ].join('\n'), []))
@@ -896,7 +896,7 @@ async function main() {
             'Then call `request_extension` with {"kind":"mcp","name":"playwright"}.',
             'After Arroba reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Arroba request_extension.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
-            'After any Playwright/browser MCP tool call completes successfully, you must call Arroba managed I/O (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
+            'After any Playwright/browser MCP tool call completes successfully, you must call Arroba workspace live sync (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
             'Do not reply done until that file write tool call has completed.',
             'Then reply exactly M7_PLAYWRIGHT_MCP_AGENT_DONE.',
             'If Playwright MCP remains unavailable after the continuation, reply exactly M7_PLAYWRIGHT_MCP_AGENT_UNAVAILABLE and do not write the marker file.',

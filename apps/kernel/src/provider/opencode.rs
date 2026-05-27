@@ -468,10 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn plans_required_managed_io_launch() {
+    fn plans_required_workspace_live_sync_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-managed-io",
+            "arroba-opencode-resolve-test-{}-workspace-live-sync",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
@@ -485,10 +485,10 @@ mod tests {
             "default",
             "anthropic/claude-sonnet-4",
         )
-        .with_managed_io_required();
+        .with_workspace_live_sync_required();
 
         let launch =
-            plan_opencode_launch(Some(&request)).expect("managed I/O launch should resolve");
+            plan_opencode_launch(Some(&request)).expect("workspace live sync launch should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");

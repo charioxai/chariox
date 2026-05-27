@@ -296,7 +296,7 @@ mod tests {
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
-                .with_managed_io_required()
+                .with_workspace_live_sync_required()
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
                     "http://127.0.0.1:43120/mcp",
                     "token-123",
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_mcp_config_does_not_force_managed_io_overrides_for_unrestricted_launch() {
+    fn runtime_mcp_config_does_not_force_workspace_live_sync_overrides_for_unrestricted_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "arroba-codex-resolve-test-{}-runtime-mcp-unrestricted",
@@ -475,10 +475,10 @@ mod tests {
     }
 
     #[test]
-    fn plans_required_managed_io_launch() {
+    fn plans_required_workspace_live_sync_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-managed-io",
+            "arroba-codex-resolve-test-{}-workspace-live-sync",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
@@ -486,9 +486,9 @@ mod tests {
         std::env::set_var("ARROBA_CODEX_PORT", "43144");
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
-                .with_managed_io_required();
+                .with_workspace_live_sync_required();
 
-        let launch = plan_codex_launch(Some(&request)).expect("managed I/O launch should resolve");
+        let launch = plan_codex_launch(Some(&request)).expect("workspace live sync launch should resolve");
 
         std::env::remove_var("ARROBA_CODEX_BIN");
         std::env::remove_var("ARROBA_CODEX_PORT");

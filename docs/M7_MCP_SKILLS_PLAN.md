@@ -38,7 +38,7 @@ Still open in M7:
 
 Users should install and manage MCPs and skills through Arroba instead of repeating the same setup in every provider. Agents should receive only the MCPs and skills that were granted to them.
 
-Arroba is an OS/orchestrator, not a provider harness. Third-party MCPs are exposed through each provider's native MCP support. Arroba's runtime MCP remains reserved for Arroba-owned runtime features such as managed I/O, workflow tools, and capability discovery/request control-plane operations.
+Arroba is an OS/orchestrator, not a provider harness. Third-party MCPs are exposed through each provider's native MCP support. Arroba's runtime MCP remains reserved for Arroba-owned runtime features such as workspace live sync, workflow tools, and capability discovery/request control-plane operations.
 
 ## Storage Roots
 
@@ -205,9 +205,9 @@ Local drill evidence:
 - `node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2 --live-mcp-use --timeout-ms 480000 --keep-artifacts-on-failure` passed in 103.4s.
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers opencode --provider-model opencode=openai/gpt-5.2 --poll-limit 180 --poll-interval-ms 1000` passed in ~14s.
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario mcp-echo-workflow --providers codex --provider-model codex=gpt-5.2 --poll-limit 180 --poll-interval-ms 1000` passed in ~14s.
-- The drill validates provider-native echo MCP calls, provider-native Playwright/browser MCP calls, Arroba managed-I/O marker writes, same-turn skill requests, web skill install, and agent-triggered MCP request followed by provider conversation relaunch plus automatic continuation.
-- The workflow drill validates a workflow-node MCP grant, a provider-native deterministic MCP call from the workflow agent, managed-I/O marker creation, and final workflow output submission through `validate_and_submit_workflow_run_output`.
-- A relaunch bug found during the combined drill was fixed: agent-triggered MCP activation now preserves the original provider run's managed-I/O requirement, so replacement Codex/OpenCode runs stay fenced/restricted.
+- The drill validates provider-native echo MCP calls, provider-native Playwright/browser MCP calls, Arroba workspace live sync marker writes, same-turn skill requests, web skill install, and agent-triggered MCP request followed by provider conversation relaunch plus automatic continuation.
+- The workflow drill validates a workflow-node MCP grant, a provider-native deterministic MCP call from the workflow agent, workspace live sync marker creation, and final workflow output submission through `validate_and_submit_workflow_run_output`.
+- A relaunch bug found during the combined drill was fixed: agent-triggered MCP activation now preserves the original provider run's workspace live sync requirement, so replacement Codex/OpenCode runs stay fenced/restricted.
 
 ## M7.7 Arroba Skill Format
 
@@ -503,7 +503,7 @@ node apps/cli/scripts/live-remote-mcp-drill.mjs --provider opencode --model open
 node apps/cli/scripts/live-remote-mcp-drill.mjs --provider codex --model gpt-5.2 --effort low --timeout-ms 300000 --live-mcp-use
 ```
 
-Observed on 2026-04-18 after production HTTPS/chunked MCP proxy support landed: both strict drills passed. OpenCode completed a provider-native `playwright_browser_snapshot` call and Codex completed a provider-native `browser_tabs` call on the worker. Both then wrote `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK` through Arroba managed I/O. The drill preserves real provider auth/config/cache while keeping isolated Arroba home/worker registries by passing through `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider paths.
+Observed on 2026-04-18 after production HTTPS/chunked MCP proxy support landed: both strict drills passed. OpenCode completed a provider-native `playwright_browser_snapshot` call and Codex completed a provider-native `browser_tabs` call on the worker. Both then wrote `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK` through Arroba workspace live sync. The drill preserves real provider auth/config/cache while keeping isolated Arroba home/worker registries by passing through `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider paths.
 
 Remote workflow MCP drill:
 
@@ -512,7 +512,7 @@ node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario mcp-echo
 node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario mcp-echo-workflow --provider codex --model gpt-5.2 --provider-model codex=gpt-5.2 --poll-limit 240 --poll-interval-ms 1000
 ```
 
-Observed on 2026-04-19: OpenCode passed in ~72s and Codex passed in ~116s. The wrapper installed deterministic MCP `workflow_echo` in the worker registry before invoking the remote workflow drill; each remote workflow node completed a provider-native MCP echo call, wrote the managed-I/O marker, and submitted final workflow output `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`. The earlier Codex run that used only `--model gpt-5.2` failed because the workflow drill mapped that bare model to `gpt-5.2-codex`; Codex logs showed ChatGPT-backed Codex rejected that model with HTTP 400. Use the explicit `--provider-model codex=gpt-5.2` override for this drill.
+Observed on 2026-04-19: OpenCode passed in ~72s and Codex passed in ~116s. The wrapper installed deterministic MCP `workflow_echo` in the worker registry before invoking the remote workflow drill; each remote workflow node completed a provider-native MCP echo call, wrote the workspace live sync marker, and submitted final workflow output `{"echo":"ECHO:M7_WORKFLOW_ECHO_OK"}`. The earlier Codex run that used only `--model gpt-5.2` failed because the workflow drill mapped that bare model to `gpt-5.2-codex`; Codex logs showed ChatGPT-backed Codex rejected that model with HTTP 400. Use the explicit `--provider-model codex=gpt-5.2` override for this drill.
 
 ## V2 Workflow Failure Policy
 

@@ -166,7 +166,7 @@ async function main() {
       'config path',
       'config show',
       'config set providers.model shell-drill-model',
-      'config managed-io dev-stub off',
+      'config workspace-live-sync dev-stub off',
       'config unset providers.model',
       'mcp list',
       'mcp install shell_echo --command node --arg $mcp',

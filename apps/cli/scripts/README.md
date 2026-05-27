@@ -13,10 +13,10 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
-node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2
+node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2
 node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
-node apps/cli/scripts/live-remote-managed-io-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
+node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
 ```
 
 ## Wrapper Scripts
@@ -42,9 +42,9 @@ pnpm --filter @arroba/cli run shell:drill
 pnpm --filter @arroba/cli run embedded-shell:drill
 ```
 
-## Managed I/O Identity
+## Workspace live sync Identity
 
-Managed-I/O drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
+Workspace live sync drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
 
 ## Multi-User Workflow Drill
 
@@ -90,17 +90,17 @@ Set `ARROBA_CLOUD_HOSTED_TOKEN_ROTATION=1` to force a hosted machine relay-token
 
 Use `--require-web-skill` when the network/web-skill install itself is the thing being validated. Without it, public skill clone failures are reported but do not fail the drill, so local registry/runtime coverage can still run offline.
 
-Use `--live-mcp-use` to also require provider-native Playwright tool calls. The drill covers both user-triggered MCP grants, where `/mcp grant` causes Arroba to relaunch the idle provider conversation, and agent-triggered `request_extension`, where Arroba reloads after the current turn and sends an automatic continuation prompt before requiring a Playwright/browser tool call and managed-I/O marker write.
+Use `--live-mcp-use` to also require provider-native Playwright tool calls. The drill covers both user-triggered MCP grants, where `/mcp grant` causes Arroba to relaunch the idle provider conversation, and agent-triggered `request_extension`, where Arroba reloads after the current turn and sends an automatic continuation prompt before requiring a Playwright/browser tool call and workspace live sync marker write.
 
-`live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching managed-I/O agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Arroba MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_extensions` plus `read_artifact` runtime MCP calls and writes before/after marker files through Arroba managed I/O.
+`live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching workspace live sync agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Arroba MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_extensions` plus `read_artifact` runtime MCP calls and writes before/after marker files through Arroba workspace live sync.
 
 `live-script-extension-drill.mjs` validates the v1 script extension control plane. It runs an isolated daemon, registers an external Python environment, validates and registers a realistic vector-lookup script with `run`/`test_run`, lists environments/scripts, creates an agent, grants the script extension with its environment, and verifies the durable `extension_grants` shape. Run it with `pnpm --filter @arroba/cli run script-extension:drill`.
 
-`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through managed I/O. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude=sonnet`.
+`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude=sonnet`.
 
-`live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Arroba managed I/O. Because the drill isolates `HOME` for Arroba registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
+`live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Arroba workspace live sync. Because the drill isolates `HOME` for Arroba registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
 
-`live-workflow-runtime-drill.mjs --scenario mcp-echo-workflow` validates workflow-node MCP grants. It installs a deterministic stdio MCP named `workflow_echo`, grants it to the workflow agent before provider launch, requires a provider-native MCP tool call, writes an exact marker through Arroba managed I/O, and submits final workflow output through `validate_and_submit_workflow_run_output`. The scenario is single-provider by design; run it separately for Codex and OpenCode. The remote wrapper installs the same deterministic MCP in the worker registry before launching the remote workflow drill, matching the v1 remote MCP rule that worker kernels must already have the required MCP definition. For Codex, pass `--provider-model codex=gpt-5.2`; the workflow drill's bare `--model gpt-5.2` fallback maps to `gpt-5.2-codex`, which can be rejected by ChatGPT-backed Codex accounts.
+`live-workflow-runtime-drill.mjs --scenario mcp-echo-workflow` validates workflow-node MCP grants. It installs a deterministic stdio MCP named `workflow_echo`, grants it to the workflow agent before provider launch, requires a provider-native MCP tool call, writes an exact marker through Arroba workspace live sync, and submits final workflow output through `validate_and_submit_workflow_run_output`. The scenario is single-provider by design; run it separately for Codex and OpenCode. The remote wrapper installs the same deterministic MCP in the worker registry before launching the remote workflow drill, matching the v1 remote MCP rule that worker kernels must already have the required MCP definition. For Codex, pass `--provider-model codex=gpt-5.2`; the workflow drill's bare `--model gpt-5.2` fallback maps to `gpt-5.2-codex`, which can be rejected by ChatGPT-backed Codex accounts.
 
 ## Before Commit
 

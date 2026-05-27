@@ -112,7 +112,7 @@ pub struct WorkflowConsoleWriteArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedReadArtifactArgs {
+pub struct WorkspaceLiveSyncReadArtifactArgs {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -127,7 +127,7 @@ pub struct ManagedTextRangeArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedEditArtifactArgs {
+pub struct WorkspaceLiveSyncEditArtifactArgs {
     pub path: String,
     pub new_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,7 +142,7 @@ pub struct ManagedEditArtifactArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedWriteArtifactArgs {
+pub struct WorkspaceLiveSyncWriteArtifactArgs {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_text: Option<String>,
@@ -156,7 +156,7 @@ pub struct ManagedWriteArtifactArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedApplyPatchArgs {
+pub struct WorkspaceLiveSyncApplyPatchArgs {
     pub patch_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -164,7 +164,7 @@ pub struct ManagedApplyPatchArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedDeleteArtifactArgs {
+pub struct WorkspaceLiveSyncDeleteArtifactArgs {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -172,7 +172,7 @@ pub struct ManagedDeleteArtifactArgs {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedMoveArtifactArgs {
+pub struct WorkspaceLiveSyncMoveArtifactArgs {
     pub from_path: String,
     pub to_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -393,7 +393,7 @@ fn default_http_max_response_bytes() -> u64 {
     1_048_576
 }
 
-impl ManagedMoveArtifactArgs {
+impl WorkspaceLiveSyncMoveArtifactArgs {
     pub fn normalized_text_transform_fields(&self) -> (Option<String>, Option<String>) {
         if self.old_text.as_deref() == Some("") && self.new_text.as_deref() == Some("") {
             return (None, None);
@@ -727,11 +727,11 @@ pub struct ValidateAndSubmitWorkflowRunOutputArgs {
 }
 
 #[allow(dead_code)]
-pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: READ_ARTIFACT_TOOL.to_string(),
-            description: "Read a workspace-relative artifact through Arroba managed I/O and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
+            description: "Read a workspace-relative artifact through Arroba workspace live sync and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -747,7 +747,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: EDIT_ARTIFACT_TOOL.to_string(),
-            description: "Apply a workspace-relative text artifact edit through Arroba managed I/O. Non-overlapping stale edits may be rebased with a warning; overlapping edits are rejected with conflict metadata.".to_string(),
+            description: "Apply a workspace-relative text artifact edit through Arroba workspace live sync. Non-overlapping stale edits may be rebased with a warning; overlapping edits are rejected with conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path", "new_text"],
@@ -775,7 +775,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PATCH_ARTIFACT_TOOL_ALIAS.to_string(),
-            description: "Apply a text artifact patch through Arroba managed I/O. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
+            description: "Apply a text artifact patch through Arroba workspace live sync. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["patch_text"],
@@ -791,7 +791,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: DELETE_ARTIFACT_TOOL.to_string(),
-            description: "Delete a workspace-relative artifact through Arroba managed I/O. Non-text artifacts are coordinated as whole-file operations.".to_string(),
+            description: "Delete a workspace-relative artifact through Arroba workspace live sync. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -807,7 +807,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MOVE_ARTIFACT_TOOL.to_string(),
-            description: "Move a workspace-relative artifact through Arroba managed I/O. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
+            description: "Move a workspace-relative artifact through Arroba workspace live sync. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["from_path", "to_path"],
@@ -826,7 +826,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: WRITE_ARTIFACT_TOOL.to_string(),
-            description: "Create or overwrite a workspace-relative artifact through Arroba managed I/O. Use content_text for text/structured artifacts and content_base64 for opaque artifacts. Non-text artifacts are coordinated as whole-file operations.".to_string(),
+            description: "Create or overwrite a workspace-relative artifact through Arroba workspace live sync. Use content_text for text/structured artifacts and content_base64 for opaque artifacts. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -846,14 +846,14 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ];
     let aliases = canonical
         .iter()
-        .filter_map(managed_io_alias_spec)
+        .filter_map(workspace_live_sync_alias_spec)
         .collect::<Vec<_>>();
     let mut specs = canonical;
     specs.extend(aliases);
     specs
 }
 
-fn managed_io_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+fn workspace_live_sync_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     let alias = match spec.name.as_str() {
         READ_ARTIFACT_TOOL => READ_ARTIFACT_TOOL_ALIAS,
         EDIT_ARTIFACT_TOOL => EDIT_ARTIFACT_TOOL_ALIAS,
@@ -867,12 +867,12 @@ fn managed_io_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     spec.description = format!(
         "{} Alias for `{}`.",
         spec.description,
-        canonical_managed_io_tool_name(alias).unwrap_or(alias)
+        canonical_workspace_live_sync_tool_name(alias).unwrap_or(alias)
     );
     Some(spec)
 }
 
-pub fn canonical_managed_io_tool_name(tool_name: &str) -> Option<&'static str> {
+pub fn canonical_workspace_live_sync_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         READ_ARTIFACT_TOOL
         | READ_ARTIFACT_TOOL_ALIAS

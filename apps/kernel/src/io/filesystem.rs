@@ -9,7 +9,7 @@ use crate::io::types::{
 };
 
 #[derive(Debug, Clone)]
-pub struct ManagedFileReadRequest {
+pub struct WorkspaceLiveSyncFileReadRequest {
     pub workspace_identity: WorkspaceIdentity,
     pub workspace_root: PathBuf,
     pub path: PathBuf,
@@ -17,19 +17,19 @@ pub struct ManagedFileReadRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct ManagedFileWriteRequest {
+pub struct WorkspaceLiveSyncFileWriteRequest {
     pub workspace_identity: WorkspaceIdentity,
     pub workspace_root: PathBuf,
     pub intent: AgentEditIntent,
     pub domain: ArtifactDomainKind,
 }
 
-pub struct ManagedFileIo;
+pub struct WorkspaceLiveSyncFileIo;
 
-impl ManagedFileIo {
+impl WorkspaceLiveSyncFileIo {
     pub fn read_artifact(
         coordinator: &mut ArtifactEditCoordinator,
-        request: ManagedFileReadRequest,
+        request: WorkspaceLiveSyncFileReadRequest,
     ) -> Result<ArtifactReadResult, ArtifactEditError> {
         let full_path = resolve_workspace_path(&request.workspace_root, &request.path)?;
         let content = read_content(&full_path, request.domain)?;
@@ -43,7 +43,7 @@ impl ManagedFileIo {
 
     pub fn apply_edit(
         coordinator: &mut ArtifactEditCoordinator,
-        request: ManagedFileWriteRequest,
+        request: WorkspaceLiveSyncFileWriteRequest,
     ) -> EditResult {
         match Self::apply_edit_inner(coordinator, request) {
             Ok(result) => result,
@@ -53,7 +53,7 @@ impl ManagedFileIo {
 
     fn apply_edit_inner(
         coordinator: &mut ArtifactEditCoordinator,
-        request: ManagedFileWriteRequest,
+        request: WorkspaceLiveSyncFileWriteRequest,
     ) -> Result<EditResult, ArtifactEditError> {
         reject_arroba_owned_write_path(&request.workspace_root, &request.intent.path)?;
         let full_path = resolve_workspace_path(&request.workspace_root, &request.intent.path)?;
@@ -185,13 +185,13 @@ fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEdi
 
 fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), ArtifactEditError> {
     let relative = normalize_workspace_relative_path(path)?;
-    if relative == Path::new(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH)
+    if relative == Path::new(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
         && is_arroba_source_workspace(root)
     {
         return Err(ArtifactEditError::InvalidOperation {
             message: format!(
-                "the Arroba managed-I/O instruction policy `{}` is owned by Arroba and cannot be edited through managed artifact I/O",
-                crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH
+                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through managed artifact I/O",
+                crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH
             ),
         });
     }
@@ -201,7 +201,7 @@ fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), Artifa
 fn is_arroba_source_workspace(root: &Path) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()
         && root
-            .join(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH)
+            .join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
             .is_file()
 }
 
@@ -237,9 +237,9 @@ mod tests {
         fs::write(&path, "alpha\n").expect("write fixture");
         let mut coordinator = ArtifactEditCoordinator::new();
 
-        let read = ManagedFileIo::read_artifact(
+        let read = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 path: PathBuf::from("src.txt"),
@@ -258,9 +258,9 @@ mod tests {
         let path = root.join("src.txt");
         fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
         let mut coordinator = ArtifactEditCoordinator::new();
-        let first_read = ManagedFileIo::read_artifact(
+        let first_read = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root.clone(),
                 path: PathBuf::from("src.txt"),
@@ -270,9 +270,9 @@ mod tests {
         .expect("read artifact");
         fs::write(&path, "zero\none\ntwo\nthree\n").expect("external write");
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::TextDocument,
@@ -307,9 +307,9 @@ mod tests {
         let base = "header\nalpha\nTARGET\nomega\nfooter\n";
         fs::write(&path, base).expect("write fixture");
         let mut coordinator = ArtifactEditCoordinator::new();
-        let first_read = ManagedFileIo::read_artifact(
+        let first_read = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root.clone(),
                 path: PathBuf::from("src.txt"),
@@ -323,9 +323,9 @@ mod tests {
         )
         .expect("external write");
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::TextDocument,
@@ -360,9 +360,9 @@ mod tests {
         let path = root.join("src.txt");
         fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
         let mut coordinator = ArtifactEditCoordinator::new();
-        let first_read = ManagedFileIo::read_artifact(
+        let first_read = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root.clone(),
                 path: PathBuf::from("src.txt"),
@@ -372,9 +372,9 @@ mod tests {
         .expect("read artifact");
         fs::write(&path, "one\nTWO\nthree\n").expect("external write");
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::TextDocument,
@@ -405,9 +405,9 @@ mod tests {
     fn managed_file_read_rejects_path_escape() {
         let root = test_root("escape");
         let mut coordinator = ArtifactEditCoordinator::new();
-        let result = ManagedFileIo::read_artifact(
+        let result = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 path: PathBuf::from("../outside.txt"),
@@ -427,9 +427,9 @@ mod tests {
         let path = root.join("nested").join("created.txt");
         let mut coordinator = ArtifactEditCoordinator::new();
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::TextDocument,
@@ -456,9 +456,9 @@ mod tests {
         let path = root.join("assets").join("image.bin");
         let mut coordinator = ArtifactEditCoordinator::new();
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::OpaqueBlob,
@@ -485,9 +485,9 @@ mod tests {
         let path = root.join("asset.bin");
         fs::write(&path, [1, 2, 3]).expect("write fixture");
         let mut coordinator = ArtifactEditCoordinator::new();
-        let first_read = ManagedFileIo::read_artifact(
+        let first_read = WorkspaceLiveSyncFileIo::read_artifact(
             &mut coordinator,
-            ManagedFileReadRequest {
+            WorkspaceLiveSyncFileReadRequest {
                 workspace_identity: workspace(),
                 workspace_root: root.clone(),
                 path: PathBuf::from("asset.bin"),
@@ -497,9 +497,9 @@ mod tests {
         .expect("read opaque artifact");
         fs::write(&path, [1, 2, 9]).expect("external write");
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root,
                 domain: ArtifactDomainKind::OpaqueBlob,
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn managed_file_write_rejects_arroba_owned_instruction_policy() {
         let root = test_root("reject-policy");
-        let policy_path = root.join(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH);
+        let policy_path = root.join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH);
         fs::create_dir_all(policy_path.parent().unwrap()).expect("create policy parent");
         fs::write(
             root.join("apps/kernel/Cargo.toml"),
@@ -535,14 +535,14 @@ mod tests {
         fs::write(&policy_path, "original policy\n").expect("write policy marker");
         let mut coordinator = ArtifactEditCoordinator::new();
 
-        let result = ManagedFileIo::apply_edit(
+        let result = WorkspaceLiveSyncFileIo::apply_edit(
             &mut coordinator,
-            ManagedFileWriteRequest {
+            WorkspaceLiveSyncFileWriteRequest {
                 workspace_identity: workspace(),
                 workspace_root: root.clone(),
                 domain: ArtifactDomainKind::TextDocument,
                 intent: AgentEditIntent {
-                    path: PathBuf::from(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH),
+                    path: PathBuf::from(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH),
                     snapshot_id: None,
                     operation: AgentEditOperation::WriteArtifact {
                         content: ArtifactContent::Text("agent override\n".to_string()),

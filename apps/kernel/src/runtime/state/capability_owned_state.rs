@@ -117,7 +117,7 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    pub(super) fn managed_io_domain_from_arg(
+    pub(super) fn workspace_live_sync_domain_from_arg(
         domain: Option<&str>,
     ) -> Result<crate::io::ArtifactDomainKind, DaemonError> {
         match domain.unwrap_or("text") {
@@ -125,7 +125,7 @@ impl KernelRuntimeOwnedState {
             "structured" => Ok(crate::io::ArtifactDomainKind::StructuredDocument),
             "opaque" => Ok(crate::io::ArtifactDomainKind::OpaqueBlob),
             other => Err(DaemonError::LocalTransport {
-                operation: "runtime_tool_managed_io",
+                operation: "runtime_tool_workspace_live_sync",
                 message: format!("unsupported artifact domain `{other}`"),
             }),
         }

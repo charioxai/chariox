@@ -145,7 +145,7 @@ Relay does not validate:
 - workflow node ownership
 - endpoint ownership
 - provider access
-- managed-I/O authority
+- workspace live sync authority
 
 Those remain kernel responsibilities.
 
@@ -271,7 +271,7 @@ Arroba Cloud must not:
 
 - own workflow execution
 - own provider execution
-- own managed-I/O conflict decisions
+- own workspace live sync conflict decisions
 - require plaintext prompts or provider output
 - bypass kernel authorization
 

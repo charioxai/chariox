@@ -651,7 +651,7 @@ test("formatToolTranscriptUpdate summarizes apply_patch changes", () => {
   )
 })
 
-test("formatToolTranscriptUpdate summarizes managed I/O diffs", () => {
+test("formatToolTranscriptUpdate summarizes workspace live sync diffs", () => {
   const output = JSON.stringify({
     applied: true,
     path: "src/app.ts",

@@ -9,7 +9,7 @@ use super::approval_bodies::{
     file_change_approval_body,
 };
 use super::json_rpc::JsonRpcMessage;
-use super::permission::managed_io_codex_permission_grant;
+use super::permission::workspace_live_sync_codex_permission_grant;
 use super::runtime_mcp::call_runtime_mcp_tool;
 use super::{CodexClient, CodexSocket};
 
@@ -103,8 +103,8 @@ impl CodexClient {
                 "permissions": requested_permissions,
                 "scope": "session",
             }),
-            ProviderWriteAccessMode::ManagedIoRequired => {
-                let granted_permissions = managed_io_codex_permission_grant(&requested_permissions);
+            ProviderWriteAccessMode::WorkspaceLiveSyncRequired => {
+                let granted_permissions = workspace_live_sync_codex_permission_grant(&requested_permissions);
                 json!({
                     "permissions": granted_permissions,
                     "scope": "turn",

@@ -1,7 +1,7 @@
 export function nativeToolDisplayTitle(tool: string) {
   const canonical = canonicalToolName(tool)
   if (canonical === "arroba.read_artifact") return "read"
-  if (isManagedIoTool(tool)) return "patch"
+  if (isWorkspaceLiveSyncTool(tool)) return "patch"
   return tool
 }
 
@@ -10,7 +10,7 @@ export function isNativeReadTool(tool: unknown) {
   return canonical === "read" || canonical === "arroba.read_artifact"
 }
 
-export function isManagedIoTool(tool: unknown) {
+export function isWorkspaceLiveSyncTool(tool: unknown) {
   const canonical = canonicalToolName(tool)
   return canonical === "arroba.edit_artifact"
     || canonical === "arroba.apply_patch"

@@ -206,7 +206,7 @@ impl fmt::Display for AgentPermissionLevel {
 pub enum ProviderWriteAccessMode {
     #[default]
     Unrestricted,
-    ManagedIoRequired,
+    WorkspaceLiveSyncRequired,
 }
 
 impl ProviderWriteAccessMode {
@@ -214,8 +214,8 @@ impl ProviderWriteAccessMode {
         matches!(self, Self::Unrestricted)
     }
 
-    pub fn requires_managed_io(&self) -> bool {
-        matches!(self, Self::ManagedIoRequired)
+    pub fn requires_workspace_live_sync(&self) -> bool {
+        matches!(self, Self::WorkspaceLiveSyncRequired)
     }
 }
 
@@ -287,8 +287,8 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_managed_io_required(mut self) -> Self {
-        self.write_access_mode = ProviderWriteAccessMode::ManagedIoRequired;
+    pub fn with_workspace_live_sync_required(mut self) -> Self {
+        self.write_access_mode = ProviderWriteAccessMode::WorkspaceLiveSyncRequired;
         self
     }
 
@@ -302,8 +302,8 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn requires_managed_io(&self) -> bool {
-        self.write_access_mode.requires_managed_io()
+    pub fn requires_workspace_live_sync(&self) -> bool {
+        self.write_access_mode.requires_workspace_live_sync()
     }
 
     pub fn with_resume_state(mut self, resume_state: ProviderResumeState) -> Self {
@@ -356,13 +356,13 @@ mod tests {
     use super::LaunchProviderRequest;
 
     #[test]
-    fn launch_request_tracks_required_managed_io_mode() {
+    fn launch_request_tracks_required_workspace_live_sync_mode() {
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
-                .with_managed_io_required();
+                .with_workspace_live_sync_required();
 
-        assert!(request.requires_managed_io());
+        assert!(request.requires_workspace_live_sync());
         let json = serde_json::to_value(&request).expect("request should serialize");
-        assert_eq!(json["write_access_mode"], "managed_io_required");
+        assert_eq!(json["write_access_mode"], "workspace_live_sync_required");
     }
 }

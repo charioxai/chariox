@@ -6,7 +6,7 @@ import {
   normalizeToolOutputPayload,
   readString,
 } from "./strings.js"
-import { isManagedIoTool } from "./tool-names.js"
+import { isWorkspaceLiveSyncTool } from "./tool-names.js"
 import type {
   ApplyPatchFile,
   ToolDisplayPatchLine,
@@ -30,7 +30,7 @@ type CodexFileChange = {
   movePath?: unknown
 }
 
-type ManagedIoChange = {
+type WorkspaceLiveSyncChange = {
   path?: unknown
   kind?: unknown
   diff?: unknown
@@ -72,7 +72,7 @@ export function buildApplyPatchNewPreview(file: ApplyPatchFile): ToolDisplayPatc
 }
 
 export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
-  const managedFiles = readManagedIoChangeFiles(update)
+  const managedFiles = readWorkspaceLiveSyncChangeFiles(update)
   if (managedFiles.length > 0) {
     return managedFiles
   }
@@ -149,8 +149,8 @@ function readCodexFileChangeFiles(value: unknown): ApplyPatchFile[] {
     .filter((file): file is ApplyPatchFile => Boolean(file))
 }
 
-function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[] {
-  if (!isManagedIoTool(update.tool)) {
+function readWorkspaceLiveSyncChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[] {
+  if (!isWorkspaceLiveSyncTool(update.tool)) {
     return []
   }
 
@@ -162,13 +162,13 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
     const changes = normalized.changes
     if (Array.isArray(changes)) {
       const files = changes
-        .map(readManagedIoChange)
+        .map(readWorkspaceLiveSyncChange)
         .filter((file): file is ApplyPatchFile => Boolean(file))
       if (files.length > 0) {
         return files
       }
     }
-    const file = readManagedIoChange(normalized.change)
+    const file = readWorkspaceLiveSyncChange(normalized.change)
     if (file) {
       return [file]
     }
@@ -177,11 +177,11 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
   return []
 }
 
-function readManagedIoChange(value: unknown): ApplyPatchFile | null {
+function readWorkspaceLiveSyncChange(value: unknown): ApplyPatchFile | null {
   if (!isObjectValue(value)) {
     return null
   }
-  const change = value as ManagedIoChange
+  const change = value as WorkspaceLiveSyncChange
   const filePath = readString(change.path)
   const diff = readString(change.diff)
   if (!filePath || !diff) {

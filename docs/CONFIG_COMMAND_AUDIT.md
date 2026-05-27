@@ -4,8 +4,8 @@ Date: 2026-04-27
 
 This audits the user-config command surface exposed by:
 
-- Terminal CLI: `/config show`, `/config path`, `/config keys`, `/config schema`, `/config set`, `/config unset`, `/config managed-io`
-- Web/shell CLI: `config show`, `config path`, `config keys`, `config schema`, `config set`, `config unset`, `config managed-io`
+- Terminal CLI: `/config show`, `/config path`, `/config keys`, `/config schema`, `/config set`, `/config unset`, `/config workspace-live-sync`
+- Web/shell CLI: `config show`, `config path`, `config keys`, `config schema`, `config set`, `config unset`, `config workspace-live-sync`
 - Kernel IPC: `GetUserConfig`, `GetUserConfigSchema`, `SetUserConfigValue`, `UnsetUserConfigValue`
 
 The main product issue is that `set` and `unset` are generic dotted-key escape hatches. They expose parser branches even when the parsed value is not actually consumed by runtime code.
@@ -18,7 +18,7 @@ The main product issue is that `set` and `unset` are generic dotted-key escape h
 | `/config path` / `config path` | Yes | Prints the user config file path. | Keep. Useful for TOML-only sections like credentials. | No. |
 | `/config keys` / `config keys` | Yes | Fetches kernel-owned config schema and prints settable keys with type/status/effect metadata. | Keep. This is the discoverable parameter list for generic `set/unset`. | No. |
 | `/config schema` / `config schema` | Yes | Fetches kernel-owned config schema and prints full JSON metadata. | Keep. Useful for web/automation and debugging key behavior. | No. |
-| `/config managed-io` / `config managed-io` | Yes | Writes global `providers.managed_io`; terminal and shell clients render mutation effects returned by the kernel. | Keep as the friendly wrapper over the generic config mutation path. | Yes, implemented through central provider reload policy. |
+| `/config workspace-live-sync` / `config workspace-live-sync` | Yes | Writes global `providers.workspace_live_sync`; terminal and shell clients render mutation effects returned by the kernel. | Keep as the friendly wrapper over the generic config mutation path. | Yes, implemented through central provider reload policy. |
 | `/config set <path> <value>` / `config set <path> <value>` | Partially | Writes any supported parser key, including stale/dead keys; the kernel now returns mutation-effect metadata for provider reload, restart-required, and currently-unwired keys. | Keep only if paired with discoverable docs and key allowlist/status; otherwise it still creates false expectations for keys with no runtime behavior. | Depends on key. |
 | `/config unset <path>` / `config unset <path>` | Partially | Unsets supported parser keys; some backend enum keys reject unset. The same mutation-effect path is used as `set`. | Same as `set`. | Depends on key. |
 
@@ -33,7 +33,7 @@ Status meanings:
 
 | Key | Command exposed | Status | What it does today | Recommendation | Provider hot reload |
 |---|---:|---|---|---|---|
-| `providers.managed_io` | Yes | keep | Controls whether new provider launches require Arroba managed I/O write enforcement. Active running providers are reloaded or deferred through the central reload policy. | Keep as the single global managed I/O policy. | Yes, implemented. |
+| `providers.workspace_live_sync` | Yes | keep | Controls whether new provider launches require Arroba workspace live sync write enforcement. Active running providers are reloaded or deferred through the central reload policy. | Keep as the single global workspace live sync policy. | Yes, implemented. |
 | `providers.default` | Yes | fix/remove | Parsed and persisted, but launch defaults appear to come from CLI/session paths, not this key. | Either wire as the kernel-owned default provider or remove from config commands. | Only if wired and only for agents/runs that inherited the default. |
 | `providers.model` | Yes | fix/remove | Parsed and persisted, but not clearly used as launch default. | Same as `providers.default`. | Only if wired and inherited. |
 | `providers.account_profile` | Yes | fix/remove | Parsed and persisted, but launch requests pass explicit account profile. | Same as `providers.default`. | Only if wired and inherited. |
@@ -80,10 +80,10 @@ Status meanings:
 
 ## Recommended Cleanup Plan
 
-1. Keep `show`, `path`, `managed-io`, and generic `set/unset`. Generic mutations now return/display effect metadata for `provider_reload`, `restart_required`, and `no_runtime_effect`; keep expanding the table as more keys are intentionally wired.
+1. Keep `show`, `path`, `workspace-live-sync`, and generic `set/unset`. Generic mutations now return/display effect metadata for `provider_reload`, `restart_required`, and `no_runtime_effect`; keep expanding the table as more keys are intentionally wired.
 2. Remove command support for `version`.
 3. Decide ownership for provider defaults. If kernel owns them, wire `providers.default/model/account_profile/effort` into session/provider launch defaulting and track whether values were inherited. If CLI owns them, remove the kernel config keys.
 4. Delete or wire kernel `ui.*`. Right now CLI preferences appear to be the real owner.
 5. Delete or wire user-config `relay.*` and `kernel.*`; the runtime currently uses top-level env/persisted daemon config for these.
 6. Either implement pruning/archive jobs for retention and deletion-policy keys, or remove those keys until the behavior exists.
-7. Keep provider hot reload narrow for now: `providers.managed_io`, MCP grants, and future live credential-handle edits. Do not hot reload providers for UI, history, artifact, relay, state, or daemon socket/websocket settings.
+7. Keep provider hot reload narrow for now: `providers.workspace_live_sync`, MCP grants, and future live credential-handle edits. Do not hot reload providers for UI, history, artifact, relay, state, or daemon socket/websocket settings.

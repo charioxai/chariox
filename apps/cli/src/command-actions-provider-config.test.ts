@@ -114,14 +114,14 @@ test("config command renders kernel mutation effects", async () => {
     getUserConfigSchema: async () => ({
       entries: [
         {
-          path: "providers.managed_io",
+          path: "providers.workspace_live_sync",
           value_type: "enum",
           allowed_values: ["required", "unrestricted"],
           settable: true,
           unsettable: true,
           effect: "provider_reload",
           status: "live",
-          description: "Global managed I/O policy.",
+          description: "Global workspace live sync policy.",
         },
       ],
     }),
@@ -129,12 +129,12 @@ test("config command renders kernel mutation effects", async () => {
       updates.push({ path, value })
       return {
         path: "/home/.arroba/config.toml",
-        config: { version: 1, providers: { managed_io: value as "required" | "unrestricted" } },
+        config: { version: 1, providers: { workspace_live_sync: value as "required" | "unrestricted" } },
         effects: [
           {
             kind: "provider_reload",
             path,
-            message: "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+            message: "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
             provider_reload: { reloaded: 1, deferred: 0, unaffected: 0 },
           },
         ],
@@ -149,16 +149,16 @@ test("config command renders kernel mutation effects", async () => {
   })
   await handlers.handleConfigCommand({
     kind: "config",
-    raw: "/config managed-io off",
-    args: ["managed-io", "off"],
+    raw: "/config workspace-live-sync off",
+    args: ["workspace-live-sync", "off"],
   })
 
-  assert.deepEqual(updates, [{ path: "providers.managed_io", value: "unrestricted" }])
+  assert.deepEqual(updates, [{ path: "providers.workspace_live_sync", value: "unrestricted" }])
   assert.deepEqual(notices, [
-    "providers.managed_io (enum; live; provider_reload unset values=required|unrestricted)",
-    "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|unrestricted)",
+    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
   ])
-  assert.deepEqual(flashes, ["listed 1 config key", "managed I/O set to unrestricted"])
+  assert.deepEqual(flashes, ["listed 1 config key", "workspace live sync set to unrestricted"])
 })
 
 test("provider processes command lists and tears down safe daemon-tracked processes", async () => {

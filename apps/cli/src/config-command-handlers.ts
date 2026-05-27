@@ -45,12 +45,12 @@ export async function handleConfigSlashCommand(
     await unsetUserConfigValue(deps, keyPath)
     return
   }
-  if (subcommand === "managed-io") {
-    await setManagedIoMode(deps, keyPath, rest)
+  if (subcommand === "workspace-live-sync") {
+    await setWorkspaceLiveSyncMode(deps, keyPath, rest)
     return
   }
   deps.flashFooter(
-    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | managed-io required|unrestricted",
+    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync required|unrestricted",
     "error",
   )
 }
@@ -157,7 +157,7 @@ async function unsetUserConfigValue(
   deps.flashFooter(`config ${keyPath} unset`, "info")
 }
 
-async function setManagedIoMode(
+async function setWorkspaceLiveSyncMode(
   deps: ConfigCommandHandlerDeps,
   modeValue: string | undefined,
   rest: string[],
@@ -168,11 +168,11 @@ async function setManagedIoMode(
   }
   const mode = modeValue ?? "required"
   if (rest.length > 0 || !["required", "unrestricted", "on", "off"].includes(mode)) {
-    deps.flashFooter("usage: /config managed-io required|unrestricted|on|off", "error")
+    deps.flashFooter("usage: /config workspace-live-sync required|unrestricted|on|off", "error")
     return
   }
   const normalizedMode = mode === "on" ? "required" : mode === "off" ? "unrestricted" : mode
-  const payload = await deps.setUserConfigValue("providers.managed_io", normalizedMode)
+  const payload = await deps.setUserConfigValue("providers.workspace_live_sync", normalizedMode)
   appendUserConfigEffects(deps, payload)
-  deps.flashFooter(`managed I/O set to ${normalizedMode}`, "info")
+  deps.flashFooter(`workspace live sync set to ${normalizedMode}`, "info")
 }

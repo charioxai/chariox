@@ -245,7 +245,7 @@ impl ArtifactExternalChangeMonitor {
 fn external_change_notice_for_path(path: PathBuf) -> ArtifactExternalChangeNotice {
     ArtifactExternalChangeNotice {
         path,
-        message: "artifact changed outside Arroba managed I/O after the last managed observation"
+        message: "artifact changed outside Arroba workspace live sync after the last managed observation"
             .to_string(),
     }
 }
@@ -362,7 +362,7 @@ mod tests {
             .expect("external change should be noticed");
 
         assert_eq!(notice.path, std::path::PathBuf::from("src/lib.rs"));
-        assert!(notice.message.contains("outside Arroba managed I/O"));
+        assert!(notice.message.contains("outside Arroba workspace live sync"));
     }
 
     #[test]

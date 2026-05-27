@@ -18,7 +18,7 @@ This is a synchronization problem, closer to operating-system concurrency contro
 
 The M4.6 guarantee applies only to writes performed by agents launched and managed by Arroba provider sessions.
 
-For those sessions, Arroba must configure supported providers so they cannot mutate coordinated workspace artifacts except through Arroba's managed I/O tools. Detection-only or best-effort warnings are insufficient for managed agents.
+For those sessions, Arroba must configure supported providers so they cannot mutate coordinated workspace artifacts except through Arroba's workspace live sync tools. Detection-only or best-effort warnings are insufficient for managed agents.
 
 Unsupported cases:
 
@@ -202,8 +202,8 @@ Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough 
 
 Current enforcement mechanisms:
 
-- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
-- OpenCode managed-I/O runs deny native edit/write/apply-patch/task paths. Native `bash` is allowed only when Arroba's process-level workspace write fence is active, leaving coordinated file writes available only through Arroba managed I/O tools.
+- Codex workspace live sync runs use the provider read-only sandbox for new threads and turns, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
+- OpenCode workspace live sync runs deny native edit/write/apply-patch/task paths. Native `bash` is allowed only when Arroba's process-level workspace write fence is active, leaving coordinated file writes available only through Arroba workspace live sync tools.
 - OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
@@ -212,11 +212,11 @@ Detection is still useful for diagnostics, but it is not a substitute for blocki
 
 Status: implemented for Arroba-launched local provider runs on macOS. Linux and Windows are explicitly deferred to later versions.
 
-The managed-I/O hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
+The workspace live sync hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
 
 - Arroba-managed provider processes may read the real workspace and run native read/inspection tools.
 - Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under the coordinated worktree.
-- Arroba runtime MCP managed I/O remains the only write path into the real workspace.
+- Arroba runtime MCP workspace live sync remains the only write path into the real workspace.
 - Provider-native write/edit/patch tools remain disabled or hidden where the provider supports that, but those controls are defense in depth rather than the root guarantee.
 - Native shell can be allowed only when the Arroba workspace write fence is active for that provider process.
 
@@ -232,22 +232,22 @@ The worktree path must be canonicalized before profile generation, because macOS
 
 Arroba-owned launch behavior:
 
-- All managed-I/O provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
+- All workspace live sync provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
 - Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, native command/file-change approval denial, and filesystem-write permission-grant filtering as second layers. This is required because Codex app-server can request additional permissions for native shell work.
 - OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` is enabled only when the process-level write fence is active.
-- Provider runs without an active write fence cannot enable native shell for managed-I/O sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
-- External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee managed I/O for provider processes it launches and fences.
+- Provider runs without an active write fence cannot enable native shell for workspace live sync sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
+- External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee workspace live sync for provider processes it launches and fences.
 
 Implemented slices:
 
-1. Added a provider-neutral launch wrapper that transforms a managed-I/O `ProviderLaunchResult` into a fenced launch on macOS.
+1. Added a provider-neutral launch wrapper that transforms a workspace live sync `ProviderLaunchResult` into a fenced launch on macOS.
 2. Added a macOS sandbox profile generator with canonical-path validation.
 3. Threaded the coordinated worktree root into provider launch planning so the fence denies the exact canonical path.
-4. Applied the fence to Arroba-launched Codex and OpenCode managed-I/O provider processes.
+4. Applied the fence to Arroba-launched Codex and OpenCode workspace live sync provider processes.
 5. Removed external Codex/OpenCode endpoint override/reuse from managed provider launch planning.
 6. Re-enabled OpenCode `bash` only when the fence is active; OpenCode native edit/write/apply-patch/task stay denied.
 7. Kept Codex provider-native sandboxing enabled after the Arroba fence is active.
-8. Hardened Codex app-server permission approvals so managed-I/O runs preserve network and direct-read permission requests but never grant filesystem write upgrades.
+8. Hardened Codex app-server permission approvals so workspace live sync runs preserve network and direct-read permission requests but never grant filesystem write upgrades.
 
 Remaining follow-up slices:
 
@@ -266,10 +266,10 @@ Required macOS live drills:
 
 Acceptance criteria:
 
-- On macOS, Arroba-managed managed-I/O runs for Codex and OpenCode use the same Arroba-owned workspace write fence.
+- On macOS, Arroba-managed workspace live sync runs for Codex and OpenCode use the same Arroba-owned workspace write fence.
 - OpenCode native shell is available only behind that fence.
 - Direct workspace mutation attempts from provider-native shell do not change the real worktree.
-- Managed I/O writes still apply to the real worktree through the kernel coordinator.
+- Workspace live sync writes still apply to the real worktree through the kernel coordinator.
 - Linux and Windows fail closed for this capability until their own `WorkspaceWriteFence` backends are designed and implemented.
 
 ## External Changes
@@ -332,7 +332,7 @@ The relay remains transport. The home kernel remains the workspace and artifact-
 
 ## MCP/Runtime Tool Surface
 
-M4.6 should expose managed I/O through the existing runtime tool/MCP path.
+M4.6 should expose workspace live sync through the existing runtime tool/MCP path.
 
 Initial tools:
 
@@ -365,7 +365,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 15. Add unsupported-provider/session-mode reporting when write enforcement cannot be guaranteed.
 16. Treat non-text artifacts as `OpaqueBlob` with whole-file locking for v1.
 17. Design later image/audio/video/PDF/vector/structured artifact domains beyond v1.
-18. M5.6/default policy follow-up: keep managed I/O restricted mode as the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
+18. M5.6/default policy follow-up: keep workspace live sync restricted mode as the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
 
 ## Current Status
 
@@ -375,19 +375,19 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: runtime tool argument/schema definitions for managed artifact read/edit/write tools.
 - Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit/write tools backed by the provider run workspace root.
 - Landed: opaque managed reads/writes/deletes/moves use base64 payloads where content crosses process boundaries and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque operations preserve exact bytes.
-- Landed: provider launch contract for required managed-I/O writes.
-- Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
-- Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
-- Landed: workspace identity monitor boundary with identity-generation tracking and managed-I/O rejection after workspace identity invalidation.
-- Landed: unsupported provider-mode rejection at launch when managed I/O is required but the adapter cannot enforce write blocking.
-- Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
+- Landed: provider launch contract for required workspace live sync writes.
+- Landed: Codex required workspace live sync enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
+- Landed: OpenCode required workspace live sync enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
+- Landed: workspace identity monitor boundary with identity-generation tracking and workspace live sync rejection after workspace identity invalidation.
+- Landed: unsupported provider-mode rejection at launch when workspace live sync is required but the adapter cannot enforce write blocking.
+- Landed: workspace live sync health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
 - Landed: external artifact change monitor boundary that tracks managed reads, runs a scoped live watcher for tracked artifacts, records detected external changes, and returns agent-facing external-change notices for edit/write/patch/delete/move paths.
-- Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
-- Landed: remote coordinated managed-I/O routing for text artifacts. Leased worker provider runs forward `read_artifact`, `edit_artifact`, `write_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state. Remote opaque `read_artifact`, `write_artifact`, `move_artifact`, and `delete_artifact` carry bytes as base64, preserve artifact domain on absent/deleted whole-file states, and coordinate whole-file states.
-- Landed: remote managed-I/O live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
-- Landed: remote managed-I/O full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
-- Landed: local and remote managed-I/O drill scripts now cover opaque write/read/move/delete alongside text operations.
-- Landed: local managed-I/O drill hardening now serializes provider positive phases into smaller prompts and covers Codex permission-upgrade denial. On 2026-04-18, the full local drill passed with OpenCode `openai/gpt-5.3-codex` and Codex `gpt-5.2`; both providers completed managed text and opaque operations, direct/native write attempts left no forbidden files, collision serialization held, stale non-overlap external changes rebased, and stale overlap external changes were rejected.
+- Landed: local workspace live sync live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
+- Landed: remote coordinated workspace live sync routing for text artifacts. Leased worker provider runs forward `read_artifact`, `edit_artifact`, `write_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state. Remote opaque `read_artifact`, `write_artifact`, `move_artifact`, and `delete_artifact` carry bytes as base64, preserve artifact domain on absent/deleted whole-file states, and coordinate whole-file states.
+- Landed: remote workspace live sync live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
+- Landed: remote workspace live sync full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
+- Landed: local and remote workspace live sync drill scripts now cover opaque write/read/move/delete alongside text operations.
+- Landed: local workspace live sync drill hardening now serializes provider positive phases into smaller prompts and covers Codex permission-upgrade denial. On 2026-04-18, the full local drill passed with OpenCode `openai/gpt-5.3-codex` and Codex `gpt-5.2`; both providers completed managed text and opaque operations, direct/native write attempts left no forbidden files, collision serialization held, stale non-overlap external changes rebased, and stale overlap external changes were rejected.
 - Post-v1: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals

@@ -1,6 +1,6 @@
 use crate::error::DaemonError;
 use crate::execution_lease::RemoteWorkflowTurnContext;
-use crate::transport::relay_peer::{RemoteManagedIoContext, RemoteNativeInteractionContext};
+use crate::transport::relay_peer::{RemoteWorkspaceLiveSyncContext, RemoteNativeInteractionContext};
 
 use super::RemoteLeaseRuntime;
 
@@ -74,11 +74,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|binding| binding.context.clone())
     }
 
-    pub(crate) fn leased_managed_io_context_for_provider_run(
+    pub(crate) fn leased_workspace_live_sync_context_for_provider_run(
         &self,
         provider_run_id: &str,
         worker_workspace_identity: crate::io::WorkspaceIdentity,
-    ) -> Option<RemoteManagedIoContext> {
+    ) -> Option<RemoteWorkspaceLiveSyncContext> {
         let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
             self.app
                 .providers
@@ -90,7 +90,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .unwrap_or(false)
         })?;
         let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
-        Some(RemoteManagedIoContext {
+        Some(RemoteWorkspaceLiveSyncContext {
             home_kernel_id: lease.home_kernel_id.clone(),
             home_session_id: lease.home_session_id.clone(),
             home_agent_id: lease.home_agent_id.clone(),

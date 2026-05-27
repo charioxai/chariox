@@ -57,8 +57,8 @@ impl DaemonApp {
         .with_variant(agent.effort().map(str::to_string))
         .with_execution_mode(effective_config.mode)
         .with_permission_level(effective_config.permission_level);
-        if crate::provider::provider_requires_managed_io_by_default(provider, &self.config) {
-            request = request.with_managed_io_required();
+        if crate::provider::provider_requires_workspace_live_sync_by_default(provider, &self.config) {
+            request = request.with_workspace_live_sync_required();
         }
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));

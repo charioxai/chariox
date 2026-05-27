@@ -96,7 +96,7 @@ Known verification gap:
   recorded. That is a workflow/runtime-MCP Claude follow-up, not a relay target
   registration blocker.
 - Auth/status UX, larger artifact helper surfaces, native Claude TUI, slice
-  support, and managed I/O remain out of scope for this implementation slice.
+  support, and workspace live sync remain out of scope for this implementation slice.
 
 Claude Code should become a first-class Arroba provider at the same runtime level
 as Codex and OpenCode. The initial integration must use the local Claude Code CLI
@@ -137,7 +137,7 @@ transport, not a relay participant, and not a Cloud concern.
 
 ## Explicit Non-Goals
 
-- Do not implement managed I/O enforcement in the first Claude Code provider
+- Do not implement workspace live sync enforcement in the first Claude Code provider
   milestones. Leave it for a later coordinated-I/O hardening milestone.
 - Do not require `ANTHROPIC_API_KEY` or Anthropic SDK setup for normal Claude
   provider use.
@@ -279,7 +279,7 @@ Work:
 - For local files/artifacts, prefer explicit text blocks or path references that
   preserve kernel artifact ownership.
 - Add runtime MCP only as needed for artifact read/download helpers. This is not
-  managed I/O enforcement.
+  workspace live sync enforcement.
 - Ensure artifacts remain kernel-owned and relay-opaque.
 - Add tests for text artifact attachment, binary/opaque artifact fallback, and
   missing artifact diagnostics.
@@ -327,7 +327,7 @@ remote workflow drills remain follow-up validation once the remote relay target
 bootstrap issue is resolved.
 
 Goal: Claude participates in freeform and workflow runtime at the same level as
-Codex/OpenCode, without managed I/O guarantees yet.
+Codex/OpenCode, without workspace live sync guarantees yet.
 
 Work:
 
@@ -505,10 +505,10 @@ Live drills:
 - `mixed-provider-slice`: run Claude/Codex/OpenCode in one slice scenario and
   verify no provider-specific transport assumptions leak into slice code.
 
-### M13.9 Managed I/O Hardening Later
+### M13.9 Workspace live sync Hardening Later
 
 Goal: only after Claude local/remote/workflow/native/slice paths are stable,
-bring Claude into managed I/O enforcement.
+bring Claude into workspace live sync enforcement.
 
 Work:
 
@@ -519,11 +519,11 @@ Work:
 
 Live drills:
 
-- `claude-managed-io-text`: managed read/write/edit artifact workflow.
-- `claude-managed-io-native-write-denied`: direct file write attempt leaves no
+- `claude-workspace-live-sync-text`: managed read/write/edit artifact workflow.
+- `claude-workspace-live-sync-native-write-denied`: direct file write attempt leaves no
   forbidden workspace mutation.
-- `mixed-managed-io-all-providers`: Claude, Codex, and OpenCode complete the
-  managed I/O drill in one run.
+- `mixed-workspace-live-sync-all-providers`: Claude, Codex, and OpenCode complete the
+  workspace live sync drill in one run.
 
 ## Implementation Checkpoints
 
@@ -540,7 +540,7 @@ Commit and push after each meaningful improvement:
 - auth/catalog polish,
 - native TUI,
 - slice support,
-- later managed I/O.
+- later workspace live sync.
 
 Every functional milestone must add or extend at least one live drill before the
 milestone is considered complete.

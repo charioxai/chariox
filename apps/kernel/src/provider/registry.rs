@@ -16,7 +16,7 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
     fn connect(&self, request: &LaunchProviderRequest)
         -> Result<ProviderLaunchResult, DaemonError>;
-    fn supports_managed_io_write_enforcement(&self) -> bool {
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         false
     }
     fn supports_turn_scoped_execution_config(&self) -> bool {
@@ -125,7 +125,7 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         Self::KEY
     }
 
-    fn supports_managed_io_write_enforcement(&self) -> bool {
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         true
     }
 
@@ -161,7 +161,7 @@ impl AgentEndpointAdapter for CodexAdapter {
         Self::KEY
     }
 
-    fn supports_managed_io_write_enforcement(&self) -> bool {
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         true
     }
 

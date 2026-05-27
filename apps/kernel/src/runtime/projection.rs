@@ -17,7 +17,7 @@ pub(crate) use agent_runtime_projection::{AgentRuntimeProjection, AgentRuntimePr
 pub(crate) use config_projection::DaemonConfigProjectionStore;
 pub use daemon_health_model::{
     ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
-    ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot, ProjectionInvariantMismatch,
+    WorkspaceLiveSyncHealthSnapshot, ProjectionInvariantHealthSnapshot, ProjectionInvariantMismatch,
     ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
     WorkspaceCoordinationHealthSnapshot, WorktreeClaimSnapshot,
 };

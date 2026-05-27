@@ -116,14 +116,14 @@ test("executeShellCommand mutates user config", async () => {
             UserConfigSchema: {
               entries: [
                 {
-                  path: "providers.managed_io",
+                  path: "providers.workspace_live_sync",
                   value_type: "enum",
                   allowed_values: ["required", "unrestricted"],
                   settable: true,
                   unsettable: true,
                   effect: "provider_reload",
                   status: "live",
-                  description: "Global managed I/O policy.",
+                  description: "Global workspace live sync policy.",
                 },
               ],
             },
@@ -135,13 +135,13 @@ test("executeShellCommand mutates user config", async () => {
         return {
           UserConfigUpdated: {
             path: "/home/.arroba/config.json",
-            config: { version: 1, providers: { managed_io: "required" } },
-            effects: setConfig?.path === "providers.managed_io"
+            config: { version: 1, providers: { workspace_live_sync: "required" } },
+            effects: setConfig?.path === "providers.workspace_live_sync"
               ? [
                   {
                     kind: "provider_reload",
-                    path: "providers.managed_io",
-                    message: "managed I/O policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+                    path: "providers.workspace_live_sync",
+                    message: "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
                     provider_reload: { reloaded: 1, deferred: 0, unaffected: 0 },
                   },
                 ]
@@ -157,11 +157,11 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const managedIoResult = await executeShellCommand(parseShellCommand("config managed-io on"), context, { client: fake.client })
+  const workspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync on"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
   assert.equal(pathResult.message, "/home/.arroba/config.json")
   assert.equal(keysResult.ok, true)
-  assert.match(keysResult.message ?? "", /providers\.managed_io/)
+  assert.match(keysResult.message ?? "", /providers\.workspace_live_sync/)
   assert.equal(schemaResult.ok, true)
   assert.equal(schemaResult.format, "json")
   assert.match(schemaResult.message ?? "", /provider_reload/)
@@ -169,16 +169,16 @@ test("executeShellCommand mutates user config", async () => {
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
-  assert.equal(managedIoResult.ok, true)
-  assert.match(managedIoResult.message ?? "", /managed I\/O set to required/)
-  assert.match(managedIoResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
+  assert.equal(workspaceLiveSyncResult.ok, true)
+  assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
+  assert.match(workspaceLiveSyncResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.managed_io", value: "required" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
   ])
 })
 

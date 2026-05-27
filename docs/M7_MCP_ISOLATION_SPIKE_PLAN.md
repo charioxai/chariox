@@ -25,7 +25,7 @@ Current implementation status:
 - A small scale matrix is validated for Codex and OpenCode across 1-2 agents and 1-3 MCPs per agent.
 - Overlapping-but-not-identical grants are validated for Codex and OpenCode with `agent-a: fake-alpha,fake-beta` and `agent-b: fake-beta,fake-gamma`.
 - Production integration has started: Arroba now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and streamable HTTP/HTTPS MCP backing relay tests, including chunked responses.
-- Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_extension`, provider conversation relaunch/resume, automatic continuation, and managed-I/O marker writes.
+- Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_extension`, provider conversation relaunch/resume, automatic continuation, and workspace live sync marker writes.
 - Remaining production work is remote/workflow MCP drills after production proxy integration.
 
 ## Why This Exists
@@ -251,7 +251,7 @@ Validated details:
 - Codex launch and thread-start config both need the same proxy MCP config. Otherwise Codex can merge stale stdio definitions with proxy URL definitions and fail startup.
 - Codex should receive MCP bearer tokens through `bearer_token_env_var`, not inline HTTP headers in launch arguments.
 - Provider-native approval systems can reject newly exposed third-party MCP tools after Arroba has already granted them. V1 treats the Arroba grant as the approval boundary and marks granted proxy tools as non-destructive/non-open-world/read-only in `tools/list`.
-- Agent-triggered relaunch must preserve the previous run's managed-I/O mode. A combined drill caught an OpenCode replacement run launching unmanaged; this is now fixed.
+- Agent-triggered relaunch must preserve the previous run's workspace live sync mode. A combined drill caught an OpenCode replacement run launching unmanaged; this is now fixed.
 
 ## Measurements
 

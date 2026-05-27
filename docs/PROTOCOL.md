@@ -565,13 +565,13 @@ Shell capability requests MUST be validated against the requesting attachment an
 Tree/file/git capability requests MUST remain scoped to the session worktree boundary and return structured results rather than raw transcript fragments.
 Screenshot capture MUST write only into daemon-chosen session artifact locations.
 
-## 5.0.1 Managed I/O Coordination
+## 5.0.1 Workspace live sync Coordination
 
 The kernel owns managed artifact I/O for Arroba-launched provider sessions. Supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 
 macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under the canonical worktree path while still allowing provider state/cache/temp writes outside the worktree. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
 
-External provider endpoints are not a managed-runtime mode. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim managed-I/O enforcement. Native TUI agents that bind an externally launched provider app-server are therefore not managed-I/O runs unless that process was launched behind the Arroba runtime boundary.
+External provider endpoints are not a managed-runtime mode. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim workspace live sync enforcement. Native TUI agents that bind an externally launched provider app-server are therefore not workspace live sync runs unless that process was launched behind the Arroba runtime boundary.
 
 The v1 contract is:
 
@@ -581,8 +581,8 @@ The v1 contract is:
 - Runtime MCP exposes extension control-plane tools `arroba.list_extensions` / `list_extensions` and `arroba.request_extension` / `request_extension`. These list Arroba-managed MCPs, skills, and scripts visible to the current workspace and let the current agent request one by `kind` and `name`. Script requests also require an already registered local `environment`. V1 auto-grants valid requests; newly requested MCPs trigger Arroba-managed provider conversation activation, and agent-triggered MCP requests continue via an automatic continuation prompt after the current turn. Newly requested skills are effective immediately because the request returns the full `SKILL.md` body by default. Script extensions expose a registered script as a runtime MCP tool; the script must live on the machine hosting the agent and runs in the registered external environment. Remote worker agents forward these extension calls to the home kernel where applicable; standard home-worker mode does not copy scripts or environments across machines.
 - text artifacts coordinate edited ranges, serialize same-area writes, rebase stale non-overlapping external changes, and reject stale overlapping external changes.
 - non-text artifacts use `domain: "opaque"` and `content_base64`; they are coordinated as whole-file writes/moves/deletes.
-- remote agents working in the same repo and branch forward managed I/O through the home kernel. The home kernel owns snapshots, reservations, and conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state.
-- if the workspace identity changes during a managed run, the kernel rejects managed I/O until the run rejoins a valid coordinated workspace.
+- remote agents working in the same repo and branch forward workspace live sync through the home kernel. The home kernel owns snapshots, reservations, and conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state.
+- if the workspace identity changes during a managed run, the kernel rejects workspace live sync until the run rejoins a valid coordinated workspace.
 
 Future coordination work still includes port claims, an explicit user command for unsafe/uncoordinated mode, and type-specific non-text artifact region models beyond opaque whole-file locking.
 

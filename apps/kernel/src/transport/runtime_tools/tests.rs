@@ -1,12 +1,12 @@
 use super::*;
 
 #[cfg(test)]
-mod managed_io_tests {
+mod workspace_live_sync_tests {
     use super::*;
 
     #[test]
-    fn managed_io_specs_expose_read_and_edit_tools() {
-        let specs = managed_io_runtime_tool_specs();
+    fn workspace_live_sync_specs_expose_read_and_edit_tools() {
+        let specs = workspace_live_sync_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
         assert!(specs
             .iter()
@@ -140,41 +140,41 @@ mod managed_io_tests {
     }
 
     #[test]
-    fn canonical_managed_io_tool_name_accepts_provider_aliases() {
+    fn canonical_workspace_live_sync_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_managed_io_tool_name("mcp__arroba__read_artifact"),
+            canonical_workspace_live_sync_tool_name("mcp__arroba__read_artifact"),
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("mcp__arroba__arroba_read_artifact"),
+            canonical_workspace_live_sync_tool_name("mcp__arroba__arroba_read_artifact"),
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("read_artifact"),
+            canonical_workspace_live_sync_tool_name("read_artifact"),
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("edit_artifact"),
+            canonical_workspace_live_sync_tool_name("edit_artifact"),
             Some(EDIT_ARTIFACT_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("patch_artifact"),
+            canonical_workspace_live_sync_tool_name("patch_artifact"),
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("arroba_apply_patch"),
+            canonical_workspace_live_sync_tool_name("arroba_apply_patch"),
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(
-            canonical_managed_io_tool_name("arroba_patch_artifact"),
+            canonical_workspace_live_sync_tool_name("arroba_patch_artifact"),
             Some(APPLY_PATCH_TOOL)
         );
-        assert_eq!(canonical_managed_io_tool_name("unknown"), None);
+        assert_eq!(canonical_workspace_live_sync_tool_name("unknown"), None);
     }
 
     #[test]
     fn managed_edit_args_accept_text_replace_shape() {
-        let args = serde_json::from_value::<ManagedEditArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncEditArtifactArgs>(serde_json::json!({
             "path": "src/lib.rs",
             "snapshot_id": "snap:1",
             "old_text": "before",
@@ -189,7 +189,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_write_args_accept_text_content_shape() {
-        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
             "path": "src/lib.rs",
             "content_text": "hello"
         }))
@@ -202,7 +202,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_write_args_accept_opaque_content_shape() {
-        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncWriteArtifactArgs>(serde_json::json!({
             "path": "assets/blob.bin",
             "content_base64": "AAEC",
             "domain": "opaque"
@@ -216,7 +216,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_apply_patch_args_accept_patch_text_shape() {
-        let args = serde_json::from_value::<ManagedApplyPatchArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncApplyPatchArgs>(serde_json::json!({
             "patch_text": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch",
             "domain": "text"
         }))
@@ -228,7 +228,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_delete_args_accept_path_shape() {
-        let args = serde_json::from_value::<ManagedDeleteArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncDeleteArtifactArgs>(serde_json::json!({
             "path": "src/lib.rs"
         }))
         .expect("managed delete args should parse");
@@ -238,7 +238,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_move_args_accept_path_shape() {
-        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncMoveArtifactArgs>(serde_json::json!({
             "from_path": "src/old.rs",
             "to_path": "src/new.rs",
             "old_text": "old",
@@ -254,7 +254,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_move_args_treat_empty_transform_fields_as_absent_for_non_text() {
-        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncMoveArtifactArgs>(serde_json::json!({
             "from_path": "from.bin",
             "to_path": "to.bin",
             "old_text": "",
@@ -268,7 +268,7 @@ mod managed_io_tests {
 
     #[test]
     fn managed_move_args_treat_empty_transform_pair_as_absent_for_text() {
-        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+        let args = serde_json::from_value::<WorkspaceLiveSyncMoveArtifactArgs>(serde_json::json!({
             "from_path": "from.txt",
             "to_path": "to.txt",
             "old_text": "",

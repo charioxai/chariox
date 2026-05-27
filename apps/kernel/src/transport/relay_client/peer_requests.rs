@@ -361,14 +361,14 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::ForwardManagedIoRuntimeTool {
+        RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
             context,
             tool_name,
             arguments,
             artifact_states,
         } => {
             let handled = router
-                .dispatch_forwarded_managed_io_runtime_tool_call(
+                .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
                     context,
                     tool_name,
                     arguments,
@@ -377,7 +377,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match handled {
                 Ok((result, final_artifact_states)) => {
-                    RelayPeerResponse::ManagedIoRuntimeToolHandled {
+                    RelayPeerResponse::WorkspaceLiveSyncRuntimeToolHandled {
                         result,
                         final_artifact_states,
                     }

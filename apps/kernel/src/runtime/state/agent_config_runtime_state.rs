@@ -422,7 +422,7 @@ impl KernelRuntimeState {
 }
 
 fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
-    crate::transport::runtime_tools::managed_io_runtime_tool_specs()
+    crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
         .into_iter()
         .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
         .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())

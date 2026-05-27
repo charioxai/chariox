@@ -8,7 +8,7 @@ Build a native iOS client for Arroba inside the open-source `arroba` repository.
 
 The iOS app is a client surface like the TypeScript terminal CLI and the Cloud
 WEB_CLI. It must not become a runtime authority. The kernel remains responsible
-for sessions, agents, workflows, provider runs, prompt queues, managed I/O,
+for sessions, agents, workflows, provider runs, prompt queues, workspace live sync,
 relay membership, and permission decisions.
 
 ## Source Context

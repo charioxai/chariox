@@ -160,8 +160,8 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
 fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
-    config.user_config.providers.managed_io =
-        crate::config::ManagedIoConfig::from_mode(crate::config::ManagedIoMode::Required);
+    config.user_config.providers.workspace_live_sync =
+        crate::config::WorkspaceLiveSyncConfig::from_mode(crate::config::WorkspaceLiveSyncMode::Required);
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
         .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
@@ -202,7 +202,7 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .providers()
         .get_run(&provider_run_id)
         .expect("provider run should exist");
-    assert!(provider_run.requires_managed_io());
+    assert!(provider_run.requires_workspace_live_sync());
     assert_eq!(provider_run.session_id(), leased_agent.backing_session_id);
     assert_eq!(
         provider_run.agent_instance_id(),

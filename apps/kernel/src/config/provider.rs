@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -15,7 +13,7 @@ pub struct UserProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     #[serde(default)]
-    pub managed_io: ManagedIoConfig,
+    pub workspace_live_sync: WorkspaceLiveSyncConfig,
 }
 
 impl Default for UserProviderConfig {
@@ -25,39 +23,32 @@ impl Default for UserProviderConfig {
             model: Some("default".to_string()),
             account_profile: Some("default".to_string()),
             effort: None,
-            managed_io: ManagedIoConfig::default(),
+            workspace_live_sync: WorkspaceLiveSyncConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "ManagedIoConfigSerde", into = "ManagedIoConfigSerde")]
-pub struct ManagedIoConfig {
-    pub mode: ManagedIoMode,
+#[serde(from = "WorkspaceLiveSyncMode", into = "WorkspaceLiveSyncMode")]
+pub struct WorkspaceLiveSyncConfig {
+    pub mode: WorkspaceLiveSyncMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum ManagedIoConfigSerde {
-    Mode(ManagedIoMode),
-    LegacyModes(BTreeMap<String, ManagedIoMode>),
-}
-
-impl Default for ManagedIoConfig {
+impl Default for WorkspaceLiveSyncConfig {
     fn default() -> Self {
         Self {
-            mode: ManagedIoMode::Unrestricted,
+            mode: WorkspaceLiveSyncMode::Unrestricted,
         }
     }
 }
 
-impl ManagedIoConfig {
-    pub fn from_mode(mode: ManagedIoMode) -> Self {
+impl WorkspaceLiveSyncConfig {
+    pub fn from_mode(mode: WorkspaceLiveSyncMode) -> Self {
         Self { mode }
     }
 
-    pub fn requires_managed_io(&self) -> bool {
-        self.mode.requires_managed_io()
+    pub fn requires_workspace_live_sync(&self) -> bool {
+        self.mode.requires_workspace_live_sync()
     }
 
     pub(super) fn validate(&self) -> Result<(), DaemonError> {
@@ -65,59 +56,38 @@ impl ManagedIoConfig {
     }
 }
 
-impl From<ManagedIoConfigSerde> for ManagedIoConfig {
-    fn from(value: ManagedIoConfigSerde) -> Self {
-        match value {
-            ManagedIoConfigSerde::Mode(mode) => Self::from_mode(mode),
-            ManagedIoConfigSerde::LegacyModes(modes) => {
-                Self::from_mode(legacy_managed_io_mode(modes))
-            }
-        }
+impl From<WorkspaceLiveSyncMode> for WorkspaceLiveSyncConfig {
+    fn from(mode: WorkspaceLiveSyncMode) -> Self {
+        Self::from_mode(mode)
     }
 }
 
-impl From<ManagedIoConfig> for ManagedIoConfigSerde {
-    fn from(value: ManagedIoConfig) -> Self {
-        Self::Mode(value.mode)
-    }
-}
-
-fn legacy_managed_io_mode(modes: BTreeMap<String, ManagedIoMode>) -> ManagedIoMode {
-    if let Some(mode) = modes.get("default").copied() {
-        return mode;
-    }
-    let Some(first) = modes.values().copied().next() else {
-        return ManagedIoMode::Unrestricted;
-    };
-    if modes.values().all(|mode| *mode == first) {
-        first
-    } else {
-        ManagedIoMode::Required
+impl From<WorkspaceLiveSyncConfig> for WorkspaceLiveSyncMode {
+    fn from(value: WorkspaceLiveSyncConfig) -> Self {
+        value.mode
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ManagedIoMode {
+pub enum WorkspaceLiveSyncMode {
     Required,
     Unrestricted,
 }
 
-impl ManagedIoMode {
+impl WorkspaceLiveSyncMode {
     pub(super) fn parse(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "required" | "managed" | "managed_io_required" | "on" | "true" | "1" => {
-                Ok(Self::Required)
-            }
+            "required" | "on" | "true" | "1" => Ok(Self::Required),
             "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
-                field: "providers.managed_io",
+                field: "providers.workspace_live_sync",
                 message: "value must be `required` or `unrestricted`",
             }),
         }
     }
 
-    pub fn requires_managed_io(&self) -> bool {
+    pub fn requires_workspace_live_sync(&self) -> bool {
         matches!(self, Self::Required)
     }
 }

@@ -477,7 +477,7 @@ async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
 #[tokio::test]
 async fn mcp_http_tools_call_reads_and_edits_managed_artifact() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-managed-io-mcp-test-{}",
+        "arroba-workspace-live-sync-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before unix epoch")

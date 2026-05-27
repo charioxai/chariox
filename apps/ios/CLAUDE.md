@@ -6,7 +6,7 @@ This is the native iOS client for the Arroba OSS runtime.
 
 - The iOS app is a client surface like the terminal CLI and Cloud WEB_CLI.
 - The kernel remains the runtime authority for sessions, agents, workflow
-  runs, provider state, permissions, managed I/O, and relay behavior.
+  runs, provider state, permissions, workspace live sync, and relay behavior.
 - Runtime-changing actions must go through kernel or relay-backed kernel
   requests.
 - Client-local state is limited to view state, drafts, local preferences,

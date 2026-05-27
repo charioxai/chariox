@@ -54,8 +54,8 @@ impl KernelRuntimeState {
                 launch_request =
                     launch_request.with_working_directory(std::path::PathBuf::from(worktree_id));
             }
-            if crate::provider::provider_requires_managed_io_by_default(provider, &config) {
-                launch_request = launch_request.with_managed_io_required();
+            if crate::provider::provider_requires_workspace_live_sync_by_default(provider, &config) {
+                launch_request = launch_request.with_workspace_live_sync_required();
             }
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;

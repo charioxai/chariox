@@ -25,7 +25,7 @@ use json_rpc::JsonRpcMessage;
 use notifications::parse_notification;
 #[cfg(test)]
 use permission::{
-    codex_collaboration_mode, codex_permission_policy, managed_io_codex_permission_grant,
+    codex_collaboration_mode, codex_permission_policy, workspace_live_sync_codex_permission_grant,
 };
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
@@ -128,14 +128,14 @@ mod tests {
     };
 
     use super::{
-        codex_collaboration_mode, codex_permission_policy, managed_io_codex_permission_grant,
+        codex_collaboration_mode, codex_permission_policy, workspace_live_sync_codex_permission_grant,
         parse_notification, CodexClient, CodexNotification, JsonRpcMessage,
     };
 
     #[test]
-    fn managed_io_permission_policy_uses_read_only_sandbox() {
+    fn workspace_live_sync_permission_policy_uses_read_only_sandbox() {
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::ManagedIoRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_io_permission_grant_removes_filesystem_write() {
+    fn workspace_live_sync_permission_grant_removes_filesystem_write() {
         let requested = json!({
             "network": {
                 "enabled": true
@@ -257,7 +257,7 @@ mod tests {
         });
 
         assert_eq!(
-            managed_io_codex_permission_grant(&requested),
+            workspace_live_sync_codex_permission_grant(&requested),
             json!({
                 "network": {
                     "enabled": true
@@ -270,21 +270,21 @@ mod tests {
     }
 
     #[test]
-    fn managed_io_permission_grant_denies_write_only_request() {
+    fn workspace_live_sync_permission_grant_denies_write_only_request() {
         let requested = json!({
             "fileSystem": {
                 "write": ["/tmp/output"]
             }
         });
 
-        assert_eq!(managed_io_codex_permission_grant(&requested), json!({}));
+        assert_eq!(workspace_live_sync_codex_permission_grant(&requested), json!({}));
     }
 
     #[test]
-    fn managed_io_client_does_not_approve_codex_filesystem_writes() {
+    fn workspace_live_sync_client_does_not_approve_codex_filesystem_writes() {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
-            .with_write_access_mode(ProviderWriteAccessMode::ManagedIoRequired);
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncRequired);
         let message = JsonRpcMessage {
             id: Some(json!(1)),
             method: Some("item/permissions/requestApproval".to_string()),
@@ -314,7 +314,7 @@ mod tests {
             .expect("client should construct")
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::ManagedIoRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );
@@ -386,7 +386,7 @@ mod tests {
             .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
             .with_mcp_servers(&[server]);
         let policy = codex_permission_policy(
-            ProviderWriteAccessMode::ManagedIoRequired,
+            ProviderWriteAccessMode::WorkspaceLiveSyncRequired,
             AgentExecutionMode::Build,
             AgentPermissionLevel::Yolo,
         );

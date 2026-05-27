@@ -268,7 +268,7 @@ async function runProviderScenario({ client, session, attachment, workspace, out
     'You have exactly two relevant connector tools: `agent_local_api_public_echo` and `agent_local_api_secret_status`.',
     'Call `agent_local_api_public_echo` with {"q":"connector-alpha"}.',
     'Call `agent_local_api_secret_status` with {}.',
-    `Then write ${outputRel} using Arroba managed I/O as one JSON object with these keys:`,
+    `Then write ${outputRel} using Arroba workspace live sync as one JSON object with these keys:`,
     'public_route, public_echo, secret_route, secret_authorized, secret_code.',
     'Use only values returned by the connector tools. Do not use placeholders. Reply exactly CONNECTOR_EXTENSION_AGENT_DRILL_DONE.',
   ].join('\n')

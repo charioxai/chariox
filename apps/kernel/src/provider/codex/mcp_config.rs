@@ -28,8 +28,8 @@ pub(super) fn runtime_mcp_config(
         return Ok((Vec::new(), inherited_codex_auth_env()));
     }
     let mut args = vec!["-c".to_string(), "mcp_servers={}".to_string()];
-    if request.requires_managed_io() {
-        let model_catalog_path = write_managed_io_model_catalog(request.model.as_str())?;
+    if request.requires_workspace_live_sync() {
+        let model_catalog_path = write_workspace_live_sync_model_catalog(request.model.as_str())?;
         args.splice(
             0..0,
             [
@@ -188,13 +188,13 @@ fn push_codex_config(args: &mut Vec<String>, value: String) {
     args.push(value);
 }
 
-fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
+fn write_workspace_live_sync_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
     let slug = model.rsplit('/').next().unwrap_or(model);
     let catalog = serde_json::json!({
         "models": [{
             "slug": slug,
             "display_name": slug,
-            "description": "Arroba managed-I/O model metadata overlay",
+            "description": "Arroba workspace live sync model metadata overlay",
             "default_reasoning_level": "medium",
             "supported_reasoning_levels": [
                 { "effort": "low", "description": "Fast responses with lighter reasoning" },
@@ -226,16 +226,16 @@ fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
     let mut hasher = DefaultHasher::new();
     model.hash(&mut hasher);
     let path = env::temp_dir().join(format!(
-        "arroba-codex-managed-io-models-{:x}.json",
+        "arroba-codex-workspace-live-sync-models-{:x}.json",
         hasher.finish()
     ));
     let content = serde_json::to_string(&catalog).map_err(|error| DaemonError::LocalTransport {
-        operation: "codex_managed_io_model_catalog",
+        operation: "codex_workspace_live_sync_model_catalog",
         message: error.to_string(),
     })?;
     fs::write(&path, content).map_err(|error| DaemonError::LocalTransport {
-        operation: "codex_managed_io_model_catalog",
-        message: format!("failed to write managed-I/O Codex model catalog: {error}"),
+        operation: "codex_workspace_live_sync_model_catalog",
+        message: format!("failed to write workspace live sync Codex model catalog: {error}"),
     })?;
     Ok(path)
 }

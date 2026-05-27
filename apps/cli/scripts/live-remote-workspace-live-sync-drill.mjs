@@ -1,0 +1,390 @@
+import { spawn } from 'node:child_process'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const cliRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+
+async function loadCliModules(runtimeDir) {
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
+    const sourcePath = path.join(cliRoot, rel)
+    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
+    const code = await readFile(sourcePath, 'utf8')
+    const transformed = await transformAsync(code, {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await writeFile(outPath, transformed?.code ?? '', 'utf8')
+  }
+  const ipcUrl = new URL(`file://${path.join(runtimeDir, 'ipc.js')}`).href
+  const requestsUrl = new URL(`file://${path.join(runtimeDir, 'ipc-requests.js')}`).href
+  const { LocalIpcClient } = await import(ipcUrl)
+  const requests = await import(requestsUrl)
+  return { LocalIpcClient, requests }
+}
+
+const DEFAULT_PROVIDERS = ['opencode', 'codex']
+const DEFAULT_MODEL = 'gpt-5.2'
+const DEFAULT_TIMEOUT_MS = 420_000
+const DEFAULT_POLL_MS = 1_000
+
+function parseArgs(argv) {
+  const options = {
+    providers: DEFAULT_PROVIDERS,
+    model: DEFAULT_MODEL,
+    providerModels: {},
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    pollMs: DEFAULT_POLL_MS,
+    keepArtifactsOnFailure: false,
+    full: false,
+  }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
+    else if (arg === '--provider') options.providers = [argv[++i]]
+    else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
+    else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
+    else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
+    else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--full') options.full = true
+    else if (arg === '--help') options.help = true
+    else throw new Error(`unknown argument: ${arg}`)
+  }
+  return options
+}
+
+function makePorts() {
+  const base = 58000 + Math.floor(Math.random() * 1000)
+  return {
+    relayPort: base,
+    homeKernelPort: base + 1000,
+    workerKernelPort: base + 1001,
+    homeMcpPort: base + 2000,
+    workerMcpPort: base + 2001,
+    homeOpenCodePort: base + 3000,
+    workerOpenCodePort: base + 3001,
+    homeCodexPort: base + 3002,
+    workerCodexPort: base + 3003,
+  }
+}
+
+function daemonEnv({
+  ports,
+  rootDir,
+  relayToken,
+  daemonId,
+  daemonAlias,
+  machineId,
+  machineAlias,
+  acceptRemoteLeases,
+  kernelPort,
+  mcpPort,
+  opencodePort,
+  codexPort,
+  socketName,
+  historyDir,
+}) {
+  return {
+    ...process.env,
+    ARROBA_KERNEL_PORT: String(kernelPort),
+    ARROBA_MCP_PORT: String(mcpPort),
+    ARROBA_OPENCODE_PORT: String(opencodePort),
+    ARROBA_CODEX_PORT: String(codexPort),
+    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    ARROBA_RELAY_TOKEN: relayToken,
+    ARROBA_DAEMON_ID: daemonId,
+    ARROBA_DAEMON_ALIAS: daemonAlias,
+    ARROBA_MACHINE_ID: machineId,
+    ARROBA_MACHINE_ALIAS: machineAlias,
+    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
+    ARROBA_SESSION_HISTORY_DIR: historyDir,
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const unwrap = (resp, key) => resp?.[key] ?? resp
+const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const connected = await new Promise((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.once('connect', () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.once('error', () => {
+        socket.destroy()
+        resolve(false)
+      })
+    })
+    if (connected) return
+    await sleep(100)
+  }
+  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
+async function resolveBinary(binaryPath, manifestPath, binName) {
+  try {
+    await access(binaryPath)
+    return binaryPath
+  } catch {
+    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
+  }
+}
+
+async function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode != null) return
+  child.kill(signal)
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(5_000),
+  ])
+  if (child.exitCode == null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      sleep(2_000),
+    ])
+  }
+}
+
+async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const probe = new LocalIpcClient(kernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      const session = unwrap(await probe.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
+      await probe.send(endSessionRequest(session.id)).catch(() => {})
+      await probe.close()
+      return
+    } catch {
+      await probe.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error('home daemon did not become ready')
+}
+
+async function waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, targetDaemonAlias) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const client = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await Promise.race([
+        client.send(listRemoteMachinesRequest()),
+        sleep(2_000).then(() => { throw new Error('probe timeout') }),
+      ])
+      await client.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      await client.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? 'unknown error'}`)
+}
+
+async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const machines = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed').machines || []
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) return
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not become visible`)
+}
+
+async function runWorkspaceLiveSyncChild(args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => {
+      process.stdout.write(chunk)
+      stdout += chunk.toString()
+    })
+    child.on('exit', (code) => {
+      if (code === 0) resolve(stdout)
+      else reject(new Error(`remote workspace live sync drill child exited with code ${code}`))
+    })
+    child.on('error', reject)
+  })
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full]')
+    console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
+    return
+  }
+  if (options.providers.length < 1) throw new Error('remote workspace live sync drill requires at least one provider')
+
+  const ports = makePorts()
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-${process.pid}-${Date.now()}`)
+  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-workspace-live-sync-drill')
+  await mkdir(rootDir, { recursive: true })
+  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+  await mkdir(cliRuntimeDir, { recursive: true })
+
+  const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
+  const { createSessionRequest, endSessionRequest, listRemoteMachinesRequest } = requests
+
+  const relayToken = `relay-token-${process.pid}-${Date.now()}`
+  const relayBinary = await resolveBinary(
+    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+    path.join(repoRoot, 'apps/relay/Cargo.toml'),
+    'arroba-relay',
+  )
+  const daemonBinary = await resolveBinary(
+    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+    'arroba-kernel',
+  )
+  const relayEnv = {
+    ...process.env,
+    ARROBA_RELAY_HOST: '127.0.0.1',
+    ARROBA_RELAY_PORT: String(ports.relayPort),
+    ARROBA_RELAY_TOKEN: relayToken,
+  }
+  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
+  const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
+  const workerMachineId = `workspace-live-sync-machine-worker-${process.pid}`
+  const workerMachineAlias = `workspace-live-sync-worker-${process.pid}`
+  const homeDaemonId = `workspace-live-sync-home-${process.pid}-${Date.now()}`
+  const workerDaemonId = `workspace-live-sync-worker-${process.pid}-${Date.now()}`
+  const homeHistoryDir = path.join(rootDir, `${homeDaemonId}-history`)
+  const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
+
+  let relayChild = null
+  let homeChild = null
+  let workerChild = null
+  let localClient = null
+  let succeeded = false
+
+  try {
+    relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+    await waitForTcpPort(ports.relayPort)
+    homeChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: daemonEnv({
+        ports,
+        rootDir,
+        relayToken,
+        daemonId: homeDaemonId,
+        daemonAlias: 'home',
+        machineId: `workspace-live-sync-machine-home-${process.pid}`,
+        machineAlias: `workspace-live-sync-home-machine-${process.pid}`,
+        acceptRemoteLeases: false,
+        kernelPort: ports.homeKernelPort,
+        mcpPort: ports.homeMcpPort,
+        opencodePort: ports.homeOpenCodePort,
+        codexPort: ports.homeCodexPort,
+        socketName: 'home.sock',
+        historyDir: homeHistoryDir,
+      }),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+    workerChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: daemonEnv({
+        ports,
+        rootDir,
+        relayToken,
+        daemonId: workerDaemonId,
+        daemonAlias: 'worker',
+        machineId: workerMachineId,
+        machineAlias: workerMachineAlias,
+        acceptRemoteLeases: true,
+        kernelPort: ports.workerKernelPort,
+        mcpPort: ports.workerMcpPort,
+        opencodePort: ports.workerOpenCodePort,
+        codexPort: ports.workerCodexPort,
+        socketName: 'worker.sock',
+        historyDir: workerHistoryDir,
+      }),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
+    await waitForLocalDaemon(LocalIpcClient, homeKernelUrl, createSessionRequest, endSessionRequest, repoRoot)
+    await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
+    await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
+
+    localClient = new LocalIpcClient(homeKernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
+
+    const stdout = await runWorkspaceLiveSyncChild([
+      path.join('apps', 'cli', 'scripts', 'live-workspace-live-sync-drill.mjs'),
+      '--kernel', homeKernelUrl,
+      '--no-spawn-daemon',
+      '--machine-ref', workerMachineId,
+      '--history-dir', workerHistoryDir,
+      '--providers', options.providers.join(','),
+      '--model', options.model,
+      ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
+      '--timeout-ms', String(options.timeoutMs),
+      '--poll-ms', String(options.pollMs),
+      ...(options.full ? [] : ['--positive-only']),
+      ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
+    ], repoRoot)
+
+    const trimmed = stdout.trim()
+    const lastJsonIndex = trimmed.lastIndexOf('\n{')
+    const jsonText = lastJsonIndex >= 0 ? trimmed.slice(lastJsonIndex + 1) : trimmed
+    const result = JSON.parse(jsonText)
+    console.log(JSON.stringify({
+      status: 'ok',
+      mode: 'remote-workspace-live-sync-live-drill',
+      relayUrl,
+      homeKernelUrl,
+      workerMachineId,
+      workerMachineAlias,
+      providers: options.providers,
+      model: options.model,
+      providerModels: options.providerModels,
+      full: options.full,
+      workspaceLiveSync: result,
+    }, null, 2))
+    succeeded = true
+  } finally {
+    if (localClient) await localClient.close().catch(() => {})
+    await terminateChild(homeChild)
+    await terminateChild(workerChild)
+    await terminateChild(relayChild)
+    if (succeeded || !options.keepArtifactsOnFailure) {
+      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+      await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+    } else {
+      console.error(`remote workspace live sync drill artifacts kept at ${rootDir}`)
+      console.error(`remote workspace live sync drill transient CLI modules kept at ${cliRuntimeDir}`)
+    }
+  }
+}
+
+await main()

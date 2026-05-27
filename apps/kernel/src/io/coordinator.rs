@@ -178,7 +178,7 @@ impl ArtifactEditCoordinator {
                         active_owner: reservation.owner.clone(),
                         requested_ranges: ranges.clone(),
                         reserved_ranges: reservation.ranges.clone(),
-                        message: "managed I/O edit range is currently reserved by another writer"
+                        message: "workspace live sync edit range is currently reserved by another writer"
                             .to_string(),
                     });
                 }

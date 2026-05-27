@@ -4,7 +4,7 @@
 
 Use Arroba Cloud to make multi-user collaboration easy to enter: users log in through device login, invite collaborators to a session, and connect through hosted relay without manually sharing relay credentials.
 
-This milestone is the cloud bridge into the kernel collaboration model. The kernel remains the authority for sessions, workflow authorization, provider ownership, caller-scoped projections, and managed I/O.
+This milestone is the cloud bridge into the kernel collaboration model. The kernel remains the authority for sessions, workflow authorization, provider ownership, caller-scoped projections, and workspace live sync.
 
 ## Relationship To Adjacent Milestones
 
@@ -26,7 +26,7 @@ M6.5 covers kernel collaboration semantics:
 - endpoint ownership
 - caller-scoped redaction
 - stale workflow edit rejection
-- workspace links and managed-I/O coordination
+- workspace links and workspace live sync coordination
 
 M5.7 connects those two pieces through Arroba Cloud.
 
@@ -59,7 +59,7 @@ Arroba Cloud must not own:
 - provider or model visibility
 - prompt visibility decisions
 - endpoint execution authorization
-- managed-I/O conflict decisions
+- workspace live sync conflict decisions
 - kernel session mutation semantics
 
 ## Kernel Responsibilities
@@ -74,7 +74,7 @@ The kernel should own:
 - endpoint owner checks
 - prompt and endpoint prompt redaction
 - stale workflow revision rejection
-- workspace link and managed-I/O coordination
+- workspace link and workspace live sync coordination
 
 ## Required Cloud API Surface
 

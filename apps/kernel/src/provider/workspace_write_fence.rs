@@ -18,20 +18,20 @@ pub(crate) fn apply_workspace_write_fence(
     mut launch: ProviderLaunchResult,
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if !request.requires_managed_io() || launch.endpoint_mode != AgentEndpointMode::Managed {
+    if !request.requires_workspace_live_sync() || launch.endpoint_mode != AgentEndpointMode::Managed {
         return Ok(launch);
     }
 
     let Some(workspace_root) = launch.working_directory.clone() else {
         return Err(DaemonError::LocalTransport {
             operation: "workspace_write_fence",
-            message: "managed-I/O provider runs require a workspace working directory".to_string(),
+            message: "workspace live sync provider runs require a workspace working directory".to_string(),
         });
     };
     let Some(program) = launch.pty_program.clone() else {
         return Err(DaemonError::LocalTransport {
             operation: "workspace_write_fence",
-            message: "managed-I/O provider runs require an Arroba-owned provider process"
+            message: "workspace live sync provider runs require an Arroba-owned provider process"
                 .to_string(),
         });
     };
@@ -211,7 +211,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn managed_io_launch_is_wrapped_with_macos_seatbelt() {
+    fn workspace_live_sync_launch_is_wrapped_with_macos_seatbelt() {
         let workspace = std::env::temp_dir().join(format!(
             "arroba-workspace-write-fence-test-{}",
             std::process::id()
@@ -219,7 +219,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("workspace fixture should exist");
         let request =
             LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "model")
-                .with_managed_io_required()
+                .with_workspace_live_sync_required()
                 .with_working_directory(workspace.clone());
         let launch = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,

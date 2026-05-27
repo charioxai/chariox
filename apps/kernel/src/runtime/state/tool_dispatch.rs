@@ -1,6 +1,6 @@
 //! Runtime MCP tool dispatch.
 //!
-//! Provider tool calls enter here and are routed to managed-I/O handlers or other runtime-owned
+//! Provider tool calls enter here and are routed to workspace live sync handlers or other runtime-owned
 //! tool surfaces with consistent authorization and JSON payload shaping.
 
 use super::*;
@@ -9,10 +9,10 @@ mod capability;
 mod capability_registry;
 mod connector;
 mod credential;
-mod managed_io_access;
-mod managed_io_local;
-mod managed_io_permission;
-mod managed_io_remote_dispatch;
+mod workspace_live_sync_access;
+mod workspace_live_sync_local;
+mod workspace_live_sync_permission;
+mod workspace_live_sync_remote_dispatch;
 mod recall;
 mod remote_capability_sync;
 mod script;
@@ -25,7 +25,7 @@ impl KernelRuntimeState {
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
-        let mut specs = crate::transport::runtime_tools::managed_io_runtime_tool_specs()
+        let mut specs = crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
             .into_iter()
             .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
             .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
@@ -51,7 +51,7 @@ impl KernelRuntimeState {
         {
             let owned = &self.owned;
             let canonical_tool_name =
-                crate::transport::runtime_tools::canonical_managed_io_tool_name(tool_name)
+                crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(tool_name)
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
                     })
@@ -84,7 +84,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
             ) {
                 if let Some(result) = self
-                    .try_dispatch_remote_managed_io_runtime_tool_call(
+                    .try_dispatch_remote_workspace_live_sync_runtime_tool_call(
                         &provider_runs[0],
                         canonical_tool_name,
                         arguments.clone(),
@@ -94,7 +94,7 @@ impl KernelRuntimeState {
                     return Ok(result);
                 }
                 return self
-                    .dispatch_managed_io_runtime_tool_call(
+                    .dispatch_workspace_live_sync_runtime_tool_call(
                         &provider_runs[0],
                         canonical_tool_name,
                         arguments,

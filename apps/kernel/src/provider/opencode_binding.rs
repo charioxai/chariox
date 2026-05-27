@@ -66,8 +66,8 @@ pub(crate) fn initialize_opencode_runtime(
     let selection = resolve_initial_selection(run, &client)?;
 
     let allow_native_bash = workspace_write_fence_active(run);
-    let session_permission = if run.requires_managed_io() {
-        Some(opencode_managed_io_permission_rules(allow_native_bash))
+    let session_permission = if run.requires_workspace_live_sync() {
+        Some(opencode_workspace_live_sync_permission_rules(allow_native_bash))
     } else {
         Some(opencode_permission_rules(run.permission_level()))
     };
@@ -173,7 +173,7 @@ fn ensure_configured_mcp_servers_connected(
     Ok(())
 }
 
-fn opencode_managed_io_permission_rules(allow_native_bash: bool) -> serde_json::Value {
+fn opencode_workspace_live_sync_permission_rules(allow_native_bash: bool) -> serde_json::Value {
     let mut rules = vec![
         serde_json::json!({
             "permission": "edit",
@@ -287,7 +287,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        next_opencode_message_id, opencode_managed_io_permission_rules, resolve_sync_selection,
+        next_opencode_message_id, opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
         OpenCodeConfiguredDefaults, OpenCodeMessage,
     };
 
@@ -307,9 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_io_permission_rules_block_direct_writes() {
+    fn workspace_live_sync_permission_rules_block_direct_writes() {
         assert_eq!(
-            opencode_managed_io_permission_rules(false),
+            opencode_workspace_live_sync_permission_rules(false),
             json!([
                 {
                     "permission": "edit",
@@ -331,9 +331,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_io_permission_rules_allow_bash_when_workspace_is_fenced() {
+    fn workspace_live_sync_permission_rules_allow_bash_when_workspace_is_fenced() {
         assert_eq!(
-            opencode_managed_io_permission_rules(true),
+            opencode_workspace_live_sync_permission_rules(true),
             json!([
                 {
                     "permission": "edit",
@@ -436,7 +436,7 @@ pub(super) fn submit_opencode_prompt(
         Some(run.model()),
         run.variant(),
         run.execution_mode(),
-        run.requires_managed_io(),
+        run.requires_workspace_live_sync(),
         workspace_write_fence_active(run),
     )?;
     state.note_prompt_submitted(message_id);
@@ -459,8 +459,8 @@ pub(crate) fn run_opencode_utility_prompt(
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
     let allow_native_bash = workspace_write_fence_active(run);
-    let session_permission = if run.requires_managed_io() {
-        Some(opencode_managed_io_permission_rules(allow_native_bash))
+    let session_permission = if run.requires_workspace_live_sync() {
+        Some(opencode_workspace_live_sync_permission_rules(allow_native_bash))
     } else {
         Some(opencode_permission_rules(run.permission_level()))
     };

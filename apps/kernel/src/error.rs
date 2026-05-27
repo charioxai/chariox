@@ -197,8 +197,8 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
-    #[error("provider adapter `{adapter_key}` does not support required managed I/O write enforcement: {message}")]
-    ProviderManagedIoUnsupported {
+    #[error("provider adapter `{adapter_key}` does not support required workspace live sync write enforcement: {message}")]
+    ProviderWorkspaceLiveSyncUnsupported {
         adapter_key: String,
         message: String,
     },

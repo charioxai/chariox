@@ -18,10 +18,10 @@ impl ProviderProcessService {
                 adapter_key: request.adapter_key.clone(),
             }
         })?;
-        if request.requires_managed_io() && !adapter.supports_managed_io_write_enforcement() {
-            return Err(DaemonError::ProviderManagedIoUnsupported {
+        if request.requires_workspace_live_sync() && !adapter.supports_workspace_live_sync_write_enforcement() {
+            return Err(DaemonError::ProviderWorkspaceLiveSyncUnsupported {
                 adapter_key: request.adapter_key.clone(),
-                message: "this adapter cannot guarantee that provider-session writes are restricted to Arroba managed I/O tools".to_string(),
+                message: "this adapter cannot guarantee that provider-session writes are restricted to Arroba workspace live sync tools".to_string(),
             });
         }
 
@@ -38,7 +38,7 @@ impl ProviderProcessService {
                 "provider": request.provider.as_str(),
                 "model": request.model.as_str(),
                 "variant": request.variant.as_deref(),
-                "requires_managed_io": request.requires_managed_io(),
+                "requires_workspace_live_sync": request.requires_workspace_live_sync(),
                 "runtime_mcp_binding_present": request.runtime_mcp_binding.is_some(),
                 "granted_mcp_servers": request
                     .mcp_servers

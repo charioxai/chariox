@@ -40,7 +40,7 @@ pub(super) fn codex_permission_policy(
                 config_overrides: BTreeMap::new(),
             }
         }
-        ProviderWriteAccessMode::ManagedIoRequired => {
+        ProviderWriteAccessMode::WorkspaceLiveSyncRequired => {
             let mut config_overrides = BTreeMap::new();
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
@@ -82,7 +82,7 @@ pub(super) fn codex_collaboration_mode(
     }))
 }
 
-pub(super) fn managed_io_codex_permission_grant(requested_permissions: &Value) -> Value {
+pub(super) fn workspace_live_sync_codex_permission_grant(requested_permissions: &Value) -> Value {
     let Some(requested) = requested_permissions.as_object() else {
         return json!({});
     };

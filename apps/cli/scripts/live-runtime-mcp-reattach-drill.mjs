@@ -67,7 +67,7 @@ function printHelp() {
   console.log([
     'Usage: node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs [options]',
     '',
-    'Warms provider catalog endpoints before managed-I/O launch, then verifies Arroba runtime MCP tools survive detach/reattach.',
+    'Warms provider catalog endpoints before workspace live sync launch, then verifies Arroba runtime MCP tools survive detach/reattach.',
     '',
     'Options:',
     '  --provider PROVIDER',

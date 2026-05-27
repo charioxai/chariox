@@ -39,7 +39,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M14B native TUI validation reset
 
 - Replaced the stale M14 split-native plan with `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`, focused on Arroba-managed native TUI validation across local, standard remote home-worker, and slice scenarios.
-- Removed the misleading native-TUI managed-I/O artifact checks from `live-remote-native-tui-drill.mjs`. Native TUI attachment validation now explicitly means prompt files/images, while managed I/O remains covered by dedicated managed-I/O drills.
+- Removed the misleading native-TUI workspace live sync artifact checks from `live-remote-native-tui-drill.mjs`. Native TUI attachment validation now explicitly means prompt files/images, while workspace live sync remains covered by dedicated workspace live sync drills.
 
 ### M14 remote native TUI same-host relay
 
@@ -75,7 +75,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### OSS iOS app planning baseline
 
 - Added `docs/ios/IOS_APP_PLAN.md` for the native OSS iOS client sub-project.
-- Captured the key boundary: iOS is a client surface like the TypeScript CLI and Cloud browser terminal, while the kernel remains the runtime authority for sessions, agents, workflows, provider runs, permissions, managed I/O, and relay membership.
+- Captured the key boundary: iOS is a client surface like the TypeScript CLI and Cloud browser terminal, while the kernel remains the runtime authority for sessions, agents, workflows, provider runs, permissions, workspace live sync, and relay membership.
 - Recommended native SwiftUI under `apps/ios`, direct kernel WebSocket transport through `URLSessionWebSocketTask`, Keychain for relay/cloud credentials, XCTest/XCUITest for committed tests, XcodeBuildMCP for the default build/test/run validation loop, and iOS Simulator MCP for explicit QA/dogfooding passes when requested or confirmed.
 - Documented that Maestro is a candidate tool future agents should suggest when useful, but they must ask Miguel before adding it to the repo, installing it as a project dependency, or making it part of the official QA gate.
 - Added `IOS-001` to the repo-native task board.
@@ -105,7 +105,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M12 popup + native permission closure
 
 - Added the production popup interaction layer to Arroba proper: `request_popup` now blocks the current turn until the user answers or a timeout/default resolves.
-- Added always-injected shared runtime instructions so Arroba runtime MCP tools are advertised independently of managed-I/O mode.
+- Added always-injected shared runtime instructions so Arroba runtime MCP tools are advertised independently of workspace live sync mode.
 - Surfaced provider-native permissions through the same interaction model:
   - Codex `item/commandExecution/requestApproval`
   - OpenCode native permission events
@@ -121,19 +121,19 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-27
 
-### Managed-I/O permission follow-on
+### Workspace live sync permission follow-on
 
-- Added managed-I/O permission gating for mutating Arroba runtime tools. When effective permissions are `required`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` now block on an Arroba interaction before the mutation applies.
-- Split prompt assembly by execution path: all structured runs get the shared runtime instructions, unmanaged runs get the native-permissions block, and managed-I/O runs get the managed-I/O block.
-- Added `apps/cli/scripts/live-managed-io-permission-drill.mjs` and confirmed live managed-I/O permission drills for Codex and OpenCode.
+- Added workspace live sync permission gating for mutating Arroba runtime tools. When effective permissions are `required`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` now block on an Arroba interaction before the mutation applies.
+- Split prompt assembly by execution path: all structured runs get the shared runtime instructions, unmanaged runs get the native-permissions block, and workspace live sync runs get the workspace live sync block.
+- Added `apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs` and confirmed live workspace live sync permission drills for Codex and OpenCode.
 
 ### Remote permission UX follow-on
 
-- Extended the local native-permission and managed-I/O permission drills so they can be driven through an already-running home kernel and a leased remote worker.
+- Extended the local native-permission and workspace live sync permission drills so they can be driven through an already-running home kernel and a leased remote worker.
 - Added relay wrapper drills:
-  - `apps/cli/scripts/live-remote-managed-io-permission-drill.mjs`
+  - `apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs`
   - `apps/cli/scripts/live-remote-native-permission-drill.mjs`
-- Confirmed remote managed-I/O permission drills for Codex and OpenCode. Home-kernel interaction strips now surface remote managed-I/O approval requests and resume the same remote turn after approval.
+- Confirmed remote workspace live sync permission drills for Codex and OpenCode. Home-kernel interaction strips now surface remote workspace live sync approval requests and resume the same remote turn after approval.
 - Fixed leased-worker provider launch propagation so remote backing provider runs now inherit the leased agent's `execution_mode` and `permission_level` when the worker launches or reloads a provider run.
 - Fixed the remote native permission completion projection issue by refreshing the home session snapshot after leased prompt settlement, then confirmed remote native provider permission drills for Codex and OpenCode.
 
@@ -204,9 +204,9 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M7.5 shell executor config mutations
 
-- Added shared `arroba-shell` executor support for `config path`, `config set`, `config unset`, and `config managed-io`.
-- `config managed-io` normalizes `on|off` to `required|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
-- Covered config path/set/unset/managed-io flows with focused kernel-client executor tests.
+- Added shared `arroba-shell` executor support for `config path`, `config set`, `config unset`, and `config workspace-live-sync`.
+- `config workspace-live-sync` normalizes `on|off` to `required|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
+- Covered config path/set/unset/workspace-live-sync flows with focused kernel-client executor tests.
 
 
 ### M7.5 shell executor Slice 6 closure
@@ -231,12 +231,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-18
 
-### M4.6 managed-I/O Codex hardening and live drills
+### M4.6 workspace live sync Codex hardening and live drills
 
-- Root-caused the local managed-I/O drill failure to Arroba's Codex app-server permission approval path: managed Codex turns used the read-only sandbox, but Arroba was approving Codex `item/permissions/requestApproval` requests wholesale, allowing native shell to acquire filesystem write permission.
+- Root-caused the local workspace live sync drill failure to Arroba's Codex app-server permission approval path: managed Codex turns used the read-only sandbox, but Arroba was approving Codex `item/permissions/requestApproval` requests wholesale, allowing native shell to acquire filesystem write permission.
 - Hardened managed Codex runs so permission approvals preserve non-write requests but never grant filesystem write upgrades, while unrestricted Codex runs keep the previous permissive behavior.
-- Split the local managed-I/O drill's positive provider phases into smaller serialized prompts so the drill validates each managed read/write/edit/apply-patch/move/opaque step deterministically before entering the direct-write negative checks.
-- Verified with `cargo check --manifest-path apps/kernel/Cargo.toml`, focused Codex permission/runtime tests, `node --check apps/cli/scripts/live-managed-io-drill.mjs`, the full local managed-I/O drill for OpenCode `openai/gpt-5.3-codex` plus Codex `gpt-5.2`, and the local runtime MCP reattach drill for both providers.
+- Split the local workspace live sync drill's positive provider phases into smaller serialized prompts so the drill validates each managed read/write/edit/apply-patch/move/opaque step deterministically before entering the direct-write negative checks.
+- Verified with `cargo check --manifest-path apps/kernel/Cargo.toml`, focused Codex permission/runtime tests, `node --check apps/cli/scripts/live-workspace-live-sync-drill.mjs`, the full local workspace live sync drill for OpenCode `openai/gpt-5.3-codex` plus Codex `gpt-5.2`, and the local runtime MCP reattach drill for both providers.
 
 ## 2026-04-15
 

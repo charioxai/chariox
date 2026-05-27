@@ -16,10 +16,10 @@ Arroba creates a session and the first native-TUI agent. If a session ref is
 provided, Arroba attaches a new native-TUI agent to that Arroba session. Native
 TUI launches never attach to an existing provider run.
 
-This plan is intentionally about provider-native TUI behavior, not managed I/O.
-Prompt attachments are files/images transferred with a prompt. Managed I/O is
+This plan is intentionally about provider-native TUI behavior, not workspace live sync.
+Prompt attachments are files/images transferred with a prompt. Workspace live sync is
 the separate Arroba MCP `read_artifact`/`write_artifact` workspace-coordination
-system and remains covered by the managed-I/O milestones and drills.
+system and remains covered by the workspace live sync milestones and drills.
 
 2026-05-14 update: Codex/OpenCode prompt attachment byte transfer is
 implemented for relay-attached native TUI clients and Arroba TUI submissions.
@@ -273,9 +273,9 @@ Provider notes:
 ## Implementation Order
 
 1. Clean native TUI drill naming.
-   - Remove native-TUI managed-I/O artifact checks from native TUI drills.
+   - Remove native-TUI workspace live sync artifact checks from native TUI drills.
    - Use `attachments` only for prompt files/images.
-   - Keep managed I/O in its dedicated drills.
+   - Keep workspace live sync in its dedicated drills.
 
 2. Implement and validate remote/slice prompt attachments for Codex and
    OpenCode.
@@ -354,8 +354,8 @@ Provider notes:
      materialized skill paths in prompt context where provider-supported, and
      validate MCP rendering against MCP definitions installed into the managed
      slice isolation root.
-   - Keep managed-I/O marker writes out of native-TUI MCP/skill validation
-     unless the drill is explicitly a managed-I/O drill.
+   - Keep workspace live sync marker writes out of native-TUI MCP/skill validation
+     unless the drill is explicitly a workspace live sync drill.
 
 ## Matrix
 
@@ -431,7 +431,7 @@ MCP/skill drills must validate:
 
 ## Cleanup Rules
 
-- Do not add native-TUI managed-I/O artifact checks to this milestone.
+- Do not add native-TUI workspace live sync artifact checks to this milestone.
 - Do not use `artifact` in native TUI drill names unless the test is about
   generic test output files kept after failure.
 - Keep behavior below clients where possible: kernel owns sessions, agents,

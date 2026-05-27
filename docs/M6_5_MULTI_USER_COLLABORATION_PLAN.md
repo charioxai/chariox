@@ -2,13 +2,13 @@
 
 ## Goal
 
-Allow two or more users to collaborate in one Arroba session while keeping provider ownership private and keeping the session, workflow, relay, and managed-I/O model coherent.
+Allow two or more users to collaborate in one Arroba session while keeping provider ownership private and keeping the session, workflow, relay, and workspace live sync model coherent.
 
 The v1 collaboration model is open collaboration inside an invited session:
 
 - users share the same session
 - users may work in the same repository, branch, and worktree when they choose to
-- users may also work across separate forks or worktrees and explicitly link them for Arroba managed-I/O coordination
+- users may also work across separate forks or worktrees and explicitly link them for Arroba workspace live sync coordination
 - each user can see and control only their own providers and agents outside workflow execution
 - shared workflow graphs update for all session members
 - workflow nodes can represent agents owned by different users
@@ -23,7 +23,7 @@ Cloud-backed invitation, collaborator history, and hosted relay admission are tr
 
 - A collaboration unit is still one Arroba session.
 - Invites are per session.
-- The kernel remains the authority for membership, ownership, redaction, workflow mutation, endpoint execution, and managed-I/O coordination.
+- The kernel remains the authority for membership, ownership, redaction, workflow mutation, endpoint execution, and workspace live sync coordination.
 - The relay remains a transport layer and must not become a policy authority.
 - There is no external-agent marker in workflow UI. Public node labels are the shared identifier.
 - Freeform mode does not expose other users' agent status.
@@ -34,7 +34,7 @@ Cloud-backed invitation, collaborator history, and hosted relay admission are tr
 - Node-level prompts and endpoint prompts are private because they are attached to an owned agent.
 - Workflow graph structure, public labels, edges, endpoint aliases, run state, and workflow outputs are visible to session members unless a later milestone adds stronger privacy modes.
 - Concurrent workflow edits use simple optimistic rejection. Arroba does not merge simultaneous graph edits in v1.
-- Managed I/O remains the file/worktree conflict authority. This milestone does not add another I/O conflict resolver.
+- Workspace live sync remains the file/worktree conflict authority. This milestone does not add another I/O conflict resolver.
 
 ## Non-Goals
 
@@ -229,7 +229,7 @@ Policy:
 
 ## Workspace Links
 
-Workspace links let session members tell Arroba that separate local repositories, forks, branches, or worktrees should be treated as one logical coordination target for managed I/O.
+Workspace links let session members tell Arroba that separate local repositories, forks, branches, or worktrees should be treated as one logical coordination target for workspace live sync.
 
 This is not Git synchronization. It is an Arroba coordination identity.
 
@@ -239,7 +239,7 @@ Example use case:
 - user B works in `github.com/b/project-fork`
 - both are logically collaborating on the same project branch
 - they attach their current worktrees to the same Arroba workspace link
-- managed I/O coordinates writes as if both worktrees belong to one logical workspace
+- workspace live sync coordinates writes as if both worktrees belong to one logical workspace
 
 State shape:
 
@@ -270,7 +270,7 @@ Rules:
 - only session members can list or attach to a session workspace link
 - no separate workspace-link invite is needed; the session invite is the access boundary
 - attaching a worktree does not change Git remotes, branches, or files
-- external changes remain allowed; managed I/O already accounts for observed file state and conflicts
+- external changes remain allowed; workspace live sync already accounts for observed file state and conflicts
 - if a worktree is not attached to a link, Arroba treats it according to the existing workspace identity rules
 
 Command shape:
@@ -285,12 +285,12 @@ arroba workspace link detach <name-or-id>
 
 The same command family must be available in `arroba-shell`.
 
-Managed-I/O integration:
+Workspace live sync integration:
 
 - resolve the current physical workspace identity
 - check whether it is attached to a session workspace link
 - when attached, use the link id as the logical coordination workspace id
-- do not add a second conflict policy above managed I/O
+- do not add a second conflict policy above workspace live sync
 
 ## Relay And Privacy Boundary
 
@@ -476,7 +476,7 @@ Exit criteria:
 Status: closed in implementation. Sessions now carry session-scoped workspace
 links with per-user/per-machine attachments. Members can create, list, show,
 attach, and detach links through kernel API, TUI slash commands, and
-`arroba-shell`. Managed I/O preserves existing unlinked behavior, but when a
+`arroba-shell`. Workspace live sync preserves existing unlinked behavior, but when a
 provider run's worktree is attached to a workspace link, coordination uses
 `workspace_link:<link-id>` as the logical repository id so explicitly linked
 worktrees/forks share edit reservations and artifact snapshots.
@@ -486,15 +486,15 @@ Add session-scoped workspace links and shell/TUI commands.
 Exit criteria:
 
 - session members can attach separate worktrees/forks to one logical workspace link
-- managed I/O uses the link id as the logical coordination workspace id
-- existing unlinked managed-I/O behavior remains unchanged
+- workspace live sync uses the link id as the logical coordination workspace id
+- existing unlinked workspace live sync behavior remains unchanged
 - shell command coverage matches TUI/slash command coverage
 
 ### Slice 7. Relay Collaboration Drills
 
 Status: closed for local relay-caller and live relay identity paths. Regression
 drills cover remote caller membership, caller-scoped session listing, remote
-ownership authorization, projection redaction, remote managed-I/O identity
+ownership authorization, projection redaction, remote workspace live sync identity
 matching, stale workflow revision rejection, and remote-machine prompt paths.
 The live relay identity security drill also passes. Physical remote provider
 CLI drills remain an operational follow-up because they require a second
@@ -514,7 +514,7 @@ Required drills:
 - workflow node status is visible during a shared run
 - freeform status of other users' agents remains hidden
 - stale concurrent workflow edit rejects one mutation with a clear refresh/retry message
-- two linked worktrees coordinate managed I/O through one workspace link
+- two linked worktrees coordinate workspace live sync through one workspace link
 - relay path preserves the same authorization and redaction behavior
 
 ## Exit Criteria
@@ -530,7 +530,7 @@ M6.5 is complete when:
 - other users' freeform agent status remains hidden
 - node-level prompts and endpoint prompts are redacted from non-owners
 - concurrent workflow edits reject stale mutations cleanly
-- workspace links let users coordinate managed I/O across explicitly linked repos/worktrees/forks
+- workspace links let users coordinate workspace live sync across explicitly linked repos/worktrees/forks
 - relay-backed collaboration behaves the same as local collaboration
 - shell commands exist for every new collaboration command family
 

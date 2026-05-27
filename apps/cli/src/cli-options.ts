@@ -243,7 +243,7 @@ function printUsage() {
     "  /config keys          list settable config keys",
     "  /config schema        show config key metadata",
     "  /config set <p> <v>   update the Arroba user config",
-    "  /config managed-io required|unrestricted set global managed I/O",
+    "  /config workspace-live-sync required|unrestricted set global workspace live sync",
     "  /cloud                open Arroba Cloud terminal",
     "  /cloud link           link this machine to Arroba Cloud",
     "  /cloud status         show Cloud and relay status",

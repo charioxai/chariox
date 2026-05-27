@@ -40,7 +40,7 @@ Precedence:
 - `plan + required` -> approval `untrusted`, sandbox `read-only`
 - `plan + yolo` -> approval `never`, sandbox `read-only`
 
-Managed-I/O launch policy remains authoritative when enabled and can still force stricter behavior.
+Workspace live sync launch policy remains authoritative when enabled and can still force stricter behavior.
 
 Codex CLI documentation also refers to the strict approval policy as `unless-trusted`; the current
 app-server schema used by Arroba's supported Codex runtime names the same mode `untrusted`.
@@ -149,7 +149,7 @@ Validated with:
 - live native permission drills for Codex and OpenCode
 - live popup drills, including Codex popup execution on the real-home provider auth path
 - remote native permission drills for Codex and OpenCode
-- remote managed-I/O permission drills for Codex and OpenCode
+- remote workspace live sync permission drills for Codex and OpenCode
 - remote non-permission popup drills for Codex and OpenCode
 
 ## Closed Scope

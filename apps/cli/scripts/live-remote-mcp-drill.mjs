@@ -615,7 +615,7 @@ async function main() {
         'Use the provider-native Playwright MCP tool that is available to this remote agent, not Arroba list_extensions/request_extension.',
         'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
         'Prefer a non-mutating browser snapshot/title/text tool first; navigating to https://example.com is optional.',
-        'After any Playwright/browser MCP tool call completes successfully, use Arroba managed I/O to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',
+        'After any Playwright/browser MCP tool call completes successfully, use Arroba workspace live sync to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',
         'Then reply exactly M7_REMOTE_PLAYWRIGHT_MCP_DONE.',
         'If Playwright MCP is unavailable, reply exactly M7_REMOTE_PLAYWRIGHT_MCP_UNAVAILABLE and do not write the marker file.',
       ].join('\n'), []))

@@ -1,7 +1,7 @@
 use super::{
     normalized_optional, validate_config_key_path, validate_non_empty, ArrobaUserConfig,
-    ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, ManagedIoConfig,
-    ManagedIoMode, SliceImageBuildPolicy, StateBackend,
+    ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, WorkspaceLiveSyncConfig,
+    WorkspaceLiveSyncMode, SliceImageBuildPolicy, StateBackend,
 };
 use crate::error::DaemonError;
 
@@ -259,9 +259,9 @@ impl ArrobaUserConfig {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
             }
-            "providers.managed_io" => {
-                self.providers.managed_io =
-                    ManagedIoConfig::from_mode(ManagedIoMode::parse(&value)?);
+            "providers.workspace_live_sync" => {
+                self.providers.workspace_live_sync =
+                    WorkspaceLiveSyncConfig::from_mode(WorkspaceLiveSyncMode::parse(&value)?);
             }
             _ => {
                 return Err(DaemonError::InvalidConfig {
@@ -365,7 +365,7 @@ impl ArrobaUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
-            "providers.managed_io" => self.providers.managed_io = ManagedIoConfig::default(),
+            "providers.workspace_live_sync" => self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::default(),
             "version" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "version",

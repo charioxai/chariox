@@ -461,11 +461,11 @@ or inspect the shared NDJSON files directly:
 tail -f ~/.local/state/arroba/logs/*.ndjson
 ```
 
-## 13. Managed I/O
+## 13. Workspace live sync
 
-Arroba-managed Codex and OpenCode provider sessions use managed I/O by default. Supported providers are launched so coordinated workspace files cannot be written through provider-native edit/shell paths; agents must use the Arroba runtime/MCP tools instead.
+Arroba-managed Codex and OpenCode provider sessions use workspace live sync by default. Supported providers are launched so coordinated workspace files cannot be written through provider-native edit/shell paths; agents must use the Arroba runtime/MCP tools instead.
 
-Managed I/O defaults are read from the Arroba user config TOML:
+Workspace live sync defaults are read from the Arroba user config TOML:
 
 ```text
 $XDG_CONFIG_HOME/arroba/config.toml
@@ -486,17 +486,17 @@ version = 1
 default = "opencode"
 model = "default"
 account_profile = "default"
-managed_io = "required"
+workspace_live_sync = "required"
 ```
 
 To relax the policy for all managed providers:
 
 ```toml
 [providers]
-managed_io = "unrestricted"
+workspace_live_sync = "unrestricted"
 ```
 
-Remote leased agents use the same managed I/O policy as local agents.
+Remote leased agents use the same workspace live sync policy as local agents.
 
 ## 14. Workflow Queues
 
@@ -514,9 +514,9 @@ You can also modify the same TOML through the CLI:
 ```text
 /config show
 /config path
-/config set providers.managed_io unrestricted
-/config managed-io required
-/config unset providers.managed_io
+/config set providers.workspace_live_sync unrestricted
+/config workspace-live-sync required
+/config unset providers.workspace_live_sync
 ```
 
 Agent-facing tools:
@@ -536,7 +536,7 @@ The same operations are also exposed as short aliases: `read_artifact`, `write_a
 
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 
-Remote leased agents that are working in the same repo and branch as the home session forward managed I/O through the home kernel. If workspace identity changes while a managed run is active, managed I/O rejects the request until the run rejoins a valid coordinated workspace.
+Remote leased agents that are working in the same repo and branch as the home session forward workspace live sync through the home kernel. If workspace identity changes while a managed run is active, workspace live sync rejects the request until the run rejoins a valid coordinated workspace.
 
 ## 14. Current Limitations
 

@@ -11,7 +11,7 @@ alwaysApply: true
 - The iOS app is an OSS Arroba client surface, like the terminal CLI and Cloud
   WEB_CLI.
 - The kernel is the runtime authority for sessions, agents, workflow runs,
-  provider state, permissions, managed I/O, relay membership, and prompt
+  provider state, permissions, workspace live sync, relay membership, and prompt
   routing.
 - Runtime-changing actions must go through kernel or relay-backed kernel
   requests.

@@ -2,11 +2,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) fn provider_requires_managed_io_by_default(
+pub(crate) fn provider_requires_workspace_live_sync_by_default(
     provider: &str,
     config: &crate::config::DaemonConfig,
 ) -> bool {
-    config.provider_requires_managed_io(provider)
+    config.provider_requires_workspace_live_sync(provider)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -51,12 +51,12 @@ impl KernelRuntimeState {
         self.owned.config_projection.snapshot()
     }
 
-    pub(crate) async fn managed_io_health_snapshot(
+    pub(crate) async fn workspace_live_sync_health_snapshot(
         &self,
-    ) -> crate::runtime::projection::ManagedIoHealthSnapshot {
+    ) -> crate::runtime::projection::WorkspaceLiveSyncHealthSnapshot {
         let reservations = self
             .owned
-            .managed_io_coordinator
+            .workspace_live_sync_coordinator
             .lock()
             .await
             .active_reservation_snapshots();
@@ -65,11 +65,11 @@ impl KernelRuntimeState {
             .map(|reservation| reservation.artifact_id.clone())
             .collect::<BTreeSet<_>>()
             .len();
-        crate::runtime::projection::ManagedIoHealthSnapshot {
+        crate::runtime::projection::WorkspaceLiveSyncHealthSnapshot {
             active_reservations: reservations.len(),
             active_reservation_artifacts,
             workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
-            external_changes: self.owned.managed_io_external_changes.health_snapshot(),
+            external_changes: self.owned.workspace_live_sync_external_changes.health_snapshot(),
         }
     }
 }

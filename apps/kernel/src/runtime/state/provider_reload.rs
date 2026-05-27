@@ -167,8 +167,8 @@ impl KernelRuntimeState {
             .with_owner_user_id(run.owner_user_id().to_string())
             .with_variant(run.variant().map(str::to_string))
             .with_resume_state(run.resume_state().clone());
-            if crate::provider::provider_requires_managed_io_by_default(run.provider(), &config) {
-                launch_request = launch_request.with_managed_io_required();
+            if crate::provider::provider_requires_workspace_live_sync_by_default(run.provider(), &config) {
+                launch_request = launch_request.with_workspace_live_sync_required();
             }
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
@@ -215,7 +215,7 @@ impl KernelRuntimeState {
 }
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
-    path == "providers.managed_io"
+    path == "providers.workspace_live_sync"
 }
 
 fn adapter_supports_policy_reload(adapter_key: &str) -> bool {

@@ -12,11 +12,11 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
         let workspace_context = self
-            .managed_io_workspace_for_provider_run(provider_run)
+            .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
         let remote_context = self
             .with_app_side_effect(|app| {
-                crate::app::RemoteLeaseRuntime::new(app).leased_managed_io_context_for_provider_run(
+                crate::app::RemoteLeaseRuntime::new(app).leased_workspace_live_sync_context_for_provider_run(
                     provider_run.id(),
                     workspace_context.identity.clone(),
                 )
@@ -26,7 +26,7 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         if !workspace_context.valid {
-            return Ok(Some(managed_io_workspace_identity_rejected(
+            return Ok(Some(workspace_live_sync_workspace_identity_rejected(
                 &workspace_context,
             )));
         }
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
         &self,
-        context: crate::transport::relay_peer::RemoteManagedIoContext,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<
