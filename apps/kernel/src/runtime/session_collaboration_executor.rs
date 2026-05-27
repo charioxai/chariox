@@ -272,7 +272,7 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
     let conflicts = workspace_live_sync_conflicts_from_results(&target_results);
     let degraded = target_results.iter().any(|target_result| {
         target_result.path_results.iter().any(|path_result| {
-            path_result.status == crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo
+            path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
         })
     });
     let footer_state = if !conflicts.is_empty() {
@@ -316,7 +316,7 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
 }
 
 fn workspace_live_sync_target_status_from_results(
-    target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
     repo_root: &str,
 ) -> WorkspaceLiveSyncTargetState {
     let mut has_failure = false;
@@ -326,12 +326,12 @@ fn workspace_live_sync_target_status_from_results(
     {
         for path_result in &target_result.path_results {
             match path_result.status {
-                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied
-                | crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased => {}
-                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+                | crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {}
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
                     return WorkspaceLiveSyncTargetState::Conflict;
                 }
-                crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo => {
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
                     has_failure = true;
                 }
             }
@@ -345,13 +345,13 @@ fn workspace_live_sync_target_status_from_results(
 }
 
 fn workspace_live_sync_conflicts_from_results(
-    target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
 ) -> Vec<WorkspaceLiveSyncConflictSummary> {
     let mut conflicts = Vec::new();
     for target_result in target_results {
         for path_result in &target_result.path_results {
             if path_result.status
-                != crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict
+                != crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict
             {
                 continue;
             }

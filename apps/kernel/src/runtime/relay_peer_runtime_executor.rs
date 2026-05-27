@@ -226,7 +226,7 @@ pub(crate) async fn observe_relay_leased_git_after(
 ) -> Result<
     (
         Vec<RemoteGitObservation>,
-        Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+        Option<crate::git_observer::WorkspaceLiveSyncChange>,
     ),
     DaemonError,
 > {

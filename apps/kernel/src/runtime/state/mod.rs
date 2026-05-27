@@ -79,7 +79,7 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
-    tracked_workspace_live_sync_journal: crate::git_observer::TrackedWorkspaceLiveSyncJournal,
+    workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
 }
 
 mod agent_config_owned_state;
@@ -227,8 +227,8 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
-                tracked_workspace_live_sync_journal:
-                    crate::git_observer::TrackedWorkspaceLiveSyncJournal::default(),
+                workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal::default(
+                ),
             },
         }
     }

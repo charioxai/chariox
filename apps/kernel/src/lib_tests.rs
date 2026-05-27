@@ -12,7 +12,7 @@ use super::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome
 use super::terminal::TerminalOutputKind;
 use super::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RemoteTrackedWorkspaceLiveSyncApplyContext,
+    RelayProjectedOutputChunk, RemoteWorkspaceLiveSyncApplyContext,
 };
 use super::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -67,10 +67,10 @@ mod provider_sessions;
 mod remote_leases;
 
 #[test]
-fn relay_peer_tracked_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 56);
+fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 57);
 
-    let context = RemoteTrackedWorkspaceLiveSyncApplyContext {
+    let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
         link_id: "workspace-link-1".to_string(),
         link_name: "shared".to_string(),
@@ -81,7 +81,7 @@ fn relay_peer_tracked_workspace_live_sync_apply_shape_is_versioned() {
         target_kernel_id: "kernel-2".to_string(),
         target_repo_root: "/target".to_string(),
     };
-    let change = crate::git_observer::TrackedWorkspaceLiveSyncTurnChange {
+    let change = crate::git_observer::WorkspaceLiveSyncChange {
         session_id: "session-1".to_string(),
         agent_id: "agent-1".to_string(),
         provider_run_id: "run-1".to_string(),
@@ -90,22 +90,22 @@ fn relay_peer_tracked_workspace_live_sync_apply_shape_is_versioned() {
         worktree_path: "/source".to_string(),
         branch: Some("main".to_string()),
         changed_paths: vec!["src/lib.rs".to_string()],
-        file_changes: vec![crate::git_observer::TrackedWorkspaceLiveSyncFileChange {
+        file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
             path: "src/lib.rs".to_string(),
             previous_path: None,
-            kind: crate::git_observer::TrackedWorkspaceLiveSyncFileChangeKind::Modified,
+            kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
             before_content_base64: Some("YmVmb3JlCg==".to_string()),
             after_content_base64: Some("YWZ0ZXIK".to_string()),
             binary: false,
         }],
         status_fingerprint: "fingerprint-1".to_string(),
     };
-    let request = RelayPeerRequest::ApplyTrackedWorkspaceLiveSyncChange {
+    let request = RelayPeerRequest::ApplyWorkspaceLiveSyncChange {
         context: context.clone(),
         change,
     };
-    let response = RelayPeerResponse::TrackedWorkspaceLiveSyncChangeApplied {
-        target_result: crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+    let response = RelayPeerResponse::WorkspaceLiveSyncChangeApplied {
+        target_result: crate::git_observer::WorkspaceLiveSyncTargetResult {
             session_id: context.home_session_id,
             link_id: context.link_id,
             link_name: context.link_name,
@@ -115,28 +115,22 @@ fn relay_peer_tracked_workspace_live_sync_apply_shape_is_versioned() {
             target_machine_id: context.target_machine_id,
             target_kernel_id: context.target_kernel_id,
             target_repo_root: context.target_repo_root,
-            path_results: vec![
-                crate::git_observer::TrackedWorkspaceLiveSyncPathApplyResult {
-                    path: "src/lib.rs".to_string(),
-                    status: crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased,
-                    message: "rebased over non-overlapping target change".to_string(),
-                },
-            ],
+            path_results: vec![crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+                path: "src/lib.rs".to_string(),
+                status: crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased,
+                message: "rebased over non-overlapping target change".to_string(),
+            }],
         },
     };
 
     let snapshot = serde_json::json!([request, response]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
-        Some(&serde_json::json!(
-            "apply_tracked_workspace_live_sync_change"
-        ))
+        Some(&serde_json::json!("apply_workspace_live_sync_change"))
     );
     assert_eq!(
         snapshot.pointer("/1/kind"),
-        Some(&serde_json::json!(
-            "tracked_workspace_live_sync_change_applied"
-        ))
+        Some(&serde_json::json!("workspace_live_sync_change_applied"))
     );
     assert_eq!(
         snapshot.pointer("/1/target_result/path_results/0/status"),

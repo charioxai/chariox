@@ -189,9 +189,9 @@ impl KernelRuntimeState {
     pub(crate) fn workspace_live_sync_target_results(
         &self,
         session_id: &str,
-    ) -> Vec<crate::git_observer::TrackedWorkspaceLiveSyncTargetResult> {
+    ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
         self.owned
-            .tracked_workspace_live_sync_journal
+            .workspace_live_sync_journal
             .target_results_for_session(session_id)
     }
 }

@@ -233,14 +233,14 @@ impl CommandRouter {
         .await
     }
 
-    pub(crate) async fn relay_apply_tracked_workspace_live_sync_change(
+    pub(crate) async fn relay_apply_workspace_live_sync_change(
         &self,
-        context: crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
-        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
-    ) -> Result<crate::git_observer::TrackedWorkspaceLiveSyncTargetResult, DaemonError> {
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::WorkspaceLiveSyncChange,
+    ) -> Result<crate::git_observer::WorkspaceLiveSyncTargetResult, DaemonError> {
         Ok(self
             .runtime_state
-            .apply_forwarded_tracked_workspace_live_sync_change(context, change))
+            .apply_forwarded_workspace_live_sync_change(context, change))
     }
 
     pub(crate) async fn relay_complete_leased_prompt(
@@ -257,7 +257,7 @@ impl CommandRouter {
     ) -> Result<
         (
             Vec<crate::transport::relay_peer::RemoteGitObservation>,
-            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+            Option<crate::git_observer::WorkspaceLiveSyncChange>,
         ),
         DaemonError,
     > {

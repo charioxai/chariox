@@ -101,7 +101,7 @@ pub struct RemoteGitObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteTrackedWorkspaceLiveSyncApplyContext {
+pub struct RemoteWorkspaceLiveSyncApplyContext {
     pub home_session_id: String,
     pub link_id: String,
     pub link_name: String,
@@ -232,9 +232,9 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
-    ApplyTrackedWorkspaceLiveSyncChange {
-        context: RemoteTrackedWorkspaceLiveSyncApplyContext,
-        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+    ApplyWorkspaceLiveSyncChange {
+        context: RemoteWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::WorkspaceLiveSyncChange,
     },
     ForwardNativeInteraction {
         context: RemoteNativeInteractionContext,
@@ -289,8 +289,7 @@ pub enum RelayPeerResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         git_observations: Vec<RemoteGitObservation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        tracked_workspace_live_sync_change:
-            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+        workspace_live_sync_change: Option<crate::git_observer::WorkspaceLiveSyncChange>,
         completion: PromptCompletion,
     },
     LeasedPromptCancelled {
@@ -309,8 +308,8 @@ pub enum RelayPeerResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skill_package: Option<ArrobaSkillPackage>,
     },
-    TrackedWorkspaceLiveSyncChangeApplied {
-        target_result: crate::git_observer::TrackedWorkspaceLiveSyncTargetResult,
+    WorkspaceLiveSyncChangeApplied {
+        target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,
     },
     NativeInteractionResolved {
         resolution: crate::provider::ProviderNativeInteractionResolution,

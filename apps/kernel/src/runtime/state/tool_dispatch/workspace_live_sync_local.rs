@@ -524,7 +524,7 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         resolved_agent_id: Option<&str>,
         workspace_context: &WorkspaceLiveSyncWorkspaceContext,
-        file_changes: Vec<crate::git_observer::TrackedWorkspaceLiveSyncFileChange>,
+        file_changes: Vec<crate::git_observer::WorkspaceLiveSyncFileChange>,
     ) {
         if file_changes.is_empty() {
             return;
@@ -546,7 +546,7 @@ impl KernelRuntimeState {
             .map(|change| change.path.clone())
             .collect::<Vec<_>>();
         let root = workspace_context.root.to_string_lossy().to_string();
-        let change = crate::git_observer::TrackedWorkspaceLiveSyncTurnChange {
+        let change = crate::git_observer::WorkspaceLiveSyncChange {
             session_id: session.id().to_string(),
             agent_id,
             provider_run_id: provider_run.id().to_string(),
@@ -558,7 +558,7 @@ impl KernelRuntimeState {
             file_changes,
             status_fingerprint: "managed_workspace_live_sync".to_string(),
         };
-        self.record_and_fanout_tracked_workspace_live_sync_change(change, None)
+        self.record_and_fanout_workspace_live_sync_change(change, None)
             .await;
     }
 }
@@ -609,7 +609,7 @@ fn workspace_live_sync_managed_patch_file_changes(
     workspace_root: &PathBuf,
     operations: &[ManagedPatchOperation],
     before_snapshots: BTreeMap<PathBuf, Option<Vec<u8>>>,
-) -> Result<Vec<crate::git_observer::TrackedWorkspaceLiveSyncFileChange>, DaemonError> {
+) -> Result<Vec<crate::git_observer::WorkspaceLiveSyncFileChange>, DaemonError> {
     operations
         .iter()
         .map(|operation| match operation {
@@ -640,18 +640,16 @@ fn workspace_live_sync_managed_file_change(
     previous_path: Option<PathBuf>,
     before: Option<Vec<u8>>,
     after: Option<Vec<u8>>,
-) -> crate::git_observer::TrackedWorkspaceLiveSyncFileChange {
+) -> crate::git_observer::WorkspaceLiveSyncFileChange {
     let kind = match (&previous_path, before.as_ref(), after.as_ref()) {
-        (Some(_), _, _) => crate::git_observer::TrackedWorkspaceLiveSyncFileChangeKind::Renamed,
-        (None, None, Some(_)) => crate::git_observer::TrackedWorkspaceLiveSyncFileChangeKind::Added,
-        (None, Some(_), None) => {
-            crate::git_observer::TrackedWorkspaceLiveSyncFileChangeKind::Deleted
-        }
-        _ => crate::git_observer::TrackedWorkspaceLiveSyncFileChangeKind::Modified,
+        (Some(_), _, _) => crate::git_observer::WorkspaceLiveSyncFileChangeKind::Renamed,
+        (None, None, Some(_)) => crate::git_observer::WorkspaceLiveSyncFileChangeKind::Added,
+        (None, Some(_), None) => crate::git_observer::WorkspaceLiveSyncFileChangeKind::Deleted,
+        _ => crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
     };
     let binary = before.as_ref().is_some_and(|bytes| bytes.contains(&0))
         || after.as_ref().is_some_and(|bytes| bytes.contains(&0));
-    crate::git_observer::TrackedWorkspaceLiveSyncFileChange {
+    crate::git_observer::WorkspaceLiveSyncFileChange {
         path: path.to_string_lossy().to_string(),
         previous_path: previous_path.map(|path| path.to_string_lossy().to_string()),
         kind,
@@ -701,14 +699,12 @@ mod tests {
         );
         let turn_change = managed_test_turn_change(vec![change], &source);
 
-        let results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
-            &turn_change,
-            &target,
-        );
+        let results =
+            crate::git_observer::apply_workspace_live_sync_change_to_target(&turn_change, &target);
 
         assert_eq!(
             results[0].status,
-            crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased
         );
         assert_eq!(
             std::fs::read_to_string(target.join("note.txt")).expect("read target"),
@@ -731,14 +727,12 @@ mod tests {
         );
         let turn_change = managed_test_turn_change(vec![change], &source);
 
-        let results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
-            &turn_change,
-            &target,
-        );
+        let results =
+            crate::git_observer::apply_workspace_live_sync_change_to_target(&turn_change, &target);
 
         assert_eq!(
             results[0].status,
-            crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
         );
         assert!(!target.join("from.bin").exists());
         assert_eq!(
@@ -762,14 +756,12 @@ mod tests {
         );
         let turn_change = managed_test_turn_change(vec![change], &source);
 
-        let results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
-            &turn_change,
-            &target,
-        );
+        let results =
+            crate::git_observer::apply_workspace_live_sync_change_to_target(&turn_change, &target);
 
         assert_eq!(
             results[0].status,
-            crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict
         );
         assert_eq!(
             std::fs::read_to_string(target.join("note.txt")).expect("read target"),
@@ -780,10 +772,10 @@ mod tests {
     }
 
     fn managed_test_turn_change(
-        file_changes: Vec<crate::git_observer::TrackedWorkspaceLiveSyncFileChange>,
+        file_changes: Vec<crate::git_observer::WorkspaceLiveSyncFileChange>,
         source: &std::path::Path,
-    ) -> crate::git_observer::TrackedWorkspaceLiveSyncTurnChange {
-        crate::git_observer::TrackedWorkspaceLiveSyncTurnChange {
+    ) -> crate::git_observer::WorkspaceLiveSyncChange {
+        crate::git_observer::WorkspaceLiveSyncChange {
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
             provider_run_id: "run-1".to_string(),

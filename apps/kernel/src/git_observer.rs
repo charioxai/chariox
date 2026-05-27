@@ -118,7 +118,7 @@ impl GitTurnSnapshotStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackedWorkspaceLiveSyncTurnChange {
+pub struct WorkspaceLiveSyncChange {
     pub session_id: String,
     pub agent_id: String,
     pub provider_run_id: String,
@@ -127,16 +127,16 @@ pub struct TrackedWorkspaceLiveSyncTurnChange {
     pub worktree_path: String,
     pub branch: Option<String>,
     pub changed_paths: Vec<String>,
-    pub file_changes: Vec<TrackedWorkspaceLiveSyncFileChange>,
+    pub file_changes: Vec<WorkspaceLiveSyncFileChange>,
     pub status_fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackedWorkspaceLiveSyncFileChange {
+pub struct WorkspaceLiveSyncFileChange {
     pub path: String,
     #[serde(default)]
     pub previous_path: Option<String>,
-    pub kind: TrackedWorkspaceLiveSyncFileChangeKind,
+    pub kind: WorkspaceLiveSyncFileChangeKind,
     #[serde(default)]
     pub before_content_base64: Option<String>,
     #[serde(default)]
@@ -146,7 +146,7 @@ pub struct TrackedWorkspaceLiveSyncFileChange {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrackedWorkspaceLiveSyncFileChangeKind {
+pub enum WorkspaceLiveSyncFileChangeKind {
     Added,
     Modified,
     Deleted,
@@ -154,32 +154,32 @@ pub enum TrackedWorkspaceLiveSyncFileChangeKind {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct TrackedWorkspaceLiveSyncJournal {
-    inner: Arc<Mutex<TrackedWorkspaceLiveSyncJournalState>>,
+pub(crate) struct WorkspaceLiveSyncJournal {
+    inner: Arc<Mutex<WorkspaceLiveSyncJournalState>>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct TrackedWorkspaceLiveSyncJournalState {
-    entries: Vec<TrackedWorkspaceLiveSyncTurnChange>,
-    target_results: Vec<TrackedWorkspaceLiveSyncTargetResult>,
+struct WorkspaceLiveSyncJournalState {
+    entries: Vec<WorkspaceLiveSyncChange>,
+    target_results: Vec<WorkspaceLiveSyncTargetResult>,
 }
 
-impl TrackedWorkspaceLiveSyncJournal {
-    pub(crate) fn append(&self, change: TrackedWorkspaceLiveSyncTurnChange) {
+impl WorkspaceLiveSyncJournal {
+    pub(crate) fn append(&self, change: WorkspaceLiveSyncChange) {
         self.inner
             .lock()
-            .expect("tracked workspace live sync journal mutex poisoned")
+            .expect("workspace live sync journal mutex poisoned")
             .entries
             .push(change);
     }
 
-    pub(crate) fn record_target_results(&self, results: Vec<TrackedWorkspaceLiveSyncTargetResult>) {
+    pub(crate) fn record_target_results(&self, results: Vec<WorkspaceLiveSyncTargetResult>) {
         if results.is_empty() {
             return;
         }
         self.inner
             .lock()
-            .expect("tracked workspace live sync journal mutex poisoned")
+            .expect("workspace live sync journal mutex poisoned")
             .target_results
             .extend(results);
     }
@@ -187,10 +187,10 @@ impl TrackedWorkspaceLiveSyncJournal {
     pub(crate) fn target_results_for_session(
         &self,
         session_id: &str,
-    ) -> Vec<TrackedWorkspaceLiveSyncTargetResult> {
+    ) -> Vec<WorkspaceLiveSyncTargetResult> {
         self.inner
             .lock()
-            .expect("tracked workspace live sync journal mutex poisoned")
+            .expect("workspace live sync journal mutex poisoned")
             .target_results
             .iter()
             .filter(|result| result.session_id == session_id)
@@ -200,7 +200,7 @@ impl TrackedWorkspaceLiveSyncJournal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackedWorkspaceLiveSyncTargetResult {
+pub struct WorkspaceLiveSyncTargetResult {
     pub session_id: String,
     pub link_id: String,
     pub link_name: String,
@@ -210,19 +210,19 @@ pub struct TrackedWorkspaceLiveSyncTargetResult {
     pub target_machine_id: String,
     pub target_kernel_id: String,
     pub target_repo_root: String,
-    pub path_results: Vec<TrackedWorkspaceLiveSyncPathApplyResult>,
+    pub path_results: Vec<WorkspaceLiveSyncPathApplyResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackedWorkspaceLiveSyncPathApplyResult {
+pub struct WorkspaceLiveSyncPathApplyResult {
     pub path: String,
-    pub status: TrackedWorkspaceLiveSyncApplyStatus,
+    pub status: WorkspaceLiveSyncApplyStatus,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrackedWorkspaceLiveSyncApplyStatus {
+pub enum WorkspaceLiveSyncApplyStatus {
     Applied,
     Rebased,
     SkippedConflict,
@@ -374,7 +374,7 @@ pub(crate) fn observations_after_turn(
 pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     before: &GitTurnSnapshot,
     after: &GitTurnSnapshot,
-) -> Option<TrackedWorkspaceLiveSyncTurnChange> {
+) -> Option<WorkspaceLiveSyncChange> {
     if before.is_dirty || before.status_fingerprint == after.status_fingerprint {
         return None;
     }
@@ -391,7 +391,7 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     }
     let file_changes =
         tracked_workspace_live_sync_file_changes(before, &path_changes).unwrap_or_default();
-    Some(TrackedWorkspaceLiveSyncTurnChange {
+    Some(WorkspaceLiveSyncChange {
         session_id: before.session_id.clone(),
         agent_id: before.agent_id.clone(),
         provider_run_id: before.provider_run_id.clone(),
@@ -406,15 +406,15 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TrackedWorkspaceLiveSyncPathChange {
+struct WorkspaceLiveSyncTrackedPathChange {
     path: String,
     previous_path: Option<String>,
-    kind: TrackedWorkspaceLiveSyncFileChangeKind,
+    kind: WorkspaceLiveSyncFileChangeKind,
 }
 
 fn tracked_workspace_live_sync_path_changes(
     status_fingerprint: &str,
-) -> Vec<TrackedWorkspaceLiveSyncPathChange> {
+) -> Vec<WorkspaceLiveSyncTrackedPathChange> {
     let mut paths = BTreeMap::new();
     for line in status_fingerprint.lines() {
         let line = line.trim_end();
@@ -431,21 +431,21 @@ fn tracked_workspace_live_sync_path_changes(
         } else {
             (None, tracked_workspace_live_sync_unquote_path(raw_path))
         };
-        if path.is_empty() || tracked_workspace_live_sync_force_excluded_path(&path) {
+        if path.is_empty() || workspace_live_sync_force_excluded_path(&path) {
             continue;
         }
         let kind = if status == "??" {
-            TrackedWorkspaceLiveSyncFileChangeKind::Added
+            WorkspaceLiveSyncFileChangeKind::Added
         } else if status.contains('R') {
-            TrackedWorkspaceLiveSyncFileChangeKind::Renamed
+            WorkspaceLiveSyncFileChangeKind::Renamed
         } else if status.contains('D') {
-            TrackedWorkspaceLiveSyncFileChangeKind::Deleted
+            WorkspaceLiveSyncFileChangeKind::Deleted
         } else {
-            TrackedWorkspaceLiveSyncFileChangeKind::Modified
+            WorkspaceLiveSyncFileChangeKind::Modified
         };
         paths.insert(
             path.clone(),
-            TrackedWorkspaceLiveSyncPathChange {
+            WorkspaceLiveSyncTrackedPathChange {
                 path,
                 previous_path,
                 kind,
@@ -457,8 +457,8 @@ fn tracked_workspace_live_sync_path_changes(
 
 fn tracked_workspace_live_sync_file_changes(
     before: &GitTurnSnapshot,
-    path_changes: &[TrackedWorkspaceLiveSyncPathChange],
-) -> Option<Vec<TrackedWorkspaceLiveSyncFileChange>> {
+    path_changes: &[WorkspaceLiveSyncTrackedPathChange],
+) -> Option<Vec<WorkspaceLiveSyncFileChange>> {
     let repo_root = PathBuf::from(&before.repo_root);
     let worktree_path = PathBuf::from(&before.worktree_path);
     let revision = before.head_sha.as_deref().unwrap_or("HEAD");
@@ -468,10 +468,10 @@ fn tracked_workspace_live_sync_file_changes(
             .map(|change| {
                 let before_path = change.previous_path.as_deref().unwrap_or(&change.path);
                 let before_snapshot = match change.kind {
-                    TrackedWorkspaceLiveSyncFileChangeKind::Added => None,
-                    TrackedWorkspaceLiveSyncFileChangeKind::Modified
-                    | TrackedWorkspaceLiveSyncFileChangeKind::Deleted
-                    | TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
+                    WorkspaceLiveSyncFileChangeKind::Added => None,
+                    WorkspaceLiveSyncFileChangeKind::Modified
+                    | WorkspaceLiveSyncFileChangeKind::Deleted
+                    | WorkspaceLiveSyncFileChangeKind::Renamed => {
                         tracked_workspace_live_sync_git_blob_snapshot(
                             &repo_root,
                             revision,
@@ -480,10 +480,10 @@ fn tracked_workspace_live_sync_file_changes(
                     }
                 };
                 let after_snapshot = match change.kind {
-                    TrackedWorkspaceLiveSyncFileChangeKind::Deleted => None,
-                    TrackedWorkspaceLiveSyncFileChangeKind::Added
-                    | TrackedWorkspaceLiveSyncFileChangeKind::Modified
-                    | TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
+                    WorkspaceLiveSyncFileChangeKind::Deleted => None,
+                    WorkspaceLiveSyncFileChangeKind::Added
+                    | WorkspaceLiveSyncFileChangeKind::Modified
+                    | WorkspaceLiveSyncFileChangeKind::Renamed => {
                         tracked_workspace_live_sync_worktree_snapshot(&worktree_path, &change.path)
                     }
                 };
@@ -493,7 +493,7 @@ fn tracked_workspace_live_sync_file_changes(
                     || after_snapshot
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.binary);
-                TrackedWorkspaceLiveSyncFileChange {
+                WorkspaceLiveSyncFileChange {
                     path: change.path.clone(),
                     previous_path: change.previous_path.clone(),
                     kind: change.kind,
@@ -507,7 +507,7 @@ fn tracked_workspace_live_sync_file_changes(
 }
 
 #[derive(Debug, Clone)]
-struct TrackedWorkspaceLiveSyncContentSnapshot {
+struct WorkspaceLiveSyncTrackedContentSnapshot {
     content_base64: String,
     binary: bool,
 }
@@ -516,7 +516,7 @@ fn tracked_workspace_live_sync_git_blob_snapshot(
     repo_root: &Path,
     revision: &str,
     path: &str,
-) -> Option<TrackedWorkspaceLiveSyncContentSnapshot> {
+) -> Option<WorkspaceLiveSyncTrackedContentSnapshot> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -533,7 +533,7 @@ fn tracked_workspace_live_sync_git_blob_snapshot(
 fn tracked_workspace_live_sync_worktree_snapshot(
     worktree_path: &Path,
     path: &str,
-) -> Option<TrackedWorkspaceLiveSyncContentSnapshot> {
+) -> Option<WorkspaceLiveSyncTrackedContentSnapshot> {
     std::fs::read(worktree_path.join(path))
         .ok()
         .map(tracked_workspace_live_sync_content_snapshot)
@@ -541,8 +541,8 @@ fn tracked_workspace_live_sync_worktree_snapshot(
 
 fn tracked_workspace_live_sync_content_snapshot(
     bytes: Vec<u8>,
-) -> TrackedWorkspaceLiveSyncContentSnapshot {
-    TrackedWorkspaceLiveSyncContentSnapshot {
+) -> WorkspaceLiveSyncTrackedContentSnapshot {
+    WorkspaceLiveSyncTrackedContentSnapshot {
         binary: bytes.contains(&0),
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
     }
@@ -552,31 +552,30 @@ fn tracked_workspace_live_sync_unquote_path(path: &str) -> String {
     path.trim().trim_matches('"').to_string()
 }
 
-pub(crate) fn apply_tracked_workspace_live_sync_change_to_target(
-    change: &TrackedWorkspaceLiveSyncTurnChange,
+pub(crate) fn apply_workspace_live_sync_change_to_target(
+    change: &WorkspaceLiveSyncChange,
     target_root: &Path,
-) -> Vec<TrackedWorkspaceLiveSyncPathApplyResult> {
+) -> Vec<WorkspaceLiveSyncPathApplyResult> {
     change
         .file_changes
         .iter()
         .map(|file_change| {
-            apply_tracked_workspace_live_sync_file_change_to_target(file_change, target_root)
+            apply_workspace_live_sync_file_change_to_target(file_change, target_root)
         })
         .collect()
 }
 
-fn apply_tracked_workspace_live_sync_file_change_to_target(
-    file_change: &TrackedWorkspaceLiveSyncFileChange,
+fn apply_workspace_live_sync_file_change_to_target(
+    file_change: &WorkspaceLiveSyncFileChange,
     target_root: &Path,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let path = file_change.path.clone();
-    let target_path = match tracked_workspace_live_sync_target_path(target_root, &file_change.path)
-    {
+    let target_path = match workspace_live_sync_target_path(target_root, &file_change.path) {
         Some(path) => path,
         None => {
-            return TrackedWorkspaceLiveSyncPathApplyResult {
+            return WorkspaceLiveSyncPathApplyResult {
                 path,
-                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+                status: WorkspaceLiveSyncApplyStatus::FailedIo,
                 message: "workspace live sync path must be relative and cannot contain `..`"
                     .to_string(),
             };
@@ -585,81 +584,77 @@ fn apply_tracked_workspace_live_sync_file_change_to_target(
     let previous_target_path = file_change
         .previous_path
         .as_deref()
-        .and_then(|path| tracked_workspace_live_sync_target_path(target_root, path));
-    let before_bytes = match tracked_workspace_live_sync_decode_optional(
-        file_change.before_content_base64.as_deref(),
-    ) {
-        Ok(bytes) => bytes,
-        Err(message) => {
-            return TrackedWorkspaceLiveSyncPathApplyResult {
-                path,
-                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
-                message,
-            };
-        }
-    };
-    let after_bytes = match tracked_workspace_live_sync_decode_optional(
-        file_change.after_content_base64.as_deref(),
-    ) {
-        Ok(bytes) => bytes,
-        Err(message) => {
-            return TrackedWorkspaceLiveSyncPathApplyResult {
-                path,
-                status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
-                message,
-            };
-        }
-    };
+        .and_then(|path| workspace_live_sync_target_path(target_root, path));
+    let before_bytes =
+        match workspace_live_sync_decode_optional(file_change.before_content_base64.as_deref()) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                return WorkspaceLiveSyncPathApplyResult {
+                    path,
+                    status: WorkspaceLiveSyncApplyStatus::FailedIo,
+                    message,
+                };
+            }
+        };
+    let after_bytes =
+        match workspace_live_sync_decode_optional(file_change.after_content_base64.as_deref()) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                return WorkspaceLiveSyncPathApplyResult {
+                    path,
+                    status: WorkspaceLiveSyncApplyStatus::FailedIo,
+                    message,
+                };
+            }
+        };
     match file_change.kind {
-        TrackedWorkspaceLiveSyncFileChangeKind::Added => {
-            tracked_workspace_live_sync_apply_add(&path, &target_path, after_bytes)
+        WorkspaceLiveSyncFileChangeKind::Added => {
+            workspace_live_sync_apply_add(&path, &target_path, after_bytes)
         }
-        TrackedWorkspaceLiveSyncFileChangeKind::Modified => {
-            tracked_workspace_live_sync_apply_modify(&path, &target_path, before_bytes, after_bytes)
+        WorkspaceLiveSyncFileChangeKind::Modified => {
+            workspace_live_sync_apply_modify(&path, &target_path, before_bytes, after_bytes)
         }
-        TrackedWorkspaceLiveSyncFileChangeKind::Deleted => {
-            tracked_workspace_live_sync_apply_delete(&path, &target_path, before_bytes)
+        WorkspaceLiveSyncFileChangeKind::Deleted => {
+            workspace_live_sync_apply_delete(&path, &target_path, before_bytes)
         }
-        TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
-            tracked_workspace_live_sync_apply_rename(
-                &path,
-                previous_target_path.as_deref(),
-                &target_path,
-                before_bytes,
-                after_bytes,
-            )
-        }
+        WorkspaceLiveSyncFileChangeKind::Renamed => workspace_live_sync_apply_rename(
+            &path,
+            previous_target_path.as_deref(),
+            &target_path,
+            before_bytes,
+            after_bytes,
+        ),
     }
 }
 
-fn tracked_workspace_live_sync_apply_add(
+fn workspace_live_sync_apply_add(
     path: &str,
     target_path: &Path,
     after_bytes: Option<Vec<u8>>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let Some(after_bytes) = after_bytes else {
-        return tracked_workspace_live_sync_failed(path, "tracked add has no after content");
+        return workspace_live_sync_failed(path, "workspace live sync add has no after content");
     };
     if target_path.exists() {
-        return tracked_workspace_live_sync_conflict(path, "target path already exists");
+        return workspace_live_sync_conflict(path, "target path already exists");
     }
-    tracked_workspace_live_sync_write_file(path, target_path, &after_bytes)
+    workspace_live_sync_write_file(path, target_path, &after_bytes)
 }
 
-fn tracked_workspace_live_sync_apply_modify(
+fn workspace_live_sync_apply_modify(
     path: &str,
     target_path: &Path,
     before_bytes: Option<Vec<u8>>,
     after_bytes: Option<Vec<u8>>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let (Some(before_bytes), Some(after_bytes)) = (before_bytes, after_bytes) else {
-        return tracked_workspace_live_sync_failed(path, "tracked modify is missing content");
+        return workspace_live_sync_failed(path, "workspace live sync modify is missing content");
     };
     match std::fs::read(target_path) {
         Ok(current) if current == before_bytes => {
-            tracked_workspace_live_sync_write_file(path, target_path, &after_bytes)
+            workspace_live_sync_write_file(path, target_path, &after_bytes)
         }
-        Ok(current) => tracked_workspace_live_sync_rebase_modify(
+        Ok(current) => workspace_live_sync_rebase_modify(
             path,
             target_path,
             &before_bytes,
@@ -667,76 +662,61 @@ fn tracked_workspace_live_sync_apply_modify(
             &current,
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            tracked_workspace_live_sync_conflict(path, "target path is missing")
+            workspace_live_sync_conflict(path, "target path is missing")
         }
-        Err(error) => tracked_workspace_live_sync_failed(
+        Err(error) => workspace_live_sync_failed(
             path,
             format!("failed to read target path before apply: {error}"),
         ),
     }
 }
 
-fn tracked_workspace_live_sync_rebase_modify(
+fn workspace_live_sync_rebase_modify(
     path: &str,
     target_path: &Path,
     before_bytes: &[u8],
     after_bytes: &[u8],
     current_bytes: &[u8],
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let Ok(before) = std::str::from_utf8(before_bytes) else {
-        return tracked_workspace_live_sync_conflict(
-            path,
-            "binary target content changed before apply",
-        );
+        return workspace_live_sync_conflict(path, "binary target content changed before apply");
     };
     let Ok(after) = std::str::from_utf8(after_bytes) else {
-        return tracked_workspace_live_sync_conflict(
-            path,
-            "binary source content cannot be rebased",
-        );
+        return workspace_live_sync_conflict(path, "binary source content cannot be rebased");
     };
     let Ok(current) = std::str::from_utf8(current_bytes) else {
-        return tracked_workspace_live_sync_conflict(
-            path,
-            "binary target content cannot be rebased",
-        );
+        return workspace_live_sync_conflict(path, "binary target content cannot be rebased");
     };
-    let Some(rebased) = tracked_workspace_live_sync_rebase_text(before, after, current) else {
-        return tracked_workspace_live_sync_conflict(
+    let Some(rebased) = workspace_live_sync_rebase_text(before, after, current) else {
+        return workspace_live_sync_conflict(
             path,
             "target content changed in an overlapping area before apply",
         );
     };
     if let Some(parent) = target_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            return tracked_workspace_live_sync_failed(
+            return workspace_live_sync_failed(
                 path,
                 format!("failed to create target directory: {error}"),
             );
         }
     }
     match std::fs::write(target_path, rebased.as_bytes()) {
-        Ok(()) => {
-            tracked_workspace_live_sync_rebased(path, "rebased over non-overlapping target change")
-        }
-        Err(error) => tracked_workspace_live_sync_failed(
+        Ok(()) => workspace_live_sync_rebased(path, "rebased over non-overlapping target change"),
+        Err(error) => workspace_live_sync_failed(
             path,
             format!("failed to write rebased target content: {error}"),
         ),
     }
 }
 
-fn tracked_workspace_live_sync_rebase_text(
-    before: &str,
-    after: &str,
-    current: &str,
-) -> Option<String> {
-    let before_lines = tracked_workspace_live_sync_lines(before);
-    let after_lines = tracked_workspace_live_sync_lines(after);
-    let current_lines = tracked_workspace_live_sync_lines(current);
-    let source = tracked_workspace_live_sync_changed_range(&before_lines, &after_lines);
-    let target = tracked_workspace_live_sync_changed_range(&before_lines, &current_lines);
-    if tracked_workspace_live_sync_ranges_overlap(
+fn workspace_live_sync_rebase_text(before: &str, after: &str, current: &str) -> Option<String> {
+    let before_lines = workspace_live_sync_lines(before);
+    let after_lines = workspace_live_sync_lines(after);
+    let current_lines = workspace_live_sync_lines(current);
+    let source = workspace_live_sync_changed_range(&before_lines, &after_lines);
+    let target = workspace_live_sync_changed_range(&before_lines, &current_lines);
+    if workspace_live_sync_ranges_overlap(
         source.before_start,
         source.before_end,
         target.before_start,
@@ -765,17 +745,17 @@ fn tracked_workspace_live_sync_rebase_text(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct TrackedWorkspaceLiveSyncTextChangeRange {
+struct WorkspaceLiveSyncTextChangeRange {
     before_start: usize,
     before_end: usize,
     changed_start: usize,
     changed_end: usize,
 }
 
-fn tracked_workspace_live_sync_changed_range(
+fn workspace_live_sync_changed_range(
     before: &[String],
     changed: &[String],
-) -> TrackedWorkspaceLiveSyncTextChangeRange {
+) -> WorkspaceLiveSyncTextChangeRange {
     let mut prefix = 0usize;
     while prefix < before.len() && prefix < changed.len() && before[prefix] == changed[prefix] {
         prefix += 1;
@@ -787,7 +767,7 @@ fn tracked_workspace_live_sync_changed_range(
     {
         suffix += 1;
     }
-    TrackedWorkspaceLiveSyncTextChangeRange {
+    WorkspaceLiveSyncTextChangeRange {
         before_start: prefix,
         before_end: before.len() - suffix,
         changed_start: prefix,
@@ -795,7 +775,7 @@ fn tracked_workspace_live_sync_changed_range(
     }
 }
 
-fn tracked_workspace_live_sync_ranges_overlap(
+fn workspace_live_sync_ranges_overlap(
     left_start: usize,
     left_end: usize,
     right_start: usize,
@@ -810,68 +790,70 @@ fn tracked_workspace_live_sync_ranges_overlap(
     left_start < right_end && right_start < left_end
 }
 
-fn tracked_workspace_live_sync_lines(value: &str) -> Vec<String> {
+fn workspace_live_sync_lines(value: &str) -> Vec<String> {
     if value.is_empty() {
         return Vec::new();
     }
     value.split_inclusive('\n').map(str::to_string).collect()
 }
 
-fn tracked_workspace_live_sync_apply_delete(
+fn workspace_live_sync_apply_delete(
     path: &str,
     target_path: &Path,
     before_bytes: Option<Vec<u8>>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let Some(before_bytes) = before_bytes else {
-        return tracked_workspace_live_sync_failed(path, "tracked delete has no before content");
+        return workspace_live_sync_failed(
+            path,
+            "workspace live sync delete has no before content",
+        );
     };
     match std::fs::read(target_path) {
         Ok(current) if current == before_bytes => match std::fs::remove_file(target_path) {
-            Ok(()) => tracked_workspace_live_sync_applied(path, "deleted target path"),
-            Err(error) => tracked_workspace_live_sync_failed(
-                path,
-                format!("failed to delete target path: {error}"),
-            ),
+            Ok(()) => workspace_live_sync_applied(path, "deleted target path"),
+            Err(error) => {
+                workspace_live_sync_failed(path, format!("failed to delete target path: {error}"))
+            }
         },
-        Ok(_) => tracked_workspace_live_sync_conflict(path, "target content changed before delete"),
+        Ok(_) => workspace_live_sync_conflict(path, "target content changed before delete"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            tracked_workspace_live_sync_conflict(path, "target path is already missing")
+            workspace_live_sync_conflict(path, "target path is already missing")
         }
-        Err(error) => tracked_workspace_live_sync_failed(
+        Err(error) => workspace_live_sync_failed(
             path,
             format!("failed to read target path before delete: {error}"),
         ),
     }
 }
 
-fn tracked_workspace_live_sync_apply_rename(
+fn workspace_live_sync_apply_rename(
     path: &str,
     previous_target_path: Option<&Path>,
     target_path: &Path,
     before_bytes: Option<Vec<u8>>,
     after_bytes: Option<Vec<u8>>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     let (Some(previous_target_path), Some(before_bytes), Some(after_bytes)) =
         (previous_target_path, before_bytes, after_bytes)
     else {
-        return tracked_workspace_live_sync_failed(path, "tracked rename is missing content");
+        return workspace_live_sync_failed(path, "workspace live sync rename is missing content");
     };
     if target_path.exists() {
-        return tracked_workspace_live_sync_conflict(path, "rename target path already exists");
+        return workspace_live_sync_conflict(path, "rename target path already exists");
     }
     match std::fs::read(previous_target_path) {
         Ok(current) if current == before_bytes => {}
         Ok(_) => {
-            return tracked_workspace_live_sync_conflict(
+            return workspace_live_sync_conflict(
                 path,
                 "rename source content changed before apply",
             );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return tracked_workspace_live_sync_conflict(path, "rename source path is missing");
+            return workspace_live_sync_conflict(path, "rename source path is missing");
         }
         Err(error) => {
-            return tracked_workspace_live_sync_failed(
+            return workspace_live_sync_failed(
                 path,
                 format!("failed to read rename source before apply: {error}"),
             );
@@ -879,62 +861,58 @@ fn tracked_workspace_live_sync_apply_rename(
     }
     if let Some(parent) = target_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            return tracked_workspace_live_sync_failed(
+            return workspace_live_sync_failed(
                 path,
                 format!("failed to create target directory: {error}"),
             );
         }
     }
     if let Err(error) = std::fs::write(target_path, after_bytes) {
-        return tracked_workspace_live_sync_failed(
-            path,
-            format!("failed to write target: {error}"),
-        );
+        return workspace_live_sync_failed(path, format!("failed to write target: {error}"));
     }
     match std::fs::remove_file(previous_target_path) {
-        Ok(()) => tracked_workspace_live_sync_applied(path, "renamed target path"),
-        Err(error) => tracked_workspace_live_sync_failed(
+        Ok(()) => workspace_live_sync_applied(path, "renamed target path"),
+        Err(error) => workspace_live_sync_failed(
             path,
             format!("failed to remove rename source after write: {error}"),
         ),
     }
 }
 
-fn tracked_workspace_live_sync_write_file(
+fn workspace_live_sync_write_file(
     path: &str,
     target_path: &Path,
     bytes: &[u8],
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
     if let Some(parent) = target_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            return tracked_workspace_live_sync_failed(
+            return workspace_live_sync_failed(
                 path,
                 format!("failed to create target directory: {error}"),
             );
         }
     }
     match std::fs::write(target_path, bytes) {
-        Ok(()) => tracked_workspace_live_sync_applied(path, "applied target content"),
-        Err(error) => tracked_workspace_live_sync_failed(
-            path,
-            format!("failed to write target content: {error}"),
-        ),
+        Ok(()) => workspace_live_sync_applied(path, "applied target content"),
+        Err(error) => {
+            workspace_live_sync_failed(path, format!("failed to write target content: {error}"))
+        }
     }
 }
 
-fn tracked_workspace_live_sync_decode_optional(
-    value: Option<&str>,
-) -> Result<Option<Vec<u8>>, String> {
+fn workspace_live_sync_decode_optional(value: Option<&str>) -> Result<Option<Vec<u8>>, String> {
     value
         .map(|value| {
             base64::engine::general_purpose::STANDARD
                 .decode(value)
-                .map_err(|error| format!("tracked content is not valid base64: {error}"))
+                .map_err(|error| {
+                    format!("workspace live sync content is not valid base64: {error}")
+                })
         })
         .transpose()
 }
 
-fn tracked_workspace_live_sync_target_path(target_root: &Path, path: &str) -> Option<PathBuf> {
+fn workspace_live_sync_target_path(target_root: &Path, path: &str) -> Option<PathBuf> {
     let relative = Path::new(path);
     if relative.is_absolute()
         || relative.components().any(|component| {
@@ -949,51 +927,51 @@ fn tracked_workspace_live_sync_target_path(target_root: &Path, path: &str) -> Op
     Some(target_root.join(relative))
 }
 
-fn tracked_workspace_live_sync_applied(
+fn workspace_live_sync_applied(
     path: &str,
     message: impl Into<String>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
-    TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
+    WorkspaceLiveSyncPathApplyResult {
         path: path.to_string(),
-        status: TrackedWorkspaceLiveSyncApplyStatus::Applied,
+        status: WorkspaceLiveSyncApplyStatus::Applied,
         message: message.into(),
     }
 }
 
-fn tracked_workspace_live_sync_rebased(
+fn workspace_live_sync_rebased(
     path: &str,
     message: impl Into<String>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
-    TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
+    WorkspaceLiveSyncPathApplyResult {
         path: path.to_string(),
-        status: TrackedWorkspaceLiveSyncApplyStatus::Rebased,
+        status: WorkspaceLiveSyncApplyStatus::Rebased,
         message: message.into(),
     }
 }
 
-fn tracked_workspace_live_sync_conflict(
+fn workspace_live_sync_conflict(
     path: &str,
     message: impl Into<String>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
-    TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
+    WorkspaceLiveSyncPathApplyResult {
         path: path.to_string(),
-        status: TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict,
+        status: WorkspaceLiveSyncApplyStatus::SkippedConflict,
         message: message.into(),
     }
 }
 
-fn tracked_workspace_live_sync_failed(
+fn workspace_live_sync_failed(
     path: &str,
     message: impl Into<String>,
-) -> TrackedWorkspaceLiveSyncPathApplyResult {
-    TrackedWorkspaceLiveSyncPathApplyResult {
+) -> WorkspaceLiveSyncPathApplyResult {
+    WorkspaceLiveSyncPathApplyResult {
         path: path.to_string(),
-        status: TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
+        status: WorkspaceLiveSyncApplyStatus::FailedIo,
         message: message.into(),
     }
 }
 
-fn tracked_workspace_live_sync_force_excluded_path(path: &str) -> bool {
+fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     if path == ".arrobaignore"
         || path == ".git"
         || path.starts_with(".git/")
@@ -1296,11 +1274,10 @@ mod tests {
     use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
     use super::{
-        apply_tracked_workspace_live_sync_change_to_target, capture_turn_snapshot,
-        observe_after_turn, tracked_workspace_live_sync_change_after_turn, GitTurnContext,
-        GitTurnSnapshot, GitTurnSnapshotStore, TrackedWorkspaceLiveSyncApplyStatus,
-        TrackedWorkspaceLiveSyncFileChange, TrackedWorkspaceLiveSyncFileChangeKind,
-        TrackedWorkspaceLiveSyncTurnChange,
+        apply_workspace_live_sync_change_to_target, capture_turn_snapshot, observe_after_turn,
+        tracked_workspace_live_sync_change_after_turn, GitTurnContext, GitTurnSnapshot,
+        GitTurnSnapshotStore, WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncChange,
+        WorkspaceLiveSyncFileChange, WorkspaceLiveSyncFileChangeKind,
     };
 
     #[test]
@@ -1497,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_workspace_live_sync_apply_target_applies_exact_base_changes() {
+    fn workspace_live_sync_apply_target_applies_exact_base_changes() {
         let source = std::env::temp_dir().join(format!(
             "arroba-tracked-sync-source-{}-{}",
             std::process::id(),
@@ -1536,11 +1513,11 @@ mod tests {
         let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
             .expect("tracked turn should produce a change");
 
-        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
 
         assert!(results
             .iter()
-            .all(|result| result.status == TrackedWorkspaceLiveSyncApplyStatus::Applied));
+            .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied));
         assert_eq!(
             std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
             "new\n"
@@ -1556,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_workspace_live_sync_apply_target_skips_conflicting_target() {
+    fn workspace_live_sync_apply_target_skips_conflicting_target() {
         let source = std::env::temp_dir().join(format!(
             "arroba-tracked-sync-conflict-source-{}-{}",
             std::process::id(),
@@ -1592,11 +1569,11 @@ mod tests {
         let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
             .expect("tracked turn should produce a change");
 
-        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
 
         assert_eq!(
             results[0].status,
-            TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict
+            WorkspaceLiveSyncApplyStatus::SkippedConflict
         );
         assert_eq!(
             std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
@@ -1608,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_workspace_live_sync_apply_target_rebases_non_overlapping_text_changes() {
+    fn workspace_live_sync_apply_target_rebases_non_overlapping_text_changes() {
         let target = std::env::temp_dir().join(format!(
             "arroba-tracked-sync-rebase-target-{}-{}",
             std::process::id(),
@@ -1618,7 +1595,7 @@ mod tests {
         std::fs::write(target.join("src/lib.rs"), "a\nlocal\nb\nc\n").expect("target should write");
         let encode =
             |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
-        let change = TrackedWorkspaceLiveSyncTurnChange {
+        let change = WorkspaceLiveSyncChange {
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
@@ -1627,10 +1604,10 @@ mod tests {
             worktree_path: "/source".to_string(),
             branch: Some("main".to_string()),
             changed_paths: vec!["src/lib.rs".to_string()],
-            file_changes: vec![TrackedWorkspaceLiveSyncFileChange {
+            file_changes: vec![WorkspaceLiveSyncFileChange {
                 path: "src/lib.rs".to_string(),
                 previous_path: None,
-                kind: TrackedWorkspaceLiveSyncFileChangeKind::Modified,
+                kind: WorkspaceLiveSyncFileChangeKind::Modified,
                 before_content_base64: Some(encode("a\nb\nc\n")),
                 after_content_base64: Some(encode("a\nb\nsource\nc\n")),
                 binary: false,
@@ -1638,12 +1615,9 @@ mod tests {
             status_fingerprint: "fingerprint".to_string(),
         };
 
-        let results = apply_tracked_workspace_live_sync_change_to_target(&change, &target);
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
 
-        assert_eq!(
-            results[0].status,
-            TrackedWorkspaceLiveSyncApplyStatus::Rebased
-        );
+        assert_eq!(results[0].status, WorkspaceLiveSyncApplyStatus::Rebased);
         assert_eq!(
             std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
             "a\nlocal\nb\nsource\nc\n"

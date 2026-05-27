@@ -278,7 +278,7 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             Vec<RemoteGitObservation>,
-            Option<crate::git_observer::TrackedWorkspaceLiveSyncTurnChange>,
+            Option<crate::git_observer::WorkspaceLiveSyncChange>,
         ),
         DaemonError,
     > {

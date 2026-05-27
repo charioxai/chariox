@@ -293,7 +293,7 @@ pub(super) async fn handle_daemon_peer_request(
                         } else {
                             None
                         };
-                    let (git_observations, tracked_workspace_live_sync_change) =
+                    let (git_observations, workspace_live_sync_change) =
                         if let Some(provider_run_id) = provider_run_id.as_deref() {
                             router
                                 .relay_observe_leased_git_after(&leased_agent_id, provider_run_id)
@@ -306,7 +306,7 @@ pub(super) async fn handle_daemon_peer_request(
                         provider_run_id,
                         provider_diagnostic,
                         git_observations,
-                        tracked_workspace_live_sync_change,
+                        workspace_live_sync_change,
                         completion,
                     }
                 }
@@ -412,13 +412,13 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::ApplyTrackedWorkspaceLiveSyncChange { context, change } => {
+        RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change } => {
             let applied = router
-                .relay_apply_tracked_workspace_live_sync_change(context, change)
+                .relay_apply_workspace_live_sync_change(context, change)
                 .await;
             match applied {
                 Ok(target_result) => {
-                    RelayPeerResponse::TrackedWorkspaceLiveSyncChangeApplied { target_result }
+                    RelayPeerResponse::WorkspaceLiveSyncChangeApplied { target_result }
                 }
                 Err(error) => {
                     return RelayRequestOutcome {

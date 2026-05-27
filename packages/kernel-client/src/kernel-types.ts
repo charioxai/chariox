@@ -882,7 +882,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 56
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 57
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

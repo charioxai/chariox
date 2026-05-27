@@ -96,7 +96,7 @@ impl KernelRuntimeState {
             Ok(Some(Ok((events, tracked_change)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
-                    self.record_and_fanout_tracked_workspace_live_sync_change(change, None)
+                    self.record_and_fanout_workspace_live_sync_change(change, None)
                         .await;
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
@@ -142,28 +142,26 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn record_and_fanout_tracked_workspace_live_sync_change(
+    pub(super) async fn record_and_fanout_workspace_live_sync_change(
         &self,
-        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        change: crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
     ) {
         let target_results = self
-            .apply_tracked_workspace_live_sync_change_to_link_targets(&change, source_kernel_id)
+            .apply_workspace_live_sync_change_to_link_targets(&change, source_kernel_id)
             .await;
-        self.record_tracked_workspace_live_sync_notices(&change, &target_results);
+        self.record_workspace_live_sync_notices(&change, &target_results);
+        self.owned.workspace_live_sync_journal.append(change);
         self.owned
-            .tracked_workspace_live_sync_journal
-            .append(change);
-        self.owned
-            .tracked_workspace_live_sync_journal
+            .workspace_live_sync_journal
             .record_target_results(target_results);
     }
 
-    async fn apply_tracked_workspace_live_sync_change_to_link_targets(
+    async fn apply_workspace_live_sync_change_to_link_targets(
         &self,
-        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
-    ) -> Vec<crate::git_observer::TrackedWorkspaceLiveSyncTargetResult> {
+    ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
         let Ok(session) = self.owned.session_store.get_session(&change.session_id) else {
             return Vec::new();
         };
@@ -181,12 +179,11 @@ impl KernelRuntimeState {
             }
             if attachment.kernel_id() == config.daemon_id {
                 let target_root = std::path::Path::new(attachment.repo_root());
-                let path_results =
-                    crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
-                        change,
-                        target_root,
-                    );
-                results.push(crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+                let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
+                    change,
+                    target_root,
+                );
+                results.push(crate::git_observer::WorkspaceLiveSyncTargetResult {
                     session_id: change.session_id.clone(),
                     link_id: link.link_id().to_string(),
                     link_name: link.name().to_string(),
@@ -201,7 +198,7 @@ impl KernelRuntimeState {
                 continue;
             }
             results.push(
-                self.apply_tracked_workspace_live_sync_change_to_remote_target(
+                self.apply_workspace_live_sync_change_to_remote_target(
                     &config, change, &link, attachment,
                 )
                 .await,
@@ -210,14 +207,14 @@ impl KernelRuntimeState {
         results
     }
 
-    async fn apply_tracked_workspace_live_sync_change_to_remote_target(
+    async fn apply_workspace_live_sync_change_to_remote_target(
         &self,
         config: &crate::config::DaemonConfig,
-        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
         link: &crate::session::WorkspaceLinkDefinition,
         attachment: &crate::session::WorkspaceLinkAttachment,
-    ) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
-        let context = crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext {
+    ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+        let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
             home_session_id: change.session_id.clone(),
             link_id: link.link_id().to_string(),
             link_name: link.name().to_string(),
@@ -234,40 +231,42 @@ impl KernelRuntimeState {
                 daemon_id: Some(attachment.kernel_id().to_string()),
                 daemon_alias: None,
             },
-            crate::transport::relay_peer::RelayPeerRequest::ApplyTrackedWorkspaceLiveSyncChange {
+            crate::transport::relay_peer::RelayPeerRequest::ApplyWorkspaceLiveSyncChange {
                 context: context.clone(),
                 change: change.clone(),
             },
         )
         .await;
         match response {
-            Ok(crate::transport::relay_peer::RelayPeerResponse::TrackedWorkspaceLiveSyncChangeApplied {
-                target_result,
-            }) => target_result,
-            Ok(other) => tracked_workspace_live_sync_remote_failed_result(
+            Ok(
+                crate::transport::relay_peer::RelayPeerResponse::WorkspaceLiveSyncChangeApplied {
+                    target_result,
+                },
+            ) => target_result,
+            Ok(other) => workspace_live_sync_remote_failed_result(
                 &context,
                 format!("unexpected relay apply response: {other:?}"),
             ),
-            Err(error) => tracked_workspace_live_sync_remote_failed_result(
+            Err(error) => workspace_live_sync_remote_failed_result(
                 &context,
-                format!("failed to relay tracked workspace live sync change: {error}"),
+                format!("failed to relay workspace live sync change: {error}"),
             ),
         }
     }
 
-    pub(crate) fn apply_forwarded_tracked_workspace_live_sync_change(
+    pub(crate) fn apply_forwarded_workspace_live_sync_change(
         &self,
-        context: crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
-        change: crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
-    ) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
-        if let Some(message) = self.forwarded_tracked_workspace_live_sync_rejection(&context) {
-            return tracked_workspace_live_sync_remote_failed_result(&context, message);
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::WorkspaceLiveSyncChange,
+    ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+        if let Some(message) = self.forwarded_workspace_live_sync_rejection(&context) {
+            return workspace_live_sync_remote_failed_result(&context, message);
         }
-        let path_results = crate::git_observer::apply_tracked_workspace_live_sync_change_to_target(
+        let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
             &change,
             std::path::Path::new(&context.target_repo_root),
         );
-        let target_result = crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+        let target_result = crate::git_observer::WorkspaceLiveSyncTargetResult {
             session_id: context.home_session_id.clone(),
             link_id: context.link_id.clone(),
             link_name: context.link_name.clone(),
@@ -280,14 +279,14 @@ impl KernelRuntimeState {
             path_results,
         };
         self.owned
-            .tracked_workspace_live_sync_journal
+            .workspace_live_sync_journal
             .record_target_results(vec![target_result.clone()]);
         target_result
     }
 
-    fn forwarded_tracked_workspace_live_sync_rejection(
+    fn forwarded_workspace_live_sync_rejection(
         &self,
-        context: &crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
     ) -> Option<String> {
         let config = self.owned.config_projection.snapshot();
         if context.target_kernel_id != config.daemon_id {
@@ -323,10 +322,10 @@ impl KernelRuntimeState {
         }
     }
 
-    fn record_tracked_workspace_live_sync_notices(
+    fn record_workspace_live_sync_notices(
         &self,
-        change: &crate::git_observer::TrackedWorkspaceLiveSyncTurnChange,
-        target_results: &[crate::git_observer::TrackedWorkspaceLiveSyncTargetResult],
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
+        target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
     ) {
         if target_results.is_empty() {
             return;
@@ -344,14 +343,14 @@ impl KernelRuntimeState {
             let mut target_has_applied = false;
             for path_result in &target_result.path_results {
                 match path_result.status {
-                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Applied => {
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied => {
                         target_has_applied = true;
                     }
-                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::Rebased => {
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {
                         target_has_applied = true;
                         rebased_count += 1;
                     }
-                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict => {
                         conflict_count += 1;
                         self.owned.record_notice(
                             &change.session_id,
@@ -367,7 +366,7 @@ impl KernelRuntimeState {
                             ),
                         );
                     }
-                    crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo => {
+                    crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo => {
                         failed_count += 1;
                     }
                 }
@@ -396,11 +395,11 @@ impl KernelRuntimeState {
     }
 }
 
-fn tracked_workspace_live_sync_remote_failed_result(
-    context: &crate::transport::relay_peer::RemoteTrackedWorkspaceLiveSyncApplyContext,
+fn workspace_live_sync_remote_failed_result(
+    context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
     message: String,
-) -> crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
-    crate::git_observer::TrackedWorkspaceLiveSyncTargetResult {
+) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
+    crate::git_observer::WorkspaceLiveSyncTargetResult {
         session_id: context.home_session_id.clone(),
         link_id: context.link_id.clone(),
         link_name: context.link_name.clone(),
@@ -410,12 +409,10 @@ fn tracked_workspace_live_sync_remote_failed_result(
         target_machine_id: context.target_machine_id.clone(),
         target_kernel_id: context.target_kernel_id.clone(),
         target_repo_root: context.target_repo_root.clone(),
-        path_results: vec![
-            crate::git_observer::TrackedWorkspaceLiveSyncPathApplyResult {
-                path: "*".to_string(),
-                status: crate::git_observer::TrackedWorkspaceLiveSyncApplyStatus::FailedIo,
-                message,
-            },
-        ],
+        path_results: vec![crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+            path: "*".to_string(),
+            status: crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo,
+            message,
+        }],
     }
 }
