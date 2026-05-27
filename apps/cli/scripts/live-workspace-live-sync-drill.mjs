@@ -930,6 +930,7 @@ async function main() {
     endSessionRequest,
     getSessionStateRequest,
     listProviderProcessesRequest,
+    setWorkspaceLiveSyncModeRequest,
     spawnAgentRequest,
     submitPromptRequest,
   } = requests
@@ -938,6 +939,8 @@ async function main() {
   let kernelUrl = options.kernel
   const startedAt = Date.now()
   const historyDir = options.historyDir ?? path.join(rootDir, 'history')
+  const xdgConfigHome = path.join(rootDir, 'xdg-config')
+  const xdgStateHome = path.join(rootDir, 'xdg-state')
   let succeeded = false
   if (options.spawnDaemon) {
     const ports = makePorts()
@@ -958,6 +961,8 @@ async function main() {
         ARROBA_DAEMON_ID: `workspace-live-sync-drill-${process.pid}-${Date.now()}`,
         ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
         ARROBA_SESSION_HISTORY_DIR: historyDir,
+        XDG_CONFIG_HOME: xdgConfigHome,
+        XDG_STATE_HOME: xdgStateHome,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -968,6 +973,9 @@ async function main() {
   const events = []
   let sessionId = null
   try {
+    if (setWorkspaceLiveSyncModeRequest) {
+      await client.send(setWorkspaceLiveSyncModeRequest('managed'))
+    }
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
     const attachment = unwrap(
