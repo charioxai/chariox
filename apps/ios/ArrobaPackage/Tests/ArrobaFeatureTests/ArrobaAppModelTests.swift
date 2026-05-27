@@ -682,7 +682,7 @@ import Testing
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text == "Workspace live sync linked shared -> /repo")
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync linked shared -> /repo. Recommended mode: managed.")
 }
 
 @MainActor

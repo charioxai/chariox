@@ -852,9 +852,9 @@ public final class ArrobaAppModel {
             }
             upsert(updatedSession)
             selectedSessionID = updatedSession.id
-            appendCommandNotice("Workspace live sync linked \(linkRef) -> \(targetRoot)")
+            appendCommandNotice("Workspace live sync linked \(linkRef) -> \(targetRoot). Recommended mode: managed.")
             promptDraft = ""
-            return "Workspace live sync linked."
+            return "Workspace live sync linked. Recommended mode: managed."
         }
     }
 
