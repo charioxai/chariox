@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -126,7 +127,30 @@ pub(crate) struct TrackedWorkspaceLiveSyncTurnChange {
     pub worktree_path: String,
     pub branch: Option<String>,
     pub changed_paths: Vec<String>,
+    pub file_changes: Vec<TrackedWorkspaceLiveSyncFileChange>,
     pub status_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TrackedWorkspaceLiveSyncFileChange {
+    pub path: String,
+    #[serde(default)]
+    pub previous_path: Option<String>,
+    pub kind: TrackedWorkspaceLiveSyncFileChangeKind,
+    #[serde(default)]
+    pub before_content_base64: Option<String>,
+    #[serde(default)]
+    pub after_content_base64: Option<String>,
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TrackedWorkspaceLiveSyncFileChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -295,10 +319,16 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     if before.repo_root != after.repo_root || before.worktree_path != after.worktree_path {
         return None;
     }
-    let changed_paths = tracked_workspace_live_sync_changed_paths(&after.status_fingerprint);
+    let path_changes = tracked_workspace_live_sync_path_changes(&after.status_fingerprint);
+    let changed_paths = path_changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
     if changed_paths.is_empty() {
         return None;
     }
+    let file_changes =
+        tracked_workspace_live_sync_file_changes(before, &path_changes).unwrap_or_default();
     Some(TrackedWorkspaceLiveSyncTurnChange {
         session_id: before.session_id.clone(),
         agent_id: before.agent_id.clone(),
@@ -308,30 +338,156 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
         worktree_path: before.worktree_path.clone(),
         branch: before.branch.clone().or_else(|| after.branch.clone()),
         changed_paths,
+        file_changes,
         status_fingerprint: after.status_fingerprint.clone(),
     })
 }
 
-fn tracked_workspace_live_sync_changed_paths(status_fingerprint: &str) -> Vec<String> {
-    let mut paths = BTreeSet::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackedWorkspaceLiveSyncPathChange {
+    path: String,
+    previous_path: Option<String>,
+    kind: TrackedWorkspaceLiveSyncFileChangeKind,
+}
+
+fn tracked_workspace_live_sync_path_changes(
+    status_fingerprint: &str,
+) -> Vec<TrackedWorkspaceLiveSyncPathChange> {
+    let mut paths = BTreeMap::new();
     for line in status_fingerprint.lines() {
         let line = line.trim_end();
         if line.len() < 4 {
             continue;
         }
-        let path = line[3..]
-            .split(" -> ")
-            .last()
-            .unwrap_or_default()
-            .trim()
-            .trim_matches('"')
-            .to_string();
+        let status = &line[..2];
+        let raw_path = line[3..].trim();
+        let (previous_path, path) = if let Some((previous, next)) = raw_path.split_once(" -> ") {
+            (
+                Some(tracked_workspace_live_sync_unquote_path(previous)),
+                tracked_workspace_live_sync_unquote_path(next),
+            )
+        } else {
+            (None, tracked_workspace_live_sync_unquote_path(raw_path))
+        };
         if path.is_empty() || tracked_workspace_live_sync_force_excluded_path(&path) {
             continue;
         }
-        paths.insert(path);
+        let kind = if status == "??" {
+            TrackedWorkspaceLiveSyncFileChangeKind::Added
+        } else if status.contains('R') {
+            TrackedWorkspaceLiveSyncFileChangeKind::Renamed
+        } else if status.contains('D') {
+            TrackedWorkspaceLiveSyncFileChangeKind::Deleted
+        } else {
+            TrackedWorkspaceLiveSyncFileChangeKind::Modified
+        };
+        paths.insert(
+            path.clone(),
+            TrackedWorkspaceLiveSyncPathChange {
+                path,
+                previous_path,
+                kind,
+            },
+        );
     }
-    paths.into_iter().collect()
+    paths.into_values().collect()
+}
+
+fn tracked_workspace_live_sync_file_changes(
+    before: &GitTurnSnapshot,
+    path_changes: &[TrackedWorkspaceLiveSyncPathChange],
+) -> Option<Vec<TrackedWorkspaceLiveSyncFileChange>> {
+    let repo_root = PathBuf::from(&before.repo_root);
+    let worktree_path = PathBuf::from(&before.worktree_path);
+    let revision = before.head_sha.as_deref().unwrap_or("HEAD");
+    Some(
+        path_changes
+            .iter()
+            .map(|change| {
+                let before_path = change.previous_path.as_deref().unwrap_or(&change.path);
+                let before_snapshot = match change.kind {
+                    TrackedWorkspaceLiveSyncFileChangeKind::Added => None,
+                    TrackedWorkspaceLiveSyncFileChangeKind::Modified
+                    | TrackedWorkspaceLiveSyncFileChangeKind::Deleted
+                    | TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
+                        tracked_workspace_live_sync_git_blob_snapshot(
+                            &repo_root,
+                            revision,
+                            before_path,
+                        )
+                    }
+                };
+                let after_snapshot = match change.kind {
+                    TrackedWorkspaceLiveSyncFileChangeKind::Deleted => None,
+                    TrackedWorkspaceLiveSyncFileChangeKind::Added
+                    | TrackedWorkspaceLiveSyncFileChangeKind::Modified
+                    | TrackedWorkspaceLiveSyncFileChangeKind::Renamed => {
+                        tracked_workspace_live_sync_worktree_snapshot(&worktree_path, &change.path)
+                    }
+                };
+                let binary = before_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.binary)
+                    || after_snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.binary);
+                TrackedWorkspaceLiveSyncFileChange {
+                    path: change.path.clone(),
+                    previous_path: change.previous_path.clone(),
+                    kind: change.kind,
+                    binary,
+                    before_content_base64: before_snapshot.map(|snapshot| snapshot.content_base64),
+                    after_content_base64: after_snapshot.map(|snapshot| snapshot.content_base64),
+                }
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct TrackedWorkspaceLiveSyncContentSnapshot {
+    content_base64: String,
+    binary: bool,
+}
+
+fn tracked_workspace_live_sync_git_blob_snapshot(
+    repo_root: &Path,
+    revision: &str,
+    path: &str,
+) -> Option<TrackedWorkspaceLiveSyncContentSnapshot> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("show")
+        .arg(format!("{revision}:{path}"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| tracked_workspace_live_sync_content_snapshot(output.stdout))
+}
+
+fn tracked_workspace_live_sync_worktree_snapshot(
+    worktree_path: &Path,
+    path: &str,
+) -> Option<TrackedWorkspaceLiveSyncContentSnapshot> {
+    std::fs::read(worktree_path.join(path))
+        .ok()
+        .map(tracked_workspace_live_sync_content_snapshot)
+}
+
+fn tracked_workspace_live_sync_content_snapshot(
+    bytes: Vec<u8>,
+) -> TrackedWorkspaceLiveSyncContentSnapshot {
+    TrackedWorkspaceLiveSyncContentSnapshot {
+        binary: bytes.contains(&0),
+        content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+fn tracked_workspace_live_sync_unquote_path(path: &str) -> String {
+    path.trim().trim_matches('"').to_string()
 }
 
 fn tracked_workspace_live_sync_force_excluded_path(path: &str) -> bool {
@@ -632,6 +788,8 @@ fn truncate_for_metadata(value: &str, limit: usize) -> String {
 mod tests {
     use std::process::Command;
 
+    use base64::Engine as _;
+
     use crate::history::{HistoryEventKind, HistoryEventQuery, OperationalHistoryStore};
 
     use super::{
@@ -756,6 +914,80 @@ mod tests {
             .expect("allowed tracked path should remain");
 
         assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_captures_file_snapshots() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "agent@example.com"]);
+        run_git(&root, &["config", "user.name", "Agent"]);
+        std::fs::write(root.join("src/lib.rs"), "pub fn old() {}\n")
+            .expect("tracked file should write");
+        std::fs::write(root.join("README.md"), "delete me\n").expect("delete file should write");
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "seed commit"]);
+
+        let before = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&root, "prompt-1")
+        })
+        .expect("pre-turn snapshot should capture");
+        std::fs::write(root.join("src/lib.rs"), "pub fn new() {}\n")
+            .expect("tracked file should update");
+        std::fs::write(root.join("src/new.rs"), "pub fn added() {}\n")
+            .expect("new file should write");
+        std::fs::remove_file(root.join("README.md")).expect("tracked file should delete");
+        let after = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&root, "prompt-1")
+        })
+        .expect("post-turn snapshot should capture");
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("tracked turn should produce file changes");
+
+        assert_eq!(
+            change.changed_paths,
+            vec!["README.md", "src/lib.rs", "src/new.rs"]
+        );
+        assert_eq!(change.file_changes.len(), 3);
+        let modified = change
+            .file_changes
+            .iter()
+            .find(|change| change.path == "src/lib.rs")
+            .expect("modified path should be present");
+        let old_base64 = base64::engine::general_purpose::STANDARD.encode("pub fn old() {}\n");
+        let new_base64 = base64::engine::general_purpose::STANDARD.encode("pub fn new() {}\n");
+        assert_eq!(
+            modified.before_content_base64.as_deref(),
+            Some(old_base64.as_str())
+        );
+        assert_eq!(
+            modified.after_content_base64.as_deref(),
+            Some(new_base64.as_str())
+        );
+        let added = change
+            .file_changes
+            .iter()
+            .find(|change| change.path == "src/new.rs")
+            .expect("added path should be present");
+        assert_eq!(added.before_content_base64, None);
+        assert!(added.after_content_base64.is_some());
+        let deleted = change
+            .file_changes
+            .iter()
+            .find(|change| change.path == "README.md")
+            .expect("deleted path should be present");
+        assert!(deleted.before_content_base64.is_some());
+        assert_eq!(deleted.after_content_base64, None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn tracked_snapshot(is_dirty: bool, status_fingerprint: &str) -> GitTurnSnapshot {
