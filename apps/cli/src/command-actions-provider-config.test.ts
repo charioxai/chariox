@@ -167,13 +167,32 @@ test("config command renders kernel mutation effects", async () => {
     raw: "/config workspace-live-sync unrestricted",
     args: ["workspace-live-sync", "unrestricted"],
   })
+  await handlers.handleConfigCommand({
+    kind: "config",
+    raw: "/config workspace-live-sync",
+    args: ["workspace-live-sync"],
+  })
+  await handlers.handleConfigCommand({
+    kind: "config",
+    raw: "/config workspace-live-sync tracked",
+    args: ["workspace-live-sync", "tracked"],
+  })
 
-  assert.deepEqual(updates, [{ path: "providers.workspace_live_sync", value: "unrestricted" }])
+  assert.deepEqual(updates, [
+    { path: "providers.workspace_live_sync", value: "unrestricted" },
+    { path: "providers.workspace_live_sync", value: "managed" },
+  ])
   assert.deepEqual(notices, [
     "providers.workspace_live_sync (enum; live; provider_reload unset values=managed|tracked|unrestricted)",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
   ])
-  assert.deepEqual(flashes, ["listed 1 config key", "workspace live sync set to unrestricted"])
+  assert.deepEqual(flashes, [
+    "listed 1 config key",
+    "workspace live sync set to unrestricted",
+    "workspace live sync set to required",
+    "usage: /config workspace-live-sync required|unrestricted",
+  ])
 })
 
 test("provider processes command lists and tears down safe daemon-tracked processes", async () => {
