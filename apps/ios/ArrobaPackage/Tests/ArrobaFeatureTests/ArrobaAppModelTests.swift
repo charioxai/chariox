@@ -693,7 +693,7 @@ import Testing
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text.contains("/repo/peer @ tracked-peer") == true)
+    #expect(model.transcriptEntries.last?.text.contains("user-2 /repo/peer @ tracked-peer") == true)
 
     model.promptDraft = "/workspace sync ignore"
     await model.submitPrompt()

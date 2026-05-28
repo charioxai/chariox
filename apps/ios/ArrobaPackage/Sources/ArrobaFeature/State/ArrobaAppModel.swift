@@ -1473,7 +1473,7 @@ public final class ArrobaAppModel {
             guard !status.targets.isEmpty else { return "\(header)\ntargets: none" }
             let lines = status.targets.map { target in
                 let branch = target.branch.map { " @ \($0)" } ?? ""
-                return "- \(target.linkName) \(target.status) \(target.repoRoot)\(branch)"
+                return "- \(target.linkName) \(target.status) \(target.userID) \(target.repoRoot)\(branch)"
             }
             return "\(header)\ntargets\n\(lines.joined(separator: "\n"))"
         case "conflicts":
