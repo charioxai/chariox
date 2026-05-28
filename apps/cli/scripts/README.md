@@ -33,6 +33,18 @@ pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 ```
 
+OpenCode parity aliases use the same scenarios with explicit OpenAI model selection:
+
+```bash
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-managed-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-same-branch-tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-permission-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-managed-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-permission-drill
+```
+
 ## Wrapper Scripts
 
 Remote wrapper drills must forward `--provider-model PROVIDER=MODEL` to their child drill scripts. This keeps local and remote provider sessions on the same model policy.
