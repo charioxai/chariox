@@ -76,10 +76,12 @@ async fn remote_workspace_live_sync_requests_require_membership_and_record_membe
     };
     assert_eq!(link.created_by_user_id(), "user-2");
 
+    let user_2_worktree = create_test_git_worktree("workspace-live-sync-auth-user-2");
+    let user_2_worktree_id = user_2_worktree.to_string_lossy().to_string();
     let attach_request = LocalDaemonRequest::AttachWorkspaceLink(AttachWorkspaceLinkRequest {
         session_id: session_id.clone(),
         link_ref: "team-sync".to_string(),
-        repo_root: Some("/tmp/workspace-live-sync-auth-user-2".to_string()),
+        repo_root: Some(user_2_worktree_id.clone()),
         branch: Some("tracked-peer".to_string()),
         repo_fingerprint: Some("repo-fingerprint-user-2".to_string()),
     });
@@ -95,10 +97,7 @@ async fn remote_workspace_live_sync_requests_require_membership_and_record_membe
         other => panic!("unexpected attach response: {other:?}"),
     };
     assert_eq!(attachment.user_id(), "user-2");
-    assert_eq!(
-        attachment.repo_root(),
-        "/tmp/workspace-live-sync-auth-user-2"
-    );
+    assert_eq!(attachment.repo_root(), user_2_worktree_id);
     assert_eq!(attachment.branch(), Some("tracked-peer"));
     assert_eq!(
         attachment.repo_fingerprint(),
@@ -124,9 +123,36 @@ async fn remote_workspace_live_sync_requests_require_membership_and_record_membe
     assert_eq!(status.sync_groups[0].target_count, 1);
     assert_eq!(status.targets.len(), 1);
     assert_eq!(status.targets[0].user_id, "user-2");
-    assert_eq!(
-        status.targets[0].repo_root,
-        "/tmp/workspace-live-sync-auth-user-2"
-    );
+    assert_eq!(status.targets[0].repo_root, user_2_worktree_id);
     assert_eq!(status.targets[0].branch.as_deref(), Some("tracked-peer"));
+    let _ = std::fs::remove_dir_all(user_2_worktree);
+}
+
+fn create_test_git_worktree(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("temp repo should be created");
+    run_git(&root, &["init"]);
+    run_git(&root, &["config", "user.email", "agent@example.com"]);
+    run_git(&root, &["config", "user.name", "Agent"]);
+    run_git(&root, &["checkout", "-b", "tracked-peer"]);
+    root
+}
+
+fn run_git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

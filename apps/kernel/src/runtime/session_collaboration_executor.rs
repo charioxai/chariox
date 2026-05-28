@@ -204,6 +204,7 @@ pub(crate) async fn execute_attach_workspace_link_request(
             .to_string()
     };
     let repo_root_path = std::path::Path::new(&repo_root);
+    validate_workspace_live_sync_attachment_target(repo_root_path)?;
     let branch = request
         .branch
         .or_else(|| crate::git_observer::workspace_live_sync_git_branch(repo_root_path));
@@ -225,6 +226,59 @@ pub(crate) async fn execute_attach_workspace_link_request(
         attachment,
         session,
     })
+}
+
+fn validate_workspace_live_sync_attachment_target(
+    repo_root_path: &std::path::Path,
+) -> Result<(), DaemonError> {
+    let canonical_root =
+        repo_root_path
+            .canonicalize()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "attach workspace link",
+                message: format!(
+                "workspace live sync target `{}` must be an existing Git worktree root: {error}",
+                repo_root_path.display()
+            ),
+            })?;
+    if !canonical_root.is_dir() {
+        return Err(DaemonError::LocalTransport {
+            operation: "attach workspace link",
+            message: format!(
+                "workspace live sync target `{}` must be a directory",
+                repo_root_path.display()
+            ),
+        });
+    }
+    let top_level =
+        crate::git_observer::git_output(repo_root_path, &["rev-parse", "--show-toplevel"])
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "attach workspace link",
+                message: format!(
+                    "workspace live sync target `{}` must be a Git worktree root",
+                    repo_root_path.display()
+                ),
+            })?;
+    let canonical_top_level = std::path::Path::new(top_level.trim())
+        .canonicalize()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "attach workspace link",
+            message: format!(
+                "workspace live sync target `{}` Git worktree root could not be verified: {error}",
+                repo_root_path.display()
+            ),
+        })?;
+    if canonical_root != canonical_top_level {
+        return Err(DaemonError::LocalTransport {
+            operation: "attach workspace link",
+            message: format!(
+                "workspace live sync target `{}` must be the Git worktree root `{}`",
+                repo_root_path.display(),
+                canonical_top_level.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) async fn execute_detach_workspace_link_request(

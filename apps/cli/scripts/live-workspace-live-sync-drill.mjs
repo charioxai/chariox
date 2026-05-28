@@ -185,6 +185,17 @@ async function runCommand(command, args, cwd) {
   })
 }
 
+async function initGitWorktree(workspace, branch = 'main') {
+  await runCommand('git', ['init'], workspace)
+  await runCommand('git', ['config', 'user.email', 'workspace-live-sync-drill@example.com'], workspace)
+  await runCommand('git', ['config', 'user.name', 'Workspace Live Sync Drill'], workspace)
+  await runCommand('git', ['add', '.'], workspace)
+  await runCommand('git', ['commit', '-m', 'seed workspace live sync fixture'], workspace)
+  if (branch && branch !== 'main') {
+    await runCommand('git', ['checkout', '-b', branch], workspace)
+  }
+}
+
 async function initTrackedWorkspace(workspace, provider, branch = 'main') {
   const outputsDir = path.join(workspace, 'outputs')
   await mkdir(path.join(workspace, 'ignored'), { recursive: true })
@@ -248,6 +259,7 @@ async function initManagedTargetWorkspace(workspace, providers) {
     await writeFile(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n', 'utf8')
     await writeFile(path.join(outputsDir, `${provider}-opaque-delete-me.bin`), Buffer.from([9, 8, 7]))
   }
+  await initGitWorktree(workspace)
 }
 
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
@@ -1878,6 +1890,7 @@ async function main() {
       await initTrackedWorkspace(target, options.providers[0], options.targetBranch)
     }
   } else {
+    await initGitWorktree(workspace)
     for (const target of targetWorkspaces) {
       await initManagedTargetWorkspace(target, options.providers)
     }

@@ -108,9 +108,11 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules() {
 #[test]
 fn local_request_api_manages_session_workspace_links() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = create_test_git_worktree("workspace-links");
+    let worktree_id = worktree.to_string_lossy().to_string();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-a"),
+            CreateSessionRequest::new("workspace-1", &worktree_id),
         ))
         .expect("session create should succeed")
     {
@@ -152,7 +154,7 @@ fn local_request_api_manages_session_workspace_links() {
             AttachWorkspaceLinkRequest {
                 session_id: session_id.clone(),
                 link_ref: "shared".to_string(),
-                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+                repo_root: Some(worktree_id.clone()),
                 branch: Some("main".to_string()),
                 repo_fingerprint: Some("fingerprint-a".to_string()),
             },
@@ -165,7 +167,7 @@ fn local_request_api_manages_session_workspace_links() {
             session,
         } => {
             assert_eq!(session.workspace_links()[0].attachments().len(), 1);
-            assert_eq!(attachment.repo_root(), "/tmp/arroba-worktree-a");
+            assert_eq!(attachment.repo_root(), worktree_id);
             link
         }
         _ => panic!("unexpected local response"),
@@ -188,7 +190,7 @@ fn local_request_api_manages_session_workspace_links() {
     assert_eq!(status.sync_groups[0].group_name, "shared-repo");
     assert_eq!(status.sync_groups[0].target_count, 1);
     assert_eq!(status.targets.len(), 1);
-    assert_eq!(status.targets[0].repo_root, "/tmp/arroba-worktree-a");
+    assert_eq!(status.targets[0].repo_root, worktree_id);
     assert!(status.conflicts.is_empty());
     for pattern in [
         ".git/**",
@@ -267,7 +269,7 @@ fn local_request_api_manages_session_workspace_links() {
             DetachWorkspaceLinkRequest {
                 session_id,
                 link_ref: "shared-repo".to_string(),
-                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+                repo_root: Some(worktree_id),
             },
         ))
         .expect("workspace link detach should succeed")
@@ -279,14 +281,17 @@ fn local_request_api_manages_session_workspace_links() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(detached.len(), 1);
+    let _ = std::fs::remove_dir_all(worktree);
 }
 
 #[test]
 fn workspace_link_mutations_preserve_spawned_agents_in_session_projection() {
     let harness = LocalRouterTestHarness::new();
+    let worktree = create_test_git_worktree("workspace-link-session-projection");
+    let worktree_id = worktree.to_string_lossy().to_string();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-a"),
+            CreateSessionRequest::new("workspace-1", &worktree_id),
         ))
         .expect("session create should succeed")
     {
@@ -338,7 +343,7 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection() {
             AttachWorkspaceLinkRequest {
                 session_id: session_id.clone(),
                 link_ref: "shared".to_string(),
-                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+                repo_root: Some(worktree_id),
                 branch: Some("main".to_string()),
                 repo_fingerprint: Some("fingerprint-a".to_string()),
             },
@@ -364,6 +369,52 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(session_state.agents().len(), 2);
+    let _ = std::fs::remove_dir_all(worktree);
+}
+
+#[test]
+fn attach_workspace_link_rejects_non_git_worktree_targets() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-workspace-link-invalid-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("temp directory should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", root.to_string_lossy()),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceLink(
+            CreateWorkspaceLinkRequest {
+                session_id: session.id().to_string(),
+                name: "shared-repo".to_string(),
+            },
+        ))
+        .expect("workspace link create should succeed");
+
+    let denied = harness.dispatch(LocalDaemonRequest::AttachWorkspaceLink(
+        AttachWorkspaceLinkRequest {
+            session_id: session.id().to_string(),
+            link_ref: "shared".to_string(),
+            repo_root: Some(root.to_string_lossy().to_string()),
+            branch: Some("main".to_string()),
+            repo_fingerprint: Some("fingerprint-a".to_string()),
+        },
+    ));
+
+    assert!(matches!(denied, Err(DaemonError::LocalTransport { .. })));
+    assert!(denied
+        .expect_err("non-git worktree attach should fail")
+        .to_string()
+        .contains("must be a Git worktree root"));
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -437,6 +488,20 @@ fn run_git(cwd: &std::path::Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn create_test_git_worktree(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("temp repo should be created");
+    run_git(&root, &["init"]);
+    run_git(&root, &["config", "user.email", "agent@example.com"]);
+    run_git(&root, &["config", "user.name", "Agent"]);
+    run_git(&root, &["checkout", "-b", "main"]);
+    root
 }
 
 #[test]
