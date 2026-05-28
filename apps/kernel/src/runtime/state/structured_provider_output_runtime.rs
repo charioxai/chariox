@@ -206,6 +206,8 @@ impl KernelRuntimeState {
                     | crate::terminal::TerminalOutputKind::ProviderStatus
             )
         });
+        let saw_observable_provider_activity =
+            saw_runtime_activity || !poll_result.completions.is_empty();
         let saw_settlement_blocking_activity = poll_result.chunks.iter().any(|chunk| {
             matches!(
                 chunk.kind,
@@ -270,7 +272,7 @@ impl KernelRuntimeState {
                 )
                 .await?;
         }
-        if saw_runtime_activity || prompt_completed {
+        if saw_observable_provider_activity || prompt_completed {
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
         }

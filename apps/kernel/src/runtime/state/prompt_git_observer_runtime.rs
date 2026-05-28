@@ -2,6 +2,8 @@
 
 use super::*;
 
+const TRACKED_GIT_RECHECK_DELAYS_MS: &[u64] = &[250, 1_000, 3_000, 10_000, 30_000, 120_000];
+
 impl KernelRuntimeState {
     pub(super) async fn observe_git_before_prompt_dispatch(
         &self,
@@ -96,13 +98,30 @@ impl KernelRuntimeState {
             );
             return;
         };
-        self.observe_git_after_turn_snapshot(provider_run_id, completed_prompt.id(), before, true)
-            .await;
+        self.observe_git_after_turn_snapshot(
+            provider_run_id,
+            completed_prompt.id(),
+            before,
+            true,
+            0,
+            true,
+            false,
+        )
+        .await;
     }
 
     pub(super) async fn observe_git_after_provider_activity_if_pending(
         &self,
         provider_run_id: &str,
+    ) {
+        self.observe_git_after_provider_activity_if_pending_attempt(provider_run_id, 0)
+            .await;
+    }
+
+    async fn observe_git_after_provider_activity_if_pending_attempt(
+        &self,
+        provider_run_id: &str,
+        retry_attempt: usize,
     ) {
         let Ok(provider_run) = self.owned.provider_store.get_run(provider_run_id) else {
             return;
@@ -117,14 +136,11 @@ impl KernelRuntimeState {
         else {
             return;
         };
-        if self
+        let prompt_is_active = self
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return;
-        }
+            .is_some();
         let Some(before) = self
             .owned
             .git_turn_snapshots
@@ -139,24 +155,21 @@ impl KernelRuntimeState {
             );
             return;
         };
-        let prompt_id = before.prompt_id.clone();
-        self.observe_git_after_turn_snapshot(provider_run_id, &prompt_id, before, true)
-            .await;
-    }
-
-    pub(crate) async fn observe_pending_tracked_git_for_session(&self, session_id: &str) {
-        let provider_run_ids = self
-            .owned
-            .provider_store
-            .list_runs()
-            .into_iter()
-            .filter(|run| run.session_id() == session_id)
-            .map(|run| run.id().to_string())
-            .collect::<Vec<_>>();
-        for provider_run_id in provider_run_ids {
-            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
-                .await;
+        if prompt_is_active && !before.workspace_live_sync_tracked {
+            self.owned.git_turn_snapshots.insert(before);
+            return;
         }
+        let prompt_id = before.prompt_id.clone();
+        self.observe_git_after_turn_snapshot(
+            provider_run_id,
+            &prompt_id,
+            before,
+            true,
+            retry_attempt,
+            !prompt_is_active,
+            prompt_is_active,
+        )
+        .await;
     }
 
     async fn observe_git_after_turn_snapshot(
@@ -165,6 +178,9 @@ impl KernelRuntimeState {
         prompt_id: &str,
         before: crate::git_observer::GitTurnSnapshot,
         keep_pending_if_unchanged: bool,
+        retry_attempt: usize,
+        record_history: bool,
+        keep_pending_after_tracked_change: bool,
     ) {
         let candidates = self.owned.git_turn_snapshots.candidates_for(&before);
         let pending_before = before.clone();
@@ -191,18 +207,25 @@ impl KernelRuntimeState {
             } else {
                 None
             };
-            Some(
-                crate::git_observer::observe_after_turn(before, after, candidates, &history)
-                    .map(|events| (events, tracked_change, status_changed)),
-            )
+            let history_events = if record_history {
+                crate::git_observer::observe_after_turn(before, after.clone(), candidates, &history)
+            } else {
+                Ok(Vec::new())
+            };
+            Some(history_events.map(|events| (events, tracked_change, status_changed, after)))
         })
         .await;
         match observation {
-            Ok(Some(Ok((events, tracked_change, status_changed)))) => {
+            Ok(Some(Ok((events, tracked_change, status_changed, after)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
                     self.record_and_fanout_workspace_live_sync_change(change, None)
                         .await;
+                    if keep_pending_after_tracked_change {
+                        let mut next_pending = after;
+                        next_pending.is_dirty = false;
+                        self.owned.git_turn_snapshots.insert(next_pending);
+                    }
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
                         "recorded tracked workspace live sync turn change",
@@ -217,6 +240,7 @@ impl KernelRuntimeState {
                     && !status_changed
                 {
                     self.owned.git_turn_snapshots.insert(pending_before);
+                    self.schedule_tracked_git_recheck(provider_run_id, prompt_id, retry_attempt);
                 }
                 if !events.is_empty() {
                     crate::logging::info_with_fields(
@@ -250,6 +274,48 @@ impl KernelRuntimeState {
                 }),
             ),
         }
+    }
+
+    fn schedule_tracked_git_recheck(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        retry_attempt: usize,
+    ) {
+        let Some(delay_ms) = TRACKED_GIT_RECHECK_DELAYS_MS.get(retry_attempt).copied() else {
+            crate::logging::warn_with_fields(
+                "daemon.git_observer",
+                "tracked workspace live sync recheck budget exhausted",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "prompt_id": prompt_id,
+                    "retry_attempt": retry_attempt,
+                }),
+            );
+            return;
+        };
+        let state = self.clone();
+        let provider_run_id = provider_run_id.to_string();
+        let prompt_id = prompt_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            crate::logging::debug_with_fields(
+                "daemon.git_observer",
+                "rechecking pending tracked workspace live sync turn",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "prompt_id": prompt_id,
+                    "retry_attempt": retry_attempt,
+                    "delay_ms": delay_ms,
+                }),
+            );
+            state
+                .observe_git_after_provider_activity_if_pending_attempt(
+                    &provider_run_id,
+                    retry_attempt + 1,
+                )
+                .await;
+        });
     }
 
     pub(super) async fn record_and_fanout_workspace_live_sync_change(

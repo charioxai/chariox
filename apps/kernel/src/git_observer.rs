@@ -502,8 +502,12 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
         return None;
     }
     let worktree_path = PathBuf::from(&before.worktree_path);
+    let changed_status_fingerprint = tracked_workspace_live_sync_status_delta(
+        &before.status_fingerprint,
+        &after.status_fingerprint,
+    );
     let path_changes =
-        tracked_workspace_live_sync_path_changes(&after.status_fingerprint, &worktree_path);
+        tracked_workspace_live_sync_path_changes(&changed_status_fingerprint, &worktree_path);
     let changed_paths = path_changes
         .iter()
         .map(|change| change.path.clone())
@@ -532,6 +536,22 @@ struct WorkspaceLiveSyncTrackedPathChange {
     path: String,
     previous_path: Option<String>,
     kind: WorkspaceLiveSyncFileChangeKind,
+}
+
+fn tracked_workspace_live_sync_status_delta(before_status: &str, after_status: &str) -> String {
+    if before_status.is_empty() {
+        return after_status.to_string();
+    }
+    let before_lines = before_status
+        .lines()
+        .map(str::trim_end)
+        .collect::<BTreeSet<_>>();
+    after_status
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !before_lines.contains(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tracked_workspace_live_sync_path_changes(
@@ -1827,6 +1847,40 @@ mod tests {
             .expect("deleted path should be present");
         assert!(deleted.before_content_base64.is_some());
         assert_eq!(deleted.after_content_base64, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_skips_already_synced_status_lines() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-delta-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(root.join("outputs")).expect("temp worktree should be created");
+        let mut before = tracked_snapshot(false, " M tracked.txt\n?? outputs/existing.txt");
+        before.repo_root = root.display().to_string();
+        before.worktree_path = root.display().to_string();
+        let mut after = tracked_snapshot(
+            true,
+            " M tracked.txt\n?? .arrobaignore\n?? outputs/existing.txt",
+        );
+        after.repo_root = root.display().to_string();
+        after.worktree_path = root.display().to_string();
+
+        assert!(tracked_workspace_live_sync_change_after_turn(&before, &after).is_none());
+
+        let mut after_new = tracked_snapshot(
+            true,
+            " M tracked.txt\n?? outputs/existing.txt\n?? outputs/new.txt",
+        );
+        after_new.repo_root = root.display().to_string();
+        after_new.worktree_path = root.display().to_string();
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after_new)
+            .expect("new status lines should still fan out");
+        assert_eq!(change.changed_paths, vec!["outputs/new.txt"]);
 
         let _ = std::fs::remove_dir_all(&root);
     }
