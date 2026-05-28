@@ -18,6 +18,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Made the local and remote workspace live sync drill argument parsers tolerate the conventional `pnpm run <script> -- <args>` separator, and verified both aliases print help through that path.
 - Re-ran `pnpm --filter @arroba/cli test` and the focused remote workspace live sync membership authorization test. CLI tests passed with 1065 tests; the kernel test verified non-member denial plus member workspace-link create/attach/status identity recording.
 
+### Workspace live sync protocol contract refresh
+
+- Updated `docs/PROTOCOL.md` section 5.0.1 from managed-only wording to the current Workspace Live Sync contract: managed and tracked modes, turn-end tracked fanout, `.arrobaignore` plus force-excludes, explicit workspace-link requirements, relay apply/status shapes, no auto commits, conflict surfacing, and resolver-entry convergence.
+- Re-ran `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`; 124 focused kernel tests passed, including protocol shape/version hashes, relay apply shape, ignore initialization/force-excludes, journal sequencing, tracked snapshots, rebase/conflict handling, membership auth, and relay peer application.
+
 ## 2026-05-15
 
 ### M14B actual Hetzner native TUI worker validation
