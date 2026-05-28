@@ -99,10 +99,10 @@ pub use api::{
     WorkflowDesignWorkflow, WorkflowDesignWorkflowPatch, WorkspaceCommitMessageUtilityInput,
     WorkspaceFileContent, WorkspaceGitActionResult, WorkspaceGitChangeTotals,
     WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
-    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncIgnoreStatus,
-    WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
-    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
-    WorkspaceWorktreeRecord, LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
+    WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
+    WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
+    WorkspaceRepoFileListing, WorkspaceWorktreeRecord, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

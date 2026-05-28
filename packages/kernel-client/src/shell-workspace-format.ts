@@ -28,9 +28,13 @@ export function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): strin
 export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
   const lines = [
     `workspace live sync: ${status.mode} footer=${status.footer_state}`,
+    `sync_groups=${status.sync_groups.length}`,
     `targets=${status.targets.length} conflicts=${status.conflicts.length}`,
     `ignore=${status.ignore.ignore_file ?? "none"}`,
   ]
+  for (const group of status.sync_groups) {
+    lines.push(`group ${group.group_name} (${group.group_id}) targets=${group.target_count} ready=${group.ready_targets} degraded=${group.degraded_targets} conflicts=${group.conflicted_targets}`)
+  }
   for (const rule of status.ignore.rules) {
     lines.push(`rule ${rule}`)
   }

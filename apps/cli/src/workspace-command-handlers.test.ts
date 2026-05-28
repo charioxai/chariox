@@ -17,6 +17,14 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     session_id: "session-1",
     mode: "managed",
     footer_state: "conflict",
+    sync_groups: [{
+      group_id: "link-1",
+      group_name: "shared",
+      target_count: 1,
+      ready_targets: 0,
+      degraded_targets: 0,
+      conflicted_targets: 1,
+    }],
     targets: [{
       link_id: "link-1",
       link_name: "shared",
@@ -70,8 +78,10 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync disable")
 
   assert.match(notices[0] ?? "", /Workspace live sync: managed footer=conflict/)
+  assert.match(notices[0] ?? "", /Sync groups: 1/)
   assert.match(notices[0] ?? "", /Rules: ignored\/\*\*, \*\.secret/)
   assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main/)
+  assert.match(notices[1] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
   assert.match(notices[3] ?? "", /rule ignored\/\*\*/)

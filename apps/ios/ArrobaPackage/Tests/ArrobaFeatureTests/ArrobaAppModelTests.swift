@@ -639,6 +639,16 @@ import Testing
         sessionID: session.id,
         mode: "tracked",
         footerState: "conflict",
+        syncGroups: [
+            WorkspaceLiveSyncGroupStatus(
+                groupID: "link-1",
+                groupName: "shared",
+                targetCount: 1,
+                readyTargets: 1,
+                degradedTargets: 0,
+                conflictedTargets: 0
+            ),
+        ],
         targets: [
             WorkspaceLiveSyncTargetStatus(
                 linkID: "link-1",

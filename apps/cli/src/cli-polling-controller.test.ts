@@ -271,6 +271,7 @@ function workspaceLiveSyncStatus(
     session_id: "session-1",
     mode: footerState === "off" ? "unrestricted" : "managed",
     footer_state: footerState,
+    sync_groups: [],
     targets: [],
     conflicts: [],
     ignore: {

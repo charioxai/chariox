@@ -589,6 +589,7 @@ The current contract is:
 - tracked mode syncs only at turn end. Changes made outside an Arroba-managed agent turn are ignored as origins, though they can still cause a target-side rebase or conflict.
 - Workspace Live Sync never creates commits. Git history remains user/agent-owned.
 - `.arrobaignore` controls user exclusions and is initialized from `.gitignore` when present, otherwise empty. The kernel always force-excludes runtime/private paths such as `.git/**`, `.arroba/**`, `.arrobaignore`, `.env*`, provider state directories, sockets, session/history stores, dependency caches, and build outputs.
+- Workspace links are the session sync-group primitive. `GetWorkspaceLiveSyncStatus` returns `sync_groups` derived from the session's workspace links plus flattened `targets`, `conflicts`, and ignore state for rendering.
 - remote agents working in the same repo/branch or in worktrees attached to the same session workspace link forward workspace live sync through the home kernel. The home kernel owns snapshots, reservations, and conflict decisions, and the worker applies accepted final states only if its local artifact still matches the forwarded pre-apply state.
 - cross-branch, cross-worktree, and cross-user/fork collaboration requires explicit workspace-link attachment. Session membership gates workspace-link creation, attachment, and status visibility.
 - relay peers use `ApplyWorkspaceLiveSyncChange` / `WorkspaceLiveSyncChangeApplied` for tracked fanout. Per-path results are `applied`, `rebased`, `skipped_conflict`, or `failed_io`.

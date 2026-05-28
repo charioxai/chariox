@@ -1496,11 +1496,14 @@ public final class ArrobaAppModel {
         switch filter {
         case "targets":
             guard !status.targets.isEmpty else { return "\(header)\ntargets: none" }
+            let groupLines = status.syncGroups.map { group in
+                "group \(group.groupName) targets=\(group.targetCount) ready=\(group.readyTargets) degraded=\(group.degradedTargets) conflicts=\(group.conflictedTargets)"
+            }
             let lines = status.targets.map { target in
                 let branch = target.branch.map { " @ \($0)" } ?? ""
                 return "- \(target.linkName) \(target.status) \(target.userID) \(target.repoRoot)\(branch)"
             }
-            return "\(header)\ntargets\n\(lines.joined(separator: "\n"))"
+            return "\(header)\ntargets\n\((groupLines + lines).joined(separator: "\n"))"
         case "conflicts":
             guard !status.conflicts.isEmpty else { return "\(header)\nconflicts: none" }
             let lines = status.conflicts.map { conflict in
@@ -1517,7 +1520,7 @@ public final class ArrobaAppModel {
                 : status.ignore.forceExcludes.joined(separator: ", ")
             return "\(header)\nignore: \(ignoreFile)\nrules: \(rules)\nforce excludes: \(excludes)"
         default:
-            return "\(header)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")\nrules: \(status.ignore.rules.count)"
+            return "\(header)\nsync groups: \(status.syncGroups.count)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")\nrules: \(status.ignore.rules.count)"
         }
     }
 

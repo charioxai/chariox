@@ -184,6 +184,9 @@ fn local_request_api_manages_session_workspace_links() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(status.session_id, session_id);
+    assert_eq!(status.sync_groups.len(), 1);
+    assert_eq!(status.sync_groups[0].group_name, "shared-repo");
+    assert_eq!(status.sync_groups[0].target_count, 1);
     assert_eq!(status.targets.len(), 1);
     assert_eq!(status.targets[0].repo_root, "/tmp/arroba-worktree-a");
     assert!(status.conflicts.is_empty());

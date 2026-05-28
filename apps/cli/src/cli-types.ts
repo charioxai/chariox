@@ -348,10 +348,20 @@ export type WorkspaceLiveSyncTargetStatus = {
   attached_at_ms: number
 }
 
+export type WorkspaceLiveSyncGroupStatus = {
+  group_id: string
+  group_name: string
+  target_count: number
+  ready_targets: number
+  degraded_targets: number
+  conflicted_targets: number
+}
+
 export type WorkspaceLiveSyncStatus = {
   session_id: string
   mode: "managed" | "tracked" | "unrestricted"
   footer_state: "off" | "managed" | "tracked" | "syncing" | "conflict" | "degraded"
+  sync_groups: WorkspaceLiveSyncGroupStatus[]
   targets: WorkspaceLiveSyncTargetStatus[]
   conflicts: Array<{
     conflict_id: string

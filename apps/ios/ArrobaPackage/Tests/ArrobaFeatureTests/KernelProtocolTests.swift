@@ -172,6 +172,14 @@ import Testing
             "session_id": "session-1",
             "mode": "tracked",
             "footer_state": "conflict",
+            "sync_groups": [{
+              "group_id": "link-1",
+              "group_name": "shared",
+              "target_count": 1,
+              "ready_targets": 0,
+              "degraded_targets": 0,
+              "conflicted_targets": 1
+            }],
             "targets": [{
               "link_id": "link-1",
               "link_name": "shared",
@@ -212,6 +220,7 @@ import Testing
     }
     #expect(status.mode == "tracked")
     #expect(status.footerState == "conflict")
+    #expect(status.syncGroups.first?.groupName == "shared")
     #expect(status.targets.first?.linkName == "shared")
     #expect(status.conflicts.first?.path == "src/app.swift")
     #expect(status.ignore.rules == ["ignored/**", "*.secret"])

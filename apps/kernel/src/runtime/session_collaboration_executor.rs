@@ -9,8 +9,9 @@ use crate::local::{
     DetachWorkspaceLinkRequest, GetWorkspaceLiveSyncStatusRequest, JoinSessionInviteRequest,
     ListSessionMembersRequest, ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     RevokeSessionInviteRequest, SessionInviteRecord, ShowWorkspaceLinkRequest,
-    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncIgnoreStatus,
-    WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
+    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
+    WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
+    WorkspaceLiveSyncTargetStatus,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::invite_tokens::{
@@ -260,15 +261,22 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
     let has_prompt_work = session.has_any_prompt_work();
     let links = runtime_state.list_workspace_links(&request.session_id)?;
     let target_results = runtime_state.workspace_live_sync_target_results(&request.session_id);
+    let latest_path_results = workspace_live_sync_latest_path_results(&target_results);
+    let conflicts = workspace_live_sync_conflicts_from_latest_results(&latest_path_results);
+    let degraded = latest_path_results.iter().any(|(_, path_result)| {
+        path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
+    });
     let mut targets = Vec::new();
+    let mut sync_groups = Vec::new();
     for link in links {
+        let mut group_targets = Vec::new();
         for attachment in link.attachments() {
-            let result_status = workspace_live_sync_target_status_from_results(
-                &target_results,
+            let result_status = workspace_live_sync_target_status_from_latest_results(
+                &latest_path_results,
                 link.link_id(),
                 attachment.repo_root(),
             );
-            targets.push(WorkspaceLiveSyncTargetStatus {
+            let target = WorkspaceLiveSyncTargetStatus {
                 link_id: link.link_id().to_string(),
                 link_name: link.name().to_string(),
                 user_id: attachment.user_id().to_string(),
@@ -279,15 +287,16 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
                 repo_fingerprint: attachment.repo_fingerprint().map(str::to_string),
                 status: result_status,
                 attached_at_ms: attachment.attached_at_ms(),
-            });
+            };
+            targets.push(target.clone());
+            group_targets.push(target);
         }
+        sync_groups.push(workspace_live_sync_group_status(
+            link.link_id(),
+            link.name(),
+            &group_targets,
+        ));
     }
-    let conflicts = workspace_live_sync_conflicts_from_results(&target_results);
-    let degraded = workspace_live_sync_latest_path_results(&target_results)
-        .into_iter()
-        .any(|(_, path_result)| {
-            path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
-        });
     let footer_state =
         workspace_live_sync_footer_state(mode, has_prompt_work, !conflicts.is_empty(), degraded);
     Ok(LocalDaemonResponse::WorkspaceLiveSyncStatus {
@@ -295,6 +304,7 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             session_id: request.session_id,
             mode,
             footer_state,
+            sync_groups,
             targets,
             conflicts,
             ignore: WorkspaceLiveSyncIgnoreStatus {
@@ -331,18 +341,42 @@ fn workspace_live_sync_footer_state(
     }
 }
 
-fn workspace_live_sync_target_status_from_results(
-    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+fn workspace_live_sync_group_status(
+    group_id: &str,
+    group_name: &str,
+    targets: &[WorkspaceLiveSyncTargetStatus],
+) -> WorkspaceLiveSyncGroupStatus {
+    WorkspaceLiveSyncGroupStatus {
+        group_id: group_id.to_string(),
+        group_name: group_name.to_string(),
+        target_count: targets.len(),
+        ready_targets: targets
+            .iter()
+            .filter(|target| target.status == WorkspaceLiveSyncTargetState::Ready)
+            .count(),
+        degraded_targets: targets
+            .iter()
+            .filter(|target| target.status == WorkspaceLiveSyncTargetState::Degraded)
+            .count(),
+        conflicted_targets: targets
+            .iter()
+            .filter(|target| target.status == WorkspaceLiveSyncTargetState::Conflict)
+            .count(),
+    }
+}
+
+fn workspace_live_sync_target_status_from_latest_results(
+    latest_path_results: &[(
+        &crate::git_observer::WorkspaceLiveSyncTargetResult,
+        &crate::git_observer::WorkspaceLiveSyncPathApplyResult,
+    )],
     link_id: &str,
     repo_root: &str,
 ) -> WorkspaceLiveSyncTargetState {
     let mut has_failure = false;
-    for (_, path_result) in workspace_live_sync_latest_path_results(target_results)
-        .into_iter()
-        .filter(|(target_result, _)| {
-            target_result.link_id == link_id && target_result.target_repo_root == repo_root
-        })
-    {
+    for (_, path_result) in latest_path_results.iter().filter(|(target_result, _)| {
+        target_result.link_id == link_id && target_result.target_repo_root == repo_root
+    }) {
         match path_result.status {
             crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
             | crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased => {}
@@ -361,11 +395,24 @@ fn workspace_live_sync_target_status_from_results(
     }
 }
 
-fn workspace_live_sync_conflicts_from_results(
+#[cfg(test)]
+fn workspace_live_sync_target_status_from_results(
     target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+    link_id: &str,
+    repo_root: &str,
+) -> WorkspaceLiveSyncTargetState {
+    let latest_path_results = workspace_live_sync_latest_path_results(target_results);
+    workspace_live_sync_target_status_from_latest_results(&latest_path_results, link_id, repo_root)
+}
+
+fn workspace_live_sync_conflicts_from_latest_results(
+    latest_path_results: &[(
+        &crate::git_observer::WorkspaceLiveSyncTargetResult,
+        &crate::git_observer::WorkspaceLiveSyncPathApplyResult,
+    )],
 ) -> Vec<WorkspaceLiveSyncConflictSummary> {
     let mut conflicts = Vec::new();
-    for (target_result, path_result) in workspace_live_sync_latest_path_results(target_results) {
+    for (target_result, path_result) in latest_path_results {
         if path_result.status != crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict
         {
             continue;
@@ -387,6 +434,14 @@ fn workspace_live_sync_conflicts_from_results(
         });
     }
     conflicts
+}
+
+#[cfg(test)]
+fn workspace_live_sync_conflicts_from_results(
+    target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+) -> Vec<WorkspaceLiveSyncConflictSummary> {
+    let latest_path_results = workspace_live_sync_latest_path_results(target_results);
+    workspace_live_sync_conflicts_from_latest_results(&latest_path_results)
 }
 
 fn workspace_live_sync_latest_path_results(

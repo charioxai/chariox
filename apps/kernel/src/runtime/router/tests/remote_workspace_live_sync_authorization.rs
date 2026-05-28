@@ -120,6 +120,8 @@ async fn remote_workspace_live_sync_requests_require_membership_and_record_membe
         LocalDaemonResponse::WorkspaceLiveSyncStatus { status } => status,
         other => panic!("unexpected status response: {other:?}"),
     };
+    assert_eq!(status.sync_groups.len(), 1);
+    assert_eq!(status.sync_groups[0].target_count, 1);
     assert_eq!(status.targets.len(), 1);
     assert_eq!(status.targets[0].user_id, "user-2");
     assert_eq!(

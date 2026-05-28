@@ -499,6 +499,14 @@ test("executeShellCommand manages workspace links", async () => {
     session_id: "session-1",
     mode: "tracked",
     footer_state: "tracked",
+    sync_groups: [{
+      group_id: link.link_id,
+      group_name: link.name,
+      target_count: 1,
+      ready_targets: 1,
+      degraded_targets: 0,
+      conflicted_targets: 0,
+    }],
     targets: [{
       link_id: link.link_id,
       link_name: link.name,
@@ -578,6 +586,8 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
   assert.match(attachResult.message ?? "", /workspace sync enable managed.*recommended/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
+  assert.match(syncResult.message ?? "", /sync_groups=1/)
+  assert.match(syncResult.message ?? "", /group shared-repo \(workspace-link-1\) targets=1 ready=1 degraded=0 conflicts=0/)
   assert.match(syncResult.message ?? "", /source=agent-1 target=local:\/repo/)
   assert.match(syncResult.message ?? "", /rule ignored\/\*\*/)
   assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo/)

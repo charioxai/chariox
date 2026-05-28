@@ -118,6 +118,16 @@ pub struct WorkspaceLiveSyncTargetStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceLiveSyncGroupStatus {
+    pub group_id: String,
+    pub group_name: String,
+    pub target_count: usize,
+    pub ready_targets: usize,
+    pub degraded_targets: usize,
+    pub conflicted_targets: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceLiveSyncConflictSummary {
     pub conflict_id: String,
     pub link_id: String,
@@ -142,6 +152,7 @@ pub struct WorkspaceLiveSyncStatus {
     pub session_id: String,
     pub mode: crate::config::WorkspaceLiveSyncMode,
     pub footer_state: WorkspaceLiveSyncFooterState,
+    pub sync_groups: Vec<WorkspaceLiveSyncGroupStatus>,
     pub targets: Vec<WorkspaceLiveSyncTargetStatus>,
     pub conflicts: Vec<WorkspaceLiveSyncConflictSummary>,
     pub ignore: WorkspaceLiveSyncIgnoreStatus,

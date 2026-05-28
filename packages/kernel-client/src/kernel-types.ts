@@ -260,6 +260,15 @@ export type WorkspaceLiveSyncTargetStatus = {
   attached_at_ms: number
 }
 
+export type WorkspaceLiveSyncGroupStatus = {
+  group_id: string
+  group_name: string
+  target_count: number
+  ready_targets: number
+  degraded_targets: number
+  conflicted_targets: number
+}
+
 export type WorkspaceLiveSyncConflictSummary = {
   conflict_id: string
   link_id: string
@@ -280,6 +289,7 @@ export type WorkspaceLiveSyncStatus = {
   session_id: string
   mode: "managed" | "tracked" | "unrestricted"
   footer_state: WorkspaceLiveSyncFooterState
+  sync_groups: WorkspaceLiveSyncGroupStatus[]
   targets: WorkspaceLiveSyncTargetStatus[]
   conflicts: WorkspaceLiveSyncConflictSummary[]
   ignore: WorkspaceLiveSyncIgnoreStatus
@@ -884,7 +894,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 62
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 63
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

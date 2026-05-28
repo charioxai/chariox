@@ -205,6 +205,7 @@ public struct WorkspaceLiveSyncStatus: Equatable, Sendable, Decodable {
     public let sessionID: String
     public let mode: String
     public let footerState: String
+    public let syncGroups: [WorkspaceLiveSyncGroupStatus]
     public let targets: [WorkspaceLiveSyncTargetStatus]
     public let conflicts: [WorkspaceLiveSyncConflictSummary]
     public let ignore: WorkspaceLiveSyncIgnoreStatus
@@ -213,9 +214,28 @@ public struct WorkspaceLiveSyncStatus: Equatable, Sendable, Decodable {
         case sessionID = "session_id"
         case mode
         case footerState = "footer_state"
+        case syncGroups = "sync_groups"
         case targets
         case conflicts
         case ignore
+    }
+}
+
+public struct WorkspaceLiveSyncGroupStatus: Equatable, Sendable, Decodable {
+    public let groupID: String
+    public let groupName: String
+    public let targetCount: Int
+    public let readyTargets: Int
+    public let degradedTargets: Int
+    public let conflictedTargets: Int
+
+    enum CodingKeys: String, CodingKey {
+        case groupID = "group_id"
+        case groupName = "group_name"
+        case targetCount = "target_count"
+        case readyTargets = "ready_targets"
+        case degradedTargets = "degraded_targets"
+        case conflictedTargets = "conflicted_targets"
     }
 }
 

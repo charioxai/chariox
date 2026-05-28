@@ -298,6 +298,7 @@ function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): string {
 function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
   return [
     `Workspace live sync: ${status.mode} footer=${status.footer_state}`,
+    `Sync groups: ${status.sync_groups.length}`,
     `Targets: ${status.targets.length}`,
     `Conflicts: ${status.conflicts.length}`,
     `Ignore: ${status.ignore.ignore_file ?? "none"}`,
@@ -311,10 +312,13 @@ function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string
   if (status.targets.length === 0) {
     return "No workspace live sync targets."
   }
+  const groups = status.sync_groups.map((group) => (
+    `Group ${group.group_name} (${group.group_id}) targets=${group.target_count} ready=${group.ready_targets} degraded=${group.degraded_targets} conflicts=${group.conflicted_targets}`
+  ))
   return status.targets.map((target) => {
     const branch = target.branch ? ` branch=${target.branch}` : ""
     return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
-  }).join("\n")
+  }).concat(groups).join("\n")
 }
 
 function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): string {

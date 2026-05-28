@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-28
 
+### Workspace live sync sync-group status
+
+- Made workspace links explicit as the Workspace Live Sync session sync-group surface. `GetWorkspaceLiveSyncStatus` now returns `sync_groups` alongside flattened targets/conflicts/ignore state; CLI shell, slash UI, iOS status text/protocol, and Cloud web side panel render the grouping counts. Bumped the local daemon protocol to 63 and refreshed protocol shape hashes.
+- Validation passed for the changed surface: `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml protocol_shapes -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture`, `pnpm --filter @arroba/kernel-client test -- shell-executor`, `pnpm --filter @arroba/cli test -- workspace-command-handlers session-chrome-state cli-polling-controller`, `swift test --package-path apps/ios/ArrobaPackage`, and `pnpm --filter @arroba-cloud/web test -- workspace-sidebar-projection WorkspaceSidebarPanelMount`.
+- A broad Cloud workspace test invocation also ran package/API/web tests but hit an unrelated API server assertion (`404 !== 302` in `apps/api/dist/server.test.js`) before the aggregate completed. The direct web package build/test for the changed Workspace Live Sync UI passed.
+
 ### Workspace live sync session-mode contract
 
 - Split Workspace Live Sync configuration into global launch policy and session-scoped runtime mode. `/config workspace-live-sync` and shell `config workspace-live-sync` now write only `providers.workspace_live_sync = required|unrestricted`; `workspace sync mode managed|tracked|unrestricted` sends `SetWorkspaceLiveSyncMode { session_id, mode }` and receives `WorkspaceLiveSyncModeUpdated { session }`.
