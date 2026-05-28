@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-28
 
+### Workspace live sync local/client validation closure
+
+- Completed the remaining non-Scalingo validation sweep for Workspace Live Sync after tracked-mode parity work. `pnpm --filter @arroba/kernel-client test` passed with 76 tests, `pnpm --filter @arroba/cli test` passed with 1065 tests, `swift test --package-path apps/ios/ArrobaPackage` passed with 65 tests, and `/Users/miguel/arroba-cloud pnpm test` passed through the Cloud API, worker, package, and web app suites, including the Workspace Live Sync side-panel/enrollment coverage.
+- Rechecked the old managed-I/O naming surface across OSS and Cloud; the remaining references are mode-specific "managed" wording or historical progress-log notes rather than the feature name. Scalingo/staging hosted drills are intentionally deferred until the hosted platform issue is cleared.
+
 ### Workspace live sync Hetzner validation closure
 
 - Extended `apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs` with `--hetzner-worker`, matching the remote workspace live sync drill's actual Hetzner topology: relay and worker kernel run on the configured Hetzner host while the home kernel remains local, with Codex auth synchronized and fixture workspaces mirrored before leased provider launch.
