@@ -678,6 +678,8 @@ public final class ArrobaAppModel {
             await executeSkillCommand(Array(tokens.dropFirst()))
         case "/workspace":
             await executeWorkspaceCommand(Array(tokens.dropFirst()))
+        case "/config":
+            await executeConfigCommand(Array(tokens.dropFirst()))
         default:
             connectionState = .failed
             statusMessage = "Unsupported iOS command: \(command)."
@@ -711,6 +713,30 @@ public final class ArrobaAppModel {
         default:
             connectionState = .failed
             statusMessage = "usage: /skill list"
+        }
+    }
+
+    private func executeConfigCommand(_ args: [String]) async {
+        let action = args.first ?? ""
+        switch action {
+        case "workspace-live-sync":
+            let policy = args.dropFirst().first ?? "required"
+            guard args.dropFirst(2).isEmpty,
+                  policy == "required" || policy == "unrestricted"
+            else {
+                connectionState = .failed
+                statusMessage = "usage: /config workspace-live-sync required|unrestricted"
+                return
+            }
+            let mode = policy == "required" ? "managed" : "unrestricted"
+            await setWorkspaceLiveSyncMode(
+                mode,
+                notice: "Workspace live sync set to \(policy)",
+                status: "Workspace live sync set to \(policy)."
+            )
+        default:
+            connectionState = .failed
+            statusMessage = "usage: /config workspace-live-sync required|unrestricted"
         }
     }
 
@@ -820,7 +846,11 @@ public final class ArrobaAppModel {
         }
     }
 
-    private func setWorkspaceLiveSyncMode(_ mode: String) async {
+    private func setWorkspaceLiveSyncMode(
+        _ mode: String,
+        notice: String? = nil,
+        status: String? = nil
+    ) async {
         await perform("Updating workspace live sync") {
             let response = try await client.send(
                 .setWorkspaceLiveSyncMode(mode: mode),
@@ -829,9 +859,9 @@ public final class ArrobaAppModel {
             guard case .userConfigUpdated = response else {
                 throw KernelClientError.unexpectedResponse(String(describing: response))
             }
-            appendCommandNotice("Workspace live sync mode = \(mode)")
+            appendCommandNotice(notice ?? "Workspace live sync mode = \(mode)")
             promptDraft = ""
-            return "Workspace live sync set to \(mode)."
+            return status ?? "Workspace live sync set to \(mode)."
         }
     }
 

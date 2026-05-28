@@ -59,6 +59,9 @@ public enum CommandCenterCatalog {
         if trimmed.hasPrefix("/workspace") {
             return filter(workspaceItems, query: trimmed.removingCommandPrefix("/workspace"))
         }
+        if trimmed.hasPrefix("/config") {
+            return filter(configItems, query: trimmed.removingCommandPrefix("/config"))
+        }
         return filter(rootItems, query: String(trimmed.dropFirst()))
     }
 
@@ -127,6 +130,13 @@ public enum CommandCenterCatalog {
             submitsImmediately: false
         ),
         CommandCenterItem(
+            id: "config",
+            label: "/config",
+            detail: "Inspect and update Arroba user config",
+            value: "/config ",
+            submitsImmediately: false
+        ),
+        CommandCenterItem(
             id: "stop",
             label: "/stop",
             detail: "Request cancellation of the active provider turn",
@@ -138,6 +148,23 @@ public enum CommandCenterCatalog {
             label: "/waiting",
             detail: "Show waiting-room context",
             value: "/waiting",
+            submitsImmediately: true
+        ),
+    ]
+
+    private static let configItems: [CommandCenterItem] = [
+        CommandCenterItem(
+            id: "config-workspace-live-sync-required",
+            label: "workspace-live-sync required",
+            detail: "Require workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync required",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "config-workspace-live-sync-unrestricted",
+            label: "workspace-live-sync unrestricted",
+            detail: "Disable workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync unrestricted",
             submitsImmediately: true
         ),
     ]
