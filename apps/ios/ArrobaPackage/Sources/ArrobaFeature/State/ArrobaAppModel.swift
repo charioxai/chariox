@@ -1491,7 +1491,7 @@ public final class ArrobaAppModel {
                 : status.ignore.forceExcludes.joined(separator: ", ")
             return "\(header)\nignore: \(ignoreFile)\nrules: \(rules)\nforce excludes: \(excludes)"
         default:
-            return "\(header)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")"
+            return "\(header)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")\nrules: \(status.ignore.rules.count)"
         }
     }
 

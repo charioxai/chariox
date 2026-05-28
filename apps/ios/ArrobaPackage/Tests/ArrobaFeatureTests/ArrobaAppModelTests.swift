@@ -674,6 +674,7 @@ import Testing
         .workspaceLiveSyncStatus(status),
         .workspaceLiveSyncStatus(status),
         .workspaceLiveSyncStatus(status),
+        .workspaceLiveSyncStatus(status),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
@@ -683,6 +684,13 @@ import Testing
     defaults.removePersistentDomain(forName: "ArrobaAppModelTests.workspaceSync")
     let model = ArrobaAppModel(client: client, defaults: defaults)
     model.selectSession(session)
+    model.promptDraft = "/workspace sync status"
+
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("rules: 2") == true)
+
     model.promptDraft = "/workspace sync conflicts"
 
     await model.submitPrompt()

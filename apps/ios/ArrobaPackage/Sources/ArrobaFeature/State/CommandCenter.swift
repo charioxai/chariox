@@ -449,7 +449,7 @@ public enum CommandCenterCatalog {
         CommandCenterItem(
             id: "workspace-sync-status",
             label: "sync status",
-            detail: "Show workspace live sync status, targets, conflicts, and ignore file",
+            detail: "Show workspace live sync status, targets, conflicts, and ignore rules",
             value: "/workspace sync status",
             submitsImmediately: true
         ),

@@ -576,6 +576,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(attachResult.message ?? "", /workspace sync enable managed.*recommended/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
   assert.match(syncResult.message ?? "", /source=agent-1 target=local:\/repo/)
+  assert.match(syncResult.message ?? "", /rule ignored\/\*\*/)
   assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo/)
   assert.match(syncConflictsResult.message ?? "", /src\/app\.ts source=agent-1 target=local:\/repo: reconcile target/)
   assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)
