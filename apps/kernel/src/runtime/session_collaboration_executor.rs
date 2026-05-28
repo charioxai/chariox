@@ -281,11 +281,11 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
         }
     }
     let conflicts = workspace_live_sync_conflicts_from_results(&target_results);
-    let degraded = target_results.iter().any(|target_result| {
-        target_result.path_results.iter().any(|path_result| {
+    let degraded = workspace_live_sync_latest_path_results(&target_results)
+        .into_iter()
+        .any(|(_, path_result)| {
             path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
-        })
-    });
+        });
     let footer_state =
         workspace_live_sync_footer_state(mode, has_prompt_work, !conflicts.is_empty(), degraded);
     Ok(LocalDaemonResponse::WorkspaceLiveSyncStatus {
@@ -504,6 +504,11 @@ mod tests {
             WorkspaceLiveSyncTargetState::Ready
         );
         assert!(workspace_live_sync_conflicts_from_results(&results).is_empty());
+        assert!(!workspace_live_sync_latest_path_results(&results)
+            .into_iter()
+            .any(|(_, path_result)| {
+                path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
+            }));
     }
 
     #[test]
@@ -574,6 +579,60 @@ mod tests {
             ),
             WorkspaceLiveSyncTargetState::Ready
         );
+    }
+
+    #[test]
+    fn workspace_live_sync_degraded_footer_uses_latest_path_result() {
+        let unresolved = vec![
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo,
+                "permission denied",
+            ),
+            target_result(
+                "link-1",
+                "/repo/other-target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                "applied cleanly",
+            ),
+        ];
+        let resolved = vec![
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo,
+                "permission denied",
+            ),
+            target_result(
+                "link-1",
+                "/repo/target",
+                "agent-b",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                "applied after retry",
+            ),
+        ];
+
+        let unresolved_degraded = workspace_live_sync_latest_path_results(&unresolved)
+            .into_iter()
+            .any(|(_, path_result)| {
+                path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
+            });
+        let resolved_degraded = workspace_live_sync_latest_path_results(&resolved)
+            .into_iter()
+            .any(|(_, path_result)| {
+                path_result.status == crate::git_observer::WorkspaceLiveSyncApplyStatus::FailedIo
+            });
+
+        assert!(unresolved_degraded);
+        assert!(!resolved_degraded);
     }
 
     fn target_result(
