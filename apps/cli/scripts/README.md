@@ -30,6 +30,7 @@ pnpm --filter @arroba/cli run workspace-live-sync:tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:permission-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-managed-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-restart-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 ```
 
