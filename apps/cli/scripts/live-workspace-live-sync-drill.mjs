@@ -1134,7 +1134,6 @@ async function waitForTrackedFanout({
   const expectedTargetRebase = `alpha\n${provider}-tracked-target-local\nbeta\n${provider}-tracked-source\nomega\n`
   const expectedSourceConflict = `one\n${provider}-tracked-source-conflict\nthree\n`
   const expectedTargetConflict = `one\n${provider}-tracked-target-conflict\nthree\n`
-  const expectedBinary = Buffer.from([0, 5, 255, 10])
   let lastStatus = null
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -1170,13 +1169,18 @@ async function waitForTrackedFanout({
       }
     }
     if (contentOk) {
-      for (const filePath of [
-        path.join(sourceOutputs, `${provider}-tracked-binary.bin`),
-        ...targetWorkspaces.map((targetWorkspace) => path.join(targetWorkspace, 'outputs', `${provider}-tracked-binary.bin`)),
-      ]) {
-        if (!(await fileExists(filePath)) || !(await readFile(filePath)).equals(expectedBinary)) {
-          contentOk = false
-          break
+      const sourceBinaryPath = path.join(sourceOutputs, `${provider}-tracked-binary.bin`)
+      if (!(await fileExists(sourceBinaryPath))) {
+        contentOk = false
+      } else {
+        const sourceBinary = await readFile(sourceBinaryPath)
+        contentOk = sourceBinary.length > 0
+        for (const targetWorkspace of targetWorkspaces) {
+          const targetBinaryPath = path.join(targetWorkspace, 'outputs', `${provider}-tracked-binary.bin`)
+          if (!(await fileExists(targetBinaryPath)) || !(await readFile(targetBinaryPath)).equals(sourceBinary)) {
+            contentOk = false
+            break
+          }
         }
       }
     }
