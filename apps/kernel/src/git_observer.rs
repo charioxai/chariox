@@ -1144,11 +1144,24 @@ fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     if path.split('/').any(|part| part.starts_with(".env")) {
         return true;
     }
+    if path.split('/').any(|part| {
+        part.ends_with(".sock")
+            || part.ends_with(".socket")
+            || part.starts_with("operational-history")
+    }) {
+        return true;
+    }
     let forced_dirs = [
         ".codex",
         ".opencode",
         ".claude",
         ".cursor",
+        ".tmp-arroba",
+        ".tmp-live-workspace-live-sync-drill",
+        ".tmp-live-remote-workspace-live-sync-drill",
+        "history",
+        "session-history",
+        "operational-history",
         "node_modules",
         "target",
         ".cache",

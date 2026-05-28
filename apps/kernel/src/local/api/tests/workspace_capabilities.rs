@@ -126,6 +126,21 @@ fn local_request_api_manages_session_workspace_links() {
         .ignore
         .force_excludes
         .iter()
+        .any(|pattern| pattern == "*.sock"));
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
+        .any(|pattern| pattern == "history/**"));
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
+        .any(|pattern| pattern == "operational-history*"));
+    assert!(status
+        .ignore
+        .force_excludes
+        .iter()
         .any(|pattern| pattern == ".cache/**"));
 
     let shown = match harness
