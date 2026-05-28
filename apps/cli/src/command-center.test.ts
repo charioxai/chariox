@@ -55,6 +55,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync conflicts"), true)
   assert.equal(values.has("/workspace sync ignore"), true)
   assert.equal(values.has("/workspace sync enable managed"), true)
+  assert.equal(values.has("/workspace sync enable tracked"), true)
   assert.equal(values.has("/workspace sync disable"), true)
   assert.equal(values.has("/workspace sync mode "), true)
   assert.equal(values.has("/workspace sync link "), true)
