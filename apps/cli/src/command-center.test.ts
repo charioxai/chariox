@@ -69,6 +69,19 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync disable"), true)
   assert.equal(values.has("/workspace sync mode "), true)
   assert.equal(values.has("/workspace sync link "), true)
+
+  const modeItems = buildCommandCenterItems("/workspace sync mode ", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+  const modeValues = new Set(modeItems.map((item) => item.value))
+  assert.equal(modeValues.has("/workspace sync mode managed"), true)
+  assert.equal(modeValues.has("/workspace sync mode tracked"), true)
+  assert.equal(modeValues.has("/workspace sync mode unrestricted"), true)
 })
 
 test("buildCommandCenterItems filters model options", () => {

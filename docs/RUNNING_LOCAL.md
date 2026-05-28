@@ -463,7 +463,7 @@ tail -f ~/.local/state/arroba/logs/*.ndjson
 
 ## 13. Workspace live sync
 
-Arroba-managed Codex and OpenCode provider sessions use workspace live sync by default. Supported providers are launched so coordinated workspace files cannot be written through provider-native edit/shell paths; agents must use the Arroba runtime/MCP tools instead.
+Workspace Live Sync keeps selected Arroba session worktrees aligned at provider turn boundaries. Managed mode enforces Arroba runtime/MCP write tools and performs collision checks before syncing writes. Tracked mode watches file changes made during Arroba-managed provider turns and syncs those changes without write enforcement. Changes made outside Arroba-managed turns are ignored.
 
 Workspace live sync defaults are read from the Arroba user config TOML:
 
@@ -489,29 +489,19 @@ account_profile = "default"
 workspace_live_sync = "required"
 ```
 
-The `required` policy launches supported providers with managed workspace live sync write enforcement.
+The `required` policy launches supported providers in managed Workspace Live Sync mode by default. Session commands can switch the current session to tracked mode or unrestricted mode:
 
-To disable the policy for all managed providers:
-
-```toml
-[providers]
-workspace_live_sync = "unrestricted"
+```text
+/workspace sync enable managed
+/workspace sync enable tracked
+/workspace sync mode managed
+/workspace sync mode tracked
+/workspace sync disable
 ```
 
-Remote leased agents use the same workspace live sync policy as local agents.
+Workspace Live Sync uses `.arrobaignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Arroba state are always excluded.
 
-## 14. Workflow Queues
-
-Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML:
-
-```toml
-[workflow]
-max_queues_per_workflow = 10
-```
-
-The kernel rejects workflow queue creation if this setting is missing or if a workflow already has the configured number of queues.
-
-You can also modify the same TOML through the CLI:
+You can inspect or modify the Workspace Live Sync policy through the CLI:
 
 ```text
 /config show
@@ -521,12 +511,14 @@ You can also modify the same TOML through the CLI:
 /config unset providers.workspace_live_sync
 ```
 
-Tracked workspace live sync is controlled from an attached workspace session:
+To disable the policy for all managed providers:
 
-```text
-/workspace sync enable tracked
-/workspace sync mode tracked
+```toml
+[providers]
+workspace_live_sync = "unrestricted"
 ```
+
+Remote leased agents use the same workspace live sync policy as local agents.
 
 Agent-facing tools:
 
@@ -547,7 +539,18 @@ Text artifacts use snapshot-aware fine-grained coordination. If a stale edit ove
 
 Remote leased agents that are working in the same repo/branch as the home session, or in worktrees explicitly attached to the same session workspace link, forward workspace live sync through the home kernel. If workspace identity changes while a managed run is active, workspace live sync rejects the request until the run rejoins a valid coordinated workspace.
 
-## 14. Current Limitations
+## 14. Workflow Queues
+
+Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML:
+
+```toml
+[workflow]
+max_queues_per_workflow = 10
+```
+
+The kernel rejects workflow queue creation if this setting is missing or if a workflow already has the configured number of queues.
+
+## 15. Current Limitations
 
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.

@@ -318,7 +318,32 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "workspace-sync-enable-managed", label: "sync enable managed", description: "Enable managed workspace live sync", value: "/workspace sync enable managed" },
       { id: "workspace-sync-enable-tracked", label: "sync enable tracked", description: "Enable tracked workspace live sync", value: "/workspace sync enable tracked" },
       { id: "workspace-sync-disable", label: "sync disable", description: "Disable workspace live sync", value: "/workspace sync disable" },
-      { id: "workspace-sync-mode", label: "sync mode", description: "Set workspace live sync mode", value: "/workspace sync mode " },
+      {
+        id: "workspace-sync-mode",
+        label: "sync mode",
+        description: "Set workspace live sync mode",
+        value: "/workspace sync mode ",
+        children: [
+          {
+            id: "workspace-sync-mode-managed",
+            label: "managed",
+            description: "Sync Arroba-managed writes with collision checks",
+            value: "/workspace sync mode managed",
+          },
+          {
+            id: "workspace-sync-mode-tracked",
+            label: "tracked",
+            description: "Sync Arroba-turn file changes without write enforcement",
+            value: "/workspace sync mode tracked",
+          },
+          {
+            id: "workspace-sync-mode-unrestricted",
+            label: "unrestricted",
+            description: "Disable workspace live sync for this session",
+            value: "/workspace sync mode unrestricted",
+          },
+        ],
+      },
       { id: "workspace-sync-link", label: "sync link", description: "Attach this worktree to a sync link", value: "/workspace sync link " },
     ],
   },
