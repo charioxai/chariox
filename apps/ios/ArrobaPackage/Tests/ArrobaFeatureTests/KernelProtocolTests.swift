@@ -194,6 +194,7 @@ import Testing
             }],
             "ignore": {
               "ignore_file": "/repo/.arrobaignore",
+              "rules": ["ignored/**", "*.secret"],
               "force_excludes": [".git/**", ".arroba/**"]
             }
           }
@@ -212,6 +213,7 @@ import Testing
     #expect(status.footerState == "conflict")
     #expect(status.targets.first?.linkName == "shared")
     #expect(status.conflicts.first?.path == "src/app.swift")
+    #expect(status.ignore.rules == ["ignored/**", "*.secret"])
     #expect(status.ignore.forceExcludes.contains(".git/**"))
 
     let updatedJSON = """

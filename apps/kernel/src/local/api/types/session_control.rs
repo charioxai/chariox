@@ -132,6 +132,8 @@ pub struct WorkspaceLiveSyncConflictSummary {
 pub struct WorkspaceLiveSyncIgnoreStatus {
     #[serde(default)]
     pub ignore_file: Option<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
     pub force_excludes: Vec<String>,
 }
 

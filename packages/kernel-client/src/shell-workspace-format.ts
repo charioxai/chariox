@@ -31,6 +31,9 @@ export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): 
     `targets=${status.targets.length} conflicts=${status.conflicts.length}`,
     `ignore=${status.ignore.ignore_file ?? "none"}`,
   ]
+  for (const rule of status.ignore.rules) {
+    lines.push(`rule ${rule}`)
+  }
   for (const target of status.targets) {
     const branch = target.branch ? ` branch=${target.branch}` : ""
     lines.push(`- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`)

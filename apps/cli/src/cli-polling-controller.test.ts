@@ -274,6 +274,7 @@ function workspaceLiveSyncStatus(
     targets: [],
     conflicts: [],
     ignore: {
+      rules: [],
       force_excludes: [],
     },
   }

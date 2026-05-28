@@ -40,6 +40,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     }],
     ignore: {
       ignore_file: ".arrobaignore",
+      rules: ["ignored/**", "*.secret"],
       force_excludes: [".git/**", ".arroba/**"],
     },
   }
@@ -72,6 +73,8 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main/)
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
+  assert.match(notices[3] ?? "", /rule ignored\/\*\*/)
+  assert.match(notices[3] ?? "", /rule \*\.secret/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
   assert.deepEqual(modeUpdates, ["tracked", "managed", "tracked", "unrestricted"])
   assert.deepEqual(footers.slice(-4), [

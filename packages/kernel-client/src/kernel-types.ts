@@ -271,6 +271,7 @@ export type WorkspaceLiveSyncConflictSummary = {
 
 export type WorkspaceLiveSyncIgnoreStatus = {
   ignore_file?: string | null
+  rules: string[]
   force_excludes: string[]
 }
 
@@ -882,7 +883,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 59
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 60
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

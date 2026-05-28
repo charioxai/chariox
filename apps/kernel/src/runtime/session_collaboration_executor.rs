@@ -297,6 +297,9 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
             conflicts,
             ignore: WorkspaceLiveSyncIgnoreStatus {
                 ignore_file: Some(".arrobaignore".to_string()),
+                rules: crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(
+                    std::path::Path::new(session.worktree_id()),
+                ),
                 force_excludes:
                     crate::workspace_live_sync_ignore::workspace_live_sync_force_exclude_patterns(),
             },

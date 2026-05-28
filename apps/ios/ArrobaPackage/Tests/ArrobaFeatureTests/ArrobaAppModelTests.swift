@@ -666,6 +666,7 @@ import Testing
         ],
         ignore: WorkspaceLiveSyncIgnoreStatus(
             ignoreFile: "/repo/.arrobaignore",
+            rules: ["ignored/**", "*.secret"],
             forceExcludes: [".git/**", ".arroba/**"]
         )
     )
@@ -699,6 +700,7 @@ import Testing
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("rules: ignored/**, *.secret") == true)
     #expect(model.transcriptEntries.last?.text.contains("force excludes: .git/**, .arroba/**") == true)
 
     model.promptDraft = "/workspace sync mode managed"

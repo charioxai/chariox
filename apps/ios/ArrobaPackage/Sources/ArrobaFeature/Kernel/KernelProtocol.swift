@@ -262,10 +262,12 @@ public struct WorkspaceLiveSyncConflictSummary: Equatable, Sendable, Decodable {
 
 public struct WorkspaceLiveSyncIgnoreStatus: Equatable, Sendable, Decodable {
     public let ignoreFile: String?
+    public let rules: [String]
     public let forceExcludes: [String]
 
     enum CodingKeys: String, CodingKey {
         case ignoreFile = "ignore_file"
+        case rules
         case forceExcludes = "force_excludes"
     }
 }

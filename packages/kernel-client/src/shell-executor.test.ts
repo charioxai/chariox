@@ -520,7 +520,7 @@ test("executeShellCommand manages workspace links", async () => {
       path: "src/app.ts",
       next_action: "reconcile target",
     }],
-    ignore: { ignore_file: ".arrobaignore", force_excludes: [".git/**"] },
+    ignore: { ignore_file: ".arrobaignore", rules: ["ignored/**"], force_excludes: [".git/**"] },
   }
   const requests: Record<string, unknown>[] = []
   const fake = {
@@ -579,6 +579,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo/)
   assert.match(syncConflictsResult.message ?? "", /src\/app\.ts source=agent-1 target=local:\/repo: reconcile target/)
   assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)
+  assert.match(syncIgnoreResult.message ?? "", /rule ignored\/\*\*/)
   assert.match(modeResult.message ?? "", /mode set to tracked/)
   assert.match(enableResult.message ?? "", /enabled: managed/)
   assert.match(enableTrackedResult.message ?? "", /enabled: tracked/)

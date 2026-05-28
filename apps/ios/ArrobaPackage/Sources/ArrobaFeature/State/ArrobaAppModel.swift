@@ -1483,10 +1483,13 @@ public final class ArrobaAppModel {
             return "\(header)\nconflicts\n\(lines.joined(separator: "\n"))"
         case "ignore":
             let ignoreFile = status.ignore.ignoreFile ?? ".arrobaignore"
+            let rules = status.ignore.rules.isEmpty
+                ? "none"
+                : status.ignore.rules.joined(separator: ", ")
             let excludes = status.ignore.forceExcludes.isEmpty
                 ? "none"
                 : status.ignore.forceExcludes.joined(separator: ", ")
-            return "\(header)\nignore: \(ignoreFile)\nforce excludes: \(excludes)"
+            return "\(header)\nignore: \(ignoreFile)\nrules: \(rules)\nforce excludes: \(excludes)"
         default:
             return "\(header)\ntargets: \(status.targets.count)\nconflicts: \(status.conflicts.count)\nignore: \(status.ignore.ignoreFile ?? ".arrobaignore")"
         }

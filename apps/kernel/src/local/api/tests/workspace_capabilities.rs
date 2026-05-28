@@ -31,6 +31,54 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
 }
 
 #[test]
+fn local_request_api_reports_workspace_live_sync_ignore_rules() {
+    let harness = LocalRouterTestHarness::new();
+    let worktree = std::env::temp_dir().join(format!(
+        "arroba-live-sync-ignore-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&worktree).expect("worktree should be created");
+    std::fs::write(worktree.join(".gitignore"), "ignored/\n*.secret\n# comment\n!keep\n")
+        .expect("gitignore should be written");
+    let worktree_id = worktree.to_string_lossy().to_string();
+
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-1",
+            &worktree_id,
+        )))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let status = match harness
+        .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
+            GetWorkspaceLiveSyncStatusRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("workspace live sync status should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLiveSyncStatus { status } => status,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(status.ignore.ignore_file.as_deref(), Some(".arrobaignore"));
+    assert_eq!(status.ignore.rules, vec!["ignored/**", "*.secret"]);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".arrobaignore"))
+            .expect(".arrobaignore should initialize from .gitignore"),
+        "ignored/\n*.secret\n# comment\n!keep\n"
+    );
+    std::fs::remove_dir_all(worktree).expect("worktree should clean up");
+}
+
+#[test]
 fn local_request_api_manages_session_workspace_links() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

@@ -363,6 +363,7 @@ export type WorkspaceLiveSyncStatus = {
   }>
   ignore: {
     ignore_file?: string | null
+    rules: string[]
     force_excludes: string[]
   }
 }

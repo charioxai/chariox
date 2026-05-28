@@ -114,6 +114,7 @@ async function handleWorkspaceSyncCommand(
     deps.setWorkspaceLiveSyncStatus?.(status)
     deps.appendNotice([
       `Ignore file: ${status.ignore.ignore_file ?? "none"}`,
+      ...status.ignore.rules.map((pattern) => `rule ${pattern}`),
       ...status.ignore.force_excludes.map((pattern) => `- ${pattern}`),
     ].join("\n"))
     deps.flashFooter("workspace live sync ignore rules", "info")
@@ -301,6 +302,7 @@ function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string 
     `Targets: ${status.targets.length}`,
     `Conflicts: ${status.conflicts.length}`,
     `Ignore: ${status.ignore.ignore_file ?? "none"}`,
+    status.ignore.rules.length > 0 ? `Rules: ${status.ignore.rules.join(", ")}` : "",
     formatWorkspaceLiveSyncTargets(status),
     formatWorkspaceLiveSyncConflicts(status),
   ].filter(Boolean).join("\n")
