@@ -54,6 +54,8 @@ function parseArgs(argv) {
     targetBranch: 'main',
     trackedTargetCount: 1,
     trackedBidirectional: false,
+    rootDir: null,
+    afterFixtureCommand: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -81,6 +83,8 @@ function parseArgs(argv) {
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
+    else if (arg === '--root-dir') options.rootDir = argv[++i]
+    else if (arg === '--after-fixture-command') options.afterFixtureCommand = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -121,6 +125,8 @@ function printHelp() {
     '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
     '  --tracked-target-count COUNT (tracked mode only; attach and validate multiple target workspaces)',
     '  --tracked-bidirectional (tracked mode only; validate target-origin fanout back to source/sibling targets)',
+    '  --root-dir PATH (override isolated drill root)',
+    '  --after-fixture-command CMD (run after local fixtures are initialized, before agents spawn)',
   ].join('\n'))
 }
 
@@ -207,6 +213,30 @@ async function gitHead(workspace) {
 async function resetTrackedWorkspace(workspace) {
   await runCommand('git', ['reset', '--hard', 'HEAD'], workspace)
   await runCommand('git', ['clean', '-fdx'], workspace)
+}
+
+async function runAfterFixtureCommand(command, context) {
+  const env = {
+    ...process.env,
+    ARROBA_WORKSPACE_LIVE_SYNC_ROOT: context.rootDir,
+    ARROBA_WORKSPACE_LIVE_SYNC_WORKSPACE: context.workspace,
+    ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACE: context.targetWorkspace,
+    ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACES: JSON.stringify(context.targetWorkspaces),
+    ARROBA_WORKSPACE_LIVE_SYNC_MODE: context.mode,
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawn('bash', ['-lc', command], { env, stdio: ['ignore', 'inherit', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk)
+      stderr += chunk.toString()
+    })
+    child.on('exit', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`after-fixture command exited with code ${code}: ${stderr.trim()}`))
+    })
+    child.on('error', reject)
+  })
 }
 
 async function initManagedTargetWorkspace(workspace, providers) {
@@ -1751,7 +1781,7 @@ async function main() {
   )
   // Keep the live workspace out of OS temp directories: Codex read-only mode may
   // allow TMPDIR writes, which would make the negative direct-write probe invalid.
-  const rootDir = path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
+  const rootDir = options.rootDir ?? path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const targetWorkspace = path.join(rootDir, 'target-workspace')
   const targetCount = options.mode === 'tracked' ? options.trackedTargetCount : options.managedTargetCount
@@ -1780,6 +1810,15 @@ async function main() {
     for (const target of targetWorkspaces) {
       await initManagedTargetWorkspace(target, options.providers)
     }
+  }
+  if (options.afterFixtureCommand) {
+    await runAfterFixtureCommand(options.afterFixtureCommand, {
+      rootDir,
+      workspace,
+      targetWorkspace,
+      targetWorkspaces,
+      mode: options.mode,
+    })
   }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)

@@ -1,13 +1,16 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
+const execFileAsync = promisify(execFile)
 
 async function loadCliModules(runtimeDir) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
@@ -52,6 +55,10 @@ function parseArgs(argv) {
     restartRelayBeforeSync: false,
     trackedTargetCount: 1,
     trackedBidirectional: false,
+    hetznerWorker: false,
+    hetznerHost: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
+    hetznerRepo: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -76,6 +83,10 @@ function parseArgs(argv) {
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
     }
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
+    else if (arg === '--hetzner-worker') options.hetznerWorker = true
+    else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
+    else if (arg === '--hetzner-key') options.hetznerKey = argv[++i]
+    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -172,6 +183,61 @@ async function resolveBinary(binaryPath, manifestPath, binName) {
   }
 }
 
+async function assertHetznerBinaries(options) {
+  await runHetznerCommand(
+    options,
+    [
+      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/kernel/target/debug/arroba-kernel'))}`,
+      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
+    ].join(' && '),
+  )
+}
+
+function localCodexAuthPath() {
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
+  return path.join(codexHome, 'auth.json')
+}
+
+async function syncHetznerCodexAuth(options) {
+  const authPath = localCodexAuthPath()
+  await access(authPath)
+  await execFileAsync('ssh', sshArgs(options, 'mkdir -p /root/.codex && chmod 700 /root/.codex'))
+  await execFileAsync('scp', [
+    '-i',
+    options.hetznerKey,
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    authPath,
+    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
+  ])
+  await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
+}
+
+function mirrorFixturesToHetznerCommand(options, rootDir) {
+  const parent = path.dirname(rootDir)
+  const base = path.basename(rootDir)
+  const remoteCommand = [
+    `rm -rf ${shellQuote(rootDir)}`,
+    `mkdir -p ${shellQuote(parent)}`,
+    `tar -C ${shellQuote(parent)} -xf -`,
+  ].join(' && ')
+  return [
+    `COPYFILE_DISABLE=1 tar -C ${shellQuote(parent)} -cf - ${shellQuote(base)}`,
+    '|',
+    'ssh',
+    '-i',
+    shellQuote(options.hetznerKey),
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    shellQuote(options.hetznerHost),
+    shellQuote(remoteCommand),
+  ].join(' ')
+}
+
 async function terminateChild(child, signal = 'SIGTERM') {
   if (!child || child.exitCode != null) return
   child.kill(signal)
@@ -260,7 +326,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync] [--hetzner-worker]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
@@ -278,11 +344,13 @@ async function main() {
   const { createSessionRequest, endSessionRequest, listRemoteMachinesRequest } = requests
 
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
+  const relayBinary = options.hetznerWorker
+    ? null
+    : await resolveBinary(
+        path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+        path.join(repoRoot, 'apps/relay/Cargo.toml'),
+        'arroba-relay',
+      )
   const daemonBinary = await resolveBinary(
     path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
@@ -304,14 +372,46 @@ async function main() {
   const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
 
   let relayChild = null
+  let relayTunnel = null
   let homeChild = null
   let workerChild = null
   let localClient = null
   let succeeded = false
+  const childRootDir = options.hetznerWorker
+    ? path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `hetzner-${runId}`)
+    : null
 
   try {
-    relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
-    await waitForTcpPort(ports.relayPort)
+    if (options.hetznerWorker) {
+      await assertHetznerBinaries(options)
+      if (options.providers.includes('codex')) {
+        await syncHetznerCodexAuth(options)
+      }
+    }
+    if (options.hetznerWorker) {
+      relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(ports.relayPort),
+        ARROBA_RELAY_TOKEN: relayToken,
+      }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      relayTunnel = spawn('ssh', [
+        '-i',
+        options.hetznerKey,
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-N',
+        '-L',
+        `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
+        options.hetznerHost,
+      ], { stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForTcpPort(ports.relayPort, '127.0.0.1', 30_000)
+    } else {
+      relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForTcpPort(ports.relayPort)
+    }
     homeChild = spawn(daemonBinary, [], {
       cwd: repoRoot,
       env: daemonEnv({
@@ -332,26 +432,57 @@ async function main() {
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    workerChild = spawn(daemonBinary, [], {
-      cwd: repoRoot,
-      env: daemonEnv({
-        ports,
-        rootDir,
-        relayToken,
-        daemonId: workerDaemonId,
-        daemonAlias: 'worker',
-        machineId: workerMachineId,
-        machineAlias: workerMachineAlias,
-        acceptRemoteLeases: true,
-        kernelPort: ports.workerKernelPort,
-        mcpPort: ports.workerMcpPort,
-        opencodePort: ports.workerOpenCodePort,
-        codexPort: ports.workerCodexPort,
-        socketName: 'worker.sock',
-        historyDir: workerHistoryDir,
-      }),
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
+    if (options.hetznerWorker) {
+      const remoteRoot = `/tmp/arroba-remote-workspace-live-sync-${runId}`
+      workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        HOME: '/root',
+        XDG_CONFIG_HOME: '/root/.config',
+        XDG_STATE_HOME: '/root/.local/state',
+        XDG_DATA_HOME: '/root/.local/share',
+        XDG_CACHE_HOME: '/root/.cache',
+        CODEX_HOME: '/root/.codex',
+        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
+        ARROBA_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
+        ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
+        ARROBA_MCP_PORT: String(ports.workerMcpPort),
+        ARROBA_OPENCODE_PORT: String(ports.workerOpenCodePort),
+        ARROBA_CODEX_PORT: String(ports.workerCodexPort),
+        ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+        ARROBA_RELAY_TOKEN: relayToken,
+        ARROBA_DAEMON_ID: workerDaemonId,
+        ARROBA_DAEMON_ALIAS: 'worker',
+        ARROBA_MACHINE_ID: workerMachineId,
+        ARROBA_MACHINE_ALIAS: workerMachineAlias,
+        ARROBA_ACCEPT_REMOTE_LEASES: '1',
+        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
+        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
+      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    } else {
+      workerChild = spawn(daemonBinary, [], {
+        cwd: repoRoot,
+        env: daemonEnv({
+          ports,
+          rootDir,
+          relayToken,
+          daemonId: workerDaemonId,
+          daemonAlias: 'worker',
+          machineId: workerMachineId,
+          machineAlias: workerMachineAlias,
+          acceptRemoteLeases: true,
+          kernelPort: ports.workerKernelPort,
+          mcpPort: ports.workerMcpPort,
+          opencodePort: ports.workerOpenCodePort,
+          codexPort: ports.workerCodexPort,
+          socketName: 'worker.sock',
+          historyDir: workerHistoryDir,
+        }),
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    }
 
     await waitForLocalDaemon(LocalIpcClient, homeKernelUrl, createSessionRequest, endSessionRequest, repoRoot)
     await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
@@ -364,7 +495,16 @@ async function main() {
     await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
     if (options.restartRelayBeforeSync) {
       await terminateChild(relayChild)
-      relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+      if (options.hetznerWorker) {
+        relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+          ARROBA_REMOTE_REPO: options.hetznerRepo,
+          ARROBA_RELAY_HOST: '127.0.0.1',
+          ARROBA_RELAY_PORT: String(ports.relayPort),
+          ARROBA_RELAY_TOKEN: relayToken,
+        }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      } else {
+        relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+      }
       await waitForTcpPort(ports.relayPort)
       await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
       await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
@@ -386,6 +526,8 @@ async function main() {
       '--managed-target-count', String(options.managedTargetCount),
       '--target-branch', options.targetBranch,
       '--tracked-target-count', String(options.trackedTargetCount),
+      ...(childRootDir ? ['--root-dir', childRootDir] : []),
+      ...(options.hetznerWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToHetznerCommand(options, childRootDir)] : []),
       ...(options.trackedBidirectional ? ['--tracked-bidirectional'] : []),
       ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
@@ -407,6 +549,7 @@ async function main() {
       providerModels: options.providerModels,
       full: options.full,
       restartRelayBeforeSync: options.restartRelayBeforeSync,
+      hetznerWorker: options.hetznerWorker,
       liveSyncMode: options.mode,
       managedTargetCount: options.managedTargetCount,
       targetBranch: options.targetBranch,
@@ -420,6 +563,10 @@ async function main() {
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
+    await terminateChild(relayTunnel)
+    if (options.hetznerWorker && childRootDir) {
+      await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
+    }
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
