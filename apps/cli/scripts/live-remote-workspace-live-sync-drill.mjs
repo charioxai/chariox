@@ -62,7 +62,8 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
+    if (arg === '--') continue
+    else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--provider-model') {
@@ -333,7 +334,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync] [--hetzner-worker]')
-    console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
+    console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --full')
     return
   }
   if (options.providers.length < 1) throw new Error('remote workspace live sync drill requires at least one provider')

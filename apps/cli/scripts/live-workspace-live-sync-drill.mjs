@@ -59,7 +59,8 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--kernel') options.kernel = argv[++i]
+    if (arg === '--') continue
+    else if (arg === '--kernel') options.kernel = argv[++i]
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
@@ -112,7 +113,7 @@ function printHelp() {
     '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+    '  --provider-model PROVIDER=MODEL (for example codex=gpt-5.2 or opencode=openai/gpt-5.2)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',

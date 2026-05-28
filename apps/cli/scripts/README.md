@@ -13,11 +13,13 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
-node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2
+node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
-node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.3-codex --full
+node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --full
 ```
+
+Add OpenCode to the workspace live sync drills only when OpenCode auth is healthy; current failures with `Token refresh failed: 401` happen before workspace live sync behavior is exercised.
 
 ## Wrapper Scripts
 
