@@ -390,15 +390,21 @@ impl KernelRuntimeState {
     ) -> crate::git_observer::WorkspaceLiveSyncTargetResult {
         if let Some(message) = self.forwarded_workspace_live_sync_rejection(&context) {
             let target_result = workspace_live_sync_remote_failed_result(&context, message);
-            self.record_forwarded_workspace_live_sync_target_result(&target_result);
+            self.record_forwarded_workspace_live_sync_target_result(None, &change, &target_result);
             return target_result;
         }
         if let Some(message) = self.forwarded_workspace_live_sync_identity_conflict(&context) {
             let target_result =
                 workspace_live_sync_remote_conflict_result(&context, &change, message);
-            self.record_forwarded_workspace_live_sync_target_result(&target_result);
+            let local_session_id = self.forwarded_workspace_live_sync_target_session_id(&context);
+            self.record_forwarded_workspace_live_sync_target_result(
+                local_session_id.as_deref(),
+                &change,
+                &target_result,
+            );
             return target_result;
         }
+        let local_session_id = self.forwarded_workspace_live_sync_target_session_id(&context);
         let path_results = crate::git_observer::apply_workspace_live_sync_change_to_target(
             &change,
             std::path::Path::new(&context.target_repo_root),
@@ -415,18 +421,32 @@ impl KernelRuntimeState {
             target_repo_root: context.target_repo_root.clone(),
             path_results,
         };
-        self.record_forwarded_workspace_live_sync_target_result(&target_result);
+        self.record_forwarded_workspace_live_sync_target_result(
+            local_session_id.as_deref(),
+            &change,
+            &target_result,
+        );
         target_result
     }
 
     fn record_forwarded_workspace_live_sync_target_result(
         &self,
+        local_session_id: Option<&str>,
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
         target_result: &crate::git_observer::WorkspaceLiveSyncTargetResult,
     ) {
         self.owned
             .workspace_live_sync_journal
             .record_target_results(vec![target_result.clone()]);
         self.persist_workspace_live_sync_target_results(std::slice::from_ref(target_result));
+        if let Some(local_session_id) = local_session_id {
+            self.record_workspace_live_sync_notices_for_session(
+                local_session_id,
+                None,
+                change,
+                std::slice::from_ref(target_result),
+            );
+        }
     }
 
     fn persist_workspace_live_sync_journal_entry(
@@ -527,6 +547,34 @@ impl KernelRuntimeState {
             })
     }
 
+    fn forwarded_workspace_live_sync_target_session_id(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
+    ) -> Option<String> {
+        let config = self.owned.config_projection.snapshot();
+        let target_root =
+            crate::session::normalize_workspace_link_repo_root(context.target_repo_root.clone());
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .find_map(|session| {
+                session
+                    .workspace_links()
+                    .iter()
+                    .flat_map(|link| link.attachments())
+                    .any(|attachment| {
+                        forwarded_workspace_live_sync_attachment_matches_context(
+                            attachment,
+                            context,
+                            &config.daemon_id,
+                            &target_root,
+                        )
+                    })
+                    .then(|| session.id().to_string())
+            })
+    }
+
     fn forwarded_workspace_live_sync_identity_conflict(
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext,
@@ -546,13 +594,24 @@ impl KernelRuntimeState {
         change: &crate::git_observer::WorkspaceLiveSyncChange,
         target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
     ) {
+        self.record_workspace_live_sync_notices_for_session(
+            &change.session_id,
+            Some(&change.provider_run_id),
+            change,
+            target_results,
+        );
+    }
+
+    fn record_workspace_live_sync_notices_for_session(
+        &self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        change: &crate::git_observer::WorkspaceLiveSyncChange,
+        target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+    ) {
         for message in workspace_live_sync_notice_messages(change, target_results) {
-            self.owned.record_notice(
-                &change.session_id,
-                Some(&change.provider_run_id),
-                Vec::new(),
-                message,
-            );
+            self.owned
+                .record_notice(session_id, provider_run_id, Vec::new(), message);
         }
     }
 }
@@ -1143,6 +1202,111 @@ mod tests {
         assert_eq!(
             reverse_result.path_results[0].status,
             crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-forwarded-workspace-live-sync-notice-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let target = root.join("target");
+        init_repo_with_file(&target, "src/lib.rs", "seed\n");
+
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.daemon_id = "target-kernel".to_string();
+        let mut app = crate::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                target.to_string_lossy(),
+                target.to_string_lossy(),
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "target-terminal-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("terminal attachment should attach");
+        let target_session_id = session.id().to_string();
+        let target_attachment_id = attachment.id().to_string();
+        let machine_id = app.config_projection_store().snapshot().host_machine_id;
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        let (_, link) = runtime
+            .create_workspace_link(
+                &target_session_id,
+                "shared-remote".to_string(),
+                "target-user".to_string(),
+            )
+            .expect("workspace link should be created");
+        runtime
+            .attach_workspace_link(
+                &target_session_id,
+                link.link_id(),
+                "target-user".to_string(),
+                machine_id,
+                "target-kernel".to_string(),
+                target.to_string_lossy().to_string(),
+                crate::git_observer::workspace_live_sync_git_branch(&target),
+                crate::git_observer::workspace_live_sync_repo_fingerprint(&target),
+            )
+            .expect("target worktree should attach");
+
+        let change = workspace_live_sync_text_change(
+            "home-session",
+            "source-agent",
+            "source-provider-run",
+            "source-prompt",
+            std::path::Path::new("/tmp/source-worktree"),
+            "seed\n",
+            "seed\nfrom source\n",
+        );
+        let result = runtime.apply_forwarded_workspace_live_sync_change(
+            crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
+                home_session_id: "home-session".to_string(),
+                link_id: link.link_id().to_string(),
+                link_name: link.name().to_string(),
+                source_agent_id: "source-agent".to_string(),
+                source_worktree_path: "/tmp/source-worktree".to_string(),
+                target_user_id: "target-user".to_string(),
+                target_machine_id: "target-machine".to_string(),
+                target_kernel_id: "target-kernel".to_string(),
+                target_repo_root: target.to_string_lossy().to_string(),
+            },
+            change,
+        );
+
+        assert_eq!(
+            result.path_results[0].status,
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs"))
+                .expect("target file should be readable"),
+            "seed\nfrom source\n"
+        );
+        let notices = runtime
+            .drain_notice_records(&target_session_id, &target_attachment_id)
+            .await;
+        assert!(
+            notices.iter().any(|notice| {
+                notice.session_id == target_session_id
+                    && notice.provider_run_id.is_none()
+                    && notice
+                        .message
+                        .contains("Workspace live sync tracked turn summary")
+                    && notice.message.contains("source agent `source-agent`")
+                    && notice.message.contains("target user `target-user`")
+                    && notice.message.contains("Next action: none")
+            }),
+            "forwarded workspace live sync apply should notify target session: {notices:?}"
         );
 
         let _ = std::fs::remove_dir_all(root);
