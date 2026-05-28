@@ -910,6 +910,28 @@ service = "arroba-test"
     }
 
     #[test]
+    fn workspace_live_sync_policy_rejects_legacy_boolean_aliases() {
+        for alias in ["on", "true", "1", "off", "false", "0"] {
+            let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+            let error = config
+                .set_user_config_value("providers.workspace_live_sync", alias)
+                .expect_err("legacy workspace live sync aliases should be rejected");
+
+            assert!(
+                matches!(
+                    error,
+                    DaemonError::InvalidConfig {
+                        field: "providers.workspace_live_sync",
+                        ..
+                    }
+                ),
+                "alias {alias:?} should be rejected with an invalid config error"
+            );
+        }
+    }
+
+    #[test]
     fn user_config_schema_lists_settable_kernel_owned_keys() {
         let schema = DaemonConfig::user_config_schema();
         let workspace_live_sync = schema

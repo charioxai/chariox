@@ -221,8 +221,6 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
 }
 
 function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
-  if (value === "on") return "managed"
-  if (value === "off") return "unrestricted"
   if (value === "managed" || value === "tracked" || value === "unrestricted") return value
   return null
 }

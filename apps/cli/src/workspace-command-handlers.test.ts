@@ -86,6 +86,28 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   ])
 })
 
+test("workspace sync slash commands reject legacy mode aliases", async () => {
+  const footers: string[] = []
+  const modeUpdates: string[] = []
+  const deps = workspaceDeps({
+    setWorkspaceLiveSyncMode: async (mode) => {
+      modeUpdates.push(mode)
+    },
+    flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
+  })
+
+  await runWorkspace(deps, "/workspace sync mode on")
+  await runWorkspace(deps, "/workspace sync mode off")
+  await runWorkspace(deps, "/workspace sync enable on")
+
+  assert.deepEqual(modeUpdates, [])
+  assert.deepEqual(footers, [
+    "error:usage: /workspace sync mode managed|tracked|unrestricted",
+    "error:usage: /workspace sync mode managed|tracked|unrestricted",
+    "error:usage: /workspace sync enable [managed|tracked]",
+  ])
+})
+
 test("workspace sync link uses sync-specific attach wording", async () => {
   const link: WorkspaceLinkDefinition = {
     link_id: "link-1",

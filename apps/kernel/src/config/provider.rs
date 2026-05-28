@@ -108,9 +108,9 @@ pub enum WorkspaceLiveSyncMode {
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "required" | "on" | "true" | "1" => Ok(Self::Managed),
+            "required" => Ok(Self::Managed),
             "tracked" => Ok(Self::Tracked),
-            "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
+            "unrestricted" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
                 field: "providers.workspace_live_sync",
                 message: "value must be `required`, `tracked`, or `unrestricted`",

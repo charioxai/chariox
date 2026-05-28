@@ -567,6 +567,9 @@ test("executeShellCommand manages workspace links", async () => {
   const enableTrackedResult = await executeShellCommand(parseShellCommand("workspace sync enable tracked"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
   const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
+  const legacyModeOnResult = await executeShellCommand(parseShellCommand("workspace sync mode on"), context, { client: fake.client })
+  const legacyModeOffResult = await executeShellCommand(parseShellCommand("workspace sync mode off"), context, { client: fake.client })
+  const legacyEnableOnResult = await executeShellCommand(parseShellCommand("workspace sync enable on"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
   const invalidResourceResult = await executeShellCommand(parseShellCommand("workspace unknown"), context, { client: fake.client })
 
@@ -586,6 +589,9 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(enableTrackedResult.message ?? "", /enabled: tracked/)
   assert.match(disableResult.message ?? "", /disabled/)
   assert.match(syncLinkResult.message ?? "", /recommended mode: managed/)
+  assert.match(legacyModeOnResult.message ?? "", /usage: workspace sync mode managed\|tracked\|unrestricted/)
+  assert.match(legacyModeOffResult.message ?? "", /usage: workspace sync mode managed\|tracked\|unrestricted/)
+  assert.match(legacyEnableOnResult.message ?? "", /usage: workspace sync enable \[managed\|tracked\]/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.match(invalidResourceResult.message ?? "", /workspace sync .*link/)
   assert.deepEqual(requests, [
