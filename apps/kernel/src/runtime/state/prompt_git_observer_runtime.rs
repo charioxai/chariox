@@ -787,6 +787,36 @@ fn forwarded_workspace_live_sync_attachment_matches_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn owned_runtime_state(app: &Arc<Mutex<crate::DaemonApp>>) -> KernelRuntimeState {
+        let app_locked = app.lock().await;
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.slices(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
 
     #[test]
     fn workspace_live_sync_summary_names_targets_paths_and_next_action() {
@@ -951,6 +981,127 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn workspace_live_sync_fans_out_to_second_user_attached_fork() {
+        use base64::Engine as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workspace-live-sync-collab-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let source = root.join("source");
+        let target = root.join("target-fork");
+        init_repo_with_file(&source, "src/lib.rs", "seed\n");
+        init_repo_with_file(&target, "src/lib.rs", "seed\n");
+
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                source.to_string_lossy(),
+                source.to_string_lossy(),
+            ))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let daemon_id = app.config_projection_store().snapshot().daemon_id;
+        let machine_id = app.config_projection_store().snapshot().host_machine_id;
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        let (_, invite) = runtime
+            .create_session_invite(
+                &session_id,
+                "invite-user-2".to_string(),
+                "local".to_string(),
+                None,
+                None,
+                crate::session::CollaborationLevel::Full,
+            )
+            .expect("invite should be created");
+        runtime
+            .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+            .expect("user-2 should join");
+        let (_, link) = runtime
+            .create_workspace_link(&session_id, "shared-fork".to_string(), "local".to_string())
+            .expect("workspace link should be created");
+        let source_branch = crate::git_observer::workspace_live_sync_git_branch(&source);
+        let target_branch = crate::git_observer::workspace_live_sync_git_branch(&target);
+        let source_fingerprint = crate::git_observer::workspace_live_sync_repo_fingerprint(&source);
+        let target_fingerprint = crate::git_observer::workspace_live_sync_repo_fingerprint(&target);
+        runtime
+            .attach_workspace_link(
+                &session_id,
+                link.link_id(),
+                "local".to_string(),
+                machine_id.clone(),
+                daemon_id.clone(),
+                source.to_string_lossy().to_string(),
+                source_branch,
+                source_fingerprint,
+            )
+            .expect("source worktree should attach");
+        runtime
+            .attach_workspace_link(
+                &session_id,
+                link.link_id(),
+                "user-2".to_string(),
+                machine_id,
+                daemon_id,
+                target.to_string_lossy().to_string(),
+                target_branch,
+                target_fingerprint,
+            )
+            .expect("second user target worktree should attach");
+
+        std::fs::write(source.join("src/lib.rs"), "seed\nagent change\n")
+            .expect("source should change");
+        let change = crate::git_observer::WorkspaceLiveSyncChange {
+            session_id: session_id.clone(),
+            agent_id: "agent-source".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: source.to_string_lossy().to_string(),
+            worktree_path: source.to_string_lossy().to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec!["src/lib.rs".to_string()],
+            file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
+                path: "src/lib.rs".to_string(),
+                previous_path: None,
+                kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
+                before_content_base64: Some(
+                    base64::engine::general_purpose::STANDARD.encode("seed\n"),
+                ),
+                after_content_base64: Some(
+                    base64::engine::general_purpose::STANDARD.encode("seed\nagent change\n"),
+                ),
+                binary: false,
+            }],
+            status_fingerprint: "tracked_workspace_live_sync".to_string(),
+        };
+
+        runtime
+            .record_and_fanout_workspace_live_sync_change(change, None)
+            .await;
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs"))
+                .expect("target file should be readable"),
+            "seed\nagent change\n"
+        );
+        let results = runtime.workspace_live_sync_target_results(&session_id);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].target_user_id, "user-2");
+        assert_eq!(results[0].source_agent_id, "agent-source");
+        assert_eq!(results[0].path_results[0].path, "src/lib.rs");
+        assert_eq!(
+            results[0].path_results[0].status,
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn change(status_fingerprint: &str) -> crate::git_observer::WorkspaceLiveSyncChange {
         crate::git_observer::WorkspaceLiveSyncChange {
             session_id: "session-1".to_string(),
@@ -1005,5 +1156,35 @@ mod tests {
             status,
             message: message.to_string(),
         }
+    }
+
+    fn init_repo_with_file(root: &std::path::Path, relative_path: &str, content: &str) {
+        std::fs::create_dir_all(root.join(std::path::Path::new(relative_path).parent().unwrap()))
+            .expect("fixture directory should be created");
+        run_git(root, &["init", "-b", "main"]);
+        run_git(
+            root,
+            &["config", "user.email", "workspace-live-sync@example.com"],
+        );
+        run_git(root, &["config", "user.name", "Workspace Live Sync"]);
+        std::fs::write(root.join(relative_path), content).expect("fixture file should be written");
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "seed"]);
+    }
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        std::fs::create_dir_all(cwd).expect("git cwd should exist");
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
