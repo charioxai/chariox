@@ -133,7 +133,10 @@ async function executeWorkspaceSyncCommand(
       ok: true,
       message: payload.status.targets.length === 0
         ? "no workspace live sync targets"
-        : payload.status.targets.map((target) => `${target.status} ${target.link_name}: ${target.repo_root}`).join("\n"),
+        : payload.status.targets.map((target) => {
+          const branch = target.branch ? ` branch=${target.branch}` : ""
+          return `${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
+        }).join("\n"),
       data: payload,
     }
   }
