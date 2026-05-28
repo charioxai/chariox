@@ -24,11 +24,18 @@ function parseArgs(argv) {
     machineRef: null,
     rootDir: null,
     afterFixtureCommand: null,
+    providerModels: {},
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--provider') options.provider = argv[++i]
+    if (arg === '--') continue
+    else if (arg === '--provider') options.provider = argv[++i]
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
@@ -45,6 +52,7 @@ function parseArgs(argv) {
         'Options:',
         '  --provider <codex|opencode>',
         '  --model <provider model override>',
+        '  --provider-model <provider=model>',
         '  --kernel <ws://...> (reuse an already-running kernel)',
         '  --no-spawn-daemon',
         '  --machine-ref <remote machine id or alias>',
@@ -280,7 +288,7 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
-  const model = options.model ?? defaultModelForProvider(provider)
+  const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
   const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')

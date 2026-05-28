@@ -23,6 +23,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Updated `docs/PROTOCOL.md` section 5.0.1 from managed-only wording to the current Workspace Live Sync contract: managed and tracked modes, turn-end tracked fanout, `.arrobaignore` plus force-excludes, explicit workspace-link requirements, relay apply/status shapes, no auto commits, conflict surfacing, and resolver-entry convergence.
 - Re-ran `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`; 124 focused kernel tests passed, including protocol shape/version hashes, relay apply shape, ignore initialization/force-excludes, journal sequencing, tracked snapshots, rebase/conflict handling, membership auth, and relay peer application.
 
+### Workspace live sync validation aliases
+
+- Added explicit `@arroba/cli` aliases for Codex managed, tracked, permission, remote managed, remote tracked, and remote permission Workspace Live Sync drills so the validated local/relay matrix can be rerun without reconstructing long command lines.
+- Made the local and remote permission drill parsers accept the normal `pnpm run <script> -- <args>` separator; the local permission drill also accepts `--provider-model PROVIDER=MODEL`, matching the other Workspace Live Sync wrappers.
+- Verified all Workspace Live Sync aliases reach `--help`, and re-ran `pnpm --filter @arroba/cli test`; 1065 tests passed.
+
 ## 2026-05-15
 
 ### M14B actual Hetzner native TUI worker validation

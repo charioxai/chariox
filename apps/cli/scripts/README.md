@@ -21,6 +21,17 @@ node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex
 
 Add OpenCode to the workspace live sync drills only when OpenCode auth is healthy; current failures with `Token refresh failed: 401` happen before workspace live sync behavior is exercised.
 
+Workspace Live Sync validation aliases:
+
+```bash
+pnpm --filter @arroba/cli run workspace-live-sync:managed-drill
+pnpm --filter @arroba/cli run workspace-live-sync:tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:permission-drill
+pnpm --filter @arroba/cli run workspace-live-sync:remote-managed-drill
+pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill
+pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
+```
+
 ## Wrapper Scripts
 
 Remote wrapper drills must forward `--provider-model PROVIDER=MODEL` to their child drill scripts. This keeps local and remote provider sessions on the same model policy.

@@ -55,7 +55,8 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
+    if (arg === '--') continue
+    else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--provider-model') {
