@@ -49,7 +49,7 @@ Terminology:
 ## Existing Automation
 
 - Local freeform multi-agent: `node apps/cli/scripts/live-freeform-multi-agent-drill.mjs --providers opencode,codex`
-- Local workspace live sync: `pnpm --filter @arroba/cli run workspace-live-sync:drill` for smoke, `workspace-live-sync:managed-drill` for two-target managed fanout, `workspace-live-sync:tracked-drill` for two-target bidirectional tracked fanout, and `workspace-live-sync:permission-drill` for permission gating. Add OpenCode only when provider auth is healthy.
+- Local workspace live sync: `pnpm --filter @arroba/cli run workspace-live-sync:drill` for smoke, `workspace-live-sync:managed-drill` for two-target managed fanout, `workspace-live-sync:same-branch-tracked-drill` for same-branch tracked fanout, `workspace-live-sync:tracked-drill` for cross-branch bidirectional tracked fanout, and `workspace-live-sync:permission-drill` for permission gating. Add OpenCode only when provider auth is healthy.
 - Local runtime MCP reattach: `node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex` or `pnpm --filter @arroba/cli run runtime-mcp-reattach:drill`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
   - Add `--no-early-pass` when validating the full `immediate-release-downstream` completion path instead of only the immediate release point.

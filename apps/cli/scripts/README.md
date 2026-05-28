@@ -25,6 +25,7 @@ Workspace Live Sync validation aliases:
 
 ```bash
 pnpm --filter @arroba/cli run workspace-live-sync:managed-drill
+pnpm --filter @arroba/cli run workspace-live-sync:same-branch-tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:permission-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-managed-drill
