@@ -295,6 +295,159 @@ export type WorkspaceLiveSyncStatus = {
   ignore: WorkspaceLiveSyncIgnoreStatus
 }
 
+export type ProjectionMetadata = {
+  projection_version: number
+  last_event_id: number
+  generated_at_ms: number
+}
+
+export type ActorQueueSnapshot = {
+  lane_id: string
+  queue_limit: number
+  queued_commands: number
+}
+
+export type SessionProjectionHealthSnapshot = {
+  projected_sessions: number
+  projected_session_list_entries?: number | null
+  active_prompts: number
+  queued_prompts: number
+}
+
+export type AgentRuntimeProjectionHealthSnapshot = {
+  projected_agents: number
+  active_prompts: number
+  queued_prompts: number
+}
+
+export type ProviderRunActorHealthSnapshot = {
+  enqueued_commands: number
+  enqueue_rejections: number
+}
+
+export type CapabilityExecutorHealthSnapshot = {
+  max_concurrent_jobs: number
+  available_permits: number
+  submitted_jobs: number
+  running_jobs: number
+  completed_jobs: number
+  failed_jobs: number
+  rejected_jobs: number
+  join_errors: number
+}
+
+export type ProviderCatalogHealthSnapshot = {
+  cached: boolean
+  expired: boolean
+  age_ms?: number | null
+  ttl_ms: number
+}
+
+export type TransportHealthSnapshot = {
+  active_connections: number
+  active_subscriptions: number
+  retained_event_limit: number
+  command_result_cache_limit: number
+  inbound_request_limit: number
+  incoming_requests: number
+  emitted_events: number
+  replay_gaps: number
+  inbound_overload_rejections: number
+  duplicate_command_conflicts: number
+  outgoing_queue_overflows: number
+  slow_consumer_closes: number
+}
+
+export type TerminalStreamHealthSnapshot = {
+  pending_output_records: number
+  pending_notice_records: number
+  pending_completion_records: number
+  pending_output_record_limit_per_attachment: number
+  trimmed_pending_output_recipients: number
+}
+
+export type WorktreeClaimSnapshot = {
+  workspace_id: string
+  worktree_id: string
+  session_ids: string[]
+}
+
+export type WorkspaceOperationClaimSnapshot = {
+  claim_id: string
+  workspace_id: string
+  worktree_id: string
+  session_id: string
+  attachment_id?: string | null
+  operation: string
+  mode: "read" | "write"
+}
+
+export type WorkspaceCoordinationHealthSnapshot = {
+  active_worktree_claims: WorktreeClaimSnapshot[]
+  worktree_collisions: WorktreeClaimSnapshot[]
+  active_operation_claims: WorkspaceOperationClaimSnapshot[]
+}
+
+export type WorkspaceIdentityMonitorHealthSnapshot = {
+  tracked_provider_runs: number
+  identity_changed_provider_runs: number
+  invalid_provider_runs: number
+  current_generation_total: number
+}
+
+export type ArtifactExternalChangeHealthSnapshot = {
+  tracked_artifacts: number
+  externally_changed_artifacts: number
+  external_change_events: number
+  live_watcher_started: boolean
+  live_watcher_scans: number
+  live_watcher_scan_errors: number
+}
+
+export type WorkspaceLiveSyncHealthSnapshot = {
+  active_reservations: number
+  active_reservation_artifacts: number
+  workspace_identity: WorkspaceIdentityMonitorHealthSnapshot
+  external_changes: ArtifactExternalChangeHealthSnapshot
+}
+
+export type ProjectionInvariantMismatch = {
+  kind: string
+  session_id: string
+  agent_id?: string | null
+  details: string
+}
+
+export type ProjectionInvariantHealthSnapshot = {
+  checked_sessions: number
+  checked_agents: number
+  mismatches: ProjectionInvariantMismatch[]
+}
+
+export type DaemonHealthProjection = {
+  metadata: ProjectionMetadata
+  session_command_lanes: ActorQueueSnapshot[]
+  agent_command_lanes: ActorQueueSnapshot[]
+  workflow_command_lanes: ActorQueueSnapshot[]
+  provider_runtime_lanes: ActorQueueSnapshot[]
+  provider_run_actor: ProviderRunActorHealthSnapshot
+  capability_executor: CapabilityExecutorHealthSnapshot
+  session_projection: SessionProjectionHealthSnapshot
+  agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot
+  provider_catalog: ProviderCatalogHealthSnapshot
+  transport: TransportHealthSnapshot
+  terminal_stream: TerminalStreamHealthSnapshot
+  workspace_coordination: WorkspaceCoordinationHealthSnapshot
+  workspace_live_sync: WorkspaceLiveSyncHealthSnapshot
+  projection_invariants: ProjectionInvariantHealthSnapshot
+}
+
+export type DaemonHealthResponse = {
+  DaemonHealth: {
+    projection: DaemonHealthProjection
+  }
+}
+
 export type SessionMember = {
   user_id: string
   joined_at_ms: number
