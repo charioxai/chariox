@@ -80,19 +80,21 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
         AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
-        AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
-        CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
-        DeleteKernelRequest, DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest,
-        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
+        AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
+        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+        CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteKernelRequest,
+        DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
+        FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
         GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
-        GetSessionHistoryRequest, GetSessionStateRequest, InvokeWorkflowEndpointRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        PumpTerminalOutputRequest, QueryRecallRequest, RelayStatusRequest,
-        RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
-        ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
-        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+        GetSessionHistoryRequest, GetSessionStateRequest, GetWorkspaceLiveSyncStatusRequest,
+        InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
+        QueryRecallRequest, RelayStatusRequest, RemoveWorkflowEdgeRequest, ResizeTerminalRequest,
+        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
+        SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
@@ -168,6 +170,7 @@ mod tests {
     mod interactive_command_admission;
     mod provider_projection;
     mod remote_authorization;
+    mod remote_workspace_live_sync_authorization;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_history_projection;
