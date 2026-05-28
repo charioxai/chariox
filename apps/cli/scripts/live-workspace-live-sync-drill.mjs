@@ -52,6 +52,7 @@ function parseArgs(argv) {
     mode: 'managed',
     targetBranch: 'main',
     trackedTargetCount: 1,
+    trackedBidirectional: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -77,6 +78,7 @@ function parseArgs(argv) {
     }
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
+    else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -112,6 +114,7 @@ function printHelp() {
     '  --mode managed|tracked',
     '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
     '  --tracked-target-count COUNT (tracked mode only; attach and validate multiple target workspaces)',
+    '  --tracked-bidirectional (tracked mode only; validate target-origin fanout back to source/sibling targets)',
   ].join('\n'))
 }
 
@@ -175,6 +178,7 @@ async function initTrackedWorkspace(workspace, provider, branch = 'main') {
   await mkdir(outputsDir, { recursive: true })
   await writeFile(path.join(workspace, '.gitignore'), 'ignored/\n*.secret\n', 'utf8')
   await writeFile(path.join(workspace, 'tracked.txt'), 'line-a\nline-b\n', 'utf8')
+  await writeFile(path.join(workspace, 'target-origin.txt'), 'target-origin-a\ntarget-origin-b\n', 'utf8')
   await writeFile(path.join(outputsDir, `${provider}-tracked-delete.txt`), 'delete me\n', 'utf8')
   await writeFile(path.join(outputsDir, `${provider}-tracked-rename-source.txt`), 'rename me\n', 'utf8')
   await writeFile(path.join(outputsDir, `${provider}-tracked-rebase.txt`), 'alpha\nbeta\nomega\n', 'utf8')
@@ -192,6 +196,11 @@ async function initTrackedWorkspace(workspace, provider, branch = 'main') {
 async function gitHead(workspace) {
   const { stdout } = await runCommand('git', ['rev-parse', 'HEAD'], workspace)
   return stdout.trim()
+}
+
+async function resetTrackedWorkspace(workspace) {
+  await runCommand('git', ['reset', '--hard', 'HEAD'], workspace)
+  await runCommand('git', ['clean', '-fdx'], workspace)
 }
 
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
@@ -1042,6 +1051,133 @@ async function waitForTrackedFanout({
   throw new Error(`timed out waiting for tracked workspace live sync fanout; lastStatus=${JSON.stringify(lastStatus)}`)
 }
 
+async function waitForTrackedTargetOriginFanout({
+  client,
+  sessionId,
+  attachmentId,
+  getWorkspaceLiveSyncStatusRequest,
+  allWorkspaces,
+  statusTargetWorkspaces,
+  provider,
+  timeoutMs,
+  pollMs,
+}) {
+  const expectedText = `${provider}-target-origin-modified\n`
+  const expectedAdded = `${provider}-target-origin-added\n`
+  let lastStatus = null
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    lastStatus = unwrapVariant(
+      await client.send(getWorkspaceLiveSyncStatusRequest(sessionId)),
+      'WorkspaceLiveSyncStatus',
+    ).status
+    let contentOk = true
+    for (const workspace of allWorkspaces) {
+      const textPath = path.join(workspace, 'target-origin.txt')
+      const addedPath = path.join(workspace, 'outputs', `${provider}-target-origin-added.txt`)
+      if (!(await fileExists(textPath)) || (await readFile(textPath, 'utf8')) !== expectedText) {
+        contentOk = false
+        break
+      }
+      if (!(await fileExists(addedPath)) || (await readFile(addedPath, 'utf8')) !== expectedAdded) {
+        contentOk = false
+        break
+      }
+    }
+    const hasTargets = statusTargetWorkspaces.every((workspace) =>
+      (lastStatus.targets ?? []).some((target) => target.repo_root === workspace)
+    )
+    if (contentOk && hasTargets) return lastStatus
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for tracked target-origin fanout; lastStatus=${JSON.stringify(lastStatus)}`)
+}
+
+async function runTrackedTargetOriginPhase({
+  client,
+  session,
+  attachment,
+  events,
+  provider,
+  agent,
+  workspace,
+  targetWorkspaces,
+  historyDir,
+  timeoutMs,
+  pollMs,
+  getSessionStateRequest,
+  getWorkspaceLiveSyncStatusRequest,
+  submitPromptRequest,
+}) {
+  const allWorkspaces = [workspace, ...targetWorkspaces]
+  const headsBefore = Object.fromEntries(await Promise.all(allWorkspaces.map(async (worktree) => [worktree, await gitHead(worktree)])))
+  const completionSinceMs = Date.now()
+  const marker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_TARGET_ORIGIN_DONE`
+  await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    'This is a live Arroba workspace live sync tracked-mode target-origin drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    `Run direct writes in the current workspace so that target-origin.txt becomes exactly "${provider}-target-origin-modified\\n".`,
+    `Create outputs/${provider}-target-origin-added.txt containing exactly "${provider}-target-origin-added\\n".`,
+    `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
+  ].join('\n'), []))
+
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    events,
+    expectedCompletionCount: events.filter((event) => event.event === 'assistant_message_completed').length + 1,
+    completionSinceMs,
+    requiredFiles: [
+      path.join(targetWorkspaces[0], 'outputs', `${provider}-target-origin-added.txt`),
+    ],
+    forbiddenFiles: [],
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryOutputMarkers({
+    historyDir,
+    markerGroups: [[marker]],
+    sinceMs: completionSinceMs,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [agent.id],
+    getSessionStateRequest,
+    timeoutMs,
+    pollMs,
+  })
+  const status = await waitForTrackedTargetOriginFanout({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    getWorkspaceLiveSyncStatusRequest,
+    allWorkspaces,
+    statusTargetWorkspaces: targetWorkspaces,
+    provider,
+    timeoutMs,
+    pollMs,
+  })
+  const headsAfter = Object.fromEntries(await Promise.all(allWorkspaces.map(async (worktree) => [worktree, await gitHead(worktree)])))
+  const changedHead = allWorkspaces.find((worktree) => headsAfter[worktree] !== headsBefore[worktree])
+  if (changedHead) {
+    const headSummary = allWorkspaces.map((worktree) => `${worktree}: ${headsBefore[worktree]} -> ${headsAfter[worktree]}`).join('; ')
+    throw new Error(`tracked target-origin fanout unexpectedly created commits; ${headSummary}`)
+  }
+  return {
+    sourceWorkspace: targetWorkspaces[0],
+    targetWorkspaces: allWorkspaces.filter((worktree) => worktree !== targetWorkspaces[0]),
+    headsBefore,
+    headsAfter,
+    status,
+  }
+}
+
 async function runTrackedWorkspaceLiveSyncDrill({
   client,
   session,
@@ -1049,6 +1185,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
   events,
   provider,
   agent,
+  targetOriginAgent,
   spawnedSessionId,
   workspace,
   targetWorkspace,
@@ -1066,6 +1203,31 @@ async function runTrackedWorkspaceLiveSyncDrill({
   options,
 }) {
   const trackedTargetWorkspaces = targetWorkspaces ?? [targetWorkspace]
+  let bidirectional = null
+  if (options.trackedBidirectional) {
+    if (!targetOriginAgent) {
+      throw new Error('tracked bidirectional drill requires a target-origin agent')
+    }
+    bidirectional = await runTrackedTargetOriginPhase({
+      client,
+      session,
+      attachment,
+      events,
+      provider,
+      agent: targetOriginAgent.agent,
+      workspace,
+      targetWorkspaces: trackedTargetWorkspaces,
+      historyDir,
+      timeoutMs,
+      pollMs,
+      getSessionStateRequest,
+      getWorkspaceLiveSyncStatusRequest,
+      submitPromptRequest,
+    })
+    for (const worktree of [workspace, ...trackedTargetWorkspaces]) {
+      await resetTrackedWorkspace(worktree)
+    }
+  }
   const sourceHeadBefore = await gitHead(workspace)
   const targetHeadsBefore = Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await gitHead(target)])))
   for (const target of trackedTargetWorkspaces) {
@@ -1227,6 +1389,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
       targetArrobaignore: await readFile(path.join(targetWorkspace, '.arrobaignore'), 'utf8'),
       targetArrobaignores: Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await readFile(path.join(target, '.arrobaignore'), 'utf8')]))),
     },
+    bidirectional,
     workspaceLiveSyncStatus: status,
     providerProcesses: processes.map((process) => ({
       processId: process.process_id,
@@ -1364,6 +1527,18 @@ async function main() {
       spawnAgentRequest,
       aliasSuffix: 'positive',
     })
+    const targetOriginAgents = options.mode === 'tracked' && options.trackedBidirectional
+      ? await spawnWorkspaceLiveSyncPhaseAgents({
+          client,
+          sessionId: session.id,
+          providers: options.providers,
+          modelForProvider: (provider) => modelForProvider(provider, options),
+          workspace: targetWorkspace,
+          machineRef: options.machineRef,
+          spawnAgentRequest,
+          aliasSuffix: 'target-origin',
+        })
+      : []
 
     if (options.mode === 'tracked') {
       await runTrackedWorkspaceLiveSyncDrill({
@@ -1373,6 +1548,7 @@ async function main() {
         events,
         provider: options.providers[0],
         agent: agents[0].agent,
+        targetOriginAgent: targetOriginAgents[0],
         spawnedSessionId: agents[0].spawnedSessionId,
         workspace,
         targetWorkspace,
