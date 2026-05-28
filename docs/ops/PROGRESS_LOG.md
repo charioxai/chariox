@@ -12,6 +12,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Confirmed full Codex workspace live sync validation against the actual Hetzner worker in both tracked and managed modes. Tracked mode covered two targets, explicit cross-branch binding, bidirectional propagation, `.arrobaignore`, outside-turn ignore, no commits, conflict detection, and resolver convergence. Managed mode covered two targets, structured text/opaque writes, move/delete fanout, direct-write blocking, collision behavior, non-overlap rebase, and overlap rejection.
 - Current OpenCode live workspace sync drills are blocked before workspace live sync behavior by provider auth (`Token refresh failed: 401`). Treat current OpenCode live validation as an environment gap until auth is refreshed.
 
+### Workspace live sync drill entrypoint cleanup
+
+- Changed the `@arroba/cli` workspace live sync drill aliases to the currently green Codex `gpt-5.2` path, with OpenCode treated as an explicit add-on while provider auth is failing before runtime behavior.
+- Made the local and remote workspace live sync drill argument parsers tolerate the conventional `pnpm run <script> -- <args>` separator, and verified both aliases print help through that path.
+- Re-ran `pnpm --filter @arroba/cli test` and the focused remote workspace live sync membership authorization test. CLI tests passed with 1065 tests; the kernel test verified non-member denial plus member workspace-link create/attach/status identity recording.
+
 ## 2026-05-15
 
 ### M14B actual Hetzner native TUI worker validation
