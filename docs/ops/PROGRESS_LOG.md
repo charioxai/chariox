@@ -10,6 +10,8 @@ Chronological notes to preserve execution context between contributors/agents.
 - Bumped the local daemon protocol to 62 and refreshed kernel, TypeScript CLI/shell, iOS, and Cloud web request/response shapes. Provider launch paths now resolve Workspace Live Sync mode from the session override first, then the global launch policy.
 - Local validation passed after the split: `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture` (124 tests), `pnpm --filter @arroba/kernel-client test` (76 tests), `pnpm --filter @arroba/cli test` (1065 tests), `swift test --package-path apps/ios/ArrobaPackage` (65 tests), `/Users/miguel/arroba-cloud pnpm test` (Cloud API/worker/web suites), and syntax checks for changed live-drill scripts.
 - Local Codex live drills passed after the split: `workspace-live-sync:managed-drill` with two managed targets, `workspace-live-sync:tracked-drill` with two cross-branch tracked targets plus bidirectional fanout/resolver convergence, and `workspace-live-sync:permission-drill` with approval-gated write resumption. Scalingo/staging hosted drills remain intentionally deferred.
+- Same-host relay Codex drills passed after the split: `workspace-live-sync:remote-managed-drill`, `workspace-live-sync:remote-tracked-drill`, `workspace-live-sync:remote-permission-drill`, plus relay restart recovery in tracked mode with two tracked targets and bidirectional fanout.
+- Actual Hetzner-worker Codex drills passed after the split while Scalingo remained deferred: managed mode with two targets, tracked mode with two cross-branch targets and bidirectional fanout, and remote Workspace Live Sync permission gating.
 
 ### Workspace live sync local/client validation closure
 
