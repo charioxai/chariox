@@ -47,3 +47,14 @@ export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): 
   }
   return lines.join("\n")
 }
+
+export function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string {
+  const lines = status.sync_groups.map((group) => (
+    `group ${group.group_name} (${group.group_id}) targets=${group.target_count} ready=${group.ready_targets} degraded=${group.degraded_targets} conflicts=${group.conflicted_targets}`
+  ))
+  for (const target of status.targets) {
+    const branch = target.branch ? ` branch=${target.branch}` : ""
+    lines.push(`${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`)
+  }
+  return lines.length === 0 ? "no workspace live sync targets" : lines.join("\n")
+}

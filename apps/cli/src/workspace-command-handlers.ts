@@ -309,16 +309,15 @@ function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string 
 }
 
 function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string {
-  if (status.targets.length === 0) {
-    return "No workspace live sync targets."
-  }
   const groups = status.sync_groups.map((group) => (
     `Group ${group.group_name} (${group.group_id}) targets=${group.target_count} ready=${group.ready_targets} degraded=${group.degraded_targets} conflicts=${group.conflicted_targets}`
   ))
-  return status.targets.map((target) => {
+  const targets = status.targets.map((target) => {
     const branch = target.branch ? ` branch=${target.branch}` : ""
     return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
-  }).concat(groups).join("\n")
+  })
+  const lines = groups.concat(targets)
+  return lines.length === 0 ? "No workspace live sync targets." : lines.join("\n")
 }
 
 function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): string {

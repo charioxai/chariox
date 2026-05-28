@@ -99,6 +99,13 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     "info:workspace live sync enabled: tracked",
     "info:workspace live sync disabled",
   ])
+
+  status.targets = []
+  notices.length = 0
+  await runWorkspace(deps, "/workspace sync targets")
+  assert.match(notices[0] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
+  assert.doesNotMatch(notices[0] ?? "", /No workspace live sync targets/)
+  assert.equal(statusUpdates.length, 5)
 })
 
 test("workspace sync slash commands reject legacy mode aliases", async () => {

@@ -16,6 +16,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatWorkspaceLiveSyncTargets,
   formatWorkspaceLiveSyncStatus,
   formatWorkspaceLinkDetails,
   formatWorkspaceLinks,
@@ -131,12 +132,7 @@ async function executeWorkspaceSyncCommand(
     const payload = expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus")
     return {
       ok: true,
-      message: payload.status.targets.length === 0
-        ? "no workspace live sync targets"
-        : payload.status.targets.map((target) => {
-          const branch = target.branch ? ` branch=${target.branch}` : ""
-          return `${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
-        }).join("\n"),
+      message: formatWorkspaceLiveSyncTargets(payload.status),
       data: payload,
     }
   }
