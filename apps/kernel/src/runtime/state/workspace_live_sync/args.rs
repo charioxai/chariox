@@ -21,7 +21,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_edit_operation_from_args(
         }),
         (None, None) => Err(DaemonError::LocalTransport {
             operation: "runtime_tool_edit_artifact",
-            message: "managed text edits require old_text or range+old_text".to_string(),
+            message: "workspace live sync text edits require old_text or range+old_text"
+                .to_string(),
         }),
     }
 }

@@ -22,7 +22,8 @@ pub(super) fn dispatch_forwarded_edit(
     if domain != crate::io::ArtifactDomainKind::TextDocument {
         return Err(DaemonError::LocalTransport {
             operation: "forwarded_workspace_live_sync_edit_artifact",
-            message: "remote managed edit currently supports only text artifacts".to_string(),
+            message: "remote workspace live sync edit currently supports only text artifacts"
+                .to_string(),
         });
     }
     let operation = workspace_live_sync_edit_operation_from_args(args.clone())?;

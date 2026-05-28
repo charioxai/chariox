@@ -294,7 +294,7 @@ fn remote_workspace_live_sync_final_apply_writes_opaque_bytes() {
 }
 
 #[test]
-fn managed_whole_file_operations_move_and_delete_opaque_bytes() {
+fn workspace_live_sync_whole_file_operations_move_and_delete_opaque_bytes() {
     let root = std::env::temp_dir().join(format!(
         "arroba-managed-whole-file-{}",
         crate::session::unix_epoch_ms()
@@ -306,17 +306,17 @@ fn managed_whole_file_operations_move_and_delete_opaque_bytes() {
     let mut coordinator = crate::io::ArtifactEditCoordinator::new();
     let monitor = crate::io::ArtifactExternalChangeMonitor::default();
 
-    let result = apply_managed_whole_file_operations(
+    let result = apply_workspace_live_sync_whole_file_operations(
         &mut coordinator,
         workspace.clone(),
         root.clone(),
         crate::io::ArtifactDomainKind::OpaqueBlob,
         vec![
-            ManagedWholeFileOperation::Move {
+            WorkspaceLiveSyncWholeFileOperation::Move {
                 from_path: PathBuf::from("from.bin"),
                 to_path: PathBuf::from("to.bin"),
             },
-            ManagedWholeFileOperation::Delete {
+            WorkspaceLiveSyncWholeFileOperation::Delete {
                 path: PathBuf::from("delete.bin"),
             },
         ],
@@ -338,7 +338,7 @@ fn managed_whole_file_operations_move_and_delete_opaque_bytes() {
 }
 
 #[test]
-fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
+fn remote_workspace_live_sync_whole_file_operations_return_opaque_move_and_delete_states() {
     let root = std::env::temp_dir().join(format!(
         "remote-whole-file-repo-{}",
         crate::session::unix_epoch_ms()
@@ -366,16 +366,16 @@ fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
         ),
     ];
 
-    let (result, final_states) = apply_remote_managed_whole_file_operations(
+    let (result, final_states) = apply_remote_workspace_live_sync_whole_file_operations(
         &mut coordinator,
         workspace.clone(),
         crate::io::ArtifactDomainKind::OpaqueBlob,
         vec![
-            ManagedWholeFileOperation::Move {
+            WorkspaceLiveSyncWholeFileOperation::Move {
                 from_path: PathBuf::from("from.bin"),
                 to_path: PathBuf::from("to.bin"),
             },
-            ManagedWholeFileOperation::Delete {
+            WorkspaceLiveSyncWholeFileOperation::Delete {
                 path: PathBuf::from("delete.bin"),
             },
         ],
@@ -417,7 +417,7 @@ fn remote_managed_whole_file_operations_return_opaque_move_and_delete_states() {
 }
 
 #[test]
-fn remote_managed_opaque_move_final_apply_preserves_deleted_source_domain() {
+fn remote_workspace_live_sync_opaque_move_final_apply_preserves_deleted_source_domain() {
     let root = std::env::temp_dir().join(format!(
         "arroba-remote-managed-opaque-move-{}",
         crate::session::unix_epoch_ms()
@@ -446,11 +446,11 @@ fn remote_managed_opaque_move_final_apply_preserves_deleted_source_domain() {
         ),
     ];
 
-    let (result, final_states) = apply_remote_managed_whole_file_operations(
+    let (result, final_states) = apply_remote_workspace_live_sync_whole_file_operations(
         &mut coordinator,
         workspace.clone(),
         crate::io::ArtifactDomainKind::OpaqueBlob,
-        vec![ManagedWholeFileOperation::Move {
+        vec![WorkspaceLiveSyncWholeFileOperation::Move {
             from_path: PathBuf::from("from.bin"),
             to_path: PathBuf::from("to.bin"),
         }],
@@ -487,7 +487,7 @@ fn remote_managed_opaque_move_final_apply_preserves_deleted_source_domain() {
 }
 
 #[test]
-fn remote_managed_patch_operations_return_move_and_delete_final_states() {
+fn remote_workspace_live_sync_patch_operations_return_move_and_delete_final_states() {
     let root = std::env::temp_dir().join(format!(
         "arroba-remote-managed-patch-{}",
         crate::session::unix_epoch_ms()
@@ -508,7 +508,7 @@ fn remote_managed_patch_operations_return_move_and_delete_final_states() {
         remote_workspace_live_sync_state(&PathBuf::from("c.txt"), Some("delete me\n".to_string())),
     ];
 
-    let (result, final_states) = apply_remote_managed_patch_operations(
+    let (result, final_states) = apply_remote_workspace_live_sync_patch_operations(
         &mut coordinator,
         workspace.clone(),
         crate::io::ArtifactDomainKind::TextDocument,

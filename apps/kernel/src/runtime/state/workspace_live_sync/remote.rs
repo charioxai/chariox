@@ -66,7 +66,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
                 operation: "remote_workspace_live_sync_apply_patch_state",
                 message: format!("invalid tool arguments: {error}"),
             })?;
-            let operations = parse_managed_apply_patch(&args.patch_text)?;
+            let operations = parse_workspace_live_sync_apply_patch(&args.patch_text)?;
             remote_workspace_live_sync_states_for_patch_operations(workspace_root, &operations)
         }
         crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {

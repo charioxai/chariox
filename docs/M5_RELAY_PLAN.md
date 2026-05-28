@@ -154,7 +154,7 @@ The open-source path must support:
 
 This is the baseline remote story for the repository itself.
 
-## Planned Managed Integration Boundary
+## Planned Hosted Integration Boundary
 
 Later, an external service may provide:
 

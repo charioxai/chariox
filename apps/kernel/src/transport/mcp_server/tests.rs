@@ -379,7 +379,10 @@ async fn mcp_resource_and_prompt_discovery_return_empty_lists() {
 
 #[tokio::test]
 async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should exist");
@@ -475,7 +478,7 @@ async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
 }
 
 #[tokio::test]
-async fn mcp_http_tools_call_reads_and_edits_managed_artifact() {
+async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
     let root = std::env::temp_dir().join(format!(
         "arroba-workspace-live-sync-mcp-test-{}",
         std::time::SystemTime::now()
@@ -486,11 +489,21 @@ async fn mcp_http_tools_call_reads_and_edits_managed_artifact() {
     std::fs::create_dir_all(&root).expect("test root should be created");
     std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
 
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let worktree = root.to_string_lossy().to_string();
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", &worktree))
         .expect("session should exist");
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "mcp-workspace-live-sync-test",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
     let agent_id = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")

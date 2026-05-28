@@ -97,7 +97,8 @@ impl KernelRuntimeState {
                 if domain != crate::io::ArtifactDomainKind::TextDocument {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_edit_artifact",
-                        message: "managed edit currently supports only text artifacts".to_string(),
+                        message: "workspace live sync edit currently supports only text artifacts"
+                            .to_string(),
                     });
                 }
                 let operation = match (args.range, args.old_text) {
@@ -119,8 +120,9 @@ impl KernelRuntimeState {
                     (None, None) => {
                         return Err(DaemonError::LocalTransport {
                             operation: "runtime_tool_edit_artifact",
-                            message: "managed text edits require old_text or range+old_text"
-                                .to_string(),
+                            message:
+                                "workspace live sync text edits require old_text or range+old_text"
+                                    .to_string(),
                         });
                     }
                 };
@@ -130,7 +132,7 @@ impl KernelRuntimeState {
                     &path,
                     "runtime_tool_edit_artifact",
                 )?;
-                let managed_fanout_before =
+                let managed_mode_fanout_before =
                     workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)?;
                 let before = workspace_live_sync_text_for_diff(&workspace_root, &path, false);
                 let reservation_ranges = workspace_live_sync_reservation_ranges_for_operation(
@@ -189,12 +191,12 @@ impl KernelRuntimeState {
                 let after = workspace_live_sync_result_applied(&result)
                     .then(|| workspace_live_sync_text_for_diff(&workspace_root, &path, true))
                     .flatten();
-                let managed_fanout_change =
+                let managed_mode_fanout_change =
                     workspace_live_sync_result_applied(&result).then(|| {
-                        workspace_live_sync_managed_file_change(
+                        workspace_live_sync_managed_mode_file_change(
                             path.clone(),
                             None,
-                            managed_fanout_before,
+                            managed_mode_fanout_before,
                             workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)
                                 .ok()
                                 .flatten(),
@@ -210,7 +212,7 @@ impl KernelRuntimeState {
                     external_change_notice,
                 );
                 add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
-                if let Some(file_change) = managed_fanout_change {
+                if let Some(file_change) = managed_mode_fanout_change {
                     drop(coordinator);
                     self.record_and_fanout_managed_workspace_live_sync_change(
                         provider_run,
@@ -237,14 +239,17 @@ impl KernelRuntimeState {
                 if domain != crate::io::ArtifactDomainKind::TextDocument {
                     return Err(DaemonError::LocalTransport {
                         operation: "runtime_tool_apply_patch",
-                        message: "managed apply_patch currently supports only text artifacts"
-                            .to_string(),
+                        message:
+                            "workspace live sync apply_patch currently supports only text artifacts"
+                                .to_string(),
                     });
                 }
-                let operations = parse_managed_apply_patch(&args.patch_text)?;
-                let managed_fanout_before =
-                    workspace_live_sync_managed_before_snapshots(&workspace_root, &operations)?;
-                let mut output = apply_managed_patch_operations(
+                let operations = parse_workspace_live_sync_apply_patch(&args.patch_text)?;
+                let managed_mode_fanout_before = workspace_live_sync_managed_mode_before_snapshots(
+                    &workspace_root,
+                    &operations,
+                )?;
+                let mut output = apply_workspace_live_sync_patch_operations(
                     &mut coordinator,
                     workspace_identity,
                     workspace_root.clone(),
@@ -255,10 +260,10 @@ impl KernelRuntimeState {
                 )?;
                 add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
                 if workspace_live_sync_runtime_tool_applied(&output) {
-                    let file_changes = workspace_live_sync_managed_patch_file_changes(
+                    let file_changes = workspace_live_sync_managed_mode_patch_file_changes(
                         &workspace_root,
                         &operations,
-                        managed_fanout_before,
+                        managed_mode_fanout_before,
                     )?;
                     drop(coordinator);
                     self.record_and_fanout_managed_workspace_live_sync_change(
@@ -284,10 +289,10 @@ impl KernelRuntimeState {
                     args.domain.as_deref(),
                 )?;
                 let path = PathBuf::from(args.path);
-                let managed_fanout_before =
+                let managed_mode_fanout_before =
                     workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)?;
                 let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
-                    apply_managed_patch_operations(
+                    apply_workspace_live_sync_patch_operations(
                         &mut coordinator,
                         workspace_identity,
                         workspace_root.clone(),
@@ -297,22 +302,22 @@ impl KernelRuntimeState {
                         &self.owned.workspace_live_sync_external_changes,
                     )?
                 } else {
-                    apply_managed_whole_file_operations(
+                    apply_workspace_live_sync_whole_file_operations(
                         &mut coordinator,
                         workspace_identity,
                         workspace_root.clone(),
                         domain,
-                        vec![ManagedWholeFileOperation::Delete { path: path.clone() }],
+                        vec![WorkspaceLiveSyncWholeFileOperation::Delete { path: path.clone() }],
                         workspace_live_sync_reservation_owner(provider_run, tool_name),
                         &self.owned.workspace_live_sync_external_changes,
                     )?
                 };
                 add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
                 if workspace_live_sync_runtime_tool_applied(&output) {
-                    let file_change = workspace_live_sync_managed_file_change(
+                    let file_change = workspace_live_sync_managed_mode_file_change(
                         path.clone(),
                         None,
-                        managed_fanout_before,
+                        managed_mode_fanout_before,
                         workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)?,
                     );
                     drop(coordinator);
@@ -340,11 +345,11 @@ impl KernelRuntimeState {
                 )?;
                 let from_path = PathBuf::from(args.from_path.clone());
                 let to_path = PathBuf::from(args.to_path.clone());
-                let managed_fanout_before =
+                let managed_mode_fanout_before =
                     workspace_live_sync_managed_read_optional_bytes(&workspace_root, &from_path)?;
                 let (old_text, new_text) = args.normalized_text_transform_fields();
                 let mut output = if domain == crate::io::ArtifactDomainKind::TextDocument {
-                    apply_managed_patch_operations(
+                    apply_workspace_live_sync_patch_operations(
                         &mut coordinator,
                         workspace_identity,
                         workspace_root.clone(),
@@ -365,12 +370,12 @@ impl KernelRuntimeState {
                             message: "non-text managed moves cannot transform content; omit old_text and new_text".to_string(),
                         });
                     }
-                    apply_managed_whole_file_operations(
+                    apply_workspace_live_sync_whole_file_operations(
                         &mut coordinator,
                         workspace_identity,
                         workspace_root.clone(),
                         domain,
-                        vec![ManagedWholeFileOperation::Move {
+                        vec![WorkspaceLiveSyncWholeFileOperation::Move {
                             from_path: from_path.clone(),
                             to_path: to_path.clone(),
                         }],
@@ -380,10 +385,10 @@ impl KernelRuntimeState {
                 };
                 add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
                 if workspace_live_sync_runtime_tool_applied(&output) {
-                    let file_change = workspace_live_sync_managed_file_change(
+                    let file_change = workspace_live_sync_managed_mode_file_change(
                         to_path.clone(),
                         Some(from_path),
-                        managed_fanout_before,
+                        managed_mode_fanout_before,
                         workspace_live_sync_managed_read_optional_bytes(&workspace_root, &to_path)?,
                     );
                     drop(coordinator);
@@ -415,7 +420,7 @@ impl KernelRuntimeState {
                     &path,
                     "runtime_tool_write_artifact",
                 )?;
-                let managed_fanout_before =
+                let managed_mode_fanout_before =
                     workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)?;
                 let before = workspace_live_sync_text_for_diff(&workspace_root, &path, true);
                 let content = workspace_live_sync_write_content_from_args(
@@ -477,12 +482,12 @@ impl KernelRuntimeState {
                 let after = workspace_live_sync_result_applied(&result)
                     .then(|| workspace_live_sync_text_for_diff(&workspace_root, &path, true))
                     .flatten();
-                let managed_fanout_change =
+                let managed_mode_fanout_change =
                     workspace_live_sync_result_applied(&result).then(|| {
-                        workspace_live_sync_managed_file_change(
+                        workspace_live_sync_managed_mode_file_change(
                             path.clone(),
                             None,
-                            managed_fanout_before,
+                            managed_mode_fanout_before,
                             workspace_live_sync_managed_read_optional_bytes(&workspace_root, &path)
                                 .ok()
                                 .flatten(),
@@ -498,7 +503,7 @@ impl KernelRuntimeState {
                     external_change_notice,
                 );
                 add_workspace_live_sync_workspace_payload(&mut output.payload, &workspace_context);
-                if let Some(file_change) = managed_fanout_change {
+                if let Some(file_change) = managed_mode_fanout_change {
                     drop(coordinator);
                     self.record_and_fanout_managed_workspace_live_sync_change(
                         provider_run,
@@ -574,13 +579,13 @@ fn workspace_live_sync_runtime_tool_applied(
             == Some(true)
 }
 
-fn workspace_live_sync_managed_before_snapshots(
+fn workspace_live_sync_managed_mode_before_snapshots(
     workspace_root: &PathBuf,
     operations: &[ManagedPatchOperation],
 ) -> Result<BTreeMap<PathBuf, Option<Vec<u8>>>, DaemonError> {
     let mut snapshots = BTreeMap::new();
     for operation in operations {
-        for path in workspace_live_sync_managed_patch_operation_paths(operation) {
+        for path in workspace_live_sync_managed_mode_patch_operation_paths(operation) {
             if !snapshots.contains_key(&path) {
                 snapshots.insert(
                     path.clone(),
@@ -592,7 +597,7 @@ fn workspace_live_sync_managed_before_snapshots(
     Ok(snapshots)
 }
 
-fn workspace_live_sync_managed_patch_operation_paths(
+fn workspace_live_sync_managed_mode_patch_operation_paths(
     operation: &ManagedPatchOperation,
 ) -> Vec<PathBuf> {
     match operation {
@@ -605,7 +610,7 @@ fn workspace_live_sync_managed_patch_operation_paths(
     }
 }
 
-fn workspace_live_sync_managed_patch_file_changes(
+fn workspace_live_sync_managed_mode_patch_file_changes(
     workspace_root: &PathBuf,
     operations: &[ManagedPatchOperation],
     before_snapshots: BTreeMap<PathBuf, Option<Vec<u8>>>,
@@ -616,7 +621,7 @@ fn workspace_live_sync_managed_patch_file_changes(
             ManagedPatchOperation::Add { path, .. }
             | ManagedPatchOperation::Update { path, .. }
             | ManagedPatchOperation::Delete { path } => {
-                Ok(workspace_live_sync_managed_file_change(
+                Ok(workspace_live_sync_managed_mode_file_change(
                     path.clone(),
                     None,
                     before_snapshots.get(path).cloned().flatten(),
@@ -625,7 +630,7 @@ fn workspace_live_sync_managed_patch_file_changes(
             }
             ManagedPatchOperation::Move {
                 from_path, to_path, ..
-            } => Ok(workspace_live_sync_managed_file_change(
+            } => Ok(workspace_live_sync_managed_mode_file_change(
                 to_path.clone(),
                 Some(from_path.clone()),
                 before_snapshots.get(from_path).cloned().flatten(),
@@ -635,7 +640,7 @@ fn workspace_live_sync_managed_patch_file_changes(
         .collect()
 }
 
-fn workspace_live_sync_managed_file_change(
+fn workspace_live_sync_managed_mode_file_change(
     path: PathBuf,
     previous_path: Option<PathBuf>,
     before: Option<Vec<u8>>,
@@ -685,13 +690,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn managed_file_change_rebases_non_overlapping_target_edit() {
+    fn workspace_live_sync_file_change_rebases_non_overlapping_target_edit() {
         let source = temp_workspace("managed-fanout-source");
         let target = temp_workspace("managed-fanout-target");
         std::fs::write(source.join("note.txt"), "one\nsource\nthree\n").expect("write source");
         std::fs::write(target.join("note.txt"), "target\nold\nthree\n").expect("write target");
 
-        let change = workspace_live_sync_managed_file_change(
+        let change = workspace_live_sync_managed_mode_file_change(
             PathBuf::from("note.txt"),
             None,
             Some(b"one\nold\nthree\n".to_vec()),
@@ -719,7 +724,7 @@ mod tests {
         let source = temp_workspace("managed-fanout-move-source");
         let target = temp_workspace("managed-fanout-move-target");
         std::fs::write(target.join("from.bin"), [0, 1, 2]).expect("write target");
-        let change = workspace_live_sync_managed_file_change(
+        let change = workspace_live_sync_managed_mode_file_change(
             PathBuf::from("to.bin"),
             Some(PathBuf::from("from.bin")),
             Some(vec![0, 1, 2]),
@@ -748,7 +753,7 @@ mod tests {
         let source = temp_workspace("managed-fanout-conflict-source");
         let target = temp_workspace("managed-fanout-conflict-target");
         std::fs::write(target.join("note.txt"), "one\ntarget\nthree\n").expect("write target");
-        let change = workspace_live_sync_managed_file_change(
+        let change = workspace_live_sync_managed_mode_file_change(
             PathBuf::from("note.txt"),
             None,
             Some(b"one\nold\nthree\n".to_vec()),

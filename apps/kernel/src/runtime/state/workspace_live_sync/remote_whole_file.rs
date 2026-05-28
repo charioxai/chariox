@@ -2,11 +2,11 @@
 
 use super::*;
 
-pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
+pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_operations(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
     workspace_identity: crate::io::WorkspaceIdentity,
     domain: crate::io::ArtifactDomainKind,
-    operations: Vec<ManagedWholeFileOperation>,
+    operations: Vec<WorkspaceLiveSyncWholeFileOperation>,
     artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
     reservation_owner: crate::io::ArtifactReservationOwner,
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
@@ -34,9 +34,9 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
 
     for operation in operations {
         match operation {
-            ManagedWholeFileOperation::Delete { path } => {
+            WorkspaceLiveSyncWholeFileOperation::Delete { path } => {
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &path)?;
-                let current = remote_managed_whole_file_state(
+                let current = remote_workspace_live_sync_whole_file_state(
                     &artifact_states,
                     &path,
                     domain,
@@ -45,7 +45,10 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
                 )?;
                 if current.is_none() {
                     return Ok((
-                        managed_patch_rejected(path, "delete file target does not exist"),
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "delete file target does not exist",
+                        ),
                         Vec::new(),
                     ));
                 }
@@ -55,16 +58,19 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, None);
             }
-            ManagedWholeFileOperation::Move { from_path, to_path } => {
+            WorkspaceLiveSyncWholeFileOperation::Move { from_path, to_path } => {
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &from_path)?;
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &to_path)?;
                 if from_path == to_path {
                     return Ok((
-                        managed_patch_rejected(from_path, "move source and target are identical"),
+                        workspace_live_sync_patch_rejected(
+                            from_path,
+                            "move source and target are identical",
+                        ),
                         Vec::new(),
                     ));
                 }
-                let source = remote_managed_whole_file_state(
+                let source = remote_workspace_live_sync_whole_file_state(
                     &artifact_states,
                     &from_path,
                     domain,
@@ -73,11 +79,11 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
                 )?;
                 let Some(source) = source else {
                     return Ok((
-                        managed_patch_rejected(from_path, "move source does not exist"),
+                        workspace_live_sync_patch_rejected(from_path, "move source does not exist"),
                         Vec::new(),
                     ));
                 };
-                let target = remote_managed_whole_file_state(
+                let target = remote_workspace_live_sync_whole_file_state(
                     &artifact_states,
                     &to_path,
                     domain,
@@ -86,7 +92,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
                 )?;
                 if target.is_some() {
                     return Ok((
-                        managed_patch_rejected(to_path, "move target already exists"),
+                        workspace_live_sync_patch_rejected(to_path, "move target already exists"),
                         Vec::new(),
                     ));
                 }
@@ -180,7 +186,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_whole_file_operations(
     ))
 }
 
-fn remote_managed_whole_file_state(
+fn remote_workspace_live_sync_whole_file_state(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     path: &PathBuf,
     domain: crate::io::ArtifactDomainKind,

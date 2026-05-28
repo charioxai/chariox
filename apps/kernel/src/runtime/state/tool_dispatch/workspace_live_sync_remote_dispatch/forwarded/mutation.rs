@@ -22,12 +22,13 @@ pub(super) fn dispatch_forwarded_apply_patch(
     if domain != crate::io::ArtifactDomainKind::TextDocument {
         return Err(DaemonError::LocalTransport {
             operation: "forwarded_workspace_live_sync_apply_patch",
-            message: "remote managed apply_patch currently supports only text artifacts"
-                .to_string(),
+            message:
+                "remote workspace live sync apply_patch currently supports only text artifacts"
+                    .to_string(),
         });
     }
-    let operations = parse_managed_apply_patch(&args.patch_text)?;
-    apply_remote_managed_patch_operations(
+    let operations = parse_workspace_live_sync_apply_patch(&args.patch_text)?;
+    apply_remote_workspace_live_sync_patch_operations(
         coordinator,
         context.worker_workspace_identity.clone(),
         domain,
@@ -56,7 +57,7 @@ pub(super) fn dispatch_forwarded_delete(
     let domain =
         KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     if domain == crate::io::ArtifactDomainKind::TextDocument {
-        apply_remote_managed_patch_operations(
+        apply_remote_workspace_live_sync_patch_operations(
             coordinator,
             context.worker_workspace_identity.clone(),
             domain,
@@ -68,11 +69,11 @@ pub(super) fn dispatch_forwarded_delete(
             workspace_context,
         )
     } else {
-        apply_remote_managed_whole_file_operations(
+        apply_remote_workspace_live_sync_whole_file_operations(
             coordinator,
             context.worker_workspace_identity.clone(),
             domain,
-            vec![ManagedWholeFileOperation::Delete {
+            vec![WorkspaceLiveSyncWholeFileOperation::Delete {
                 path: PathBuf::from(args.path),
             }],
             artifact_states,
@@ -101,7 +102,7 @@ pub(super) fn dispatch_forwarded_move(
         KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
     let (old_text, new_text) = args.normalized_text_transform_fields();
     if domain == crate::io::ArtifactDomainKind::TextDocument {
-        apply_remote_managed_patch_operations(
+        apply_remote_workspace_live_sync_patch_operations(
             coordinator,
             context.worker_workspace_identity.clone(),
             domain,
@@ -124,11 +125,11 @@ pub(super) fn dispatch_forwarded_move(
                         .to_string(),
             });
         }
-        apply_remote_managed_whole_file_operations(
+        apply_remote_workspace_live_sync_whole_file_operations(
             coordinator,
             context.worker_workspace_identity.clone(),
             domain,
-            vec![ManagedWholeFileOperation::Move {
+            vec![WorkspaceLiveSyncWholeFileOperation::Move {
                 from_path: PathBuf::from(args.from_path),
                 to_path: PathBuf::from(args.to_path),
             }],

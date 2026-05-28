@@ -58,7 +58,7 @@ fn workspace_live_sync_permission_message(
             >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "workspace_live_sync_permission_message",
-                message: format!("invalid managed edit arguments: {error}"),
+                message: format!("invalid workspace live sync edit arguments: {error}"),
             })?;
             Ok((
                 "Workspace live sync edit approval".to_string(),
@@ -74,7 +74,7 @@ fn workspace_live_sync_permission_message(
             >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "workspace_live_sync_permission_message",
-                message: format!("invalid managed apply_patch arguments: {error}"),
+                message: format!("invalid workspace live sync apply_patch arguments: {error}"),
             })?;
             let patch_preview = args
                 .patch_text
@@ -127,7 +127,7 @@ fn workspace_live_sync_permission_message(
             >(arguments.clone())
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "workspace_live_sync_permission_message",
-                message: format!("invalid managed write arguments: {error}"),
+                message: format!("invalid workspace live sync write arguments: {error}"),
             })?;
             Ok((
                 "Workspace live sync write approval".to_string(),

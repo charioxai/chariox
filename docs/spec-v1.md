@@ -1010,7 +1010,7 @@ Requirements:
 
 ### 9.4 Edit File
 
-Runs an Arroba-managed file edit flow.
+Runs a Workspace Live Sync file edit flow.
 
 Requirements:
 

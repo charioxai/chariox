@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::runtime::state) enum ManagedPatchPlanOutcome {
+pub(in crate::runtime::state) enum WorkspaceLiveSyncPatchPlanOutcome {
     Planned(ManagedPatchPlan),
     Rejected(crate::transport::runtime_tools::RuntimeToolResult),
 }
@@ -13,10 +13,10 @@ pub(in crate::runtime::state) struct ManagedPatchPlan {
     pub(in crate::runtime::state) reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>>,
 }
 
-pub(in crate::runtime::state) fn plan_managed_patch_operations(
+pub(in crate::runtime::state) fn plan_workspace_live_sync_patch_operations(
     workspace_root: &PathBuf,
     operations: Vec<ManagedPatchOperation>,
-) -> Result<ManagedPatchPlanOutcome, DaemonError> {
+) -> Result<WorkspaceLiveSyncPatchPlanOutcome, DaemonError> {
     let mut before_states = BTreeMap::new();
     let mut final_states = BTreeMap::new();
     let mut reservation_ranges = BTreeMap::new();
@@ -25,17 +25,19 @@ pub(in crate::runtime::state) fn plan_managed_patch_operations(
         match operation {
             ManagedPatchOperation::Add { path, content } => {
                 workspace_live_sync_validate_patch_path(workspace_root, &path)?;
-                let current = managed_patch_state(
+                let current = workspace_live_sync_patch_state(
                     workspace_root,
                     &path,
                     &mut before_states,
                     &mut final_states,
                 )?;
                 if current.is_some() {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        path,
-                        "add file target already exists; reread and retry with an update",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "add file target already exists; reread and retry with an update",
+                        ),
+                    ));
                 }
                 reserve_full_artifact(&mut reservation_ranges, &path);
                 final_states.insert(path, Some(content));
@@ -46,24 +48,28 @@ pub(in crate::runtime::state) fn plan_managed_patch_operations(
                 new_text,
             } => {
                 workspace_live_sync_validate_patch_path(workspace_root, &path)?;
-                let current = managed_patch_state(
+                let current = workspace_live_sync_patch_state(
                     workspace_root,
                     &path,
                     &mut before_states,
                     &mut final_states,
                 )?;
                 let Some(current) = current else {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        path,
-                        "update file target does not exist",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "update file target does not exist",
+                        ),
+                    ));
                 };
                 let Some((range, updated)) = replace_unique_text(&current, &old_text, &new_text)
                 else {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        path,
-                        "patch old text was not found exactly once in the current artifact",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "patch old text was not found exactly once in the current artifact",
+                        ),
+                    ));
                 };
                 reservation_ranges
                     .entry(path.clone())
@@ -73,17 +79,19 @@ pub(in crate::runtime::state) fn plan_managed_patch_operations(
             }
             ManagedPatchOperation::Delete { path } => {
                 workspace_live_sync_validate_patch_path(workspace_root, &path)?;
-                let current = managed_patch_state(
+                let current = workspace_live_sync_patch_state(
                     workspace_root,
                     &path,
                     &mut before_states,
                     &mut final_states,
                 )?;
                 if current.is_none() {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        path,
-                        "delete file target does not exist",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "delete file target does not exist",
+                        ),
+                    ));
                 }
                 reserve_full_artifact(&mut reservation_ranges, &path);
                 final_states.insert(path, None);
@@ -97,40 +105,40 @@ pub(in crate::runtime::state) fn plan_managed_patch_operations(
                 workspace_live_sync_validate_patch_path(workspace_root, &from_path)?;
                 workspace_live_sync_validate_patch_path(workspace_root, &to_path)?;
                 if from_path == to_path {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        from_path,
-                        "move source and target are identical",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(
+                            from_path,
+                            "move source and target are identical",
+                        ),
+                    ));
                 }
-                let source = managed_patch_state(
+                let source = workspace_live_sync_patch_state(
                     workspace_root,
                     &from_path,
                     &mut before_states,
                     &mut final_states,
                 )?;
                 let Some(mut source) = source else {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        from_path,
-                        "move source does not exist",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(from_path, "move source does not exist"),
+                    ));
                 };
-                let target = managed_patch_state(
+                let target = workspace_live_sync_patch_state(
                     workspace_root,
                     &to_path,
                     &mut before_states,
                     &mut final_states,
                 )?;
                 if target.is_some() {
-                    return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
-                        to_path,
-                        "move target already exists",
-                    )));
+                    return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                        workspace_live_sync_patch_rejected(to_path, "move target already exists"),
+                    ));
                 }
                 if let (Some(old_text), Some(new_text)) = (old_text, new_text) {
                     let Some((_range, updated)) =
                         replace_unique_text(&source, &old_text, &new_text)
                     else {
-                        return Ok(ManagedPatchPlanOutcome::Rejected(managed_patch_rejected(
+                        return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(workspace_live_sync_patch_rejected(
                             from_path,
                             "move patch old text was not found exactly once in the current artifact",
                         )));
@@ -145,11 +153,13 @@ pub(in crate::runtime::state) fn plan_managed_patch_operations(
         }
     }
 
-    Ok(ManagedPatchPlanOutcome::Planned(ManagedPatchPlan {
-        before_states,
-        final_states,
-        reservation_ranges,
-    }))
+    Ok(WorkspaceLiveSyncPatchPlanOutcome::Planned(
+        ManagedPatchPlan {
+            before_states,
+            final_states,
+            reservation_ranges,
+        },
+    ))
 }
 
 fn reserve_full_artifact(

@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
+pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operations(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
     workspace_identity: crate::io::WorkspaceIdentity,
     domain: crate::io::ArtifactDomainKind,
@@ -36,7 +36,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
         match operation {
             ManagedPatchOperation::Add { path, content } => {
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &path)?;
-                let current = remote_managed_patch_state(
+                let current = remote_workspace_live_sync_patch_state(
                     &artifact_states,
                     &path,
                     &mut before_states,
@@ -44,7 +44,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 )?;
                 if current.is_some() {
                     return Ok((
-                        managed_patch_rejected(
+                        workspace_live_sync_patch_rejected(
                             path,
                             "add file target already exists; reread and retry with an update",
                         ),
@@ -63,7 +63,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 new_text,
             } => {
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &path)?;
-                let current = remote_managed_patch_state(
+                let current = remote_workspace_live_sync_patch_state(
                     &artifact_states,
                     &path,
                     &mut before_states,
@@ -71,14 +71,17 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 )?;
                 let Some(current) = current else {
                     return Ok((
-                        managed_patch_rejected(path, "update file target does not exist"),
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "update file target does not exist",
+                        ),
                         Vec::new(),
                     ));
                 };
                 let Some((range, updated)) = replace_unique_text(&current, &old_text, &new_text)
                 else {
                     return Ok((
-                        managed_patch_rejected(
+                        workspace_live_sync_patch_rejected(
                             path,
                             "patch old text was not found exactly once in the current artifact",
                         ),
@@ -93,7 +96,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
             }
             ManagedPatchOperation::Delete { path } => {
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &path)?;
-                let current = remote_managed_patch_state(
+                let current = remote_workspace_live_sync_patch_state(
                     &artifact_states,
                     &path,
                     &mut before_states,
@@ -101,7 +104,10 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 )?;
                 if current.is_none() {
                     return Ok((
-                        managed_patch_rejected(path, "delete file target does not exist"),
+                        workspace_live_sync_patch_rejected(
+                            path,
+                            "delete file target does not exist",
+                        ),
                         Vec::new(),
                     ));
                 }
@@ -121,11 +127,14 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 workspace_live_sync_validate_patch_path(&workspace_context.root, &to_path)?;
                 if from_path == to_path {
                     return Ok((
-                        managed_patch_rejected(from_path, "move source and target are identical"),
+                        workspace_live_sync_patch_rejected(
+                            from_path,
+                            "move source and target are identical",
+                        ),
                         Vec::new(),
                     ));
                 }
-                let source = remote_managed_patch_state(
+                let source = remote_workspace_live_sync_patch_state(
                     &artifact_states,
                     &from_path,
                     &mut before_states,
@@ -133,11 +142,11 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 )?;
                 let Some(mut source) = source else {
                     return Ok((
-                        managed_patch_rejected(from_path, "move source does not exist"),
+                        workspace_live_sync_patch_rejected(from_path, "move source does not exist"),
                         Vec::new(),
                     ));
                 };
-                let target = remote_managed_patch_state(
+                let target = remote_workspace_live_sync_patch_state(
                     &artifact_states,
                     &to_path,
                     &mut before_states,
@@ -145,7 +154,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                 )?;
                 if target.is_some() {
                     return Ok((
-                        managed_patch_rejected(to_path, "move target already exists"),
+                        workspace_live_sync_patch_rejected(to_path, "move target already exists"),
                         Vec::new(),
                     ));
                 }
@@ -154,7 +163,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
                         replace_unique_text(&source, &old_text, &new_text)
                     else {
                         return Ok((
-                            managed_patch_rejected(
+                            workspace_live_sync_patch_rejected(
                                 from_path,
                                 "move patch old text was not found exactly once in the current artifact",
                             ),
@@ -265,7 +274,7 @@ pub(in crate::runtime::state) fn apply_remote_managed_patch_operations(
     ))
 }
 
-fn remote_managed_patch_state(
+fn remote_workspace_live_sync_patch_state(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     path: &PathBuf,
     before_states: &mut BTreeMap<PathBuf, Option<String>>,

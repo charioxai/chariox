@@ -337,7 +337,7 @@ mod tests {
         fs::write(&file, "alpha\n").expect("write fixture");
 
         monitor.observe_managed_read("run-1", &workspace, &root, "src/lib.rs".as_ref());
-        fs::write(&file, "managed\n").expect("managed write fixture");
+        fs::write(&file, "managed\n").expect("workspace live sync write fixture");
         monitor.observe_managed_write("run-1", &workspace, &root, "src/lib.rs".as_ref());
         monitor.scan_tracked_artifacts_once();
 

@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(in crate::runtime::state) fn apply_managed_patch_operations(
+pub(in crate::runtime::state) fn apply_workspace_live_sync_patch_operations(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
     workspace_identity: crate::io::WorkspaceIdentity,
     workspace_root: PathBuf,
@@ -14,9 +14,9 @@ pub(in crate::runtime::state) fn apply_managed_patch_operations(
     reservation_owner: crate::io::ArtifactReservationOwner,
     external_change_monitor: &crate::io::ArtifactExternalChangeMonitor,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let plan = match plan_managed_patch_operations(&workspace_root, operations)? {
-        ManagedPatchPlanOutcome::Planned(plan) => plan,
-        ManagedPatchPlanOutcome::Rejected(output) => return Ok(output),
+    let plan = match plan_workspace_live_sync_patch_operations(&workspace_root, operations)? {
+        WorkspaceLiveSyncPatchPlanOutcome::Planned(plan) => plan,
+        WorkspaceLiveSyncPatchPlanOutcome::Rejected(output) => return Ok(output),
     };
     let ManagedPatchPlan {
         before_states,
@@ -67,9 +67,9 @@ pub(in crate::runtime::state) fn apply_managed_patch_operations(
                     path.clone(),
                 ));
             }
-            let mut output = managed_patch_rejected(
+            let mut output = workspace_live_sync_patch_rejected(
                 path.clone(),
-                "artifact changed while the managed patch was being prepared; reread and retry",
+                "artifact changed while the workspace live sync patch was being prepared; reread and retry",
             );
             add_workspace_live_sync_external_change_notices_payload(&mut output.payload, notices);
             return Ok(output);
@@ -168,7 +168,7 @@ pub(in crate::runtime::state) fn replace_unique_text(
     Some((range, updated))
 }
 
-pub(in crate::runtime::state) fn managed_patch_rejected(
+pub(in crate::runtime::state) fn workspace_live_sync_patch_rejected(
     path: PathBuf,
     message: impl Into<String>,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {

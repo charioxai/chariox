@@ -24,7 +24,7 @@ pub(in crate::runtime::state) enum ManagedPatchOperation {
     },
 }
 
-pub(in crate::runtime::state) fn parse_managed_apply_patch(
+pub(in crate::runtime::state) fn parse_workspace_live_sync_apply_patch(
     patch_text: &str,
 ) -> Result<Vec<ManagedPatchOperation>, DaemonError> {
     let lines = patch_text.lines().collect::<Vec<_>>();

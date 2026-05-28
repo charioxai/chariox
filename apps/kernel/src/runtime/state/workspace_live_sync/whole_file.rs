@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-pub(in crate::runtime::state) enum ManagedWholeFileOperation {
+pub(in crate::runtime::state) enum WorkspaceLiveSyncWholeFileOperation {
     Delete {
         path: PathBuf,
     },
@@ -13,12 +13,12 @@ pub(in crate::runtime::state) enum ManagedWholeFileOperation {
     },
 }
 
-pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
+pub(in crate::runtime::state) fn apply_workspace_live_sync_whole_file_operations(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
     workspace_identity: crate::io::WorkspaceIdentity,
     workspace_root: PathBuf,
     domain: crate::io::ArtifactDomainKind,
-    operations: Vec<ManagedWholeFileOperation>,
+    operations: Vec<WorkspaceLiveSyncWholeFileOperation>,
     reservation_owner: crate::io::ArtifactReservationOwner,
     external_change_monitor: &crate::io::ArtifactExternalChangeMonitor,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
@@ -28,9 +28,9 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
 
     for operation in operations {
         match operation {
-            ManagedWholeFileOperation::Delete { path } => {
+            WorkspaceLiveSyncWholeFileOperation::Delete { path } => {
                 workspace_live_sync_validate_patch_path(&workspace_root, &path)?;
-                let current = managed_whole_file_state(
+                let current = workspace_live_sync_whole_file_state(
                     &workspace_root,
                     &path,
                     domain,
@@ -38,7 +38,7 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
                     &mut final_states,
                 )?;
                 if current.is_none() {
-                    return Ok(managed_patch_rejected(
+                    return Ok(workspace_live_sync_patch_rejected(
                         path,
                         "delete file target does not exist",
                     ));
@@ -49,16 +49,16 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, None);
             }
-            ManagedWholeFileOperation::Move { from_path, to_path } => {
+            WorkspaceLiveSyncWholeFileOperation::Move { from_path, to_path } => {
                 workspace_live_sync_validate_patch_path(&workspace_root, &from_path)?;
                 workspace_live_sync_validate_patch_path(&workspace_root, &to_path)?;
                 if from_path == to_path {
-                    return Ok(managed_patch_rejected(
+                    return Ok(workspace_live_sync_patch_rejected(
                         from_path,
                         "move source and target are identical",
                     ));
                 }
-                let source = managed_whole_file_state(
+                let source = workspace_live_sync_whole_file_state(
                     &workspace_root,
                     &from_path,
                     domain,
@@ -66,12 +66,12 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
                     &mut final_states,
                 )?;
                 let Some(source) = source else {
-                    return Ok(managed_patch_rejected(
+                    return Ok(workspace_live_sync_patch_rejected(
                         from_path,
                         "move source does not exist",
                     ));
                 };
-                let target = managed_whole_file_state(
+                let target = workspace_live_sync_whole_file_state(
                     &workspace_root,
                     &to_path,
                     domain,
@@ -79,7 +79,7 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
                     &mut final_states,
                 )?;
                 if target.is_some() {
-                    return Ok(managed_patch_rejected(
+                    return Ok(workspace_live_sync_patch_rejected(
                         to_path,
                         "move target already exists",
                     ));
@@ -142,9 +142,9 @@ pub(in crate::runtime::state) fn apply_managed_whole_file_operations(
                     path.clone(),
                 ));
             }
-            let mut output = managed_patch_rejected(
+            let mut output = workspace_live_sync_patch_rejected(
                 path.clone(),
-                "artifact changed while the managed whole-file operation was being prepared; reread and retry",
+                "artifact changed while the workspace live sync whole-file operation was being prepared; reread and retry",
             );
             add_workspace_live_sync_external_change_notices_payload(&mut output.payload, notices);
             return Ok(output);

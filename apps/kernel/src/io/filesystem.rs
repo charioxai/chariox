@@ -165,7 +165,7 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, ArtifactE
 fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEditError> {
     if path.is_absolute() {
         return Err(ArtifactEditError::InvalidOperation {
-            message: "managed file paths must be relative to the workspace root".to_string(),
+            message: "workspace live sync paths must be relative to the workspace root".to_string(),
         });
     }
     let mut relative = PathBuf::new();
@@ -175,7 +175,7 @@ fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEdi
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(ArtifactEditError::InvalidOperation {
-                    message: "managed file path escapes the workspace root".to_string(),
+                    message: "workspace live sync path escapes the workspace root".to_string(),
                 });
             }
         }
@@ -220,7 +220,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("arroba-managed-file-io-{name}-{nanos}"));
+        let root =
+            std::env::temp_dir().join(format!("arroba-workspace-live-sync-file-io-{name}-{nanos}"));
         fs::create_dir_all(&root).expect("create test root");
         root
     }
@@ -231,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_read_tracks_snapshot() {
+    fn workspace_live_sync_file_read_tracks_snapshot() {
         let root = test_root("read");
         let path = root.join("src.txt");
         fs::write(&path, "alpha\n").expect("write fixture");
@@ -253,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_apply_rebases_external_non_overlap_before_write() {
+    fn workspace_live_sync_file_apply_rebases_external_non_overlap_before_write() {
         let root = test_root("rebase");
         let path = root.join("src.txt");
         fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
@@ -301,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_apply_places_rebased_range_edit_exactly() {
+    fn workspace_live_sync_file_apply_places_rebased_range_edit_exactly() {
         let root = test_root("exact-rebase");
         let path = root.join("src.txt");
         let base = "header\nalpha\nTARGET\nomega\nfooter\n";
@@ -355,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_apply_rejects_external_overlap() {
+    fn workspace_live_sync_file_apply_rejects_external_overlap() {
         let root = test_root("conflict");
         let path = root.join("src.txt");
         fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
@@ -402,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_read_rejects_path_escape() {
+    fn workspace_live_sync_file_read_rejects_path_escape() {
         let root = test_root("escape");
         let mut coordinator = ArtifactEditCoordinator::new();
         let result = WorkspaceLiveSyncFileIo::read_artifact(
@@ -422,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_write_creates_new_text_file() {
+    fn workspace_live_sync_file_write_creates_new_text_file() {
         let root = test_root("create");
         let path = root.join("nested").join("created.txt");
         let mut coordinator = ArtifactEditCoordinator::new();
@@ -451,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_write_creates_new_opaque_file() {
+    fn workspace_live_sync_file_write_creates_new_opaque_file() {
         let root = test_root("create-opaque");
         let path = root.join("assets").join("image.bin");
         let mut coordinator = ArtifactEditCoordinator::new();
@@ -480,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_opaque_stale_write_rejects_and_preserves_external_bytes() {
+    fn workspace_live_sync_file_opaque_stale_write_rejects_and_preserves_external_bytes() {
         let root = test_root("opaque-conflict");
         let path = root.join("asset.bin");
         fs::write(&path, [1, 2, 3]).expect("write fixture");
@@ -523,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_file_write_rejects_arroba_owned_instruction_policy() {
+    fn workspace_live_sync_file_write_rejects_arroba_owned_instruction_policy() {
         let root = test_root("reject-policy");
         let policy_path = root.join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH);
         fs::create_dir_all(policy_path.parent().unwrap()).expect("create policy parent");

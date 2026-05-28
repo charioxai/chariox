@@ -180,7 +180,7 @@ mod workspace_live_sync_tests {
             "old_text": "before",
             "new_text": "after"
         }))
-        .expect("managed edit args should parse");
+        .expect("workspace live sync edit args should parse");
 
         assert_eq!(args.path, "src/lib.rs");
         assert_eq!(args.old_text.as_deref(), Some("before"));
@@ -194,7 +194,7 @@ mod workspace_live_sync_tests {
                 "path": "src/lib.rs",
                 "content_text": "hello"
             }))
-            .expect("managed write args should parse");
+            .expect("workspace live sync write args should parse");
 
         assert_eq!(args.path, "src/lib.rs");
         assert_eq!(args.content_text.as_deref(), Some("hello"));

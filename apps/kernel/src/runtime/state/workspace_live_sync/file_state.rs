@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::runtime::state) fn managed_patch_state(
+pub(in crate::runtime::state) fn workspace_live_sync_patch_state(
     workspace_root: &PathBuf,
     path: &PathBuf,
     before_states: &mut BTreeMap<PathBuf, Option<String>>,
@@ -19,7 +19,7 @@ pub(in crate::runtime::state) fn managed_patch_state(
     Ok(current)
 }
 
-pub(in crate::runtime::state) fn managed_whole_file_state(
+pub(in crate::runtime::state) fn workspace_live_sync_whole_file_state(
     workspace_root: &PathBuf,
     path: &PathBuf,
     domain: crate::io::ArtifactDomainKind,
@@ -43,7 +43,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
 ) -> Result<(), DaemonError> {
     let _ = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| DaemonError::LocalTransport {
         operation: "runtime_tool_apply_patch",
-        message: "managed patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
+        message: "workspace live sync patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
     })?;
     if path == std::path::Path::new(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
         && workspace_live_sync_is_arroba_source_workspace(workspace_root)
@@ -67,7 +67,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_text(
     let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
         DaemonError::LocalTransport {
             operation: "runtime_tool_apply_patch",
-            message: "managed patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
+            message: "workspace live sync patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
         }
     })?;
     match std::fs::read_to_string(&full_path) {
@@ -90,7 +90,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_content(
             DaemonError::LocalTransport {
                 operation: "runtime_tool_workspace_live_sync_state",
                 message:
-                    "managed paths must be workspace-relative and cannot escape the workspace root"
+                    "workspace live sync paths must be workspace-relative and cannot escape the workspace root"
                         .to_string(),
             }
         })?;
@@ -134,7 +134,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_states(
         let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
             DaemonError::LocalTransport {
                 operation: "runtime_tool_apply_patch",
-                message: "managed patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
+                message: "workspace live sync patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
             }
         })?;
         match text {
@@ -185,7 +185,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
                 DaemonError::LocalTransport {
                 operation: "runtime_tool_workspace_live_sync_state",
                 message:
-                    "managed paths must be workspace-relative and cannot escape the workspace root"
+                    "workspace live sync paths must be workspace-relative and cannot escape the workspace root"
                         .to_string(),
             }
             })?;
