@@ -1001,7 +1001,15 @@ mod tests {
                 source.to_string_lossy(),
             ))
             .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "terminal-client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("terminal attachment should attach");
         let session_id = session.id().to_string();
+        let attachment_id = attachment.id().to_string();
         let daemon_id = app.config_projection_store().snapshot().daemon_id;
         let machine_id = app.config_projection_store().snapshot().host_machine_id;
         let app = Arc::new(Mutex::new(app));
@@ -1067,6 +1075,23 @@ mod tests {
         runtime
             .record_and_fanout_workspace_live_sync_change(change, None)
             .await;
+
+        let notices = runtime
+            .drain_notice_records(&session_id, &attachment_id)
+            .await;
+        assert!(
+            notices.iter().any(|notice| {
+                notice.session_id == session_id
+                    && notice.provider_run_id.as_deref() == Some("provider-run-1")
+                    && notice
+                        .message
+                        .contains("Workspace live sync tracked turn summary")
+                    && notice.message.contains("source agent `agent-source`")
+                    && notice.message.contains("target user `user-2`")
+                    && notice.message.contains("Next action: none")
+            }),
+            "workspace live sync fanout should deliver a runtime notice: {notices:?}"
+        );
 
         assert_eq!(
             std::fs::read_to_string(target.join("src/lib.rs"))
