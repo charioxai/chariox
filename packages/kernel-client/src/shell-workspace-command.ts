@@ -37,7 +37,7 @@ export async function executeWorkspaceCommand(
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|mode|enable|disable or workspace link create|list|show|attach|detach" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|mode|enable|disable|link or workspace link create|list|show|attach|detach" }
   }
   const sessionId = context.sessionId
   if (!sessionId) {

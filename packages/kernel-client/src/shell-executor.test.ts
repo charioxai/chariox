@@ -558,6 +558,7 @@ test("executeShellCommand manages workspace links", async () => {
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
   const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
+  const invalidResourceResult = await executeShellCommand(parseShellCommand("workspace unknown"), context, { client: fake.client })
 
   assert.match(createResult.message ?? "", /created workspace link shared-repo/)
   assert.match(listResult.message ?? "", /attachments=1/)
@@ -573,6 +574,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(disableResult.message ?? "", /disabled/)
   assert.match(syncLinkResult.message ?? "", /recommended mode: managed/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
+  assert.match(invalidResourceResult.message ?? "", /workspace sync .*link/)
   assert.deepEqual(requests, [
     { CreateWorkspaceLink: { session_id: "session-1", name: "shared-repo" } },
     { ListWorkspaceLinks: { session_id: "session-1" } },
