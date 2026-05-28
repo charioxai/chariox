@@ -623,6 +623,47 @@ async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, 
   throw new Error(`timed out waiting for provider output markers: ${missing.map((markers) => markers.join(' or ')).join(', ')}`)
 }
 
+async function historyNoticeMessagesSince({ historyDir, sinceMs }) {
+  const messages = []
+  const files = (await readdir(historyDir).catch(() => []))
+    .filter((file) => file.endsWith('.jsonl'))
+    .map((file) => path.join(historyDir, file))
+    .sort()
+
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+      if (entry.kind !== 'notice' || typeof entry.text !== 'string') continue
+      messages.push(entry.text)
+    }
+  }
+  return messages
+}
+
+async function waitForHistoryNotices({ historyDir, requirements, sinceMs, timeoutMs, pollMs }) {
+  const started = Date.now()
+  let messages = []
+  let missing = requirements
+  while (Date.now() - started < timeoutMs) {
+    await throwIfProviderError({ historyDir, sinceMs })
+    messages = await historyNoticeMessagesSince({ historyDir, sinceMs })
+    missing = requirements.filter((requirement) =>
+      !messages.some((message) => requirement.includes.every((needle) => message.includes(needle)))
+    )
+    if (missing.length === 0) return messages
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for workspace live sync runtime notices: missing=${missing.map((requirement) => requirement.label).join(', ')}; notices=${JSON.stringify(messages)}`)
+}
+
 async function providerToolUpdatesSince({ historyDir, sinceMs }) {
   const updates = []
   const files = (await readdir(historyDir).catch(() => []))
@@ -1653,6 +1694,31 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
+  await waitForHistoryNotices({
+    historyDir,
+    sinceMs: completionSinceMs,
+    timeoutMs,
+    pollMs,
+    requirements: [
+      {
+        label: 'tracked turn summary',
+        includes: [
+          'Workspace live sync tracked turn summary',
+          `source agent \`${agent.id}\``,
+          `outputs/${provider}-tracked-added.txt`,
+          'Next action:',
+        ],
+      },
+      {
+        label: 'tracked conflict notice',
+        includes: [
+          'Workspace live sync conflict',
+          `outputs/${provider}-tracked-conflict.txt`,
+          'Next action: assign a resolver agent',
+        ],
+      },
+    ],
+  })
   let resolution = null
   if (options.trackedBidirectional) {
     resolution = await runTrackedConflictResolutionPhase({
@@ -2232,6 +2298,23 @@ async function main() {
       }
     }
     await assertManagedTargetFanout(targetWorkspaces, options.providers, { deletesApplied: false })
+    if (targetWorkspaces.length > 0) {
+      await waitForHistoryNotices({
+        historyDir,
+        sinceMs: startedAt,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        requirements: options.providers.map((provider) => ({
+          label: `${provider} managed fanout summary`,
+          includes: [
+            'Workspace live sync managed summary',
+            `outputs/${provider}.txt`,
+            'target user',
+            'Next action:',
+          ],
+        })),
+      })
+    }
 
     if (options.positiveOnly) {
       const files = []

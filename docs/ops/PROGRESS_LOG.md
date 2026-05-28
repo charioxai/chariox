@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-28
 
+### Workspace live sync notice validation
+
+- Strengthened `apps/cli/scripts/live-workspace-live-sync-drill.mjs` so live Workspace Live Sync runs now fail unless session history contains the user-facing runtime notices for fanout: managed runs with attached targets require a `Workspace live sync managed summary`, and tracked runs require both a `Workspace live sync tracked turn summary` and a conflict notice with resolver next-action text.
+- Revalidated the non-Scalingo Codex paths affected by that drill change. Fresh passes: `pnpm --filter @arroba/cli run workspace-live-sync:managed-drill`, `workspace-live-sync:tracked-drill`, `workspace-live-sync:same-branch-tracked-drill`, `workspace-live-sync:remote-managed-drill`, and `workspace-live-sync:remote-tracked-drill`.
+- Re-ran `pnpm --filter @arroba/cli test`; 1065 tests passed. No Scalingo/staging drills were run because hosted validation remains deferred.
+
 ### Workspace live sync sync-group status
 
 - Made workspace links explicit as the Workspace Live Sync session sync-group surface. `GetWorkspaceLiveSyncStatus` now returns `sync_groups` alongside flattened targets/conflicts/ignore state; CLI shell, slash UI, iOS status text/protocol, and Cloud web side panel render the grouping counts. Bumped the local daemon protocol to 63 and refreshed protocol shape hashes.
