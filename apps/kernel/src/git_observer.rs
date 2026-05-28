@@ -2009,7 +2009,7 @@ mod tests {
         let before = tracked_snapshot(false, "");
         let after = tracked_snapshot(
             true,
-            " M .env\n M .envrc\n M config/.env.local\n M .arroba/state.json\n M .codex/session.json\n M .opencode/state.json\n M .claude/settings.json\n M .cache/tool/output.json\n M .turbo/cache.json\n M node_modules/pkg/index.js\n M src/lib.rs",
+            " M .env\n M .envrc\n M config/.env.local\n M .arroba/state.json\n M .codex/session.json\n M .opencode/state.json\n M .claude/settings.json\n M .cursor/index.json\n M daemon.sock\n M daemon.socket\n M .tmp-arroba/socket\n M .tmp-live-workspace-live-sync-drill/state.json\n M .tmp-live-remote-workspace-live-sync-drill/state.json\n M history/session.jsonl\n M session-history/session.jsonl\n M operational-history/events.db\n M operational-history-1.db\n M node_modules/pkg/index.js\n M target/debug/app\n M .cache/tool/output.json\n M .turbo/cache.json\n M .next/cache/app\n M dist/app.js\n M build/app.js\n M .venv/pyvenv.cfg\n M venv/pyvenv.cfg\n M __pycache__/mod.pyc\n M .pytest_cache/v/cache/nodeids\n M .mypy_cache/module.json\n M .ruff_cache/module.json\n M .gradle/caches/module.bin\n M .m2/repository/artifact.jar\n M .pnpm-store/v3/files/index\n M src/lib.rs",
         );
 
         let change = tracked_workspace_live_sync_change_after_turn(&before, &after)

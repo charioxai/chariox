@@ -112,36 +112,50 @@ fn local_request_api_manages_session_workspace_links() {
     assert_eq!(status.targets.len(), 1);
     assert_eq!(status.targets[0].repo_root, "/tmp/arroba-worktree-a");
     assert!(status.conflicts.is_empty());
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == ".git/**"));
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == ".codex/**"));
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == "*.sock"));
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == "history/**"));
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == "operational-history*"));
-    assert!(status
-        .ignore
-        .force_excludes
-        .iter()
-        .any(|pattern| pattern == ".cache/**"));
+    for pattern in [
+        ".git/**",
+        ".arroba/**",
+        ".arrobaignore",
+        ".env*",
+        ".codex/**",
+        ".opencode/**",
+        ".claude/**",
+        ".cursor/**",
+        "*.sock",
+        "*.socket",
+        ".tmp-arroba/**",
+        ".tmp-live-workspace-live-sync-drill/**",
+        ".tmp-live-remote-workspace-live-sync-drill/**",
+        "history/**",
+        "session-history/**",
+        "operational-history/**",
+        "operational-history*",
+        "node_modules/**",
+        "target/**",
+        ".cache/**",
+        ".turbo/**",
+        ".next/**",
+        "dist/**",
+        "build/**",
+        ".venv/**",
+        "venv/**",
+        "__pycache__/**",
+        ".pytest_cache/**",
+        ".mypy_cache/**",
+        ".ruff_cache/**",
+        ".gradle/**",
+        ".m2/**",
+        ".pnpm-store/**",
+    ] {
+        assert!(
+            status
+                .ignore
+                .force_excludes
+                .iter()
+                .any(|force_exclude| force_exclude == pattern),
+            "{pattern} should be advertised as a workspace live sync force-exclude"
+        );
+    }
 
     let shown = match harness
         .dispatch(LocalDaemonRequest::ShowWorkspaceLink(
