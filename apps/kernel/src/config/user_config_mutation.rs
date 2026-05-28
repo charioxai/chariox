@@ -261,7 +261,9 @@ impl ArrobaUserConfig {
             }
             "providers.workspace_live_sync" => {
                 self.providers.workspace_live_sync =
-                    WorkspaceLiveSyncConfig::from_mode(WorkspaceLiveSyncMode::parse(&value)?);
+                    WorkspaceLiveSyncConfig::from_mode(
+                        WorkspaceLiveSyncMode::parse_config_policy(&value)?,
+                    );
             }
             _ => {
                 return Err(DaemonError::InvalidConfig {

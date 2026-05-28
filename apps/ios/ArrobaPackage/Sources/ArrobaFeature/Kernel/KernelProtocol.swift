@@ -13,6 +13,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
     public let activeInteractions: [RuntimeInteraction]
     public let focusedAgentID: String?
     public let agents: [AgentInstance]
+    public let workspaceLiveSyncMode: String?
     public let createdAtMs: Int64
     public let lastUsedAtMs: Int64?
 
@@ -29,6 +30,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         activeInteractions: [RuntimeInteraction] = [],
         focusedAgentID: String?,
         agents: [AgentInstance],
+        workspaceLiveSyncMode: String? = nil,
         createdAtMs: Int64,
         lastUsedAtMs: Int64?
     ) {
@@ -44,6 +46,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         self.activeInteractions = activeInteractions
         self.focusedAgentID = focusedAgentID
         self.agents = agents
+        self.workspaceLiveSyncMode = workspaceLiveSyncMode
         self.createdAtMs = createdAtMs
         self.lastUsedAtMs = lastUsedAtMs
     }
@@ -61,6 +64,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         case activeInteractions = "active_interactions"
         case focusedAgentID = "focused_agent_id"
         case agents
+        case workspaceLiveSyncMode = "workspace_live_sync_mode"
         case createdAtMs = "created_at_ms"
         case lastUsedAtMs = "last_used_at_ms"
     }
@@ -79,6 +83,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         activeInteractions = try container.decodeIfPresent([RuntimeInteraction].self, forKey: .activeInteractions) ?? []
         focusedAgentID = try container.decodeIfPresent(String.self, forKey: .focusedAgentID)
         agents = try container.decode([AgentInstance].self, forKey: .agents)
+        workspaceLiveSyncMode = try container.decodeIfPresent(String.self, forKey: .workspaceLiveSyncMode)
         createdAtMs = try container.decode(Int64.self, forKey: .createdAtMs)
         lastUsedAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastUsedAtMs)
     }
@@ -507,7 +512,7 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case respondToInteraction(sessionID: String, interactionID: String, choiceID: String)
     case getWorkspaceLiveSyncStatus(sessionID: String)
     case attachWorkspaceLink(sessionID: String, linkRef: String, repoRoot: String?)
-    case setWorkspaceLiveSyncMode(mode: String)
+    case setWorkspaceLiveSyncMode(sessionID: String, mode: String)
     case setUserConfigValue(path: String, value: String)
     case getSessionHistory(sessionID: String, agentID: String?, roundCount: Int, maxChars: Int)
     case spawnAgent(sessionID: String, alias: String?, provider: String, model: String?, effort: String?, worktreeID: String?)
@@ -638,9 +643,9 @@ public enum LocalDaemonRequest: Encodable, Sendable {
                 AttachWorkspaceLinkPayload(sessionID: sessionID, linkRef: linkRef, repoRoot: repoRoot),
                 forKey: DynamicCodingKey("AttachWorkspaceLink")
             )
-        case let .setWorkspaceLiveSyncMode(mode):
+        case let .setWorkspaceLiveSyncMode(sessionID, mode):
             try container.encode(
-                SetWorkspaceLiveSyncModePayload(mode: mode),
+                SetWorkspaceLiveSyncModePayload(sessionID: sessionID, mode: mode),
                 forKey: DynamicCodingKey("SetWorkspaceLiveSyncMode")
             )
         case let .setUserConfigValue(path, value):
@@ -858,6 +863,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case interactionResponded(interactionID: String, session: RuntimeSession)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
     case workspaceLinkAttached(session: RuntimeSession)
+    case workspaceLiveSyncModeUpdated(session: RuntimeSession)
     case userConfigUpdated(path: String, effects: [UserConfigMutationEffect])
     case sessionHistory([SessionHistoryPageEntry])
     case agentSpawned(AgentInstance)
@@ -957,6 +963,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLinkAttached" }) {
             let payload = try container.decode(WorkspaceLinkAttachedPayload.self, forKey: key)
             self = .workspaceLinkAttached(session: payload.session)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLiveSyncModeUpdated" }) {
+            let payload = try container.decode(SessionPayload.self, forKey: key)
+            self = .workspaceLiveSyncModeUpdated(session: payload.session)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "UserConfigUpdated" }) {
@@ -1187,7 +1198,13 @@ private struct SetUserConfigValuePayload: Encodable {
 }
 
 private struct SetWorkspaceLiveSyncModePayload: Encodable {
+    let sessionID: String
     let mode: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case mode
+    }
 }
 
 private struct UpdateSessionConfigPayload: Encodable {

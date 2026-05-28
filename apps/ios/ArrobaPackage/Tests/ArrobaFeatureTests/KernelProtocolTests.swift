@@ -134,7 +134,7 @@ import Testing
     let modeData = try KernelProtocolCodec.encodeRequestFrame(
         KernelRequestFrame(
             requestID: "request-workspace-sync-mode",
-            request: .setWorkspaceLiveSyncMode(mode: "tracked")
+            request: .setWorkspaceLiveSyncMode(sessionID: "session-1", mode: "tracked")
         )
     )
     let modeObject = try #require(
@@ -142,6 +142,7 @@ import Testing
     )
     let modeRequest = try #require(modeObject["request"] as? [String: Any])
     let modePayload = try #require(modeRequest["SetWorkspaceLiveSyncMode"] as? [String: Any])
+    #expect(modePayload["session_id"] as? String == "session-1")
     #expect(modePayload["mode"] as? String == "tracked")
 
     let linkData = try KernelProtocolCodec.encodeRequestFrame(
@@ -221,14 +222,19 @@ import Testing
       "type": "response",
       "request_id": "request-workspace-sync-mode",
       "response": {
-        "UserConfigUpdated": {
-          "path": "/Users/test/.arroba/config.json",
-          "config": {},
-          "effects": [{
-            "kind": "provider_reload",
-            "path": "providers.workspace_live_sync",
-            "message": "workspace live sync policy updated"
-          }]
+        "WorkspaceLiveSyncModeUpdated": {
+          "session": {
+            "id": "session-1",
+            "alias": null,
+            "workspace_id": "/repo",
+            "worktree_id": "/repo",
+            "status": "Active",
+            "focused_agent_id": null,
+            "workspace_live_sync_mode": "tracked",
+            "created_at_ms": 1777111200000,
+            "last_used_at_ms": 1777111201000,
+            "agents": []
+          }
         }
       },
       "error": null
@@ -236,11 +242,11 @@ import Testing
     """
 
     let updatedFrame = try KernelProtocolCodec.decodeResponseFrame(Data(updatedJSON.utf8))
-    guard case let .userConfigUpdated(_, effects) = updatedFrame.response else {
-        Issue.record("Expected UserConfigUpdated response")
+    guard case let .workspaceLiveSyncModeUpdated(session) = updatedFrame.response else {
+        Issue.record("Expected WorkspaceLiveSyncModeUpdated response")
         return
     }
-    #expect(effects.first?.path == "providers.workspace_live_sync")
+    #expect(session.workspaceLiveSyncMode == "tracked")
 }
 
 @Test func getProviderCatalogRequestMatchesKernelShape() throws {

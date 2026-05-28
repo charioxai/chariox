@@ -158,9 +158,10 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                 .with_execution_mode(effective_config.mode)
                 .with_permission_level(effective_config.permission_level);
                 request = request.with_workspace_live_sync_mode(
-                    crate::provider::provider_workspace_live_sync_mode_by_default(
+                    crate::provider::provider_workspace_live_sync_mode_for_session(
                         provider,
                         app.config(),
+                        Some(&session),
                     ),
                 );
                 if let Some(worktree_id) = agent.worktree_id() {
@@ -195,9 +196,10 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
             .with_agent_id(agent.id().to_string())
             .with_variant(agent.effort().map(str::to_string));
             request = request.with_workspace_live_sync_mode(
-                crate::provider::provider_workspace_live_sync_mode_by_default(
+                crate::provider::provider_workspace_live_sync_mode_for_session(
                     provider,
                     app.config(),
+                    app.sessions().get_session(session_id).ok().as_ref(),
                 ),
             );
             if let Some(worktree_id) = agent.worktree_id() {

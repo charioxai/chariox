@@ -91,6 +91,8 @@ pub struct RuntimeSession {
     workflow_publications: Vec<WorkflowPublicationDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_links: Vec<WorkspaceLinkDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
 }
 
 impl RuntimeSession {
@@ -145,6 +147,7 @@ impl RuntimeSession {
             workflow_consoles: Vec::new(),
             workflow_publications: Vec::new(),
             workspace_links: Vec::new(),
+            workspace_live_sync_mode: None,
         }
     }
 
@@ -470,6 +473,17 @@ impl RuntimeSession {
 
     pub fn workspace_links(&self) -> &[WorkspaceLinkDefinition] {
         &self.workspace_links
+    }
+
+    pub fn workspace_live_sync_mode(&self) -> Option<crate::config::WorkspaceLiveSyncMode> {
+        self.workspace_live_sync_mode
+    }
+
+    pub fn set_workspace_live_sync_mode(
+        &mut self,
+        mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    ) {
+        self.workspace_live_sync_mode = mode;
     }
 
     pub fn create_workspace_link(

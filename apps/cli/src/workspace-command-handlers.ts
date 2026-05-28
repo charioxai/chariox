@@ -27,6 +27,7 @@ export type WorkspaceCommandHandlerDeps = {
   baseWorktree: string
   hasDynamicWorktreeTarget: boolean
   isAttached: () => boolean
+  sessionState: () => Pick<RuntimeSession, "id">
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   applySessionState: (session: RuntimeSession) => void
@@ -38,7 +39,7 @@ export type WorkspaceCommandHandlerDeps = {
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
   setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
-  setWorkspaceLiveSyncMode?: (mode: "managed" | "tracked" | "unrestricted") => Promise<unknown>
+  setWorkspaceLiveSyncMode?: (sessionId: string, mode: "managed" | "tracked" | "unrestricted") => Promise<unknown>
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
 }
@@ -126,7 +127,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(mode)
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
     deps.flashFooter(`workspace live sync enabled: ${mode}`, "info")
     return
   }
@@ -135,7 +136,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync disable", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode("unrestricted")
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, "unrestricted")
     deps.flashFooter("workspace live sync disabled", "info")
     return
   }
@@ -145,7 +146,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync mode managed|tracked|unrestricted", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(mode)
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
     deps.flashFooter(`workspace live sync mode set to ${mode}`, "info")
     return
   }

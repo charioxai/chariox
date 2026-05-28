@@ -4,6 +4,13 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-28
 
+### Workspace live sync session-mode contract
+
+- Split Workspace Live Sync configuration into global launch policy and session-scoped runtime mode. `/config workspace-live-sync` and shell `config workspace-live-sync` now write only `providers.workspace_live_sync = required|unrestricted`; `workspace sync mode managed|tracked|unrestricted` sends `SetWorkspaceLiveSyncMode { session_id, mode }` and receives `WorkspaceLiveSyncModeUpdated { session }`.
+- Bumped the local daemon protocol to 62 and refreshed kernel, TypeScript CLI/shell, iOS, and Cloud web request/response shapes. Provider launch paths now resolve Workspace Live Sync mode from the session override first, then the global launch policy.
+- Local validation passed after the split: `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture` (124 tests), `pnpm --filter @arroba/kernel-client test` (76 tests), `pnpm --filter @arroba/cli test` (1065 tests), `swift test --package-path apps/ios/ArrobaPackage` (65 tests), `/Users/miguel/arroba-cloud pnpm test` (Cloud API/worker/web suites), and syntax checks for changed live-drill scripts.
+- Local Codex live drills passed after the split: `workspace-live-sync:managed-drill` with two managed targets, `workspace-live-sync:tracked-drill` with two cross-branch tracked targets plus bidirectional fanout/resolver convergence, and `workspace-live-sync:permission-drill` with approval-gated write resumption. Scalingo/staging hosted drills remain intentionally deferred.
+
 ### Workspace live sync local/client validation closure
 
 - Completed the remaining non-Scalingo validation sweep for Workspace Live Sync after tracked-mode parity work. `pnpm --filter @arroba/kernel-client test` passed with 76 tests, `pnpm --filter @arroba/cli test` passed with 1065 tests, `swift test --package-path apps/ios/ArrobaPackage` passed with 65 tests, and `/Users/miguel/arroba-cloud pnpm test` passed through the Cloud API, worker, package, and web app suites, including the Workspace Live Sync side-panel/enrollment coverage.

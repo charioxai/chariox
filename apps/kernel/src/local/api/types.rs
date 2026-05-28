@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 61;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 62;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -321,6 +321,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceLiveSyncStatus {
         status: WorkspaceLiveSyncStatus,
+    },
+    WorkspaceLiveSyncModeUpdated {
+        session: RuntimeSession,
     },
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,

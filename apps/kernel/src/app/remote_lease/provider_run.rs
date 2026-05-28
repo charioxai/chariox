@@ -99,10 +99,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 request = request.with_variant(run.variant().map(str::to_string));
             }
         }
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
         request = request.with_workspace_live_sync_mode(
-            crate::provider::provider_workspace_live_sync_mode_by_default(
+            crate::provider::provider_workspace_live_sync_mode_for_session(
                 &leased_agent.provider,
                 self.app.config(),
+                Some(&session),
             ),
         );
         let run = self.app.launch_provider(request)?;

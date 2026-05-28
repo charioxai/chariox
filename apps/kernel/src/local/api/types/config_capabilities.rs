@@ -14,6 +14,7 @@ pub struct SetUserConfigValueRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkspaceLiveSyncModeRequest {
+    pub session_id: String,
     pub mode: crate::config::WorkspaceLiveSyncMode,
 }
 

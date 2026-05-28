@@ -58,7 +58,11 @@ impl DaemonApp {
         .with_execution_mode(effective_config.mode)
         .with_permission_level(effective_config.permission_level);
         request = request.with_workspace_live_sync_mode(
-            crate::provider::provider_workspace_live_sync_mode_by_default(provider, &self.config),
+            crate::provider::provider_workspace_live_sync_mode_for_session(
+                provider,
+                &self.config,
+                Some(&session),
+            ),
         );
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));

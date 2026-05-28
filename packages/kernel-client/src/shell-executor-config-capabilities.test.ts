@@ -118,7 +118,7 @@ test("executeShellCommand mutates user config", async () => {
                 {
                   path: "providers.workspace_live_sync",
                   value_type: "enum",
-                  allowed_values: ["required", "tracked", "unrestricted"],
+                  allowed_values: ["required", "unrestricted"],
                   settable: true,
                   unsettable: true,
                   effect: "provider_reload",
@@ -131,8 +131,6 @@ test("executeShellCommand mutates user config", async () => {
         }
         const setConfig = "SetUserConfigValue" in request
           ? request.SetUserConfigValue as { path?: string }
-          : "SetWorkspaceLiveSyncMode" in request
-            ? { path: "providers.workspace_live_sync" }
           : null
         return {
           UserConfigUpdated: {
@@ -185,8 +183,8 @@ test("executeShellCommand mutates user config", async () => {
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetWorkspaceLiveSyncMode: { mode: "managed" } },
-    { SetWorkspaceLiveSyncMode: { mode: "managed" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
   ])
 })
 

@@ -402,7 +402,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
-    setWorkspaceLiveSyncMode: (mode) => setWorkspaceLiveSyncMode(client, mode),
+    setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
     listRemoteMachines: () => listRemoteMachines(client),

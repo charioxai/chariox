@@ -728,9 +728,8 @@ public final class ArrobaAppModel {
                 statusMessage = "usage: /config workspace-live-sync required|unrestricted"
                 return
             }
-            let mode = policy == "required" ? "managed" : policy
-            await setWorkspaceLiveSyncMode(
-                mode,
+            await setWorkspaceLiveSyncPolicy(
+                policy,
                 notice: "Workspace live sync set to \(policy)",
                 status: "Workspace live sync set to \(policy)."
             )
@@ -851,17 +850,43 @@ public final class ArrobaAppModel {
         notice: String? = nil,
         status: String? = nil
     ) async {
+        guard let selectedSessionID else {
+            connectionState = .failed
+            statusMessage = "Attach to a session before updating workspace live sync."
+            return
+        }
         await perform("Updating workspace live sync") {
             let response = try await client.send(
-                .setWorkspaceLiveSyncMode(mode: mode),
+                .setWorkspaceLiveSyncMode(sessionID: selectedSessionID, mode: mode),
+                to: try endpointURL()
+            )
+            guard case let .workspaceLiveSyncModeUpdated(session) = response else {
+                throw KernelClientError.unexpectedResponse(String(describing: response))
+            }
+            upsert(session)
+            self.selectedSessionID = session.id
+            appendCommandNotice(notice ?? "Workspace live sync mode = \(mode)")
+            promptDraft = ""
+            return status ?? "Workspace live sync set to \(mode)."
+        }
+    }
+
+    private func setWorkspaceLiveSyncPolicy(
+        _ policy: String,
+        notice: String,
+        status: String
+    ) async {
+        await perform("Updating workspace live sync policy") {
+            let response = try await client.send(
+                .setUserConfigValue(path: "providers.workspace_live_sync", value: policy),
                 to: try endpointURL()
             )
             guard case .userConfigUpdated = response else {
                 throw KernelClientError.unexpectedResponse(String(describing: response))
             }
-            appendCommandNotice(notice ?? "Workspace live sync mode = \(mode)")
+            appendCommandNotice(notice)
             promptDraft = ""
-            return status ?? "Workspace live sync set to \(mode)."
+            return status
         }
     }
 

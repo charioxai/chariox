@@ -53,8 +53,8 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     setWorkspaceLiveSyncStatus: (nextStatus) => {
       if (nextStatus) statusUpdates.push(nextStatus.footer_state)
     },
-    setWorkspaceLiveSyncMode: async (mode) => {
-      modeUpdates.push(mode)
+    setWorkspaceLiveSyncMode: async (sessionId, mode) => {
+      modeUpdates.push(`${sessionId}:${mode}`)
     },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
@@ -77,7 +77,12 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[3] ?? "", /rule ignored\/\*\*/)
   assert.match(notices[3] ?? "", /rule \*\.secret/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
-  assert.deepEqual(modeUpdates, ["tracked", "managed", "tracked", "unrestricted"])
+  assert.deepEqual(modeUpdates, [
+    "session-1:tracked",
+    "session-1:managed",
+    "session-1:tracked",
+    "session-1:unrestricted",
+  ])
   assert.deepEqual(footers.slice(-4), [
     "info:workspace live sync mode set to tracked",
     "info:workspace live sync enabled: managed",
@@ -90,8 +95,8 @@ test("workspace sync slash commands reject legacy mode aliases", async () => {
   const footers: string[] = []
   const modeUpdates: string[] = []
   const deps = workspaceDeps({
-    setWorkspaceLiveSyncMode: async (mode) => {
-      modeUpdates.push(mode)
+    setWorkspaceLiveSyncMode: async (sessionId, mode) => {
+      modeUpdates.push(`${sessionId}:${mode}`)
     },
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
   })
@@ -158,6 +163,7 @@ function workspaceDeps(
     baseWorktree: "/repo/main",
     hasDynamicWorktreeTarget: false,
     isAttached: () => true,
+    sessionState: session,
     flashFooter: () => {},
     appendNotice: () => {},
     applySessionState: () => {},

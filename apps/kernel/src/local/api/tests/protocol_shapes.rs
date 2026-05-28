@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -11,6 +11,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     );
     let mode_request = LocalDaemonRequest::SetWorkspaceLiveSyncMode(
         crate::local::SetWorkspaceLiveSyncModeRequest {
+            session_id: "session-1".to_string(),
             mode: crate::config::WorkspaceLiveSyncMode::Tracked,
         },
     );
@@ -47,10 +48,32 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
             },
         },
     };
+    let mut mode_session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "/repo",
+        "/repo",
+        "machine-1",
+        "daemon-1",
+    );
+    mode_session.set_workspace_live_sync_mode(Some(crate::config::WorkspaceLiveSyncMode::Tracked));
+    let mode_response = LocalDaemonResponse::WorkspaceLiveSyncModeUpdated {
+        session: mode_session,
+    };
 
-    let snapshot = serde_json::json!([request, mode_request, response]);
+    let mut snapshot = serde_json::json!([request, mode_request, response, mode_response]);
+    *snapshot
+        .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/created_at_ms")
+        .expect("session created_at_ms should encode") = serde_json::json!(42);
+    *snapshot
+        .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_used_at_ms")
+        .expect("session last_used_at_ms should encode") = serde_json::json!(42);
     assert_eq!(
         snapshot.pointer("/0/GetWorkspaceLiveSyncStatus/session_id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/SetWorkspaceLiveSyncMode/session_id"),
         Some(&serde_json::json!("session-1"))
     );
     assert_eq!(
@@ -65,18 +88,26 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
         snapshot.pointer("/2/WorkspaceLiveSyncStatus/status/targets/0/status"),
         Some(&serde_json::json!("ready"))
     );
+    assert_eq!(
+        snapshot.pointer("/3/WorkspaceLiveSyncModeUpdated/session/id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/3/WorkspaceLiveSyncModeUpdated/session/workspace_live_sync_mode"),
+        Some(&serde_json::json!("tracked"))
+    );
     let serialized =
         serde_json::to_string(&snapshot).expect("workspace live sync status should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "b54e3a411d75b0558c6b916a8dff134b8848b6088b8f5072204818a52889b041"
+        "8dcd6baa14307d8b8ebec6ae117267f2a2ec30b8a25187a39fe72c85b68823a5"
     );
 }
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -165,7 +196,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
@@ -246,7 +277,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -668,7 +699,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "prompt-1".to_string(),
@@ -698,7 +729,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::RequestNativeProviderInteraction(
         RequestNativeProviderInteractionRequest::allow_deny(
@@ -749,7 +780,7 @@ fn local_daemon_protocol_native_provider_interaction_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -781,7 +812,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: "session-1".to_string(),
@@ -816,7 +847,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -839,7 +870,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let response = LocalDaemonResponse::Slice {
         slice: crate::slice::SliceRecord {
@@ -888,7 +919,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::SemanticSearchRecall(SemanticSearchRecallRequest {
         query: "why did the build fail".to_string(),
@@ -1006,7 +1037,7 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some("session-1".to_string()),
@@ -1039,7 +1070,7 @@ fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -1072,7 +1103,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -1102,7 +1133,7 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 61);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 62);
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),

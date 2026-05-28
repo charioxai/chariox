@@ -84,24 +84,8 @@ pub(crate) async fn execute_set_workspace_live_sync_mode_request(
     runtime_state: &KernelRuntimeState,
     request: SetWorkspaceLiveSyncModeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let (config, effects) = apply_user_config_mutation(
-        runtime_state,
-        UserConfigMutation::Set {
-            path: "providers.workspace_live_sync".to_string(),
-            value: match request.mode {
-                crate::config::WorkspaceLiveSyncMode::Managed => "required",
-                crate::config::WorkspaceLiveSyncMode::Tracked => "tracked",
-                crate::config::WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
-            }
-            .to_string(),
-        },
-    )
-    .await?;
-    Ok(LocalDaemonResponse::UserConfigUpdated {
-        path: config.user_config_path().clone(),
-        config: config.user_config,
-        effects,
-    })
+    let session = runtime_state.set_workspace_live_sync_mode(&request.session_id, request.mode)?;
+    Ok(LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session })
 }
 
 pub(crate) async fn execute_unset_user_config_value_request(

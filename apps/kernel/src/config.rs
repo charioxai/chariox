@@ -874,11 +874,16 @@ service = "arroba-test"
             WorkspaceLiveSyncMode::Unrestricted
         );
 
-        config
+        let error = config
             .set_user_config_value("providers.workspace_live_sync", "tracked")
-            .expect("tracked workspace live sync policy should update");
-        assert!(!config.provider_requires_workspace_live_sync("opencode"));
-        assert!(config.provider_tracks_workspace_live_sync("opencode"));
+            .expect_err("tracked workspace live sync is session-scoped, not a global policy");
+        assert!(matches!(
+            error,
+            DaemonError::InvalidConfig {
+                field: "providers.workspace_live_sync",
+                ..
+            }
+        ));
 
         let _ = std::fs::remove_file(path);
     }
@@ -944,7 +949,7 @@ service = "arroba-test"
         assert_eq!(workspace_live_sync.effect, "provider_reload");
         assert_eq!(
             workspace_live_sync.allowed_values,
-            vec!["required", "tracked", "unrestricted"]
+            vec!["required", "unrestricted"]
         );
         assert!(schema
             .iter()

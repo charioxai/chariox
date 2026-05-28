@@ -2,6 +2,7 @@ import type {
   ArrobaUserConfig,
   ArrobaUserConfigPayload,
   ArrobaUserConfigSchemaPayload,
+  RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
@@ -35,10 +36,11 @@ export async function setUserConfigValue(
 
 export async function setWorkspaceLiveSyncMode(
   client: LocalIpcClient,
+  sessionId: string,
   mode: "managed" | "tracked" | "unrestricted",
-): Promise<ArrobaUserConfigPayload> {
-  const response = await client.send<Record<string, unknown>>(setWorkspaceLiveSyncModeRequest(mode))
-  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+): Promise<{ session: RuntimeSession }> {
+  const response = await client.send<Record<string, unknown>>(setWorkspaceLiveSyncModeRequest(sessionId, mode))
+  return expectVariant<{ session: RuntimeSession }>(response, "WorkspaceLiveSyncModeUpdated")
 }
 
 export async function unsetUserConfigValue(

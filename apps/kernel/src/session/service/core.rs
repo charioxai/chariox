@@ -112,6 +112,16 @@ impl SessionService {
         Ok(self.get_session(session_id)?.workspace_links().to_vec())
     }
 
+    pub fn set_workspace_live_sync_mode(
+        &mut self,
+        session_id: &str,
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "set workspace live sync mode")?;
+        session.set_workspace_live_sync_mode(Some(mode));
+        Ok(session.clone())
+    }
+
     pub fn resolve_workspace_link_ref(
         &self,
         session_id: &str,

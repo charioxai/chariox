@@ -126,6 +126,7 @@ export type RuntimeSession = {
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
 }
 
 export type SessionCollaborationAgentCounts = {
@@ -386,7 +387,7 @@ export type ArrobaUserConfig = {
     model?: string
     account_profile?: string
     effort?: string
-    workspace_live_sync?: "required" | "tracked" | "unrestricted"
+    workspace_live_sync?: "required" | "unrestricted"
   }
   history?: {
     operational?: {
@@ -883,7 +884,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 61
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 62
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

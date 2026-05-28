@@ -346,10 +346,10 @@ async function main() {
       setWorkspaceLiveSyncModeRequest,
     } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
-    await client.send(setWorkspaceLiveSyncModeRequest('managed'))
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `workspace-live-sync-permission-${provider}`)), 'SessionCreated').session
     const sessionId = session.id
+    await client.send(setWorkspaceLiveSyncModeRequest(sessionId, 'managed'))
     const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, `workspace-live-sync-permission-drill-${Date.now()}`)), 'SessionAttached').attachment
     const attachmentId = attachment.id
     await client.send(updateSessionConfigRequest(sessionId, attachmentId, { 'agents.mode': 'build', 'agents.permissions': 'required' }, false))

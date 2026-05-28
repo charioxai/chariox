@@ -40,11 +40,12 @@ impl KernelRuntimeOwnedState {
             }
         }
         let config = self.config_projection.snapshot();
-        let workspace_live_sync_mode =
-            crate::provider::provider_workspace_live_sync_mode_by_default(
-                &launch_request.provider,
-                &config,
-            );
+        let session = self.session_store.get_session(&request.session_id).ok();
+        let workspace_live_sync_mode = crate::provider::provider_workspace_live_sync_mode_for_session(
+            &launch_request.provider,
+            &config,
+            session.as_ref(),
+        );
         launch_request = launch_request.with_workspace_live_sync_mode(workspace_live_sync_mode);
         if let Some(agent_id) = request.agent_id.clone().or_else(|| {
             self.session_store

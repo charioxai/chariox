@@ -675,9 +675,9 @@ import Testing
         .workspaceLiveSyncStatus(status),
         .workspaceLiveSyncStatus(status),
         .workspaceLiveSyncStatus(status),
-        .userConfigUpdated(path: "/tmp/config.json", effects: []),
-        .userConfigUpdated(path: "/tmp/config.json", effects: []),
-        .userConfigUpdated(path: "/tmp/config.json", effects: []),
+        .workspaceLiveSyncModeUpdated(session: session),
+        .workspaceLiveSyncModeUpdated(session: session),
+        .workspaceLiveSyncModeUpdated(session: session),
         .workspaceLinkAttached(session: session),
     ])
     let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.workspaceSync")!

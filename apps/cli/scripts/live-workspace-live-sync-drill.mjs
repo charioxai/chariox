@@ -1879,11 +1879,11 @@ async function main() {
   const events = []
   let sessionId = null
   try {
-    if (setWorkspaceLiveSyncModeRequest) {
-      await client.send(setWorkspaceLiveSyncModeRequest(options.mode))
-    }
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
+    if (setWorkspaceLiveSyncModeRequest) {
+      await client.send(setWorkspaceLiveSyncModeRequest(session.id, options.mode))
+    }
     const attachment = unwrap(
       await client.send(attachToSessionRequest(session.id, `workspace-live-sync-drill-${Date.now()}`)),
       'SessionAttached',

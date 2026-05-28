@@ -3,30 +3,32 @@ use super::*;
 #[test]
 fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
     let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-sync-mode"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
 
     let updated = match harness
         .dispatch(LocalDaemonRequest::SetWorkspaceLiveSyncMode(
             SetWorkspaceLiveSyncModeRequest {
+                session_id: session.id().to_string(),
                 mode: crate::config::WorkspaceLiveSyncMode::Tracked,
             },
         ))
         .expect("workspace live sync mode update should succeed")
     {
-        LocalDaemonResponse::UserConfigUpdated {
-            config, effects, ..
-        } => {
-            assert_eq!(
-                effects.first().map(|effect| effect.path.as_str()),
-                Some("providers.workspace_live_sync")
-            );
-            config
-        }
+        LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session } => session,
         _ => panic!("unexpected local response"),
     };
 
     assert_eq!(
-        updated.providers.workspace_live_sync.mode,
-        crate::config::WorkspaceLiveSyncMode::Tracked
+        updated.workspace_live_sync_mode(),
+        Some(crate::config::WorkspaceLiveSyncMode::Tracked)
     );
 }
 

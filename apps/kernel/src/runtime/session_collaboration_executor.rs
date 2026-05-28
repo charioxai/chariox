@@ -251,10 +251,12 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
     config_projection: &DaemonConfigProjectionStore,
     request: GetWorkspaceLiveSyncStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let mode = config_projection
-        .snapshot()
-        .provider_workspace_live_sync_mode("default");
     let session = runtime_state.session_snapshot(&request.session_id).await?;
+    let mode = session.workspace_live_sync_mode().unwrap_or_else(|| {
+        config_projection
+            .snapshot()
+            .provider_workspace_live_sync_mode("default")
+    });
     let has_prompt_work = session.has_any_prompt_work();
     let links = runtime_state.list_workspace_links(&request.session_id)?;
     let target_results = runtime_state.workspace_live_sync_target_results(&request.session_id);

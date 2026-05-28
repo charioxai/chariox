@@ -168,9 +168,10 @@ impl KernelRuntimeState {
             .with_variant(run.variant().map(str::to_string))
             .with_resume_state(run.resume_state().clone());
             launch_request = launch_request.with_workspace_live_sync_mode(
-                crate::provider::provider_workspace_live_sync_mode_by_default(
+                crate::provider::provider_workspace_live_sync_mode_for_session(
                     run.provider(),
                     &config,
+                    owned.session_store.get_session(session_id).ok().as_ref(),
                 ),
             );
             let launch_request =

@@ -119,6 +119,19 @@ impl KernelRuntimeState {
             .list_workspace_links(session_id)
     }
 
+    pub(crate) fn set_workspace_live_sync_mode(
+        &self,
+        session_id: &str,
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self
+            .owned
+            .session_store
+            .write()
+            .set_workspace_live_sync_mode(session_id, mode)?;
+        self.owned.session_snapshot(session.id())
+    }
+
     pub(crate) fn resolve_workspace_link_ref(
         &self,
         session_id: &str,

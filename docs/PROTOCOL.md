@@ -567,7 +567,9 @@ Screenshot capture MUST write only into daemon-chosen session artifact locations
 
 ## 5.0.1 Workspace Live Sync Coordination
 
-The kernel owns Workspace Live Sync for Arroba-launched provider sessions. Workspace Live Sync has two modes:
+The kernel owns Workspace Live Sync for Arroba-launched provider sessions. The global `providers.workspace_live_sync` config is a launch policy with values `required` or `unrestricted`: `required` means new provider launches must enter a Workspace Live Sync mode, while `unrestricted` leaves new launches unmanaged unless the session asks otherwise. The concrete sync mode is session-scoped and is changed with `SetWorkspaceLiveSyncMode { session_id, mode }`; successful changes return `WorkspaceLiveSyncModeUpdated { session }` and update the session projection.
+
+Workspace Live Sync has two coordinated modes:
 
 - **managed**: supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 - **tracked**: provider-native file writes are allowed, but the kernel snapshots allowed workspace files during an Arroba-managed turn, computes changed-file diffs at turn end, and fans those changes out to attached Workspace Live Sync targets.

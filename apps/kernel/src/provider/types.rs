@@ -9,6 +9,16 @@ pub(crate) fn provider_workspace_live_sync_mode_by_default(
     config.provider_workspace_live_sync_mode(provider)
 }
 
+pub(crate) fn provider_workspace_live_sync_mode_for_session(
+    provider: &str,
+    config: &crate::config::DaemonConfig,
+    session: Option<&crate::session::RuntimeSession>,
+) -> crate::config::WorkspaceLiveSyncMode {
+    session
+        .and_then(crate::session::RuntimeSession::workspace_live_sync_mode)
+        .unwrap_or_else(|| provider_workspace_live_sync_mode_by_default(provider, config))
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlOperation {

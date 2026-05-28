@@ -153,9 +153,10 @@ export function getWorkspaceLiveSyncStatusRequest(sessionId: string) {
   }
 }
 
-export function setWorkspaceLiveSyncModeRequest(mode: "managed" | "tracked" | "unrestricted") {
+export function setWorkspaceLiveSyncModeRequest(sessionId: string, mode: "managed" | "tracked" | "unrestricted") {
   return {
     SetWorkspaceLiveSyncMode: {
+      session_id: sessionId,
       mode,
     },
   }
