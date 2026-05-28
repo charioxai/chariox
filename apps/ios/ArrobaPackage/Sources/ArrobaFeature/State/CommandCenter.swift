@@ -154,10 +154,17 @@ public enum CommandCenterCatalog {
 
     private static let configItems: [CommandCenterItem] = [
         CommandCenterItem(
-            id: "config-workspace-live-sync-required",
-            label: "workspace-live-sync required",
-            detail: "Require workspace live sync for supported provider runs",
-            value: "/config workspace-live-sync required",
+            id: "config-workspace-live-sync-managed",
+            label: "workspace-live-sync managed",
+            detail: "Require managed workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync managed",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "config-workspace-live-sync-tracked",
+            label: "workspace-live-sync tracked",
+            detail: "Track turn-end workspace changes without write fencing",
+            value: "/config workspace-live-sync tracked",
             submitsImmediately: true
         ),
         CommandCenterItem(

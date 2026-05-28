@@ -731,6 +731,7 @@ import Testing
     let client = SequencedMockKernelClient(responses: [
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
+        .userConfigUpdated(path: "/tmp/config.json", effects: []),
     ])
     let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.configWorkspaceLiveSync")!
     defaults.removePersistentDomain(forName: "ArrobaAppModelTests.configWorkspaceLiveSync")
@@ -740,7 +741,7 @@ import Testing
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to required")
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to managed")
 
     model.promptDraft = "/config workspace-live-sync unrestricted"
     await model.submitPrompt()
@@ -751,7 +752,8 @@ import Testing
     model.promptDraft = "/config workspace-live-sync tracked"
     await model.submitPrompt()
 
-    #expect(model.statusMessage == "usage: /config workspace-live-sync required|unrestricted")
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to tracked")
 }
 
 @MainActor
@@ -827,7 +829,9 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-conflicts"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-ignore"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("config"))
-    #expect(CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id).contains("config-workspace-live-sync-required"))
+    let configIds = CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id)
+    #expect(configIds.contains("config-workspace-live-sync-managed"))
+    #expect(configIds.contains("config-workspace-live-sync-tracked"))
     #expect(CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id).contains("config-workspace-live-sync-unrestricted"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))

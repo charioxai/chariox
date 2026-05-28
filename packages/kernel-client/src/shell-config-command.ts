@@ -80,12 +80,11 @@ export async function executeConfigCommand(
     }
   }
   if (action === "workspace-live-sync") {
-    const mode = keyPath ?? "required"
-    if (rest.length > 0 || !["required", "unrestricted"].includes(mode)) {
-      return { ok: false, message: "usage: config workspace-live-sync required|unrestricted" }
+    const mode = normalizeWorkspaceLiveSyncMode(keyPath ?? "managed")
+    if (rest.length > 0 || !mode) {
+      return { ok: false, message: "usage: config workspace-live-sync managed|tracked|unrestricted" }
     }
-    const normalizedMode = mode === "required" ? "managed" : "unrestricted"
-    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(normalizedMode))
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(mode))
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
@@ -94,6 +93,11 @@ export async function executeConfigCommand(
     }
   }
   return { ok: false, message: "usage: config show|path|keys|schema|set|unset|workspace-live-sync" }
+}
+
+function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
+  if (value === "managed" || value === "tracked" || value === "unrestricted") return value
+  return null
 }
 
 export async function executeCredentialCommand(

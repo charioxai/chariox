@@ -181,17 +181,19 @@ test("config command renders kernel mutation effects", async () => {
   assert.deepEqual(updates, [
     { path: "providers.workspace_live_sync", value: "unrestricted" },
     { path: "providers.workspace_live_sync", value: "managed" },
+    { path: "providers.workspace_live_sync", value: "tracked" },
   ])
   assert.deepEqual(notices, [
     "providers.workspace_live_sync (enum; live; provider_reload unset values=managed|tracked|unrestricted)",
+    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
   ])
   assert.deepEqual(flashes, [
     "listed 1 config key",
     "workspace live sync set to unrestricted",
-    "workspace live sync set to required",
-    "usage: /config workspace-live-sync required|unrestricted",
+    "workspace live sync set to managed",
+    "workspace live sync set to tracked",
   ])
 })
 

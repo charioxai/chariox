@@ -522,7 +522,8 @@ You can also modify the same TOML through the CLI:
 /config show
 /config path
 /config workspace-live-sync unrestricted
-/config workspace-live-sync required
+/config workspace-live-sync managed
+/config workspace-live-sync tracked
 /config unset providers.workspace_live_sync
 ```
 

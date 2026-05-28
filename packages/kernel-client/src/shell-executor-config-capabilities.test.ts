@@ -159,7 +159,7 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const workspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync required"), context, { client: fake.client })
+  const workspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
   const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   const trackedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync tracked"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
@@ -174,12 +174,12 @@ test("executeShellCommand mutates user config", async () => {
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
   assert.equal(workspaceLiveSyncResult.ok, true)
-  assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
+  assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
   assert.match(workspaceLiveSyncResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
   assert.equal(defaultWorkspaceLiveSyncResult.ok, true)
-  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
-  assert.equal(trackedWorkspaceLiveSyncResult.ok, false)
-  assert.match(trackedWorkspaceLiveSyncResult.message ?? "", /required\|unrestricted/)
+  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
+  assert.equal(trackedWorkspaceLiveSyncResult.ok, true)
+  assert.match(trackedWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to tracked/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },
@@ -188,6 +188,7 @@ test("executeShellCommand mutates user config", async () => {
     { UnsetUserConfigValue: { path: "providers.default" } },
     { SetWorkspaceLiveSyncMode: { mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { mode: "managed" } },
+    { SetWorkspaceLiveSyncMode: { mode: "tracked" } },
   ])
 })
 
