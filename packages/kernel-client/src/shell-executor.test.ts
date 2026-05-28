@@ -564,6 +564,7 @@ test("executeShellCommand manages workspace links", async () => {
   const syncIgnoreResult = await executeShellCommand(parseShellCommand("workspace sync ignore"), context, { client: fake.client })
   const modeResult = await executeShellCommand(parseShellCommand("workspace sync mode tracked"), context, { client: fake.client })
   const enableResult = await executeShellCommand(parseShellCommand("workspace sync enable managed"), context, { client: fake.client })
+  const enableTrackedResult = await executeShellCommand(parseShellCommand("workspace sync enable tracked"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
   const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
@@ -580,6 +581,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)
   assert.match(modeResult.message ?? "", /mode set to tracked/)
   assert.match(enableResult.message ?? "", /enabled: managed/)
+  assert.match(enableTrackedResult.message ?? "", /enabled: tracked/)
   assert.match(disableResult.message ?? "", /disabled/)
   assert.match(syncLinkResult.message ?? "", /recommended mode: managed/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
@@ -595,6 +597,7 @@ test("executeShellCommand manages workspace links", async () => {
     { GetWorkspaceLiveSyncStatus: { session_id: "session-1" } },
     { SetWorkspaceLiveSyncMode: { mode: "tracked" } },
     { SetWorkspaceLiveSyncMode: { mode: "managed" } },
+    { SetWorkspaceLiveSyncMode: { mode: "tracked" } },
     { SetWorkspaceLiveSyncMode: { mode: "unrestricted" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },

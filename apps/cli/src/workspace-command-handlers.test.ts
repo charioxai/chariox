@@ -65,6 +65,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync ignore")
   await runWorkspace(deps, "/workspace sync mode tracked")
   await runWorkspace(deps, "/workspace sync enable managed")
+  await runWorkspace(deps, "/workspace sync enable tracked")
   await runWorkspace(deps, "/workspace sync disable")
 
   assert.match(notices[0] ?? "", /Workspace live sync: managed footer=conflict/)
@@ -72,10 +73,11 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
-  assert.deepEqual(modeUpdates, ["tracked", "managed", "unrestricted"])
-  assert.deepEqual(footers.slice(-3), [
+  assert.deepEqual(modeUpdates, ["tracked", "managed", "tracked", "unrestricted"])
+  assert.deepEqual(footers.slice(-4), [
     "info:workspace live sync mode set to tracked",
     "info:workspace live sync enabled: managed",
+    "info:workspace live sync enabled: tracked",
     "info:workspace live sync disabled",
   ])
 })
