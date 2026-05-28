@@ -251,6 +251,9 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
     config_projection: &DaemonConfigProjectionStore,
     request: GetWorkspaceLiveSyncStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .observe_pending_tracked_git_for_session(&request.session_id)
+        .await;
     let mode = config_projection
         .snapshot()
         .provider_workspace_live_sync_mode("default");

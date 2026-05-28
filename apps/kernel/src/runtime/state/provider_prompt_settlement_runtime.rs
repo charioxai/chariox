@@ -211,6 +211,8 @@ impl KernelRuntimeState {
             operation: "settle provider prompt",
             message: "owned prompt runtime could not settle provider prompt".to_string(),
         })?;
+        self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
+            .await;
         crate::logging::debug_with_fields(
             "daemon.provider",
             "settled provider prompt",

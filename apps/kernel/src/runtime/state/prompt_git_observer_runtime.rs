@@ -8,7 +8,13 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         provider_run: &crate::provider::RuntimeProviderRun,
     ) {
-        let Some(worktree_path) = provider_run.working_directory().cloned() else {
+        let Some(worktree_path) = provider_run.working_directory().cloned().or_else(|| {
+            self.owned
+                .session_store
+                .get_session(&dispatch.session_id)
+                .ok()
+                .map(|session| std::path::PathBuf::from(session.worktree_id()))
+        }) else {
             return;
         };
         let context = crate::git_observer::GitTurnContext {
@@ -34,6 +40,20 @@ impl KernelRuntimeState {
         .await
         {
             Ok(Some(snapshot)) => {
+                if snapshot.workspace_live_sync_tracked {
+                    crate::logging::info_with_fields(
+                        "daemon.git_observer",
+                        "captured tracked workspace live sync pre-turn snapshot",
+                        serde_json::json!({
+                            "session_id": snapshot.session_id,
+                            "agent_id": snapshot.agent_id,
+                            "provider_run_id": snapshot.provider_run_id,
+                            "prompt_id": snapshot.prompt_id,
+                            "worktree_path": snapshot.worktree_path,
+                            "is_dirty": snapshot.is_dirty,
+                        }),
+                    );
+                }
                 self.owned.git_turn_snapshots.insert(snapshot);
             }
             Ok(None) => {}
@@ -60,10 +80,94 @@ impl KernelRuntimeState {
             .owned
             .git_turn_snapshots
             .remove(provider_run_id, completed_prompt.id())
+            .or_else(|| {
+                self.owned
+                    .git_turn_snapshots
+                    .remove_for_provider_run(provider_run_id)
+            })
+        else {
+            crate::logging::warn_with_fields(
+                "daemon.git_observer",
+                "missing pre-turn git snapshot for completed prompt",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "prompt_id": completed_prompt.id(),
+                }),
+            );
+            return;
+        };
+        self.observe_git_after_turn_snapshot(provider_run_id, completed_prompt.id(), before, true)
+            .await;
+    }
+
+    pub(super) async fn observe_git_after_provider_activity_if_pending(
+        &self,
+        provider_run_id: &str,
+    ) {
+        let Ok(provider_run) = self.owned.provider_store.get_run(provider_run_id) else {
+            return;
+        };
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return;
+        };
+        let Ok(session) = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())
         else {
             return;
         };
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+        {
+            return;
+        }
+        let Some(before) = self
+            .owned
+            .git_turn_snapshots
+            .remove_for_provider_run(provider_run_id)
+        else {
+            crate::logging::debug_with_fields(
+                "daemon.git_observer",
+                "no pending pre-turn git snapshot after provider activity",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                }),
+            );
+            return;
+        };
+        let prompt_id = before.prompt_id.clone();
+        self.observe_git_after_turn_snapshot(provider_run_id, &prompt_id, before, true)
+            .await;
+    }
+
+    pub(crate) async fn observe_pending_tracked_git_for_session(&self, session_id: &str) {
+        let provider_run_ids = self
+            .owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        for provider_run_id in provider_run_ids {
+            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
+                .await;
+        }
+    }
+
+    async fn observe_git_after_turn_snapshot(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        before: crate::git_observer::GitTurnSnapshot,
+        keep_pending_if_unchanged: bool,
+    ) {
         let candidates = self.owned.git_turn_snapshots.candidates_for(&before);
+        let pending_before = before.clone();
         let after_context = crate::git_observer::GitTurnContext {
             session_id: before.session_id.clone(),
             agent_id: before.agent_id.clone(),
@@ -81,6 +185,7 @@ impl KernelRuntimeState {
         let history = self.owned.operational_history_store.clone();
         let observation = tokio::task::spawn_blocking(move || {
             let after = crate::git_observer::capture_turn_snapshot(after_context)?;
+            let status_changed = before.status_fingerprint != after.status_fingerprint;
             let tracked_change = if before.workspace_live_sync_tracked {
                 crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
             } else {
@@ -88,12 +193,12 @@ impl KernelRuntimeState {
             };
             Some(
                 crate::git_observer::observe_after_turn(before, after, candidates, &history)
-                    .map(|events| (events, tracked_change)),
+                    .map(|events| (events, tracked_change, status_changed)),
             )
         })
         .await;
         match observation {
-            Ok(Some(Ok((events, tracked_change)))) => {
+            Ok(Some(Ok((events, tracked_change, status_changed)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
                     self.record_and_fanout_workspace_live_sync_change(change, None)
@@ -103,10 +208,15 @@ impl KernelRuntimeState {
                         "recorded tracked workspace live sync turn change",
                         serde_json::json!({
                             "provider_run_id": provider_run_id,
-                            "prompt_id": completed_prompt.id(),
+                            "prompt_id": prompt_id,
                             "changed_path_count": changed_path_count,
                         }),
                     );
+                } else if keep_pending_if_unchanged
+                    && pending_before.workspace_live_sync_tracked
+                    && !status_changed
+                {
+                    self.owned.git_turn_snapshots.insert(pending_before);
                 }
                 if !events.is_empty() {
                     crate::logging::info_with_fields(
@@ -114,7 +224,7 @@ impl KernelRuntimeState {
                         "recorded git history events after agent turn",
                         serde_json::json!({
                             "provider_run_id": provider_run_id,
-                            "prompt_id": completed_prompt.id(),
+                            "prompt_id": prompt_id,
                             "event_count": events.len(),
                         }),
                     );
@@ -125,7 +235,7 @@ impl KernelRuntimeState {
                 "failed to record git history events after agent turn",
                 serde_json::json!({
                     "provider_run_id": provider_run_id,
-                    "prompt_id": completed_prompt.id(),
+                    "prompt_id": prompt_id,
                     "error": error.to_string(),
                 }),
             ),
@@ -135,7 +245,7 @@ impl KernelRuntimeState {
                 "failed to join post-turn git observation task",
                 serde_json::json!({
                     "provider_run_id": provider_run_id,
-                    "prompt_id": completed_prompt.id(),
+                    "prompt_id": prompt_id,
                     "error": error.to_string(),
                 }),
             ),

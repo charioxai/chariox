@@ -41,6 +41,7 @@ impl ProviderProcessService {
                 "model": request.model.as_str(),
                 "variant": request.variant.as_deref(),
                 "requires_workspace_live_sync": request.requires_workspace_live_sync(),
+                "tracks_workspace_live_sync": request.tracks_workspace_live_sync(),
                 "runtime_mcp_binding_present": request.runtime_mcp_binding.is_some(),
                 "granted_mcp_servers": request
                     .mcp_servers

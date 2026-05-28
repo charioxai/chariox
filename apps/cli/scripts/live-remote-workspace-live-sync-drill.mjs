@@ -46,6 +46,7 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
     full: false,
+    mode: 'managed',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -61,6 +62,10 @@ function parseArgs(argv) {
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--full') options.full = true
+    else if (arg === '--mode') {
+      options.mode = argv[++i]
+      if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
+    }
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -239,7 +244,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
@@ -352,6 +357,7 @@ async function main() {
       ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
       '--timeout-ms', String(options.timeoutMs),
       '--poll-ms', String(options.pollMs),
+      '--mode', options.mode,
       ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
     ], repoRoot)
@@ -371,6 +377,7 @@ async function main() {
       model: options.model,
       providerModels: options.providerModels,
       full: options.full,
+      liveSyncMode: options.mode,
       workspaceLiveSync: result,
     }, null, 2))
     succeeded = true

@@ -49,6 +49,7 @@ function parseArgs(argv) {
     historyDir: null,
     keepArtifactsOnFailure: false,
     positiveOnly: false,
+    mode: 'managed',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -68,6 +69,10 @@ function parseArgs(argv) {
     else if (arg === '--history-dir') options.historyDir = argv[++i]
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--positive-only') options.positiveOnly = true
+    else if (arg === '--mode') {
+      options.mode = argv[++i]
+      if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
+    }
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -97,6 +102,7 @@ function printHelp() {
     '  --history-dir PATH (session history dir when using --no-spawn-daemon)',
     '  --keep-artifacts-on-failure',
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
+    '  --mode managed|tracked',
   ].join('\n'))
 }
 
@@ -138,6 +144,36 @@ async function terminateChild(child, signal = 'SIGTERM') {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+async function runCommand(command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('exit', (code) => {
+      if (code === 0) resolve({ stdout, stderr })
+      else reject(new Error(`${command} ${args.join(' ')} failed with code ${code}: ${stderr || stdout}`))
+    })
+    child.on('error', reject)
+  })
+}
+
+async function initTrackedWorkspace(workspace, provider) {
+  const outputsDir = path.join(workspace, 'outputs')
+  await mkdir(path.join(workspace, 'ignored'), { recursive: true })
+  await mkdir(outputsDir, { recursive: true })
+  await writeFile(path.join(workspace, '.gitignore'), 'ignored/\n*.secret\n', 'utf8')
+  await writeFile(path.join(workspace, 'tracked.txt'), 'line-a\nline-b\n', 'utf8')
+  await writeFile(path.join(outputsDir, `${provider}-tracked-delete.txt`), 'delete me\n', 'utf8')
+  await writeFile(path.join(outputsDir, `${provider}-tracked-rename-source.txt`), 'rename me\n', 'utf8')
+  await runCommand('git', ['init'], workspace)
+  await runCommand('git', ['config', 'user.email', 'tracked-drill@example.com'], workspace)
+  await runCommand('git', ['config', 'user.name', 'Tracked Drill'], workspace)
+  await runCommand('git', ['add', '.'], workspace)
+  await runCommand('git', ['commit', '-m', 'seed tracked workspace'], workspace)
+}
 
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
   if (!machineRef) return spawnAgentRequest(sessionId, provider, alias, model, worktreeId, effort)
@@ -205,7 +241,7 @@ async function spawnWorkspaceLiveSyncPhaseAgents({
   const agents = []
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index]
-    const agent = unwrapVariant(
+    const spawned = unwrapVariant(
       await client.send(workspaceLiveSyncSpawnAgentRequest(
         spawnAgentRequest,
         sessionId,
@@ -217,8 +253,8 @@ async function spawnWorkspaceLiveSyncPhaseAgents({
         machineRef,
       )),
       'AgentSpawned',
-    ).agent
-    agents.push({ provider, agent })
+    )
+    agents.push({ provider, agent: spawned.agent, spawnedSessionId: spawned.session?.id ?? null })
   }
   return agents
 }
@@ -898,6 +934,193 @@ async function runLiveCollisionAndExternalChecks({
   return checks
 }
 
+async function waitForTrackedFanout({
+  client,
+  sessionId,
+  attachmentId,
+  getWorkspaceLiveSyncStatusRequest,
+  sourceWorkspace,
+  targetWorkspace,
+  provider,
+  timeoutMs,
+  pollMs,
+}) {
+  const sourceOutputs = path.join(sourceWorkspace, 'outputs')
+  const targetOutputs = path.join(targetWorkspace, 'outputs')
+  const expectedTracked = `line-a\n${provider}-tracked-modified\n`
+  const expectedAdded = `${provider}-tracked-added\n`
+  const expectedRenamed = `${provider}-tracked-renamed\n`
+  let lastStatus = null
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    lastStatus = unwrapVariant(
+      await client.send(getWorkspaceLiveSyncStatusRequest(sessionId)),
+      'WorkspaceLiveSyncStatus',
+    ).status
+    const checks = [
+      [path.join(sourceWorkspace, 'tracked.txt'), expectedTracked],
+      [path.join(targetWorkspace, 'tracked.txt'), expectedTracked],
+      [path.join(sourceOutputs, `${provider}-tracked-added.txt`), expectedAdded],
+      [path.join(targetOutputs, `${provider}-tracked-added.txt`), expectedAdded],
+      [path.join(sourceOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
+      [path.join(targetOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
+      [path.join(sourceWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
+      [path.join(targetWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
+    ]
+    let contentOk = true
+    for (const [filePath, expected] of checks) {
+      if (!(await fileExists(filePath)) || (await readFile(filePath, 'utf8')) !== expected) {
+        contentOk = false
+        break
+      }
+    }
+    const deletedOk = !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-delete.txt`))) &&
+      !(await fileExists(path.join(targetOutputs, `${provider}-tracked-delete.txt`))) &&
+      !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-rename-source.txt`))) &&
+      !(await fileExists(path.join(targetOutputs, `${provider}-tracked-rename-source.txt`)))
+    const ignoredOk = await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`)) &&
+      !(await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)))
+    const hasTarget = (lastStatus.targets ?? []).some((target) => target.repo_root === targetWorkspace)
+    const noConflicts = (lastStatus.conflicts ?? []).length === 0
+    if (contentOk && deletedOk && ignoredOk && hasTarget && noConflicts) return lastStatus
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for tracked workspace live sync fanout; lastStatus=${JSON.stringify(lastStatus)}`)
+}
+
+async function runTrackedWorkspaceLiveSyncDrill({
+  client,
+  session,
+  attachment,
+  events,
+  provider,
+  agent,
+  spawnedSessionId,
+  workspace,
+  targetWorkspace,
+  historyDir,
+  timeoutMs,
+  pollMs,
+  machineRef,
+  getSessionStateRequest,
+  getWorkspaceLiveSyncStatusRequest,
+  listProviderProcessesRequest,
+  submitPromptRequest,
+  startedAt,
+  kernelUrl,
+  options,
+}) {
+  const linkedState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+  const linkedSession = linkedState.session ?? linkedState
+  const linkedAgents = linkedSession.agents ?? []
+  const sessionAgent = linkedAgents.find((candidate) => candidate.id === agent.id)
+  if (!sessionAgent) {
+    throw new Error(`tracked drill spawned agent ${agent.id} session=${agent.session_id ?? agent.sessionId ?? 'unknown'} but current session ${session.id} has agents=${linkedAgents.map((candidate) => candidate.id).join(',')}; spawnedSessionId=${spawnedSessionId ?? 'unknown'}`)
+  }
+
+  const completionSinceMs = Date.now()
+  const marker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_DONE`
+  await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    'This is a live Arroba workspace live sync tracked-mode drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    `Run direct writes in the current workspace so that tracked.txt becomes exactly "line-a\\n${provider}-tracked-modified\\n".`,
+    `Create outputs/${provider}-tracked-added.txt containing exactly "${provider}-tracked-added\\n".`,
+    `Delete outputs/${provider}-tracked-delete.txt.`,
+    `Rename outputs/${provider}-tracked-rename-source.txt to outputs/${provider}-tracked-renamed.txt and make the renamed file contain exactly "${provider}-tracked-renamed\\n".`,
+    `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
+    `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
+  ].join('\n'), []))
+
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    events,
+    expectedCompletionCount: 1,
+    completionSinceMs,
+    requiredFiles: [
+      path.join(workspace, 'outputs', `${provider}-tracked-added.txt`),
+      path.join(workspace, 'outputs', `${provider}-tracked-renamed.txt`),
+      path.join(workspace, 'ignored', `${provider}-ignored.txt`),
+    ],
+    forbiddenFiles: [],
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryOutputMarkers({
+    historyDir,
+    markerGroups: [[marker]],
+    sinceMs: completionSinceMs,
+    timeoutMs,
+    pollMs,
+  })
+  if (!machineRef) {
+    await waitForAgentsIdle({
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+      agentIds: [agent.id],
+      getSessionStateRequest,
+      timeoutMs,
+      pollMs,
+    })
+  }
+
+  const status = await waitForTrackedFanout({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    getWorkspaceLiveSyncStatusRequest,
+    sourceWorkspace: workspace,
+    targetWorkspace,
+    provider,
+    timeoutMs,
+    pollMs,
+  })
+  const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+  const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+  console.log(JSON.stringify({
+    status: 'ok',
+    mode: 'tracked-workspace-live-sync-live-drill',
+    kernelUrl,
+    machineRef,
+    workspace,
+    targetWorkspace,
+    providers: [provider],
+    model: options.model,
+    providerModels: { [provider]: modelForProvider(provider, options) },
+    durationMs: Date.now() - startedAt,
+    agent: {
+      id: agent.id,
+      alias: agent.alias,
+      provider,
+    },
+    completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
+    terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
+    tracked: {
+      sourceTrackedContent: await readFile(path.join(workspace, 'tracked.txt'), 'utf8'),
+      targetTrackedContent: await readFile(path.join(targetWorkspace, 'tracked.txt'), 'utf8'),
+      targetAddedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-added.txt`), 'utf8'),
+      targetRenamedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-renamed.txt`), 'utf8'),
+      targetDeleteFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-delete.txt`)),
+      targetRenameSourceFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-rename-source.txt`)),
+      sourceIgnoredFileExists: await fileExists(path.join(workspace, 'ignored', `${provider}-ignored.txt`)),
+      targetIgnoredFileExists: await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)),
+      sourceArrobaignore: await readFile(path.join(workspace, '.arrobaignore'), 'utf8'),
+      targetArrobaignore: await readFile(path.join(targetWorkspace, '.arrobaignore'), 'utf8'),
+    },
+    workspaceLiveSyncStatus: status,
+    providerProcesses: processes.map((process) => ({
+      processId: process.process_id,
+      provider: process.provider,
+      pid: process.pid ?? null,
+      ownerRunIds: process.owner_provider_run_ids || [],
+    })),
+    focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
+  }, null, 2))
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -907,12 +1130,16 @@ async function main() {
   if (options.providers.length === 0) {
     throw new Error('at least one provider is required')
   }
+  if (options.mode === 'tracked' && options.providers.length !== 1) {
+    throw new Error('tracked live drill currently runs one provider at a time')
+  }
 
   const runtimeDir = path.join(cliRoot, '.tmp-live-workspace-live-sync-drill')
   // Keep the live workspace out of OS temp directories: Codex read-only mode may
   // allow TMPDIR writes, which would make the negative direct-write probe invalid.
   const rootDir = path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
+  const targetWorkspace = path.join(rootDir, 'target-workspace')
   const outputsDir = path.join(workspace, 'outputs')
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
@@ -922,12 +1149,19 @@ async function main() {
     await writeFile(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n', 'utf8')
     await writeFile(path.join(outputsDir, `${provider}-opaque-delete-me.bin`), Buffer.from([9, 8, 7]))
   }
+  if (options.mode === 'tracked') {
+    await initTrackedWorkspace(workspace, options.providers[0])
+    await initTrackedWorkspace(targetWorkspace, options.providers[0])
+  }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
   const {
     attachToSessionRequest,
+    attachWorkspaceLinkRequest,
+    createWorkspaceLinkRequest,
     createSessionRequest,
     endSessionRequest,
+    getWorkspaceLiveSyncStatusRequest,
     getSessionStateRequest,
     listProviderProcessesRequest,
     setWorkspaceLiveSyncModeRequest,
@@ -974,7 +1208,7 @@ async function main() {
   let sessionId = null
   try {
     if (setWorkspaceLiveSyncModeRequest) {
-      await client.send(setWorkspaceLiveSyncModeRequest('managed'))
+      await client.send(setWorkspaceLiveSyncModeRequest(options.mode))
     }
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
@@ -984,6 +1218,13 @@ async function main() {
     ).attachment
     client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
     await client.subscribeToKernelEvents(session.id, attachment.id)
+
+    if (options.mode === 'tracked') {
+      const linkName = `tracked-live-sync-${Date.now()}`
+      await client.send(createWorkspaceLinkRequest(session.id, linkName))
+      await client.send(attachWorkspaceLinkRequest(session.id, linkName, workspace))
+      await client.send(attachWorkspaceLinkRequest(session.id, linkName, targetWorkspace))
+    }
 
     const agents = await spawnWorkspaceLiveSyncPhaseAgents({
       client,
@@ -995,6 +1236,33 @@ async function main() {
       spawnAgentRequest,
       aliasSuffix: 'positive',
     })
+
+    if (options.mode === 'tracked') {
+      await runTrackedWorkspaceLiveSyncDrill({
+        client,
+        session,
+        attachment,
+        events,
+        provider: options.providers[0],
+        agent: agents[0].agent,
+        spawnedSessionId: agents[0].spawnedSessionId,
+        workspace,
+        targetWorkspace,
+        historyDir,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        machineRef: options.machineRef,
+        getSessionStateRequest,
+        getWorkspaceLiveSyncStatusRequest,
+        listProviderProcessesRequest,
+        submitPromptRequest,
+        startedAt,
+        kernelUrl,
+        options,
+      })
+      succeeded = true
+      return
+    }
     const debugSessionSnapshot = async () => {
       const state = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
       const currentSession = state.session ?? state

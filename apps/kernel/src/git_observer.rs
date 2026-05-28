@@ -67,13 +67,13 @@ impl GitTurnSnapshotStore {
     }
 
     pub(crate) fn insert(&self, snapshot: GitTurnSnapshot) {
-        self.inner
-            .lock()
-            .expect("git turn snapshot mutex poisoned")
-            .insert(
-                Self::key(&snapshot.provider_run_id, &snapshot.prompt_id),
-                snapshot,
-            );
+        let mut guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
+        let provider_run_prefix = format!("{}:", snapshot.provider_run_id);
+        guard.retain(|key, _| !key.starts_with(&provider_run_prefix));
+        guard.insert(
+            Self::key(&snapshot.provider_run_id, &snapshot.prompt_id),
+            snapshot,
+        );
     }
 
     pub(crate) fn remove(&self, provider_run_id: &str, prompt_id: &str) -> Option<GitTurnSnapshot> {

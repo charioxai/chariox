@@ -270,6 +270,10 @@ impl KernelRuntimeState {
                 )
                 .await?;
         }
+        if saw_runtime_activity || prompt_completed {
+            self.observe_git_after_provider_activity_if_pending(provider_run_id)
+                .await;
+        }
         Ok(records)
     }
 }
