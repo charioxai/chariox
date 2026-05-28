@@ -314,7 +314,6 @@ async function main() {
       focusAgentRequest,
       listRemoteMachinesRequest,
       respondToInteractionRequest,
-      spawnAgentRequest,
       submitPromptRequest,
       updateSessionConfigRequest,
       setWorkspaceLiveSyncModeRequest,
@@ -334,17 +333,19 @@ async function main() {
     let targetAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
     if (options.machineRef) {
       const spawned = unwrap(
-        await client.send(spawnAgentRequest(
-          sessionId,
-          provider,
-          `${provider}-remote-workspace-live-sync`,
-          model,
-          workspace,
-          'high',
-          'build',
-          'required',
-          options.machineRef,
-        )),
+        await client.send({
+          SpawnAgent: {
+            session_id: sessionId,
+            provider,
+            alias: `${provider}-remote-workspace-live-sync`,
+            model,
+            worktree_id: workspace,
+            effort: 'high',
+            execution_mode: 'build',
+            permission_level: 'required',
+            machine_ref: options.machineRef,
+          },
+        }),
         'AgentSpawned',
       )
       targetAgentId = spawned.agent?.id ?? spawned.id ?? targetAgentId

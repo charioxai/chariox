@@ -221,6 +221,24 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
+async function waitForRemoteMachineKernel(client, machineRef) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const payload = unwrapVariant(
+        await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+        'RemoteMachineKernelsListed',
+      )
+      const kernels = payload.kernels || []
+      if (kernels.some((kernel) => kernel.accepting_remote_leases)) return
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise an accepting kernel: ${lastError ?? 'unknown error'}`)
+}
+
 async function runChild(args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
@@ -347,6 +365,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
+    await waitForRemoteMachineKernel(localClient, workerMachineId)
 
     const results = []
     for (const provider of options.providers) {
@@ -371,7 +390,6 @@ async function main() {
         '--model', model,
         '--timeout-ms', String(options.timeoutMs),
         '--poll-ms', String(options.pollMs),
-        '--use-real-home',
         ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
       ], repoRoot)
       results.push({ provider, model, status: 'passed' })
