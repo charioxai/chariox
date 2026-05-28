@@ -50,6 +50,7 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     positiveOnly: false,
     mode: 'managed',
+    targetBranch: 'main',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -73,6 +74,7 @@ function parseArgs(argv) {
       options.mode = argv[++i]
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
     }
+    else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -103,6 +105,7 @@ function printHelp() {
     '  --keep-artifacts-on-failure',
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
     '  --mode managed|tracked',
+    '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
   ].join('\n'))
 }
 
@@ -160,7 +163,7 @@ async function runCommand(command, args, cwd) {
   })
 }
 
-async function initTrackedWorkspace(workspace, provider) {
+async function initTrackedWorkspace(workspace, provider, branch = 'main') {
   const outputsDir = path.join(workspace, 'outputs')
   await mkdir(path.join(workspace, 'ignored'), { recursive: true })
   await mkdir(outputsDir, { recursive: true })
@@ -173,6 +176,9 @@ async function initTrackedWorkspace(workspace, provider) {
   await runCommand('git', ['config', 'user.name', 'Tracked Drill'], workspace)
   await runCommand('git', ['add', '.'], workspace)
   await runCommand('git', ['commit', '-m', 'seed tracked workspace'], workspace)
+  if (branch && branch !== 'main') {
+    await runCommand('git', ['checkout', '-b', branch], workspace)
+  }
 }
 
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
@@ -1087,6 +1093,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     machineRef,
     workspace,
     targetWorkspace,
+    targetBranch: options.targetBranch,
     providers: [provider],
     model: options.model,
     providerModels: { [provider]: modelForProvider(provider, options) },
@@ -1151,7 +1158,7 @@ async function main() {
   }
   if (options.mode === 'tracked') {
     await initTrackedWorkspace(workspace, options.providers[0])
-    await initTrackedWorkspace(targetWorkspace, options.providers[0])
+    await initTrackedWorkspace(targetWorkspace, options.providers[0], options.targetBranch)
   }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
