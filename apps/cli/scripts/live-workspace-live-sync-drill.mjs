@@ -345,12 +345,54 @@ async function assertFileBytes(filePath, expected) {
   return actual
 }
 
-async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
+async function providerErrorsSince({ historyDir, sinceMs }) {
+  if (!historyDir) return []
+  const errors = []
+  const files = (await readdir(historyDir).catch(() => []))
+    .filter((file) => file.endsWith('.jsonl'))
+    .map((file) => path.join(historyDir, file))
+    .sort()
+
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+      if (entry.kind !== 'provider_error') continue
+      errors.push({
+        file,
+        agentId: entry.agent_id ?? null,
+        providerRunId: entry.provider_run_id ?? null,
+        text: String(entry.text ?? '').trim(),
+      })
+    }
+  }
+  return errors
+}
+
+async function throwIfProviderError({ historyDir, sinceMs }) {
+  const errors = await providerErrorsSince({ historyDir, sinceMs })
+  if (errors.length === 0) return
+  const summary = errors.map((error) => {
+    const owner = [error.agentId, error.providerRunId].filter(Boolean).join('/')
+    return `${owner ? `${owner}: ` : ''}${error.text}`
+  }).join(' | ')
+  throw new Error(`provider error while waiting for workspace live sync drill progress: ${summary}`)
+}
+
+async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot, historyDir, providerErrorSinceMs = completionSinceMs }) {
   const started = Date.now()
   let lastRequiredCount = 0
   let lastMissingRequired = requiredFiles
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    await throwIfProviderError({ historyDir, sinceMs: providerErrorSinceMs })
     const forbiddenExisting = []
     for (const forbiddenFile of forbiddenFiles) {
       if (await fileExists(forbiddenFile)) forbiddenExisting.push(forbiddenFile)
@@ -462,10 +504,11 @@ async function waitForFilesAbsent({ filePaths, timeoutMs, pollMs }) {
   throw new Error(`timed out waiting for workspace live sync files to be absent; still present=${existing.join(', ')}`)
 }
 
-async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, timeoutMs, pollMs }) {
+async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, timeoutMs, pollMs, historyDir, providerErrorSinceMs = completionSinceMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    await throwIfProviderError({ historyDir, sinceMs: providerErrorSinceMs })
     const completed = events.filter((event) =>
       event.event === 'assistant_message_completed' &&
       ((event.observed_at_ms ?? 0) >= completionSinceMs)
@@ -488,6 +531,8 @@ async function waitForPromptPhase({
   timeoutMs,
   pollMs,
   debugSnapshot,
+  historyDir,
+  providerErrorSinceMs = completionSinceMs,
 }) {
   await waitForCompletionsAndFiles({
     client,
@@ -501,6 +546,8 @@ async function waitForPromptPhase({
     timeoutMs,
     pollMs,
     debugSnapshot,
+    historyDir,
+    providerErrorSinceMs,
   })
 }
 
@@ -537,6 +584,7 @@ async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, 
   const started = Date.now()
   let missing = markerGroups
   while (Date.now() - started < timeoutMs) {
+    await throwIfProviderError({ historyDir, sinceMs })
     missing = await historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs })
     if (missing.length === 0) return
     await sleep(pollMs)
@@ -607,6 +655,7 @@ async function waitForManagedToolExpectationsAndFiles({
   let lastMissingRequired = requiredFiles
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    await throwIfProviderError({ historyDir, sinceMs })
     const forbiddenExisting = []
     for (const forbiddenFile of forbiddenFiles) {
       if (await fileExists(forbiddenFile)) forbiddenExisting.push(forbiddenFile)
@@ -1255,6 +1304,8 @@ async function runTrackedTargetOriginPhase({
     forbiddenFiles: [],
     timeoutMs,
     pollMs,
+    historyDir,
+    providerErrorSinceMs: completionSinceMs,
   })
   await waitForHistoryOutputMarkers({
     historyDir,
@@ -1340,6 +1391,8 @@ async function runTrackedConflictResolutionPhase({
     forbiddenFiles: [],
     timeoutMs,
     pollMs,
+    historyDir,
+    providerErrorSinceMs: alignSinceMs,
   })
   await waitForHistoryOutputMarkers({
     historyDir,
@@ -1391,6 +1444,8 @@ async function runTrackedConflictResolutionPhase({
     forbiddenFiles: [],
     timeoutMs,
     pollMs,
+    historyDir,
+    providerErrorSinceMs: resolveSinceMs,
   })
   await waitForHistoryOutputMarkers({
     historyDir,
@@ -1532,6 +1587,8 @@ async function runTrackedWorkspaceLiveSyncDrill({
     forbiddenFiles: [],
     timeoutMs,
     pollMs,
+    historyDir,
+    providerErrorSinceMs: completionSinceMs,
   })
   await waitForHistoryOutputMarkers({
     historyDir,
@@ -1894,6 +1951,8 @@ async function main() {
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
           debugSnapshot: debugSessionSnapshot,
+          historyDir,
+          providerErrorSinceMs: completionSinceMs,
         })
       } else {
         await waitForPromptPhase({
@@ -1908,6 +1967,8 @@ async function main() {
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
           debugSnapshot: debugSessionSnapshot,
+          historyDir,
+          providerErrorSinceMs: completionSinceMs,
         })
         await waitForHistoryOutputMarkers({
           historyDir,
@@ -2326,6 +2387,8 @@ async function main() {
           forbiddenFiles: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
+          historyDir,
+          providerErrorSinceMs: completionSinceMs,
         })
         await waitForHistoryOutputMarkers({
           historyDir,
@@ -2351,6 +2414,8 @@ async function main() {
         forbiddenFiles: directFiles,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
+        historyDir,
+        providerErrorSinceMs: completionSinceMs,
       })
       await waitForHistoryOutputMarkers({
         historyDir,
