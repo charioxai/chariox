@@ -67,17 +67,19 @@ pub(crate) fn reap_structured_prompt_jobs(app: &mut DaemonApp) {
     ProviderOutputStructuredPromptReaper::new(app).reap();
 }
 
-pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) {
+pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) -> Vec<String> {
     reap_structured_prompt_jobs(app);
     let sessions = app.sessions.list_sessions();
+    let mut pumped_provider_run_ids = Vec::new();
     for session in sessions {
-        pump_session_active_prompt_outputs(app, session.id());
+        pumped_provider_run_ids.extend(pump_session_active_prompt_outputs(app, session.id()));
     }
+    pumped_provider_run_ids
 }
 
-fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) {
+fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> Vec<String> {
     let Ok(session) = app.sessions.get_session(session_id) else {
-        return;
+        return Vec::new();
     };
     let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
     let mut provider_run_ids = BTreeSet::new();
@@ -118,12 +120,14 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) {
             })
             .map(|run| run.id().to_string()),
     );
+    let mut pumped_provider_run_ids = Vec::new();
     for provider_run_id in provider_run_ids {
         let agent_id = app
             .providers
             .get_run(&provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
+        pumped_provider_run_ids.push(provider_run_id.clone());
         if let Err(error) =
             ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
                 session_id: session.id(),
@@ -144,6 +148,7 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) {
             );
         }
     }
+    pumped_provider_run_ids
 }
 
 pub(crate) struct ProviderOutputPump<'a> {

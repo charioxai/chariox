@@ -171,6 +171,8 @@ async function initTrackedWorkspace(workspace, provider, branch = 'main') {
   await writeFile(path.join(workspace, 'tracked.txt'), 'line-a\nline-b\n', 'utf8')
   await writeFile(path.join(outputsDir, `${provider}-tracked-delete.txt`), 'delete me\n', 'utf8')
   await writeFile(path.join(outputsDir, `${provider}-tracked-rename-source.txt`), 'rename me\n', 'utf8')
+  await writeFile(path.join(outputsDir, `${provider}-tracked-rebase.txt`), 'alpha\nbeta\nomega\n', 'utf8')
+  await writeFile(path.join(outputsDir, `${provider}-tracked-conflict.txt`), 'one\ntwo\nthree\n', 'utf8')
   await runCommand('git', ['init'], workspace)
   await runCommand('git', ['config', 'user.email', 'tracked-drill@example.com'], workspace)
   await runCommand('git', ['config', 'user.name', 'Tracked Drill'], workspace)
@@ -961,6 +963,10 @@ async function waitForTrackedFanout({
   const expectedTracked = `line-a\n${provider}-tracked-modified\n`
   const expectedAdded = `${provider}-tracked-added\n`
   const expectedRenamed = `${provider}-tracked-renamed\n`
+  const expectedSourceRebase = `alpha\nbeta\n${provider}-tracked-source\nomega\n`
+  const expectedTargetRebase = `alpha\n${provider}-tracked-target-local\nbeta\n${provider}-tracked-source\nomega\n`
+  const expectedSourceConflict = `one\n${provider}-tracked-source-conflict\nthree\n`
+  const expectedTargetConflict = `one\n${provider}-tracked-target-conflict\nthree\n`
   const expectedBinary = Buffer.from([0, 5, 255, 10])
   let lastStatus = null
   const started = Date.now()
@@ -977,6 +983,10 @@ async function waitForTrackedFanout({
       [path.join(targetOutputs, `${provider}-tracked-added.txt`), expectedAdded],
       [path.join(sourceOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
       [path.join(targetOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
+      [path.join(sourceOutputs, `${provider}-tracked-rebase.txt`), expectedSourceRebase],
+      [path.join(targetOutputs, `${provider}-tracked-rebase.txt`), expectedTargetRebase],
+      [path.join(sourceOutputs, `${provider}-tracked-conflict.txt`), expectedSourceConflict],
+      [path.join(targetOutputs, `${provider}-tracked-conflict.txt`), expectedTargetConflict],
       [path.join(sourceWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
       [path.join(targetWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
     ]
@@ -1005,8 +1015,12 @@ async function waitForTrackedFanout({
     const ignoredOk = await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`)) &&
       !(await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)))
     const hasTarget = (lastStatus.targets ?? []).some((target) => target.repo_root === targetWorkspace)
-    const noConflicts = (lastStatus.conflicts ?? []).length === 0
-    if (contentOk && deletedOk && ignoredOk && hasTarget && noConflicts) return lastStatus
+    const hasExpectedConflict = (lastStatus.conflicts ?? []).some((conflict) => (
+      conflict.target_repo_root === targetWorkspace &&
+      conflict.path === `outputs/${provider}-tracked-conflict.txt` &&
+      conflict.source_agent_id
+    ))
+    if (contentOk && deletedOk && ignoredOk && hasTarget && hasExpectedConflict) return lastStatus
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for tracked workspace live sync fanout; lastStatus=${JSON.stringify(lastStatus)}`)
@@ -1036,6 +1050,16 @@ async function runTrackedWorkspaceLiveSyncDrill({
 }) {
   const sourceHeadBefore = await gitHead(workspace)
   const targetHeadBefore = await gitHead(targetWorkspace)
+  await writeFile(
+    path.join(targetWorkspace, 'outputs', `${provider}-tracked-rebase.txt`),
+    `alpha\n${provider}-tracked-target-local\nbeta\nomega\n`,
+    'utf8',
+  )
+  await writeFile(
+    path.join(targetWorkspace, 'outputs', `${provider}-tracked-conflict.txt`),
+    `one\n${provider}-tracked-target-conflict\nthree\n`,
+    'utf8',
+  )
   const linkedState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
   const linkedSession = linkedState.session ?? linkedState
   const linkedAgents = linkedSession.agents ?? []
@@ -1054,6 +1078,8 @@ async function runTrackedWorkspaceLiveSyncDrill({
     `Create outputs/${provider}-tracked-binary.bin containing exactly the four bytes with hex 0005ff0a.`,
     `Delete outputs/${provider}-tracked-delete.txt.`,
     `Rename outputs/${provider}-tracked-rename-source.txt to outputs/${provider}-tracked-renamed.txt and make the renamed file contain exactly "${provider}-tracked-renamed\\n".`,
+    `Modify outputs/${provider}-tracked-rebase.txt so it becomes exactly "alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n".`,
+    `Modify outputs/${provider}-tracked-conflict.txt so it becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
     `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
     `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
@@ -1081,17 +1107,15 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
-  if (!machineRef) {
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: [agent.id],
-      getSessionStateRequest,
-      timeoutMs,
-      pollMs,
-    })
-  }
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [agent.id],
+    getSessionStateRequest,
+    timeoutMs,
+    pollMs,
+  })
 
   const status = await waitForTrackedFanout({
     client,
@@ -1101,6 +1125,15 @@ async function runTrackedWorkspaceLiveSyncDrill({
     sourceWorkspace: workspace,
     targetWorkspace,
     provider,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [agent.id],
+    getSessionStateRequest,
     timeoutMs,
     pollMs,
   })
@@ -1148,6 +1181,10 @@ async function runTrackedWorkspaceLiveSyncDrill({
       targetAddedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-added.txt`), 'utf8'),
       targetRenamedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-renamed.txt`), 'utf8'),
       targetBinaryHex: (await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-binary.bin`))).toString('hex'),
+      sourceRebaseContent: await readFile(path.join(workspace, 'outputs', `${provider}-tracked-rebase.txt`), 'utf8'),
+      targetRebaseContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-rebase.txt`), 'utf8'),
+      sourceConflictContent: await readFile(path.join(workspace, 'outputs', `${provider}-tracked-conflict.txt`), 'utf8'),
+      targetConflictContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-conflict.txt`), 'utf8'),
       targetDeleteFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-delete.txt`)),
       targetRenameSourceFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-rename-source.txt`)),
       sourceIgnoredFileExists: await fileExists(path.join(workspace, 'ignored', `${provider}-ignored.txt`)),

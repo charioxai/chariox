@@ -21,11 +21,18 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
-        self.with_app_side_effect(|app| {
-            crate::app::provider_output::pump_active_prompt_outputs(app);
-            crate::app::workflow_runtime::pump_workflow_watchdogs(app);
-        })
-        .await;
+        let pumped_provider_run_ids = self
+            .with_app_side_effect(|app| {
+                let pumped_provider_run_ids =
+                    crate::app::provider_output::pump_active_prompt_outputs(app);
+                crate::app::workflow_runtime::pump_workflow_watchdogs(app);
+                pumped_provider_run_ids
+            })
+            .await;
+        for provider_run_id in pumped_provider_run_ids {
+            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
+                .await;
+        }
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {

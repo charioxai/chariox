@@ -112,18 +112,19 @@ impl TerminalOutputExecutor {
             }));
         }
         let active_provider_run_id = session.active_provider_run_id();
-        if active_provider_run_id.is_none()
-            || active_provider_run_id.is_some_and(|provider_run_id| {
-                self.provider_run_projection
-                    .get(provider_run_id)
-                    .is_some_and(|run| {
-                        run.session_id() == request.session_id
-                            && matches!(
-                                run.state(),
-                                ProviderRunState::Ended | ProviderRunState::Parked
-                            )
-                    })
-            })
+        if !session.has_any_prompt_work()
+            && (active_provider_run_id.is_none()
+                || active_provider_run_id.is_some_and(|provider_run_id| {
+                    self.provider_run_projection
+                        .get(provider_run_id)
+                        .is_some_and(|run| {
+                            run.session_id() == request.session_id
+                                && matches!(
+                                    run.state(),
+                                    ProviderRunState::Ended | ProviderRunState::Parked
+                                )
+                        })
+                }))
         {
             return Some(Ok(LocalDaemonResponse::TerminalOutput {
                 records: self
