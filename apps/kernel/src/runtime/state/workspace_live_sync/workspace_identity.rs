@@ -201,4 +201,61 @@ mod tests {
         assert_eq!(identity.head_commit, None);
         assert_eq!(identity.worktree_root_fingerprint, "fingerprint-a");
     }
+
+    #[test]
+    fn workspace_link_identities_match_across_different_physical_worktrees() {
+        let mut session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "/tmp/home-worktree",
+            "machine-1",
+            "kernel-1",
+        );
+        let link = crate::session::WorkspaceLinkDefinition::new(
+            "workspace-link-1",
+            "session-1",
+            "shared",
+            "local",
+        );
+        session.create_workspace_link(link);
+        let link = session
+            .workspace_link_mut("workspace-link-1")
+            .expect("link should exist");
+        link.attach(crate::session::WorkspaceLinkAttachment::new(
+            "workspace-link-1",
+            "local",
+            "machine-1",
+            "kernel-1",
+            "/tmp/home-worktree",
+            Some("main".to_string()),
+            Some("home-fingerprint".to_string()),
+        ));
+
+        let home_identity = workspace_live_sync_identity_for_session_workspace_link(
+            crate::io::WorkspaceIdentity {
+                vcs_provider: Some("git".to_string()),
+                repo_id: Some("home-physical".to_string()),
+                repo_url: Some("https://example.test/home.git".to_string()),
+                branch: Some("main".to_string()),
+                head_commit: Some("abc123".to_string()),
+                worktree_root_fingerprint: "home-fingerprint".to_string(),
+            },
+            &session,
+            Path::new("/tmp/home-worktree"),
+        );
+        let worker_identity = crate::io::WorkspaceIdentity {
+            vcs_provider: Some("git".to_string()),
+            repo_id: Some("workspace_link:workspace-link-1".to_string()),
+            repo_url: None,
+            branch: None,
+            head_commit: None,
+            worktree_root_fingerprint: "worker-fingerprint".to_string(),
+        };
+
+        assert!(workspace_live_sync_workspace_identities_match(
+            &home_identity,
+            &worker_identity
+        ));
+    }
 }

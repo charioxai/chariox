@@ -47,15 +47,20 @@ impl KernelRuntimeOwnedState {
                 "add workflow edge",
             ));
         }
-        let edge = self.session_store.write().add_workflow_edge_owned(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.from_node_id,
-            &request.to_node_id,
-            caller_user_id.to_string(),
-            request.handoff_schema_ref,
-            request.validation_policy,
-        )?;
+        let edge = self
+            .session_store
+            .write()
+            .add_workflow_edge_owned_with_sides(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.from_node_id,
+                &request.to_node_id,
+                caller_user_id.to_string(),
+                request.source_side,
+                request.target_side,
+                request.handoff_schema_ref,
+                request.validation_policy,
+            )?;
         let workflow = self
             .session_store
             .read()

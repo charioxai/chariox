@@ -253,10 +253,12 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                let mut definition = WorkflowEdgeDefinition::new(
+                let mut definition = WorkflowEdgeDefinition::new_with_sides(
                     edge.id,
                     edge.from_node_id,
                     edge.to_node_id,
+                    edge.source_side,
+                    edge.target_side,
                     edge.handoff_schema_ref,
                     edge.validation_policy,
                 );

@@ -85,6 +85,8 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
+                source_side: None,
+                target_side: None,
             },
         ))
         .expect("edge should be added");
@@ -356,6 +358,8 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 handoff_schema_ref: Some(schema_path.to_string_lossy().to_string()),
                 validation_policy: Some(WorkflowHandoffValidationPolicy::Warn),
                 expected_workflow_revision: None,
+                source_side: None,
+                target_side: None,
             },
         ))
         .expect("first edge should be added");
@@ -369,6 +373,8 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
                 handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
+                source_side: None,
+                target_side: None,
             },
         ))
         .expect("second edge should be added");

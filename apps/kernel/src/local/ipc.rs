@@ -1151,6 +1151,8 @@ mod tests {
                     handoff_schema_ref: None,
                     validation_policy: None,
                     expected_workflow_revision: None,
+                    source_side: None,
+                    target_side: None,
                 },
             ))
             .expect("workflow edge add should succeed")

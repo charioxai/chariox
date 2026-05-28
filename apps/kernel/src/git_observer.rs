@@ -1175,44 +1175,44 @@ fn workspace_live_sync_apply_rename(
         return workspace_live_sync_failed(path, "workspace live sync rename is missing content");
     };
     match std::fs::read(target_path) {
-        Ok(current) if current == after_bytes => {
-            match std::fs::read(previous_target_path) {
-                Ok(previous_current) if previous_current == before_bytes => {
-                    match std::fs::remove_file(previous_target_path) {
-                        Ok(()) => {
-                            return workspace_live_sync_applied(
-                                path,
-                                "completed already-written rename target",
-                            );
-                        }
-                        Err(error) => return workspace_live_sync_failed(
+        Ok(current) if current == after_bytes => match std::fs::read(previous_target_path) {
+            Ok(previous_current) if previous_current == before_bytes => {
+                match std::fs::remove_file(previous_target_path) {
+                    Ok(()) => {
+                        return workspace_live_sync_applied(
+                            path,
+                            "completed already-written rename target",
+                        );
+                    }
+                    Err(error) => {
+                        return workspace_live_sync_failed(
                             path,
                             format!(
                                 "failed to remove rename source after idempotent write: {error}"
                             ),
-                        ),
+                        )
                     }
                 }
-                Ok(_) => {
-                    return workspace_live_sync_conflict(
-                        path,
-                        "rename source content changed before apply",
-                    );
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return workspace_live_sync_applied(
-                        path,
-                        "rename target already contains source content",
-                    );
-                }
-                Err(error) => {
-                    return workspace_live_sync_failed(
-                        path,
-                        format!("failed to read rename source before idempotent apply: {error}"),
-                    );
-                }
             }
-        }
+            Ok(_) => {
+                return workspace_live_sync_conflict(
+                    path,
+                    "rename source content changed before apply",
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return workspace_live_sync_applied(
+                    path,
+                    "rename target already contains source content",
+                );
+            }
+            Err(error) => {
+                return workspace_live_sync_failed(
+                    path,
+                    format!("failed to read rename source before idempotent apply: {error}"),
+                );
+            }
+        },
         Ok(_) => return workspace_live_sync_conflict(path, "rename target path already exists"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {

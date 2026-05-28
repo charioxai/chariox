@@ -210,6 +210,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
                 handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
+                source_side: Some(crate::session::WorkflowEdgeEndpointSide::Right),
+                target_side: Some(crate::session::WorkflowEdgeEndpointSide::Left),
             },
         ))
         .expect("workflow edge should be added")
@@ -217,6 +219,14 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         LocalDaemonResponse::WorkflowEdgeAdded { edge, .. } => edge,
         _ => panic!("unexpected local response"),
     };
+    assert_eq!(
+        edge.source_side(),
+        Some(crate::session::WorkflowEdgeEndpointSide::Right)
+    );
+    assert_eq!(
+        edge.target_side(),
+        Some(crate::session::WorkflowEdgeEndpointSide::Left)
+    );
 
     match harness
         .dispatch(LocalDaemonRequest::UpdateWorkflowCanvasLayout(

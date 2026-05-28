@@ -882,7 +882,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 58
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 59
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -1214,6 +1214,8 @@ export type WorkflowDesignEdge = {
   id: string
   from_node_id: string
   to_node_id: string
+  source_side?: "top" | "right" | "bottom" | "left" | null
+  target_side?: "top" | "right" | "bottom" | "left" | null
   handoff_schema_ref?: string | null
   validation_policy?: "warn" | "halt" | null
 }
@@ -1381,6 +1383,8 @@ export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
+  source_side?: "top" | "right" | "bottom" | "left" | null
+  target_side?: "top" | "right" | "bottom" | "left" | null
   handoff_schema_ref?: string | null
   validation_policy?: "warn" | "halt" | null
 }

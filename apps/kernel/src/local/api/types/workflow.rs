@@ -222,6 +222,10 @@ pub struct AddWorkflowEdgeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_workflow_revision: Option<u64>,
 }
 
@@ -500,6 +504,10 @@ pub struct WorkflowDesignEdge {
     pub id: String,
     pub from_node_id: String,
     pub to_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_side: Option<crate::session::WorkflowEdgeEndpointSide>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

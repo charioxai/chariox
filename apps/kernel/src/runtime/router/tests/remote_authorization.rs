@@ -263,6 +263,8 @@ async fn remote_owned_session_objects_record_caller_user() {
         handoff_schema_ref: None,
         validation_policy: None,
         expected_workflow_revision: None,
+        source_side: None,
+        target_side: None,
     });
     let edge = match router
         .dispatch(
@@ -529,6 +531,8 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         handoff_schema_ref: None,
         validation_policy: None,
         expected_workflow_revision: None,
+        source_side: None,
+        target_side: None,
     });
     let edge = match router
         .dispatch(

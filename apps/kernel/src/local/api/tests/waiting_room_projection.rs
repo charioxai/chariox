@@ -274,6 +274,8 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
                 handoff_schema_ref: None,
                 validation_policy: None,
                 expected_workflow_revision: None,
+                source_side: None,
+                target_side: None,
             },
         ))
         .expect("workflow edge should add");

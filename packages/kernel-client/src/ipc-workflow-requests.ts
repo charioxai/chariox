@@ -337,6 +337,8 @@ export function addWorkflowEdgeRequest(
   fromNodeId: string,
   toNodeId: string,
   handoffSchemaRef?: string | null,
+  sourceSide?: "top" | "right" | "bottom" | "left" | null,
+  targetSide?: "top" | "right" | "bottom" | "left" | null,
 ) {
   return {
     AddWorkflowEdge: {
@@ -345,6 +347,8 @@ export function addWorkflowEdgeRequest(
       from_node_id: fromNodeId,
       to_node_id: toNodeId,
       ...(handoffSchemaRef ? { handoff_schema_ref: handoffSchemaRef } : {}),
+      ...(sourceSide ? { source_side: sourceSide } : {}),
+      ...(targetSide ? { target_side: targetSide } : {}),
     },
   }
 }

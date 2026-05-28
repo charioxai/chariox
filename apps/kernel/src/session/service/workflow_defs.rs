@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::{WorkflowCanvasLayout, WorkflowCanvasLayoutPatch};
+use crate::session::{WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowEdgeEndpointSide};
 
 mod design_ops;
 
@@ -291,12 +291,14 @@ impl SessionService {
         handoff_schema_ref: Option<String>,
         validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
-        self.add_workflow_edge_owned(
+        self.add_workflow_edge_owned_with_sides(
             session_id,
             workflow_ref,
             from_node_id,
             to_node_id,
             DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+            None,
             handoff_schema_ref,
             validation_policy,
         )
@@ -312,14 +314,41 @@ impl SessionService {
         handoff_schema_ref: Option<String>,
         validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
+        self.add_workflow_edge_owned_with_sides(
+            session_id,
+            workflow_ref,
+            from_node_id,
+            to_node_id,
+            created_by_user_id,
+            None,
+            None,
+            handoff_schema_ref,
+            validation_policy,
+        )
+    }
+
+    pub fn add_workflow_edge_owned_with_sides(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        from_node_id: &str,
+        to_node_id: &str,
+        created_by_user_id: String,
+        source_side: Option<WorkflowEdgeEndpointSide>,
+        target_side: Option<WorkflowEdgeEndpointSide>,
+        handoff_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowHandoffValidationPolicy>,
+    ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let mut edge = WorkflowEdgeDefinition::new(
+        let mut edge = WorkflowEdgeDefinition::new_with_sides(
             self.next_workflow_edge_id(),
             from_node_id.to_string(),
             to_node_id.to_string(),
+            source_side,
+            target_side,
             handoff_schema_ref,
             validation_policy,
         );

@@ -210,6 +210,8 @@ impl LocalRouterTestHarness {
                     handoff_schema_ref: None,
                     validation_policy: None,
                     expected_workflow_revision: None,
+                    source_side: None,
+                    target_side: None,
                 },
             ))
             .expect("workflow test edge should be added")

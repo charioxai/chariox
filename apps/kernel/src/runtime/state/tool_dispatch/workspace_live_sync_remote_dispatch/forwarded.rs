@@ -28,6 +28,11 @@ impl KernelRuntimeState {
             .get_session(&context.home_session_id)?;
         let home_root = PathBuf::from(session.worktree_id());
         let home_identity = workspace_identity_for_root_off_thread(home_root.clone()).await?;
+        let home_identity = workspace_live_sync_identity_for_session_workspace_link(
+            home_identity,
+            &session,
+            &home_root,
+        );
         if !workspace_live_sync_workspace_identities_match(
             &home_identity,
             &context.worker_workspace_identity,

@@ -198,6 +198,10 @@ pub struct WorkflowEdgeDefinition {
     #[serde(default = "default_workflow_owner_user_id")]
     created_by_user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_side: Option<WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_side: Option<WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     validation_policy: Option<WorkflowHandoffValidationPolicy>,
@@ -211,11 +215,33 @@ impl WorkflowEdgeDefinition {
         handoff_schema_ref: Option<String>,
         validation_policy: Option<WorkflowHandoffValidationPolicy>,
     ) -> Self {
+        Self::new_with_sides(
+            id,
+            from_node_id,
+            to_node_id,
+            None,
+            None,
+            handoff_schema_ref,
+            validation_policy,
+        )
+    }
+
+    pub fn new_with_sides(
+        id: impl Into<String>,
+        from_node_id: impl Into<String>,
+        to_node_id: impl Into<String>,
+        source_side: Option<WorkflowEdgeEndpointSide>,
+        target_side: Option<WorkflowEdgeEndpointSide>,
+        handoff_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowHandoffValidationPolicy>,
+    ) -> Self {
         Self {
             id: id.into(),
             from_node_id: from_node_id.into(),
             to_node_id: to_node_id.into(),
             created_by_user_id: default_workflow_owner_user_id(),
+            source_side,
+            target_side,
             handoff_schema_ref,
             validation_policy,
         }
@@ -241,6 +267,14 @@ impl WorkflowEdgeDefinition {
         self.created_by_user_id = created_by_user_id.into();
     }
 
+    pub fn source_side(&self) -> Option<WorkflowEdgeEndpointSide> {
+        self.source_side
+    }
+
+    pub fn target_side(&self) -> Option<WorkflowEdgeEndpointSide> {
+        self.target_side
+    }
+
     pub fn handoff_schema_ref(&self) -> Option<&str> {
         self.handoff_schema_ref.as_deref()
     }
@@ -256,6 +290,15 @@ impl WorkflowEdgeDefinition {
     pub fn set_validation_policy(&mut self, value: Option<WorkflowHandoffValidationPolicy>) {
         self.validation_policy = value;
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowEdgeEndpointSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
