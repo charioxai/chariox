@@ -74,6 +74,95 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 }
 
 #[test]
+fn relay_workspace_live_sync_apply_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 59);
+
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
+        home_session_id: "session-1".to_string(),
+        link_id: "workspace-link-1".to_string(),
+        link_name: "team-sync".to_string(),
+        source_agent_id: "agent-1".to_string(),
+        source_worktree_path: "/home/user/project".to_string(),
+        target_user_id: "user-2".to_string(),
+        target_machine_id: "machine-2".to_string(),
+        target_kernel_id: "kernel-2".to_string(),
+        target_repo_root: "/remote/user/project".to_string(),
+    };
+    let change = crate::git_observer::WorkspaceLiveSyncChange {
+        session_id: "session-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        prompt_id: "prompt-1".to_string(),
+        repo_root: "/home/user/project".to_string(),
+        worktree_path: "/home/user/project".to_string(),
+        branch: Some("main".to_string()),
+        changed_paths: vec!["src/lib.rs".to_string()],
+        file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
+            path: "src/lib.rs".to_string(),
+            previous_path: None,
+            kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
+            before_content_base64: Some("b2xkCg==".to_string()),
+            after_content_base64: Some("bmV3Cg==".to_string()),
+            binary: false,
+        }],
+        status_fingerprint: " M src/lib.rs".to_string(),
+    };
+    let target_result = crate::git_observer::WorkspaceLiveSyncTargetResult {
+        session_id: "session-1".to_string(),
+        link_id: "workspace-link-1".to_string(),
+        link_name: "team-sync".to_string(),
+        source_agent_id: "agent-1".to_string(),
+        source_worktree_path: "/home/user/project".to_string(),
+        target_user_id: "user-2".to_string(),
+        target_machine_id: "machine-2".to_string(),
+        target_kernel_id: "kernel-2".to_string(),
+        target_repo_root: "/remote/user/project".to_string(),
+        path_results: vec![crate::git_observer::WorkspaceLiveSyncPathApplyResult {
+            path: "src/lib.rs".to_string(),
+            status: crate::git_observer::WorkspaceLiveSyncApplyStatus::Rebased,
+            message: "applied after non-overlap rebase".to_string(),
+        }],
+    };
+    let request = crate::transport::relay_peer::RelayPeerRequest::ApplyWorkspaceLiveSyncChange {
+        context,
+        change,
+    };
+    let response =
+        crate::transport::relay_peer::RelayPeerResponse::WorkspaceLiveSyncChangeApplied {
+            target_result,
+        };
+
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/kind"),
+        Some(&serde_json::json!("apply_workspace_live_sync_change"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/context/link_id"),
+        Some(&serde_json::json!("workspace-link-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/change/file_changes/0/kind"),
+        Some(&serde_json::json!("modified"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/kind"),
+        Some(&serde_json::json!("workspace_live_sync_change_applied"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/target_result/path_results/0/status"),
+        Some(&serde_json::json!("rebased"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("relay workspace live sync shape should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "4b55d5a1dd6ef7e5132a20004156f84c70f88cd11385dc8cb93fb68ddc258107"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 59);
 
