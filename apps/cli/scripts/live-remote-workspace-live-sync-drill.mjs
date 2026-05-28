@@ -267,8 +267,9 @@ async function main() {
   if (options.providers.length < 1) throw new Error('remote workspace live sync drill requires at least one provider')
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-${process.pid}-${Date.now()}`)
-  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-workspace-live-sync-drill')
+  const runId = `${process.pid}-${Date.now()}`
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-${runId}`)
+  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-drill-${runId}`)
   await mkdir(rootDir, { recursive: true })
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })

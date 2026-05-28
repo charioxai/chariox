@@ -1745,7 +1745,10 @@ async function main() {
     throw new Error('tracked live drill currently runs one provider at a time')
   }
 
-  const runtimeDir = path.join(cliRoot, '.tmp-live-workspace-live-sync-drill')
+  const runtimeDir = path.join(
+    cliRoot,
+    `.tmp-live-workspace-live-sync-drill-${process.pid}-${Date.now()}`,
+  )
   // Keep the live workspace out of OS temp directories: Codex read-only mode may
   // allow TMPDIR writes, which would make the negative direct-write probe invalid.
   const rootDir = path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
