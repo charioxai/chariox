@@ -672,6 +672,9 @@ import Testing
     let client = SequencedMockKernelClient(responses: [
         .workspaceLiveSyncStatus(status),
         .workspaceLiveSyncStatus(status),
+        .workspaceLiveSyncStatus(status),
+        .userConfigUpdated(path: "/tmp/config.json", effects: []),
+        .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .workspaceLinkAttached(session: session),
     ])
@@ -692,11 +695,29 @@ import Testing
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text.contains("/repo/peer @ tracked-peer") == true)
 
+    model.promptDraft = "/workspace sync ignore"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("force excludes: .git/**, .arroba/**") == true)
+
     model.promptDraft = "/workspace sync mode managed"
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = managed")
+
+    model.promptDraft = "/workspace sync enable tracked"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = tracked")
+
+    model.promptDraft = "/workspace sync disable"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = unrestricted")
 
     model.promptDraft = "/workspace sync link shared"
     await model.submitPrompt()
@@ -770,7 +791,13 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-status"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-targets"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-enable-managed"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-enable-tracked"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-disable"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-mode"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-link"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-conflicts"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-ignore"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
     #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))
