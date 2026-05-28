@@ -223,7 +223,19 @@ export async function runHostedMultiUserAssertions({
       await peerRemoteClient.send(requests.listAgentsRequest(session.id)),
       "AgentsListed",
     ).agents
-    assert(peerAgents.length === 1 && peerAgents[0].id === peerAgent.id, "peer should only list its own agents", peerAgents)
+    assert(
+      peerAgents.some((agent) => agent.id === peerAgent.id && agent.visible_in_freeform !== false),
+      "peer should list its own agent as freeform-visible",
+      peerAgents,
+    )
+    const redactedPeerOwnerAgent = peerAgents.find((agent) => agent.id === ownerAgent.id)
+    assert(
+      redactedPeerOwnerAgent?.provider === "redacted"
+        && redactedPeerOwnerAgent?.model == null
+        && redactedPeerOwnerAgent?.visible_in_freeform === false,
+      "peer should list owner agent only as a redacted workflow-selectable handle",
+      peerAgents,
+    )
 
     const workflow = unwrap(
       await ownerScopedClient.send(requests.createWorkflowRequest(session.id, "hosted-cloud-session-scoped-flow")),
@@ -239,11 +251,6 @@ export async function runHostedMultiUserAssertions({
       ownerNode.id,
       "private hosted owner prompt",
     ))
-    await expectReject(
-      peerRemoteClient.send(addWorkflowNodeRequest(session.id, workflow.id, ownerAgent.id)),
-      "peer adding owner agent as workflow node",
-      "owned by",
-    )
 
     const beforePeerNode = unwrap(
       await peerRemoteClient.send(requests.resolveWorkflowRequest(session.id, workflow.id)),
@@ -321,7 +328,19 @@ export async function runHostedMultiUserAssertions({
       "SessionState",
     )
     const peerState = peerStatePayload.session ?? peerStatePayload.state ?? peerStatePayload
-    assert(peerState.agents.length === 1 && peerState.agents[0].id === peerAgent.id, "peer state should redact owner agent", peerState.agents)
+    assert(
+      peerState.agents.some((agent) => agent.id === peerAgent.id && agent.visible_in_freeform !== false),
+      "peer state should keep own agent freeform-visible",
+      peerState.agents,
+    )
+    const redactedStateOwnerAgent = peerState.agents.find((agent) => agent.id === ownerAgent.id)
+    assert(
+      redactedStateOwnerAgent?.provider === "redacted"
+        && redactedStateOwnerAgent?.model == null
+        && redactedStateOwnerAgent?.visible_in_freeform === false,
+      "peer state should redact owner agent parameters while preserving the workflow handle",
+      peerState.agents,
+    )
     const redactedWorkflow = peerState.workflows.find((entry) => entry.id === workflow.id)
     assert(redactedWorkflow, "peer should see shared workflow graph", peerState.workflows)
     const redactedOwnerNode = redactedWorkflow.nodes.find((node) => node.id === ownerNode.id)
