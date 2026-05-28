@@ -237,8 +237,19 @@ impl KernelRuntimeState {
                     );
                 } else if keep_pending_if_unchanged
                     && pending_before.workspace_live_sync_tracked
-                    && !status_changed
+                    && (!status_changed || keep_pending_after_tracked_change)
                 {
+                    if status_changed {
+                        crate::logging::debug_with_fields(
+                            "daemon.git_observer",
+                            "keeping pending tracked workspace live sync snapshot after ambiguous active change",
+                            serde_json::json!({
+                                "provider_run_id": provider_run_id,
+                                "prompt_id": prompt_id,
+                                "retry_attempt": retry_attempt,
+                            }),
+                        );
+                    }
                     self.owned.git_turn_snapshots.insert(pending_before);
                     self.schedule_tracked_git_recheck(provider_run_id, prompt_id, retry_attempt);
                 }

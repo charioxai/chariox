@@ -181,6 +181,11 @@ async function initTrackedWorkspace(workspace, provider, branch = 'main') {
   }
 }
 
+async function gitHead(workspace) {
+  const { stdout } = await runCommand('git', ['rev-parse', 'HEAD'], workspace)
+  return stdout.trim()
+}
+
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
   if (!machineRef) return spawnAgentRequest(sessionId, provider, alias, model, worktreeId, effort)
   return {
@@ -956,6 +961,7 @@ async function waitForTrackedFanout({
   const expectedTracked = `line-a\n${provider}-tracked-modified\n`
   const expectedAdded = `${provider}-tracked-added\n`
   const expectedRenamed = `${provider}-tracked-renamed\n`
+  const expectedBinary = Buffer.from([0, 5, 255, 10])
   let lastStatus = null
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -979,6 +985,17 @@ async function waitForTrackedFanout({
       if (!(await fileExists(filePath)) || (await readFile(filePath, 'utf8')) !== expected) {
         contentOk = false
         break
+      }
+    }
+    if (contentOk) {
+      for (const filePath of [
+        path.join(sourceOutputs, `${provider}-tracked-binary.bin`),
+        path.join(targetOutputs, `${provider}-tracked-binary.bin`),
+      ]) {
+        if (!(await fileExists(filePath)) || !(await readFile(filePath)).equals(expectedBinary)) {
+          contentOk = false
+          break
+        }
       }
     }
     const deletedOk = !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-delete.txt`))) &&
@@ -1017,6 +1034,8 @@ async function runTrackedWorkspaceLiveSyncDrill({
   kernelUrl,
   options,
 }) {
+  const sourceHeadBefore = await gitHead(workspace)
+  const targetHeadBefore = await gitHead(targetWorkspace)
   const linkedState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
   const linkedSession = linkedState.session ?? linkedState
   const linkedAgents = linkedSession.agents ?? []
@@ -1032,6 +1051,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
     `Run direct writes in the current workspace so that tracked.txt becomes exactly "line-a\\n${provider}-tracked-modified\\n".`,
     `Create outputs/${provider}-tracked-added.txt containing exactly "${provider}-tracked-added\\n".`,
+    `Create outputs/${provider}-tracked-binary.bin containing exactly the four bytes with hex 0005ff0a.`,
     `Delete outputs/${provider}-tracked-delete.txt.`,
     `Rename outputs/${provider}-tracked-rename-source.txt to outputs/${provider}-tracked-renamed.txt and make the renamed file contain exactly "${provider}-tracked-renamed\\n".`,
     `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
@@ -1084,6 +1104,23 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
+  const sourceHeadAfter = await gitHead(workspace)
+  const targetHeadAfter = await gitHead(targetWorkspace)
+  if (sourceHeadAfter !== sourceHeadBefore || targetHeadAfter !== targetHeadBefore) {
+    throw new Error(`tracked workspace live sync unexpectedly created commits; source ${sourceHeadBefore} -> ${sourceHeadAfter}; target ${targetHeadBefore} -> ${targetHeadAfter}`)
+  }
+  const outsideTurnPath = path.join(workspace, 'outputs', `${provider}-outside-turn.txt`)
+  const outsideTurnTargetPath = path.join(targetWorkspace, 'outputs', `${provider}-outside-turn.txt`)
+  await writeFile(outsideTurnPath, `${provider}-outside-turn-change\n`, 'utf8')
+  const outsideTurnStarted = Date.now()
+  while (Date.now() - outsideTurnStarted < Math.min(5_000, timeoutMs)) {
+    await client.send({ PumpTerminalOutput: { session_id: session.id, attachment_id: attachment.id } }).catch(() => {})
+    await client.send(getWorkspaceLiveSyncStatusRequest(session.id)).catch(() => {})
+    if (await fileExists(outsideTurnTargetPath)) {
+      throw new Error(`outside-turn tracked workspace change unexpectedly synced to target: ${outsideTurnTargetPath}`)
+    }
+    await sleep(Math.min(500, pollMs))
+  }
   const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
   const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
   console.log(JSON.stringify({
@@ -1110,10 +1147,17 @@ async function runTrackedWorkspaceLiveSyncDrill({
       targetTrackedContent: await readFile(path.join(targetWorkspace, 'tracked.txt'), 'utf8'),
       targetAddedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-added.txt`), 'utf8'),
       targetRenamedContent: await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-renamed.txt`), 'utf8'),
+      targetBinaryHex: (await readFile(path.join(targetWorkspace, 'outputs', `${provider}-tracked-binary.bin`))).toString('hex'),
       targetDeleteFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-delete.txt`)),
       targetRenameSourceFileExists: await fileExists(path.join(targetWorkspace, 'outputs', `${provider}-tracked-rename-source.txt`)),
       sourceIgnoredFileExists: await fileExists(path.join(workspace, 'ignored', `${provider}-ignored.txt`)),
       targetIgnoredFileExists: await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)),
+      outsideTurnSourceFileExists: await fileExists(outsideTurnPath),
+      outsideTurnTargetFileExists: await fileExists(outsideTurnTargetPath),
+      sourceHeadBefore,
+      sourceHeadAfter,
+      targetHeadBefore,
+      targetHeadAfter,
       sourceArrobaignore: await readFile(path.join(workspace, '.arrobaignore'), 'utf8'),
       targetArrobaignore: await readFile(path.join(targetWorkspace, '.arrobaignore'), 'utf8'),
     },
