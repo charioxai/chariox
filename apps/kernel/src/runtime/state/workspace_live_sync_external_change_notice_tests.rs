@@ -598,6 +598,34 @@ fn workspace_live_sync_ignore_initializes_from_gitignore() {
 }
 
 #[test]
+fn workspace_live_sync_ignore_initializes_empty_without_gitignore() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-workspace-live-sync-empty-ignore-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create root");
+
+    workspace_live_sync_reject_ignored_path(
+        &root,
+        &PathBuf::from("src/lib.rs"),
+        "test_workspace_live_sync_empty_ignore",
+    )
+    .expect("ordinary file should not be ignored");
+    let initialized = std::fs::read_to_string(root.join(".arrobaignore"))
+        .expect(".arrobaignore should initialize without .gitignore");
+    assert_eq!(initialized, "");
+    workspace_live_sync_reject_ignored_path(
+        &root,
+        &PathBuf::from("nested/token.secret"),
+        "test_workspace_live_sync_empty_ignore",
+    )
+    .expect("empty .arrobaignore should not invent ignore patterns");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
     let root = std::env::temp_dir().join(format!(
         "arroba-workspace-live-sync-force-ignore-{}",

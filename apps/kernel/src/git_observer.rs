@@ -2003,6 +2003,34 @@ mod tests {
     }
 
     #[test]
+    fn tracked_workspace_live_sync_change_initializes_empty_arrobaignore_without_gitignore() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-empty-ignore-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temp worktree should be created");
+        let mut before = tracked_snapshot(false, "");
+        before.repo_root = root.display().to_string();
+        before.worktree_path = root.display().to_string();
+        let mut after = tracked_snapshot(true, " M src/lib.rs\n?? token.secret");
+        after.repo_root = root.display().to_string();
+        after.worktree_path = root.display().to_string();
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("tracked paths should remain when no ignore file exists");
+
+        assert_eq!(change.changed_paths, vec!["src/lib.rs", "token.secret"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".arrobaignore"))
+                .expect(".arrobaignore should initialize"),
+            ""
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn tracked_workspace_live_sync_change_filters_renames_from_ignored_paths() {
         let root = std::env::temp_dir().join(format!(
             "arroba-tracked-sync-ignore-rename-{}-{}",
