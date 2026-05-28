@@ -8,6 +8,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Strengthened `apps/cli/scripts/live-workspace-live-sync-drill.mjs` so live Workspace Live Sync runs now fail unless session history contains the user-facing runtime notices for fanout: managed runs with attached targets require a `Workspace live sync managed summary`, and tracked runs require both a `Workspace live sync tracked turn summary` and a conflict notice with resolver next-action text.
 - Revalidated the non-Scalingo Codex paths affected by that drill change. Fresh passes: `pnpm --filter @arroba/cli run workspace-live-sync:managed-drill`, `workspace-live-sync:tracked-drill`, `workspace-live-sync:same-branch-tracked-drill`, `workspace-live-sync:remote-managed-drill`, and `workspace-live-sync:remote-tracked-drill`.
+- Fast-forwarded the Hetzner validation checkout `/tmp/arroba-native-remote-validate` to current HEAD `8583676029746ed2e1c78a45d3a53c0cff9059fc` and rebuilt the remote kernel/relay. Revalidated actual Hetzner worker Workspace Live Sync with the same notice-gated drill: managed two-target full drill passed with `--timeout-ms 1000000` after one provider-latency retry, and tracked two-target bidirectional cross-branch full drill passed with target branch `hetzner-live-sync-notice-gate-target`.
 - Re-ran `pnpm --filter @arroba/cli test`; 1065 tests passed. No Scalingo/staging drills were run because hosted validation remains deferred.
 
 ### Workspace live sync sync-group status
