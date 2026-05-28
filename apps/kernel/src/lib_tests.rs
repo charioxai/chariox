@@ -13,8 +13,10 @@ use super::terminal::TerminalOutputKind;
 use super::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RemoteWorkspaceLiveSyncApplyContext,
+    RemoteWorkspaceLiveSyncArtifactState, RemoteWorkspaceLiveSyncContext,
 };
 use super::{DaemonApp, DaemonConfig, DaemonError};
+use sha2::{Digest, Sha256};
 
 static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
 
@@ -135,5 +137,97 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/1/target_result/path_results/0/status"),
         Some(&serde_json::json!("rebased"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("workspace live sync relay apply should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "dd483fae2ed150ca874cd7594ec682e869a5dfb2aa1d73755369bb10c3ce7e8f"
+    );
+}
+
+#[test]
+fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 58);
+
+    let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext {
+            home_kernel_id: "kernel-home".to_string(),
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            worker_provider_run_id: "provider-run-worker".to_string(),
+            worker_workspace_identity: crate::io::WorkspaceIdentity {
+                vcs_provider: Some("git".to_string()),
+                repo_id: None,
+                repo_url: Some("https://example.test/repo.git".to_string()),
+                branch: Some("main".to_string()),
+                head_commit: Some("commit-1".to_string()),
+                worktree_root_fingerprint: "fingerprint-1".to_string(),
+            },
+        },
+        tool_name: "arroba.write_artifact".to_string(),
+        arguments: serde_json::json!({
+            "path": "src/lib.rs",
+            "content_text": "after\n",
+            "domain": "text"
+        }),
+        artifact_states: vec![RemoteWorkspaceLiveSyncArtifactState {
+            path: "src/lib.rs".to_string(),
+            exists: true,
+            domain: Some("text".to_string()),
+            content_text: Some("before\n".to_string()),
+            content_base64: None,
+        }],
+    };
+    let response = RelayPeerResponse::WorkspaceLiveSyncRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "applied": true,
+                "path": "src/lib.rs"
+            }),
+        },
+        final_artifact_states: vec![RemoteWorkspaceLiveSyncArtifactState {
+            path: "src/lib.rs".to_string(),
+            exists: true,
+            domain: Some("text".to_string()),
+            content_text: Some("after\n".to_string()),
+            content_base64: None,
+        }],
+    };
+
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/kind"),
+        Some(&serde_json::json!(
+            "forward_workspace_live_sync_runtime_tool"
+        ))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/context/home_kernel_id"),
+        Some(&serde_json::json!("kernel-home"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/artifact_states/0/domain"),
+        Some(&serde_json::json!("text"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/kind"),
+        Some(&serde_json::json!(
+            "workspace_live_sync_runtime_tool_handled"
+        ))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/final_artifact_states/0/content_text"),
+        Some(&serde_json::json!("after\n"))
+    );
+    let serialized = serde_json::to_string(&snapshot)
+        .expect("workspace live sync relay runtime tool should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "8ad2180809c7c2fce18ed7e36de472227c56baef7dd950a12f8d643824475534"
     );
 }

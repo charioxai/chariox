@@ -149,7 +149,7 @@ fn unsupported_remote_workspace_live_sync_tool(
                     "kind": "unsupported_remote_workspace_live_sync_tool",
                     "message": format!("remote coordinated workspace live sync does not yet support `{tool_name}`")
                 },
-                "next_action": "Use arroba.read_artifact, arroba.edit_artifact, or arroba.write_artifact for remote coordinated text edits until patch/move/delete remote routing lands.",
+                "next_action": "Use arroba.read_artifact, arroba.edit_artifact, arroba.write_artifact, arroba.apply_patch, arroba.move_artifact, or arroba.delete_artifact for remote coordinated workspace live sync.",
             }),
         },
         Vec::new(),
