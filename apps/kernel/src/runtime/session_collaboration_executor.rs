@@ -263,6 +263,7 @@ pub(crate) async fn execute_get_workspace_live_sync_status_request(
         for attachment in link.attachments() {
             let result_status = workspace_live_sync_target_status_from_results(
                 &target_results,
+                link.link_id(),
                 attachment.repo_root(),
             );
             targets.push(WorkspaceLiveSyncTargetStatus {
@@ -327,12 +328,15 @@ fn workspace_live_sync_footer_state(
 
 fn workspace_live_sync_target_status_from_results(
     target_results: &[crate::git_observer::WorkspaceLiveSyncTargetResult],
+    link_id: &str,
     repo_root: &str,
 ) -> WorkspaceLiveSyncTargetState {
     let mut has_failure = false;
     for (_, path_result) in workspace_live_sync_latest_path_results(target_results)
         .into_iter()
-        .filter(|(target_result, _)| target_result.target_repo_root == repo_root)
+        .filter(|(target_result, _)| {
+            target_result.link_id == link_id && target_result.target_repo_root == repo_root
+        })
     {
         match path_result.status {
             crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
@@ -496,7 +500,7 @@ mod tests {
         ];
 
         assert_eq!(
-            workspace_live_sync_target_status_from_results(&results, "/repo/target"),
+            workspace_live_sync_target_status_from_results(&results, "link-1", "/repo/target"),
             WorkspaceLiveSyncTargetState::Ready
         );
         assert!(workspace_live_sync_conflicts_from_results(&results).is_empty());
@@ -524,13 +528,52 @@ mod tests {
         ];
 
         assert_eq!(
-            workspace_live_sync_target_status_from_results(&results, "/repo/target"),
+            workspace_live_sync_target_status_from_results(&results, "link-1", "/repo/target"),
             WorkspaceLiveSyncTargetState::Conflict
         );
         let conflicts = workspace_live_sync_conflicts_from_results(&results);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].source_agent_id, "agent-b");
         assert_eq!(conflicts[0].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn workspace_live_sync_target_status_is_scoped_by_link_and_repo_root() {
+        let results = vec![
+            target_result(
+                "link-1",
+                "/repo/shared-target",
+                "agent-a",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::SkippedConflict,
+                "overlap",
+            ),
+            target_result(
+                "link-2",
+                "/repo/shared-target",
+                "agent-b",
+                "src/lib.rs",
+                crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+                "applied cleanly",
+            ),
+        ];
+
+        assert_eq!(
+            workspace_live_sync_target_status_from_results(
+                &results,
+                "link-1",
+                "/repo/shared-target",
+            ),
+            WorkspaceLiveSyncTargetState::Conflict
+        );
+        assert_eq!(
+            workspace_live_sync_target_status_from_results(
+                &results,
+                "link-2",
+                "/repo/shared-target",
+            ),
+            WorkspaceLiveSyncTargetState::Ready
+        );
     }
 
     fn target_result(
