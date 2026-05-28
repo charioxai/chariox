@@ -420,6 +420,13 @@ public enum CommandCenterCatalog {
             submitsImmediately: true
         ),
         CommandCenterItem(
+            id: "workspace-sync-targets",
+            label: "sync targets",
+            detail: "Show workspace live sync targets",
+            value: "/workspace sync targets",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
             id: "workspace-sync-enable-managed",
             label: "sync enable managed",
             detail: "Enable managed workspace live sync",

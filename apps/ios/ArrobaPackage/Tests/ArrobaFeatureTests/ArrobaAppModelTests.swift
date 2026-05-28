@@ -639,7 +639,20 @@ import Testing
         sessionID: session.id,
         mode: "tracked",
         footerState: "conflict",
-        targets: [],
+        targets: [
+            WorkspaceLiveSyncTargetStatus(
+                linkID: "link-1",
+                linkName: "shared",
+                userID: "user-2",
+                machineID: "machine-2",
+                kernelID: "kernel-2",
+                repoRoot: "/repo/peer",
+                branch: "tracked-peer",
+                repoFingerprint: "fingerprint-2",
+                status: "ready",
+                attachedAtMs: 42
+            ),
+        ],
         conflicts: [
             WorkspaceLiveSyncConflictSummary(
                 conflictID: "conflict-1",
@@ -658,6 +671,7 @@ import Testing
     )
     let client = SequencedMockKernelClient(responses: [
         .workspaceLiveSyncStatus(status),
+        .workspaceLiveSyncStatus(status),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .workspaceLinkAttached(session: session),
     ])
@@ -671,6 +685,12 @@ import Testing
 
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text.contains("src/app.swift") == true)
+
+    model.promptDraft = "/workspace sync targets"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text.contains("/repo/peer @ tracked-peer") == true)
 
     model.promptDraft = "/workspace sync mode managed"
     await model.submitPrompt()
@@ -749,6 +769,7 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/agent focus bui", session: session).first?.value == "/agent focus agent-1")
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-status"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-targets"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-link"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
