@@ -175,6 +175,91 @@ fn local_request_api_manages_session_workspace_links() {
 }
 
 #[test]
+fn workspace_link_mutations_preserve_spawned_agents_in_session_projection() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-a"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let session_id = session.id().to_string();
+
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("reviewer".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5.2".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+        }))
+        .expect("agent spawn should succeed")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+
+    let created_session = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkspaceLink(
+            CreateWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                name: "shared-repo".to_string(),
+            },
+        ))
+        .expect("workspace link create should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(created_session.agents().len(), 2);
+    assert!(created_session
+        .agents()
+        .iter()
+        .any(|agent| agent.id() == spawned.id()));
+
+    let attached_session = match harness
+        .dispatch(LocalDaemonRequest::AttachWorkspaceLink(
+            AttachWorkspaceLinkRequest {
+                session_id: session_id.clone(),
+                link_ref: "shared".to_string(),
+                repo_root: Some("/tmp/arroba-worktree-a".to_string()),
+                branch: Some("main".to_string()),
+                repo_fingerprint: Some("fingerprint-a".to_string()),
+            },
+        ))
+        .expect("workspace link attach should succeed")
+    {
+        LocalDaemonResponse::WorkspaceLinkAttached { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(attached_session.agents().len(), 2);
+    assert!(attached_session
+        .agents()
+        .iter()
+        .any(|agent| agent.id() == spawned.id()));
+
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest { session_id },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(session_state.agents().len(), 2);
+}
+
+#[test]
 fn attach_workspace_link_infers_git_identity_when_missing() {
     let root = std::env::temp_dir().join(format!(
         "arroba-workspace-link-identity-{}-{}",

@@ -42,7 +42,7 @@ impl KernelRuntimeState {
             max_uses,
             collaboration_level,
         )?;
-        self.owned.session_projection.update(session.clone());
+        let session = self.owned.session_snapshot(session.id())?;
         Ok((session, invite))
     }
 
@@ -64,7 +64,7 @@ impl KernelRuntimeState {
             .session_store
             .write()
             .join_session_invite(session_id, invite_id, user_id, now_ms)?;
-        self.owned.session_projection.update(session.clone());
+        let session = self.owned.session_snapshot(session.id())?;
         Ok((session, member))
     }
 
@@ -84,7 +84,7 @@ impl KernelRuntimeState {
             .session_store
             .write()
             .revoke_session_invite(session_id, invite_ref)?;
-        self.owned.session_projection.update(session.clone());
+        let session = self.owned.session_snapshot(session.id())?;
         Ok((session, invite))
     }
 
@@ -105,7 +105,7 @@ impl KernelRuntimeState {
             name,
             created_by_user_id,
         )?;
-        self.owned.session_projection.update(session.clone());
+        let session = self.owned.session_snapshot(session.id())?;
         Ok((session, link))
     }
 
@@ -159,8 +159,8 @@ impl KernelRuntimeState {
             branch,
             repo_fingerprint,
         )?;
-        self.owned.session_projection.update(result.0.clone());
-        Ok(result)
+        let session = self.owned.session_snapshot(result.0.id())?;
+        Ok((session, result.1, result.2))
     }
 
     pub(crate) fn detach_workspace_link(
@@ -182,8 +182,8 @@ impl KernelRuntimeState {
             .session_store
             .write()
             .detach_workspace_link(session_id, link_ref, user_id, repo_root)?;
-        self.owned.session_projection.update(result.0.clone());
-        Ok(result)
+        let session = self.owned.session_snapshot(result.0.id())?;
+        Ok((session, result.1, result.2))
     }
 
     pub(crate) fn workspace_live_sync_target_results(
