@@ -47,6 +47,7 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     full: false,
     mode: 'managed',
+    managedTargetCount: 0,
     targetBranch: 'main',
     restartRelayBeforeSync: false,
     trackedTargetCount: 1,
@@ -67,6 +68,7 @@ function parseArgs(argv) {
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--full') options.full = true
     else if (arg === '--restart-relay-before-sync') options.restartRelayBeforeSync = true
+    else if (arg === '--managed-target-count') options.managedTargetCount = Number(argv[++i])
     else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
     else if (arg === '--mode') {
@@ -79,6 +81,9 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(options.trackedTargetCount) || options.trackedTargetCount < 1) {
     throw new Error('--tracked-target-count must be a positive integer')
+  }
+  if (!Number.isInteger(options.managedTargetCount) || options.managedTargetCount < 0) {
+    throw new Error('--managed-target-count must be a non-negative integer')
   }
   return options
 }
@@ -255,7 +260,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
@@ -377,6 +382,7 @@ async function main() {
       '--timeout-ms', String(options.timeoutMs),
       '--poll-ms', String(options.pollMs),
       '--mode', options.mode,
+      '--managed-target-count', String(options.managedTargetCount),
       '--target-branch', options.targetBranch,
       '--tracked-target-count', String(options.trackedTargetCount),
       ...(options.trackedBidirectional ? ['--tracked-bidirectional'] : []),
@@ -401,6 +407,7 @@ async function main() {
       full: options.full,
       restartRelayBeforeSync: options.restartRelayBeforeSync,
       liveSyncMode: options.mode,
+      managedTargetCount: options.managedTargetCount,
       targetBranch: options.targetBranch,
       trackedTargetCount: options.trackedTargetCount,
       trackedBidirectional: options.trackedBidirectional,

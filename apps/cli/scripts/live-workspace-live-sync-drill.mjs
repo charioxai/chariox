@@ -50,6 +50,7 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     positiveOnly: false,
     mode: 'managed',
+    managedTargetCount: 0,
     targetBranch: 'main',
     trackedTargetCount: 1,
     trackedBidirectional: false,
@@ -76,6 +77,7 @@ function parseArgs(argv) {
       options.mode = argv[++i]
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
     }
+    else if (arg === '--managed-target-count') options.managedTargetCount = Number(argv[++i])
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
@@ -84,6 +86,9 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(options.trackedTargetCount) || options.trackedTargetCount < 1) {
     throw new Error('--tracked-target-count must be a positive integer')
+  }
+  if (!Number.isInteger(options.managedTargetCount) || options.managedTargetCount < 0) {
+    throw new Error('--managed-target-count must be a non-negative integer')
   }
   return options
 }
@@ -112,6 +117,7 @@ function printHelp() {
     '  --keep-artifacts-on-failure',
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
     '  --mode managed|tracked',
+    '  --managed-target-count COUNT (managed mode only; attach and validate target workspaces)',
     '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
     '  --tracked-target-count COUNT (tracked mode only; attach and validate multiple target workspaces)',
     '  --tracked-bidirectional (tracked mode only; validate target-origin fanout back to source/sibling targets)',
@@ -201,6 +207,16 @@ async function gitHead(workspace) {
 async function resetTrackedWorkspace(workspace) {
   await runCommand('git', ['reset', '--hard', 'HEAD'], workspace)
   await runCommand('git', ['clean', '-fdx'], workspace)
+}
+
+async function initManagedTargetWorkspace(workspace, providers) {
+  const outputsDir = path.join(workspace, 'outputs')
+  await mkdir(outputsDir, { recursive: true })
+  await writeFile(path.join(workspace, 'seed.txt'), 'seed-value-42\n', 'utf8')
+  for (const provider of providers) {
+    await writeFile(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n', 'utf8')
+    await writeFile(path.join(outputsDir, `${provider}-opaque-delete-me.bin`), Buffer.from([9, 8, 7]))
+  }
 }
 
 function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
@@ -371,6 +387,64 @@ async function assertFilesAbsent(filePaths, label) {
   }
   if (existing.length > 0) {
     throw new Error(`${label}: forbidden files exist: ${existing.join(', ')}`)
+  }
+}
+
+async function managedTargetFanoutSnapshot(targetWorkspaces, providers) {
+  return Promise.all(targetWorkspaces.map(async (targetWorkspace) => {
+    const outputsDir = path.join(targetWorkspace, 'outputs')
+    return {
+      targetWorkspace,
+      providers: await Promise.all(providers.map(async (provider) => ({
+        provider,
+        content: await readFile(path.join(outputsDir, `${provider}.txt`), 'utf8'),
+        movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+        opaqueMovedHex: (await readFile(path.join(outputsDir, `${provider}-opaque-moved.bin`))).toString('hex'),
+        patchSourceFileExists: await fileExists(path.join(outputsDir, workspaceLiveSyncMoveSourceName(provider))),
+        opaqueMoveSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque.bin`)),
+        deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
+        opaqueDeletedFileExists: await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`)),
+        directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
+      }))),
+    }
+  }))
+}
+
+async function assertManagedTargetFanout(targetWorkspaces, providers, { deletesApplied }) {
+  for (const targetWorkspace of targetWorkspaces) {
+    const outputsDir = path.join(targetWorkspace, 'outputs')
+    for (const provider of providers) {
+      await assertFileContent(
+        path.join(outputsDir, `${provider}.txt`),
+        `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`,
+      )
+      await assertFileContent(
+        path.join(outputsDir, `${provider}-moved.txt`),
+        provider === 'opencode' ? `source-start-${provider}\n` : `patch-moved-${provider}\n`,
+      )
+      await assertFileBytes(path.join(outputsDir, `${provider}-opaque-moved.bin`), [0, provider.length, 255, 10])
+      const sourceName = workspaceLiveSyncMoveSourceName(provider)
+      if (await fileExists(path.join(outputsDir, sourceName))) {
+        throw new Error(`managed target fanout left patch source behind for ${provider} in ${targetWorkspace}`)
+      }
+      if (await fileExists(path.join(outputsDir, `${provider}-opaque.bin`))) {
+        throw new Error(`managed target fanout left opaque move source behind for ${provider} in ${targetWorkspace}`)
+      }
+      if (deletesApplied) {
+        if (await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`))) {
+          throw new Error(`managed target fanout left deleted text file behind for ${provider} in ${targetWorkspace}`)
+        }
+        if (await fileExists(path.join(outputsDir, `${provider}-opaque-delete-me.bin`))) {
+          throw new Error(`managed target fanout left deleted opaque file behind for ${provider} in ${targetWorkspace}`)
+        }
+      } else {
+        await assertFileContent(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n')
+        await assertFileBytes(path.join(outputsDir, `${provider}-opaque-delete-me.bin`), [9, 8, 7])
+      }
+      if (await fileExists(path.join(outputsDir, `${provider}-direct.txt`))) {
+        throw new Error(`managed target fanout created forbidden direct-write file for ${provider} in ${targetWorkspace}`)
+      }
+    }
   }
 }
 
@@ -1420,13 +1494,14 @@ async function main() {
   const rootDir = path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const targetWorkspace = path.join(rootDir, 'target-workspace')
+  const targetCount = options.mode === 'tracked' ? options.trackedTargetCount : options.managedTargetCount
   const targetWorkspaces = [
     targetWorkspace,
     ...Array.from(
-      { length: options.mode === 'tracked' ? options.trackedTargetCount - 1 : 0 },
+      { length: Math.max(0, targetCount - 1) },
       (_, index) => path.join(rootDir, `target-workspace-${index + 2}`),
     ),
-  ]
+  ].slice(0, targetCount)
   const outputsDir = path.join(workspace, 'outputs')
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
@@ -1440,6 +1515,10 @@ async function main() {
     await initTrackedWorkspace(workspace, options.providers[0])
     for (const target of targetWorkspaces) {
       await initTrackedWorkspace(target, options.providers[0], options.targetBranch)
+    }
+  } else {
+    for (const target of targetWorkspaces) {
+      await initManagedTargetWorkspace(target, options.providers)
     }
   }
 
@@ -1508,8 +1587,8 @@ async function main() {
     client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
     await client.subscribeToKernelEvents(session.id, attachment.id)
 
-    if (options.mode === 'tracked') {
-      const linkName = `tracked-live-sync-${Date.now()}`
+    if (options.mode === 'tracked' || targetWorkspaces.length > 0) {
+      const linkName = `${options.mode}-live-sync-${Date.now()}`
       await client.send(createWorkspaceLinkRequest(session.id, linkName))
       await client.send(attachWorkspaceLinkRequest(session.id, linkName, workspace))
       for (const target of targetWorkspaces) {
@@ -1844,6 +1923,7 @@ async function main() {
         throw new Error(`managed opaque move left source file behind: outputs/${provider}-opaque.bin`)
       }
     }
+    await assertManagedTargetFanout(targetWorkspaces, options.providers, { deletesApplied: false })
 
     if (options.positiveOnly) {
       const files = []
@@ -1884,6 +1964,7 @@ async function main() {
           alias: agent.alias,
           provider,
         })),
+        managedTargets: await managedTargetFanoutSnapshot(targetWorkspaces, options.providers),
         completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
         terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
         files,
@@ -2120,6 +2201,7 @@ async function main() {
       submitPromptRequest,
     })
     await assertFilesAbsent(directFiles, 'final workspace live sync direct-write check')
+    await assertManagedTargetFanout(targetWorkspaces, options.providers, { deletesApplied: true })
 
     const files = []
     for (const provider of options.providers) {
@@ -2148,6 +2230,7 @@ async function main() {
       kernelUrl,
       machineRef: options.machineRef,
       workspace,
+      managedTargets: await managedTargetFanoutSnapshot(targetWorkspaces, options.providers),
       providers: options.providers,
       model: options.model,
       providerModels: Object.fromEntries(options.providers.map((provider) => [
