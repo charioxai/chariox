@@ -72,9 +72,9 @@ export function buildApplyPatchNewPreview(file: ApplyPatchFile): ToolDisplayPatc
 }
 
 export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
-  const managedFiles = readWorkspaceLiveSyncChangeFiles(update)
-  if (managedFiles.length > 0) {
-    return managedFiles
+  const workspaceLiveSyncFiles = readWorkspaceLiveSyncChangeFiles(update)
+  if (workspaceLiveSyncFiles.length > 0) {
+    return workspaceLiveSyncFiles
   }
 
   if (update.tool !== "apply_patch") {
