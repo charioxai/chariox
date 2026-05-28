@@ -15,6 +15,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Tightened the shell and slash `workspace sync targets` surfaces so explicit sync groups remain visible even when no flattened target rows are present. Re-ran `pnpm --filter @arroba/kernel-client test -- shell-executor` (76 tests) and `pnpm --filter @arroba/cli test -- workspace-command-handlers` (full CLI package test, 1065 tests).
 - Fresh non-Scalingo Codex validation passed for tracked parity with managed mode: local managed two-target fanout, local same-branch tracked two-target bidirectional sync, local cross-branch tracked two-target bidirectional sync, same-host relay managed two-target fanout, same-host relay tracked two-target bidirectional sync, local permission gating, and relay permission gating. Scalingo/staging drills remain deferred while the hosted platform is unhealthy.
 - Re-ran `/Users/miguel/arroba-cloud pnpm test` after the API dist fixture fix and workflow-tab cleanup. Cloud API (53), worker (4), package suites, and web (1108) passed, including Workspace Live Sync side-panel status/control coverage.
+- Rechecked `pnpm --filter @arroba/cli run workspace-live-sync:opencode-managed-drill`; OpenCode still fails before Workspace Live Sync behavior with `Token refresh failed: 401`. Cleaned the failed drill's relay/kernel/provider processes and transient drill roots.
 
 ### Workspace live sync session-mode contract
 
