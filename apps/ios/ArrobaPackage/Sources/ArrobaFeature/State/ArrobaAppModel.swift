@@ -720,12 +720,12 @@ public final class ArrobaAppModel {
         let action = args.first ?? ""
         switch action {
         case "workspace-live-sync":
-            let policy = args.dropFirst().first ?? "managed"
+            let policy = args.dropFirst().first ?? "required"
             guard args.dropFirst(2).isEmpty,
-                  policy == "required" || policy == "managed" || policy == "tracked" || policy == "unrestricted"
+                  policy == "required" || policy == "unrestricted"
             else {
                 connectionState = .failed
-                statusMessage = "usage: /config workspace-live-sync required|managed|tracked|unrestricted"
+                statusMessage = "usage: /config workspace-live-sync required|unrestricted"
                 return
             }
             let mode = policy == "required" ? "managed" : policy
@@ -736,7 +736,7 @@ public final class ArrobaAppModel {
             )
         default:
             connectionState = .failed
-            statusMessage = "usage: /config workspace-live-sync required|managed|tracked|unrestricted"
+            statusMessage = "usage: /config workspace-live-sync required|unrestricted"
         }
     }
 

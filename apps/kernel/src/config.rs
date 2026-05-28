@@ -884,6 +884,32 @@ service = "arroba-test"
     }
 
     #[test]
+    fn workspace_live_sync_policy_serializes_managed_as_required() {
+        let encoded =
+            toml::to_string(&UserProviderConfig::default()).expect("provider config should encode");
+
+        assert!(encoded.contains("workspace_live_sync = \"required\""));
+        assert!(!encoded.contains("workspace_live_sync = \"managed\""));
+    }
+
+    #[test]
+    fn workspace_live_sync_policy_rejects_old_managed_config_spelling() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+        let error = config
+            .set_user_config_value("providers.workspace_live_sync", "managed")
+            .expect_err("old managed workspace live sync config spelling should be rejected");
+
+        assert!(matches!(
+            error,
+            DaemonError::InvalidConfig {
+                field: "providers.workspace_live_sync",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn user_config_schema_lists_settable_kernel_owned_keys() {
         let schema = DaemonConfig::user_config_schema();
         let workspace_live_sync = schema
@@ -896,7 +922,7 @@ service = "arroba-test"
         assert_eq!(workspace_live_sync.effect, "provider_reload");
         assert_eq!(
             workspace_live_sync.allowed_values,
-            vec!["managed", "tracked", "unrestricted"]
+            vec!["required", "tracked", "unrestricted"]
         );
         assert!(schema
             .iter()

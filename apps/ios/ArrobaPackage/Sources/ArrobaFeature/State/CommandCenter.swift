@@ -161,13 +161,6 @@ public enum CommandCenterCatalog {
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "config-workspace-live-sync-tracked",
-            label: "workspace-live-sync tracked",
-            detail: "Track turn-end workspace changes without write fencing",
-            value: "/config workspace-live-sync tracked",
-            submitsImmediately: true
-        ),
-        CommandCenterItem(
             id: "config-workspace-live-sync-unrestricted",
             label: "workspace-live-sync unrestricted",
             detail: "Disable workspace live sync for supported provider runs",

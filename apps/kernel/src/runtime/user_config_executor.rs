@@ -89,7 +89,7 @@ pub(crate) async fn execute_set_workspace_live_sync_mode_request(
         UserConfigMutation::Set {
             path: "providers.workspace_live_sync".to_string(),
             value: match request.mode {
-                crate::config::WorkspaceLiveSyncMode::Managed => "managed",
+                crate::config::WorkspaceLiveSyncMode::Managed => "required",
                 crate::config::WorkspaceLiveSyncMode::Tracked => "tracked",
                 crate::config::WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
             }

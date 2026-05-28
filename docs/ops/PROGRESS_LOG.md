@@ -205,7 +205,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M7.5 shell executor config mutations
 
 - Added shared `arroba-shell` executor support for `config path`, `config set`, `config unset`, and `config workspace-live-sync`.
-- `config workspace-live-sync` accepts `managed|tracked|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
+- `config workspace-live-sync` accepts `required|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch. Tracked mode is selected from `workspace sync`.
 - Covered config path/set/unset/workspace-live-sync flows with focused kernel-client executor tests.
 
 

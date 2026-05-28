@@ -116,7 +116,7 @@ test("config command renders kernel mutation effects", async () => {
         {
           path: "providers.workspace_live_sync",
           value_type: "enum",
-          allowed_values: ["required", "managed", "tracked", "unrestricted"],
+          allowed_values: ["required", "tracked", "unrestricted"],
           settable: true,
           unsettable: true,
           effect: "provider_reload",
@@ -129,7 +129,7 @@ test("config command renders kernel mutation effects", async () => {
       updates.push({ path, value })
       return {
         path: "/home/.arroba/config.toml",
-        config: { version: 1, providers: { workspace_live_sync: value as "managed" | "tracked" | "unrestricted" } },
+        config: { version: 1, providers: { workspace_live_sync: value as "required" | "tracked" | "unrestricted" } },
         effects: [
           {
             kind: "provider_reload",
@@ -144,7 +144,7 @@ test("config command renders kernel mutation effects", async () => {
       updates.push({ path: "providers.workspace_live_sync", value: mode })
       return {
         path: "/home/.arroba/config.toml",
-        config: { version: 1, providers: { workspace_live_sync: mode } },
+        config: { version: 1, providers: { workspace_live_sync: mode === "managed" ? "required" : mode } },
         effects: [
           {
             kind: "provider_reload",
@@ -179,19 +179,17 @@ test("config command renders kernel mutation effects", async () => {
   })
   await handlers.handleConfigCommand({
     kind: "config",
-    raw: "/config workspace-live-sync tracked",
-    args: ["workspace-live-sync", "tracked"],
+    raw: "/config workspace-live-sync managed",
+    args: ["workspace-live-sync", "managed"],
   })
 
   assert.deepEqual(updates, [
     { path: "providers.workspace_live_sync", value: "unrestricted" },
     { path: "providers.workspace_live_sync", value: "managed" },
     { path: "providers.workspace_live_sync", value: "managed" },
-    { path: "providers.workspace_live_sync", value: "tracked" },
   ])
   assert.deepEqual(notices, [
-    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|managed|tracked|unrestricted)",
-    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|tracked|unrestricted)",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
@@ -200,8 +198,8 @@ test("config command renders kernel mutation effects", async () => {
     "listed 1 config key",
     "workspace live sync set to unrestricted",
     "workspace live sync set to required",
-    "workspace live sync set to managed",
-    "workspace live sync set to tracked",
+    "workspace live sync set to required",
+    "usage: /config workspace-live-sync required|unrestricted",
   ])
 })
 

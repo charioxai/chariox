@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::DaemonError;
 
@@ -28,8 +28,7 @@ impl Default for UserProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "WorkspaceLiveSyncMode", into = "WorkspaceLiveSyncMode")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceLiveSyncConfig {
     pub mode: WorkspaceLiveSyncMode,
 }
@@ -72,6 +71,31 @@ impl From<WorkspaceLiveSyncConfig> for WorkspaceLiveSyncMode {
     }
 }
 
+impl Serialize for WorkspaceLiveSyncConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self.mode {
+            WorkspaceLiveSyncMode::Managed => "required",
+            WorkspaceLiveSyncMode::Tracked => "tracked",
+            WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkspaceLiveSyncConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        WorkspaceLiveSyncMode::parse(&value)
+            .map(Self::from_mode)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceLiveSyncMode {
@@ -84,12 +108,12 @@ pub enum WorkspaceLiveSyncMode {
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "required" | "managed" | "on" | "true" | "1" => Ok(Self::Managed),
+            "required" | "on" | "true" | "1" => Ok(Self::Managed),
             "tracked" => Ok(Self::Tracked),
             "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
                 field: "providers.workspace_live_sync",
-                message: "value must be `required`, `managed`, `tracked`, or `unrestricted`",
+                message: "value must be `required`, `tracked`, or `unrestricted`",
             }),
         }
     }

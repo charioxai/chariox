@@ -31,7 +31,7 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
 }
 
 #[test]
-fn local_request_api_accepts_required_workspace_live_sync_config_alias() {
+fn local_request_api_accepts_required_workspace_live_sync_config_policy() {
     let harness = LocalRouterTestHarness::new();
 
     let updated = match harness
@@ -41,7 +41,7 @@ fn local_request_api_accepts_required_workspace_live_sync_config_alias() {
                 value: "required".to_string(),
             },
         ))
-        .expect("required workspace live sync alias should update config")
+        .expect("required workspace live sync policy should update config")
     {
         LocalDaemonResponse::UserConfigUpdated { config, .. } => config,
         _ => panic!("unexpected local response"),

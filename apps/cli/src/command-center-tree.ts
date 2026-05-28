@@ -377,12 +377,6 @@ export const COMMAND_TREE: CommandNode[] = [
             value: "/config workspace-live-sync required",
           },
           {
-            id: "config-workspace-live-sync-tracked",
-            label: "tracked",
-            description: "Track turn-end workspace changes without write fencing",
-            value: "/config workspace-live-sync tracked",
-          },
-          {
             id: "config-workspace-live-sync-unrestricted",
             label: "unrestricted",
             description: "Disable workspace live sync for supported provider runs",
