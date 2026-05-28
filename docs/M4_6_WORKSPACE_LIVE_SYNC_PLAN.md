@@ -1,4 +1,4 @@
-# M4.6 Coordinated Agent I/O Plan
+# M4.6 Workspace Live Sync Plan
 
 M4.6 is the dedicated milestone for kernel-owned artifact I/O coordination. It is intentionally separate from M4.5: M4.5 retires runtime/facade compatibility paths, while M4.6 defines and enforces safe concurrent writes for Arroba-managed agents.
 
