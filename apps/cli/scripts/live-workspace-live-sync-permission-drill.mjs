@@ -22,6 +22,8 @@ function parseArgs(argv) {
     kernelUrl: null,
     noSpawnDaemon: false,
     machineRef: null,
+    rootDir: null,
+    afterFixtureCommand: null,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -34,6 +36,8 @@ function parseArgs(argv) {
     else if (arg === '--kernel') options.kernelUrl = argv[++i]
     else if (arg === '--no-spawn-daemon') options.noSpawnDaemon = true
     else if (arg === '--machine-ref') options.machineRef = argv[++i]
+    else if (arg === '--root-dir') options.rootDir = argv[++i]
+    else if (arg === '--after-fixture-command') options.afterFixtureCommand = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs [options]',
@@ -44,6 +48,8 @@ function parseArgs(argv) {
         '  --kernel <ws://...> (reuse an already-running kernel)',
         '  --no-spawn-daemon',
         '  --machine-ref <remote machine id or alias>',
+        '  --root-dir <path>',
+        '  --after-fixture-command <cmd>',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
@@ -223,11 +229,17 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForSessionInteraction(client, sessionId, agentId, containsText, timeoutMs, pollMs) {
+async function pumpTerminalOutput(client, sessionId, attachmentId) {
+  if (!attachmentId) return
+  await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+}
+
+async function waitForSessionInteraction(client, sessionId, attachmentId, agentId, containsText, timeoutMs, pollMs) {
   const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   let session = null
   while (Date.now() < deadline) {
+    await pumpTerminalOutput(client, sessionId, attachmentId)
     const response = await client.send(getSessionStateRequest(sessionId))
     const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
     session = payload.session ?? payload
@@ -239,9 +251,10 @@ async function waitForSessionInteraction(client, sessionId, agentId, containsTex
   throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
-async function waitForFileContent(filePath, expectedContent, timeoutMs, pollMs) {
+async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    await pumpTerminalOutput(client, sessionId, attachmentId)
     try {
       const content = await readFile(filePath, 'utf8')
       if (content.trim() === expectedContent) return content
@@ -268,7 +281,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
   const model = options.model ?? defaultModelForProvider(provider)
-  const rootDir = path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
+  const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   const automationSocket = path.join(os.tmpdir(), `amiop-${process.pid}-${Date.now()}.sock`)
@@ -296,6 +309,12 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
+    if (options.afterFixtureCommand) {
+      const result = await run('/bin/sh', ['-lc', options.afterFixtureCommand])
+      if (result.code !== 0) {
+        throw new Error(`after-fixture command failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+      }
+    }
     if (provider === 'codex' && !options.useRealHome) {
       await seedCodexAuth(home)
     }
@@ -396,6 +415,7 @@ async function main() {
     const pending = await waitForSessionInteraction(
       client,
       sessionId,
+      attachmentId,
       agentId,
       `Allow writing \`${targetFileName}\` through Arroba workspace live sync?`,
       options.timeoutMs,
@@ -405,7 +425,7 @@ async function main() {
     log('answering-workspace-live-sync-interaction', { provider, interactionId: pending.interaction.id })
     await client.send(respondToInteractionRequest(sessionId, pending.interaction.id, 'allow'))
 
-    await waitForFileContent(targetFilePath, expectedContent, options.timeoutMs, options.pollMs)
+    await waitForFileContent(client, sessionId, attachmentId, targetFilePath, expectedContent, options.timeoutMs, options.pollMs)
     log('workspace-live-sync-permission-passed', { provider, targetFilePath })
 
     succeeded = true
