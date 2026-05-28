@@ -48,6 +48,7 @@ function parseArgs(argv) {
     full: false,
     mode: 'managed',
     targetBranch: 'main',
+    restartRelayBeforeSync: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -63,6 +64,7 @@ function parseArgs(argv) {
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--full') options.full = true
+    else if (arg === '--restart-relay-before-sync') options.restartRelayBeforeSync = true
     else if (arg === '--mode') {
       options.mode = argv[++i]
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
@@ -246,7 +248,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--target-branch BRANCH]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--target-branch BRANCH] [--restart-relay-before-sync]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
@@ -347,6 +349,14 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
+    if (options.restartRelayBeforeSync) {
+      await terminateChild(relayChild)
+      relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForTcpPort(ports.relayPort)
+      await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
+      await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
+      await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
+    }
 
     const stdout = await runWorkspaceLiveSyncChild([
       path.join('apps', 'cli', 'scripts', 'live-workspace-live-sync-drill.mjs'),
@@ -380,6 +390,7 @@ async function main() {
       model: options.model,
       providerModels: options.providerModels,
       full: options.full,
+      restartRelayBeforeSync: options.restartRelayBeforeSync,
       liveSyncMode: options.mode,
       targetBranch: options.targetBranch,
       workspaceLiveSync: result,

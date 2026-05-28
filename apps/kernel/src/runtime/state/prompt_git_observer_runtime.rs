@@ -106,6 +106,7 @@ impl KernelRuntimeState {
             0,
             true,
             false,
+            false,
         )
         .await;
     }
@@ -141,10 +142,21 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
             .is_some();
+        if !prompt_is_active {
+            crate::logging::debug_with_fields(
+                "daemon.git_observer",
+                "skipped pending tracked workspace live sync observer after prompt became inactive",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                }),
+            );
+            return;
+        }
         let Some(before) = self
             .owned
             .git_turn_snapshots
-            .remove_for_provider_run(provider_run_id)
+            .get_for_provider_run(provider_run_id)
         else {
             crate::logging::debug_with_fields(
                 "daemon.git_observer",
@@ -156,7 +168,6 @@ impl KernelRuntimeState {
             return;
         };
         if prompt_is_active && !before.workspace_live_sync_tracked {
-            self.owned.git_turn_snapshots.insert(before);
             return;
         }
         let prompt_id = before.prompt_id.clone();
@@ -166,8 +177,9 @@ impl KernelRuntimeState {
             before,
             true,
             retry_attempt,
-            !prompt_is_active,
-            prompt_is_active,
+            false,
+            true,
+            true,
         )
         .await;
     }
@@ -181,6 +193,7 @@ impl KernelRuntimeState {
         retry_attempt: usize,
         record_history: bool,
         keep_pending_after_tracked_change: bool,
+        claim_active_pending_snapshot: bool,
     ) {
         let candidates = self.owned.git_turn_snapshots.candidates_for(&before);
         let pending_before = before.clone();
@@ -217,15 +230,52 @@ impl KernelRuntimeState {
         .await;
         match observation {
             Ok(Some(Ok((events, tracked_change, status_changed, after)))) => {
+                if claim_active_pending_snapshot
+                    && (!self.owned.git_turn_snapshots.is_current(&pending_before)
+                        || !self.active_prompt_matches_pending_snapshot(
+                            provider_run_id,
+                            &pending_before,
+                        ))
+                {
+                    crate::logging::debug_with_fields(
+                        "daemon.git_observer",
+                        "discarded stale tracked workspace live sync observation",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "prompt_id": prompt_id,
+                            "retry_attempt": retry_attempt,
+                        }),
+                    );
+                    return;
+                }
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
-                    self.record_and_fanout_workspace_live_sync_change(change, None)
-                        .await;
                     if keep_pending_after_tracked_change {
                         let mut next_pending = after;
                         next_pending.is_dirty = false;
-                        self.owned.git_turn_snapshots.insert(next_pending);
+                        if claim_active_pending_snapshot {
+                            if !self
+                                .owned
+                                .git_turn_snapshots
+                                .replace_if_current(&pending_before, next_pending)
+                            {
+                                crate::logging::debug_with_fields(
+                                    "daemon.git_observer",
+                                    "discarded superseded tracked workspace live sync observation",
+                                    serde_json::json!({
+                                        "provider_run_id": provider_run_id,
+                                        "prompt_id": prompt_id,
+                                        "retry_attempt": retry_attempt,
+                                    }),
+                                );
+                                return;
+                            }
+                        } else {
+                            self.owned.git_turn_snapshots.insert(next_pending);
+                        }
                     }
+                    self.record_and_fanout_workspace_live_sync_change(change, None)
+                        .await;
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
                         "recorded tracked workspace live sync turn change",
@@ -250,7 +300,6 @@ impl KernelRuntimeState {
                             }),
                         );
                     }
-                    self.owned.git_turn_snapshots.insert(pending_before);
                     self.schedule_tracked_git_recheck(provider_run_id, prompt_id, retry_attempt);
                 }
                 if !events.is_empty() {
@@ -327,6 +376,30 @@ impl KernelRuntimeState {
                 )
                 .await;
         });
+    }
+
+    fn active_prompt_matches_pending_snapshot(
+        &self,
+        provider_run_id: &str,
+        snapshot: &crate::git_observer::GitTurnSnapshot,
+    ) -> bool {
+        let Ok(provider_run) = self.owned.provider_store.get_run(provider_run_id) else {
+            return false;
+        };
+        if provider_run.agent_instance_id() != Some(snapshot.agent_id.as_str()) {
+            return false;
+        }
+        let Ok(session) = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())
+        else {
+            return false;
+        };
+        self.owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &snapshot.agent_id)
+            .is_some_and(|prompt| prompt.id() == snapshot.prompt_id)
     }
 
     pub(super) async fn record_and_fanout_workspace_live_sync_change(
