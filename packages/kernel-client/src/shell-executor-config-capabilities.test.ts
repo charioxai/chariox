@@ -118,7 +118,7 @@ test("executeShellCommand mutates user config", async () => {
                 {
                   path: "providers.workspace_live_sync",
                   value_type: "enum",
-                  allowed_values: ["managed", "tracked", "unrestricted"],
+                  allowed_values: ["required", "managed", "tracked", "unrestricted"],
                   settable: true,
                   unsettable: true,
                   effect: "provider_reload",
@@ -159,6 +159,7 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
+  const requiredWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync required"), context, { client: fake.client })
   const workspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
   const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   const trackedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync tracked"), context, { client: fake.client })
@@ -173,6 +174,8 @@ test("executeShellCommand mutates user config", async () => {
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
+  assert.equal(requiredWorkspaceLiveSyncResult.ok, true)
+  assert.match(requiredWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
   assert.equal(workspaceLiveSyncResult.ok, true)
   assert.match(workspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
   assert.match(workspaceLiveSyncResult.message ?? "", /provider reloads: 1 reloaded, 0 deferred, 0 unaffected/)
@@ -186,6 +189,7 @@ test("executeShellCommand mutates user config", async () => {
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
+    { SetWorkspaceLiveSyncMode: { mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { mode: "tracked" } },

@@ -75,6 +75,7 @@ impl From<WorkspaceLiveSyncConfig> for WorkspaceLiveSyncMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceLiveSyncMode {
+    #[serde(alias = "required")]
     Managed,
     Tracked,
     Unrestricted,
@@ -83,12 +84,12 @@ pub enum WorkspaceLiveSyncMode {
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "managed" | "on" | "true" | "1" => Ok(Self::Managed),
+            "required" | "managed" | "on" | "true" | "1" => Ok(Self::Managed),
             "tracked" => Ok(Self::Tracked),
             "unrestricted" | "off" | "false" | "0" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
                 field: "providers.workspace_live_sync",
-                message: "value must be `managed`, `tracked`, or `unrestricted`",
+                message: "value must be `required`, `managed`, `tracked`, or `unrestricted`",
             }),
         }
     }

@@ -742,6 +742,7 @@ import Testing
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
         .userConfigUpdated(path: "/tmp/config.json", effects: []),
+        .userConfigUpdated(path: "/tmp/config.json", effects: []),
     ])
     let defaults = UserDefaults(suiteName: "ArrobaAppModelTests.configWorkspaceLiveSync")!
     defaults.removePersistentDomain(forName: "ArrobaAppModelTests.configWorkspaceLiveSync")
@@ -758,6 +759,12 @@ import Testing
 
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text == "Workspace live sync set to unrestricted")
+
+    model.promptDraft = "/config workspace-live-sync required"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to required")
 
     model.promptDraft = "/config workspace-live-sync tracked"
     await model.submitPrompt()
@@ -840,7 +847,7 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-ignore"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("config"))
     let configIds = CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id)
-    #expect(configIds.contains("config-workspace-live-sync-managed"))
+    #expect(configIds.contains("config-workspace-live-sync-required"))
     #expect(configIds.contains("config-workspace-live-sync-tracked"))
     #expect(CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id).contains("config-workspace-live-sync-unrestricted"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))

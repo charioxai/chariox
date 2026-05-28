@@ -116,7 +116,7 @@ test("config command renders kernel mutation effects", async () => {
         {
           path: "providers.workspace_live_sync",
           value_type: "enum",
-          allowed_values: ["managed", "tracked", "unrestricted"],
+          allowed_values: ["required", "managed", "tracked", "unrestricted"],
           settable: true,
           unsettable: true,
           effect: "provider_reload",
@@ -169,6 +169,11 @@ test("config command renders kernel mutation effects", async () => {
   })
   await handlers.handleConfigCommand({
     kind: "config",
+    raw: "/config workspace-live-sync required",
+    args: ["workspace-live-sync", "required"],
+  })
+  await handlers.handleConfigCommand({
+    kind: "config",
     raw: "/config workspace-live-sync",
     args: ["workspace-live-sync"],
   })
@@ -181,10 +186,12 @@ test("config command renders kernel mutation effects", async () => {
   assert.deepEqual(updates, [
     { path: "providers.workspace_live_sync", value: "unrestricted" },
     { path: "providers.workspace_live_sync", value: "managed" },
+    { path: "providers.workspace_live_sync", value: "managed" },
     { path: "providers.workspace_live_sync", value: "tracked" },
   ])
   assert.deepEqual(notices, [
-    "providers.workspace_live_sync (enum; live; provider_reload unset values=managed|tracked|unrestricted)",
+    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|managed|tracked|unrestricted)",
+    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
@@ -192,6 +199,7 @@ test("config command renders kernel mutation effects", async () => {
   assert.deepEqual(flashes, [
     "listed 1 config key",
     "workspace live sync set to unrestricted",
+    "workspace live sync set to required",
     "workspace live sync set to managed",
     "workspace live sync set to tracked",
   ])

@@ -31,6 +31,29 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
 }
 
 #[test]
+fn local_request_api_accepts_required_workspace_live_sync_config_alias() {
+    let harness = LocalRouterTestHarness::new();
+
+    let updated = match harness
+        .dispatch(LocalDaemonRequest::SetUserConfigValue(
+            SetUserConfigValueRequest {
+                path: "providers.workspace_live_sync".to_string(),
+                value: "required".to_string(),
+            },
+        ))
+        .expect("required workspace live sync alias should update config")
+    {
+        LocalDaemonResponse::UserConfigUpdated { config, .. } => config,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(
+        updated.providers.workspace_live_sync.mode,
+        crate::config::WorkspaceLiveSyncMode::Managed
+    );
+}
+
+#[test]
 fn local_request_api_reports_workspace_live_sync_ignore_rules() {
     let harness = LocalRouterTestHarness::new();
     let worktree = std::env::temp_dir().join(format!(

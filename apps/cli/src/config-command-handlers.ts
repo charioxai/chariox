@@ -51,7 +51,7 @@ export async function handleConfigSlashCommand(
     return
   }
   deps.flashFooter(
-    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync managed|tracked|unrestricted",
+    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync required|managed|tracked|unrestricted",
     "error",
   )
 }
@@ -169,15 +169,16 @@ async function setWorkspaceLiveSyncMode(
   }
   const mode = normalizeWorkspaceLiveSyncMode(modeValue ?? "managed")
   if (rest.length > 0 || !mode) {
-    deps.flashFooter("usage: /config workspace-live-sync managed|tracked|unrestricted", "error")
+    deps.flashFooter("usage: /config workspace-live-sync required|managed|tracked|unrestricted", "error")
     return
   }
   const payload = await deps.setWorkspaceLiveSyncMode(mode)
   appendUserConfigEffects(deps, payload)
-  deps.flashFooter(`workspace live sync set to ${mode}`, "info")
+  deps.flashFooter(`workspace live sync set to ${modeValue === "required" ? "required" : mode}`, "info")
 }
 
 function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
+  if (value === "required") return "managed"
   if (value === "managed" || value === "tracked" || value === "unrestricted") return value
   return null
 }

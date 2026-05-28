@@ -43,7 +43,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry(
             "providers.workspace_live_sync",
             "enum",
-            &["managed", "tracked", "unrestricted"],
+            &["required", "managed", "tracked", "unrestricted"],
             true,
             true,
             "provider_reload",
