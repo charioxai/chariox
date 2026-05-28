@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { mkdir, rm, stat, readFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, rm, stat, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -85,6 +85,17 @@ function makePorts() {
 function defaultModelForProvider(provider) {
   if (provider === 'opencode') return 'opencode/gpt-5.4'
   return 'gpt-5.4'
+}
+
+async function seedCodexAuth(home) {
+  const sourceHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
+  const sourceAuth = path.join(sourceHome, 'auth.json')
+  const targetDir = path.join(home, '.codex')
+  const targetAuth = path.join(targetDir, 'auth.json')
+  await stat(sourceAuth)
+  await mkdir(targetDir, { recursive: true })
+  await copyFile(sourceAuth, targetAuth)
+  await chmod(targetAuth, 0o600).catch(() => {})
 }
 
 async function run(command, args, options = {}) {
@@ -285,6 +296,9 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
+    if (provider === 'codex' && !options.useRealHome) {
+      await seedCodexAuth(home)
+    }
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
     if (!options.noSpawnDaemon) {
