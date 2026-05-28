@@ -482,6 +482,27 @@ public enum CommandCenterCatalog {
             submitsImmediately: false
         ),
         CommandCenterItem(
+            id: "workspace-sync-mode-managed",
+            label: "sync mode managed",
+            detail: "Sync Arroba-managed writes with collision checks",
+            value: "/workspace sync mode managed",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-mode-tracked",
+            label: "sync mode tracked",
+            detail: "Sync Arroba-turn file changes without write enforcement",
+            value: "/workspace sync mode tracked",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "workspace-sync-mode-unrestricted",
+            label: "sync mode unrestricted",
+            detail: "Disable workspace live sync for this session",
+            value: "/workspace sync mode unrestricted",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
             id: "workspace-sync-link",
             label: "sync link",
             detail: "Enroll this worktree in a workspace live sync link",
