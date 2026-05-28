@@ -39,6 +39,27 @@ test("buildCommandCenterItems includes config subcommands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.value === "/config workspace-live-sync "), true)
 })
 
+test("buildCommandCenterItems includes workspace live sync subcommands", () => {
+  const items = buildCommandCenterItems("/workspace sync", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+  const values = new Set(items.map((item) => item.value))
+
+  assert.equal(values.has("/workspace sync status"), true)
+  assert.equal(values.has("/workspace sync targets"), true)
+  assert.equal(values.has("/workspace sync conflicts"), true)
+  assert.equal(values.has("/workspace sync ignore"), true)
+  assert.equal(values.has("/workspace sync enable managed"), true)
+  assert.equal(values.has("/workspace sync disable"), true)
+  assert.equal(values.has("/workspace sync mode "), true)
+  assert.equal(values.has("/workspace sync link "), true)
+})
+
 test("buildCommandCenterItems filters model options", () => {
   const items = buildCommandCenterItems("/model gpt", {
     providerCatalog: fallbackProviderCatalog(),
