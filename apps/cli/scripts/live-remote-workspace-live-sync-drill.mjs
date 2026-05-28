@@ -49,6 +49,7 @@ function parseArgs(argv) {
     mode: 'managed',
     targetBranch: 'main',
     restartRelayBeforeSync: false,
+    trackedTargetCount: 1,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -65,6 +66,7 @@ function parseArgs(argv) {
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--full') options.full = true
     else if (arg === '--restart-relay-before-sync') options.restartRelayBeforeSync = true
+    else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--mode') {
       options.mode = argv[++i]
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
@@ -72,6 +74,9 @@ function parseArgs(argv) {
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
+  }
+  if (!Number.isInteger(options.trackedTargetCount) || options.trackedTargetCount < 1) {
+    throw new Error('--tracked-target-count must be a positive integer')
   }
   return options
 }
@@ -248,7 +253,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--target-branch BRANCH] [--restart-relay-before-sync]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--target-branch BRANCH] [--tracked-target-count COUNT] [--restart-relay-before-sync]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
@@ -371,6 +376,7 @@ async function main() {
       '--poll-ms', String(options.pollMs),
       '--mode', options.mode,
       '--target-branch', options.targetBranch,
+      '--tracked-target-count', String(options.trackedTargetCount),
       ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
     ], repoRoot)
@@ -393,6 +399,7 @@ async function main() {
       restartRelayBeforeSync: options.restartRelayBeforeSync,
       liveSyncMode: options.mode,
       targetBranch: options.targetBranch,
+      trackedTargetCount: options.trackedTargetCount,
       workspaceLiveSync: result,
     }, null, 2))
     succeeded = true

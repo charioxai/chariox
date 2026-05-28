@@ -51,6 +51,7 @@ function parseArgs(argv) {
     positiveOnly: false,
     mode: 'managed',
     targetBranch: 'main',
+    trackedTargetCount: 1,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -75,8 +76,12 @@ function parseArgs(argv) {
       if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
     }
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
+    else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
+  }
+  if (!Number.isInteger(options.trackedTargetCount) || options.trackedTargetCount < 1) {
+    throw new Error('--tracked-target-count must be a positive integer')
   }
   return options
 }
@@ -106,6 +111,7 @@ function printHelp() {
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
     '  --mode managed|tracked',
     '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
+    '  --tracked-target-count COUNT (tracked mode only; attach and validate multiple target workspaces)',
   ].join('\n'))
 }
 
@@ -953,13 +959,12 @@ async function waitForTrackedFanout({
   attachmentId,
   getWorkspaceLiveSyncStatusRequest,
   sourceWorkspace,
-  targetWorkspace,
+  targetWorkspaces,
   provider,
   timeoutMs,
   pollMs,
 }) {
   const sourceOutputs = path.join(sourceWorkspace, 'outputs')
-  const targetOutputs = path.join(targetWorkspace, 'outputs')
   const expectedTracked = `line-a\n${provider}-tracked-modified\n`
   const expectedAdded = `${provider}-tracked-added\n`
   const expectedRenamed = `${provider}-tracked-renamed\n`
@@ -978,18 +983,23 @@ async function waitForTrackedFanout({
     ).status
     const checks = [
       [path.join(sourceWorkspace, 'tracked.txt'), expectedTracked],
-      [path.join(targetWorkspace, 'tracked.txt'), expectedTracked],
       [path.join(sourceOutputs, `${provider}-tracked-added.txt`), expectedAdded],
-      [path.join(targetOutputs, `${provider}-tracked-added.txt`), expectedAdded],
       [path.join(sourceOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
-      [path.join(targetOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
       [path.join(sourceOutputs, `${provider}-tracked-rebase.txt`), expectedSourceRebase],
-      [path.join(targetOutputs, `${provider}-tracked-rebase.txt`), expectedTargetRebase],
       [path.join(sourceOutputs, `${provider}-tracked-conflict.txt`), expectedSourceConflict],
-      [path.join(targetOutputs, `${provider}-tracked-conflict.txt`), expectedTargetConflict],
       [path.join(sourceWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
-      [path.join(targetWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
     ]
+    for (const targetWorkspace of targetWorkspaces) {
+      const targetOutputs = path.join(targetWorkspace, 'outputs')
+      checks.push(
+        [path.join(targetWorkspace, 'tracked.txt'), expectedTracked],
+        [path.join(targetOutputs, `${provider}-tracked-added.txt`), expectedAdded],
+        [path.join(targetOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
+        [path.join(targetOutputs, `${provider}-tracked-rebase.txt`), expectedTargetRebase],
+        [path.join(targetOutputs, `${provider}-tracked-conflict.txt`), expectedTargetConflict],
+        [path.join(targetWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
+      )
+    }
     let contentOk = true
     for (const [filePath, expected] of checks) {
       if (!(await fileExists(filePath)) || (await readFile(filePath, 'utf8')) !== expected) {
@@ -1000,7 +1010,7 @@ async function waitForTrackedFanout({
     if (contentOk) {
       for (const filePath of [
         path.join(sourceOutputs, `${provider}-tracked-binary.bin`),
-        path.join(targetOutputs, `${provider}-tracked-binary.bin`),
+        ...targetWorkspaces.map((targetWorkspace) => path.join(targetWorkspace, 'outputs', `${provider}-tracked-binary.bin`)),
       ]) {
         if (!(await fileExists(filePath)) || !(await readFile(filePath)).equals(expectedBinary)) {
           contentOk = false
@@ -1008,19 +1018,25 @@ async function waitForTrackedFanout({
         }
       }
     }
-    const deletedOk = !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-delete.txt`))) &&
-      !(await fileExists(path.join(targetOutputs, `${provider}-tracked-delete.txt`))) &&
-      !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-rename-source.txt`))) &&
-      !(await fileExists(path.join(targetOutputs, `${provider}-tracked-rename-source.txt`)))
-    const ignoredOk = await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`)) &&
-      !(await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)))
-    const hasTarget = (lastStatus.targets ?? []).some((target) => target.repo_root === targetWorkspace)
-    const hasExpectedConflict = (lastStatus.conflicts ?? []).some((conflict) => (
-      conflict.target_repo_root === targetWorkspace &&
-      conflict.path === `outputs/${provider}-tracked-conflict.txt` &&
-      conflict.source_agent_id
-    ))
-    if (contentOk && deletedOk && ignoredOk && hasTarget && hasExpectedConflict) return lastStatus
+    let deletedOk = !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-delete.txt`))) &&
+      !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-rename-source.txt`)))
+    let ignoredOk = await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`))
+    let hasTargets = true
+    let hasExpectedConflicts = true
+    for (const targetWorkspace of targetWorkspaces) {
+      const targetOutputs = path.join(targetWorkspace, 'outputs')
+      deletedOk = deletedOk &&
+        !(await fileExists(path.join(targetOutputs, `${provider}-tracked-delete.txt`))) &&
+        !(await fileExists(path.join(targetOutputs, `${provider}-tracked-rename-source.txt`)))
+      ignoredOk = ignoredOk && !(await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)))
+      hasTargets = hasTargets && (lastStatus.targets ?? []).some((target) => target.repo_root === targetWorkspace)
+      hasExpectedConflicts = hasExpectedConflicts && (lastStatus.conflicts ?? []).some((conflict) => (
+        conflict.target_repo_root === targetWorkspace &&
+        conflict.path === `outputs/${provider}-tracked-conflict.txt` &&
+        conflict.source_agent_id
+      ))
+    }
+    if (contentOk && deletedOk && ignoredOk && hasTargets && hasExpectedConflicts) return lastStatus
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for tracked workspace live sync fanout; lastStatus=${JSON.stringify(lastStatus)}`)
@@ -1036,6 +1052,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
   spawnedSessionId,
   workspace,
   targetWorkspace,
+  targetWorkspaces,
   historyDir,
   timeoutMs,
   pollMs,
@@ -1048,18 +1065,21 @@ async function runTrackedWorkspaceLiveSyncDrill({
   kernelUrl,
   options,
 }) {
+  const trackedTargetWorkspaces = targetWorkspaces ?? [targetWorkspace]
   const sourceHeadBefore = await gitHead(workspace)
-  const targetHeadBefore = await gitHead(targetWorkspace)
-  await writeFile(
-    path.join(targetWorkspace, 'outputs', `${provider}-tracked-rebase.txt`),
-    `alpha\n${provider}-tracked-target-local\nbeta\nomega\n`,
-    'utf8',
-  )
-  await writeFile(
-    path.join(targetWorkspace, 'outputs', `${provider}-tracked-conflict.txt`),
-    `one\n${provider}-tracked-target-conflict\nthree\n`,
-    'utf8',
-  )
+  const targetHeadsBefore = Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await gitHead(target)])))
+  for (const target of trackedTargetWorkspaces) {
+    await writeFile(
+      path.join(target, 'outputs', `${provider}-tracked-rebase.txt`),
+      `alpha\n${provider}-tracked-target-local\nbeta\nomega\n`,
+      'utf8',
+    )
+    await writeFile(
+      path.join(target, 'outputs', `${provider}-tracked-conflict.txt`),
+      `one\n${provider}-tracked-target-conflict\nthree\n`,
+      'utf8',
+    )
+  }
   const linkedState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
   const linkedSession = linkedState.session ?? linkedState
   const linkedAgents = linkedSession.agents ?? []
@@ -1123,7 +1143,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     attachmentId: attachment.id,
     getWorkspaceLiveSyncStatusRequest,
     sourceWorkspace: workspace,
-    targetWorkspace,
+    targetWorkspaces: trackedTargetWorkspaces,
     provider,
     timeoutMs,
     pollMs,
@@ -1138,19 +1158,23 @@ async function runTrackedWorkspaceLiveSyncDrill({
     pollMs,
   })
   const sourceHeadAfter = await gitHead(workspace)
-  const targetHeadAfter = await gitHead(targetWorkspace)
-  if (sourceHeadAfter !== sourceHeadBefore || targetHeadAfter !== targetHeadBefore) {
-    throw new Error(`tracked workspace live sync unexpectedly created commits; source ${sourceHeadBefore} -> ${sourceHeadAfter}; target ${targetHeadBefore} -> ${targetHeadAfter}`)
+  const targetHeadsAfter = Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await gitHead(target)])))
+  const changedTargetHead = trackedTargetWorkspaces.find((target) => targetHeadsAfter[target] !== targetHeadsBefore[target])
+  if (sourceHeadAfter !== sourceHeadBefore || changedTargetHead) {
+    const targetHeadSummary = trackedTargetWorkspaces.map((target) => `${target}: ${targetHeadsBefore[target]} -> ${targetHeadsAfter[target]}`).join('; ')
+    throw new Error(`tracked workspace live sync unexpectedly created commits; source ${sourceHeadBefore} -> ${sourceHeadAfter}; targets ${targetHeadSummary}`)
   }
   const outsideTurnPath = path.join(workspace, 'outputs', `${provider}-outside-turn.txt`)
-  const outsideTurnTargetPath = path.join(targetWorkspace, 'outputs', `${provider}-outside-turn.txt`)
+  const outsideTurnTargetPaths = trackedTargetWorkspaces.map((target) => path.join(target, 'outputs', `${provider}-outside-turn.txt`))
   await writeFile(outsideTurnPath, `${provider}-outside-turn-change\n`, 'utf8')
   const outsideTurnStarted = Date.now()
   while (Date.now() - outsideTurnStarted < Math.min(5_000, timeoutMs)) {
     await client.send({ PumpTerminalOutput: { session_id: session.id, attachment_id: attachment.id } }).catch(() => {})
     await client.send(getWorkspaceLiveSyncStatusRequest(session.id)).catch(() => {})
-    if (await fileExists(outsideTurnTargetPath)) {
-      throw new Error(`outside-turn tracked workspace change unexpectedly synced to target: ${outsideTurnTargetPath}`)
+    for (const outsideTurnTargetPath of outsideTurnTargetPaths) {
+      if (await fileExists(outsideTurnTargetPath)) {
+        throw new Error(`outside-turn tracked workspace change unexpectedly synced to target: ${outsideTurnTargetPath}`)
+      }
     }
     await sleep(Math.min(500, pollMs))
   }
@@ -1163,6 +1187,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     machineRef,
     workspace,
     targetWorkspace,
+    targetWorkspaces: trackedTargetWorkspaces,
     targetBranch: options.targetBranch,
     providers: [provider],
     model: options.model,
@@ -1190,13 +1215,17 @@ async function runTrackedWorkspaceLiveSyncDrill({
       sourceIgnoredFileExists: await fileExists(path.join(workspace, 'ignored', `${provider}-ignored.txt`)),
       targetIgnoredFileExists: await fileExists(path.join(targetWorkspace, 'ignored', `${provider}-ignored.txt`)),
       outsideTurnSourceFileExists: await fileExists(outsideTurnPath),
-      outsideTurnTargetFileExists: await fileExists(outsideTurnTargetPath),
+      outsideTurnTargetFileExists: await fileExists(outsideTurnTargetPaths[0]),
+      outsideTurnTargetFileExistsByTarget: Object.fromEntries(await Promise.all(outsideTurnTargetPaths.map(async (targetPath) => [targetPath, await fileExists(targetPath)]))),
       sourceHeadBefore,
       sourceHeadAfter,
-      targetHeadBefore,
-      targetHeadAfter,
+      targetHeadBefore: targetHeadsBefore[targetWorkspace],
+      targetHeadAfter: targetHeadsAfter[targetWorkspace],
+      targetHeadsBefore,
+      targetHeadsAfter,
       sourceArrobaignore: await readFile(path.join(workspace, '.arrobaignore'), 'utf8'),
       targetArrobaignore: await readFile(path.join(targetWorkspace, '.arrobaignore'), 'utf8'),
+      targetArrobaignores: Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await readFile(path.join(target, '.arrobaignore'), 'utf8')]))),
     },
     workspaceLiveSyncStatus: status,
     providerProcesses: processes.map((process) => ({
@@ -1228,6 +1257,13 @@ async function main() {
   const rootDir = path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const targetWorkspace = path.join(rootDir, 'target-workspace')
+  const targetWorkspaces = [
+    targetWorkspace,
+    ...Array.from(
+      { length: options.mode === 'tracked' ? options.trackedTargetCount - 1 : 0 },
+      (_, index) => path.join(rootDir, `target-workspace-${index + 2}`),
+    ),
+  ]
   const outputsDir = path.join(workspace, 'outputs')
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
@@ -1239,7 +1275,9 @@ async function main() {
   }
   if (options.mode === 'tracked') {
     await initTrackedWorkspace(workspace, options.providers[0])
-    await initTrackedWorkspace(targetWorkspace, options.providers[0], options.targetBranch)
+    for (const target of targetWorkspaces) {
+      await initTrackedWorkspace(target, options.providers[0], options.targetBranch)
+    }
   }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
@@ -1311,7 +1349,9 @@ async function main() {
       const linkName = `tracked-live-sync-${Date.now()}`
       await client.send(createWorkspaceLinkRequest(session.id, linkName))
       await client.send(attachWorkspaceLinkRequest(session.id, linkName, workspace))
-      await client.send(attachWorkspaceLinkRequest(session.id, linkName, targetWorkspace))
+      for (const target of targetWorkspaces) {
+        await client.send(attachWorkspaceLinkRequest(session.id, linkName, target))
+      }
     }
 
     const agents = await spawnWorkspaceLiveSyncPhaseAgents({
@@ -1336,6 +1376,7 @@ async function main() {
         spawnedSessionId: agents[0].spawnedSessionId,
         workspace,
         targetWorkspace,
+        targetWorkspaces,
         historyDir,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,

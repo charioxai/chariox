@@ -76,14 +76,6 @@ impl GitTurnSnapshotStore {
         );
     }
 
-    pub(crate) fn get_for_provider_run(&self, provider_run_id: &str) -> Option<GitTurnSnapshot> {
-        let guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
-        let key = guard
-            .keys()
-            .find(|key| key.starts_with(&format!("{provider_run_id}:")))?;
-        guard.get(key).cloned()
-    }
-
     pub(crate) fn remove(&self, provider_run_id: &str, prompt_id: &str) -> Option<GitTurnSnapshot> {
         self.inner
             .lock()
@@ -98,28 +90,6 @@ impl GitTurnSnapshotStore {
             .find(|key| key.starts_with(&format!("{provider_run_id}:")))
             .cloned()?;
         guard.remove(&key)
-    }
-
-    pub(crate) fn is_current(&self, snapshot: &GitTurnSnapshot) -> bool {
-        self.inner
-            .lock()
-            .expect("git turn snapshot mutex poisoned")
-            .get(&Self::key(&snapshot.provider_run_id, &snapshot.prompt_id))
-            == Some(snapshot)
-    }
-
-    pub(crate) fn replace_if_current(
-        &self,
-        expected: &GitTurnSnapshot,
-        replacement: GitTurnSnapshot,
-    ) -> bool {
-        let mut guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
-        let key = Self::key(&expected.provider_run_id, &expected.prompt_id);
-        if guard.get(&key) != Some(expected) {
-            return false;
-        }
-        guard.insert(key, replacement);
-        true
     }
 
     pub(crate) fn candidates_for(&self, snapshot: &GitTurnSnapshot) -> GitAttributionCandidates {
