@@ -41,15 +41,17 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&worktree).expect("worktree should be created");
-    std::fs::write(worktree.join(".gitignore"), "ignored/\n*.secret\n# comment\n!keep\n")
-        .expect("gitignore should be written");
+    std::fs::write(
+        worktree.join(".gitignore"),
+        "ignored/\n*.secret\n# comment\n!keep\n",
+    )
+    .expect("gitignore should be written");
     let worktree_id = worktree.to_string_lossy().to_string();
 
     let session = match harness
-        .dispatch(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-1",
-            &worktree_id,
-        )))
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", &worktree_id),
+        ))
         .expect("session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { session, .. } => session,

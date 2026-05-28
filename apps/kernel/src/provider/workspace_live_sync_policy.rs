@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_path_instructions_select_managed_block_for_required_runs() {
+    fn execution_path_instructions_select_managed_block_for_managed_runs() {
         let managed_request =
             LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4")
                 .with_workspace_live_sync_managed();

@@ -14,8 +14,6 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
-
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
         port: addr.port(),
@@ -27,7 +25,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -139,8 +137,6 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
-
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
         port: addr.port(),
@@ -152,7 +148,7 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -306,8 +302,6 @@ async fn execution_leases_are_managed_through_peer_transport() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
-
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
         port: addr.port(),
@@ -319,7 +313,7 @@ async fn execution_leases_are_managed_through_peer_transport() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -440,8 +434,6 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
-
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
         port: addr.port(),
@@ -453,7 +445,7 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await

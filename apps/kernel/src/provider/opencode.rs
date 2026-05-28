@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_required_workspace_live_sync_launch() {
+    fn plans_managed_workspace_live_sync_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
             "arroba-opencode-resolve-test-{}-workspace-live-sync",

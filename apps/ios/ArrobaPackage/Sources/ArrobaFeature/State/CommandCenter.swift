@@ -156,7 +156,7 @@ public enum CommandCenterCatalog {
         CommandCenterItem(
             id: "config-workspace-live-sync-managed",
             label: "workspace-live-sync managed",
-            detail: "Require managed workspace live sync for supported provider runs",
+            detail: "Enable managed workspace live sync for supported provider runs",
             value: "/config workspace-live-sync managed",
             submitsImmediately: true
         ),

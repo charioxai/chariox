@@ -123,7 +123,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### Workspace live sync permission follow-on
 
-- Added workspace live sync permission gating for mutating Arroba runtime tools. When effective permissions are `required`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` now block on an Arroba interaction before the mutation applies.
+- Added workspace live sync permission gating for mutating Arroba runtime tools. When effective permissions require approval, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` now block on an Arroba interaction before the mutation applies.
 - Split prompt assembly by execution path: all structured runs get the shared runtime instructions, unmanaged runs get the native-permissions block, and workspace live sync runs get the workspace live sync block.
 - Added `apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs` and confirmed live workspace live sync permission drills for Codex and OpenCode.
 
@@ -205,7 +205,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M7.5 shell executor config mutations
 
 - Added shared `arroba-shell` executor support for `config path`, `config set`, `config unset`, and `config workspace-live-sync`.
-- `config workspace-live-sync` accepts `required|unrestricted`, maps `required` to the managed kernel policy, and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
+- `config workspace-live-sync` accepts `managed|tracked|unrestricted` and writes the same user-config key as the TUI command, while reporting that shell changes apply on the next provider launch.
 - Covered config path/set/unset/workspace-live-sync flows with focused kernel-client executor tests.
 
 

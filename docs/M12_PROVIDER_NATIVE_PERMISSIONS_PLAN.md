@@ -35,9 +35,9 @@ Precedence:
 
 ### Codex
 
-- `build + required` -> approval `untrusted`, sandbox `workspace-write`
+- `build + approval-required` -> approval `untrusted`, sandbox `workspace-write`
 - `build + yolo` -> approval `never`, sandbox `danger-full-access`
-- `plan + required` -> approval `untrusted`, sandbox `read-only`
+- `plan + approval-required` -> approval `untrusted`, sandbox `read-only`
 - `plan + yolo` -> approval `never`, sandbox `read-only`
 
 Workspace live sync launch policy remains authoritative when enabled and can still force stricter behavior.

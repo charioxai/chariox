@@ -94,7 +94,6 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -107,7 +106,7 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await

@@ -373,7 +373,7 @@ export const COMMAND_TREE: CommandNode[] = [
           {
             id: "config-workspace-live-sync-managed",
             label: "managed",
-            description: "Require managed workspace live sync for supported provider runs",
+            description: "Enable managed workspace live sync for supported provider runs",
             value: "/config workspace-live-sync managed",
           },
           {

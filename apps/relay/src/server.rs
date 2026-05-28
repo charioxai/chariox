@@ -55,6 +55,17 @@ impl RelayServer {
         F: Future<Output = ()>,
     {
         let listener = self.bind_listener().await?;
+        self.run_listener_until(listener, shutdown).await
+    }
+
+    pub async fn run_listener_until<F>(
+        &self,
+        listener: TcpListener,
+        shutdown: F,
+    ) -> Result<(), std::io::Error>
+    where
+        F: Future<Output = ()>,
+    {
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -286,7 +297,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let server = RelayServer::new(RelayConfig {
             host: addr.ip().to_string(),
@@ -297,7 +307,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -366,7 +376,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let server = RelayServer::new(RelayConfig {
             host: addr.ip().to_string(),
@@ -377,7 +386,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -486,7 +495,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let server = RelayServer::new(RelayConfig {
             host: addr.ip().to_string(),
@@ -496,7 +504,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -727,7 +735,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let auth_verifier = server.auth_verifier.clone();
         let server = RelayServer::with_auth_verifier(
@@ -741,7 +748,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -904,7 +911,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let auth_verifier = server.auth_verifier.clone();
         let server = RelayServer::with_auth_verifier(
@@ -919,7 +925,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -1003,7 +1009,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let auth_verifier = server.auth_verifier.clone();
         let server = RelayServer::with_auth_verifier(
@@ -1017,7 +1022,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -1127,7 +1132,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let auth_verifier = server.auth_verifier.clone();
         let server = RelayServer::with_auth_verifier(
@@ -1141,7 +1145,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -1238,7 +1242,6 @@ mod tests {
             .await
             .expect("relay listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
 
         let server = RelayServer::new(RelayConfig {
             host: addr.ip().to_string(),
@@ -1248,7 +1251,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await

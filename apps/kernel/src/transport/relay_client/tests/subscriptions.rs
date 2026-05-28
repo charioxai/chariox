@@ -14,7 +14,6 @@ async fn proxied_session_subscriptions_are_forwarded_through_relay() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -27,7 +26,7 @@ async fn proxied_session_subscriptions_are_forwarded_through_relay() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -132,7 +131,6 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -145,7 +143,7 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await

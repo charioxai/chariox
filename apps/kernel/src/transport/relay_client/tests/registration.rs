@@ -14,7 +14,6 @@ async fn daemon_connector_registers_with_relay() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -27,7 +26,7 @@ async fn daemon_connector_registers_with_relay() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await

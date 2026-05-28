@@ -14,7 +14,6 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -27,7 +26,7 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -172,7 +171,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -185,7 +183,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -335,7 +333,6 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -348,7 +345,7 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
@@ -519,7 +516,6 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
         .await
         .expect("relay listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    drop(listener);
 
     let server = Arc::new(RelayServer::new(RelayConfig {
         host: addr.ip().to_string(),
@@ -532,7 +528,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
             server
-                .run_until(async {
+                .run_listener_until(listener, async {
                     let _ = server_shutdown_rx.await;
                 })
                 .await
