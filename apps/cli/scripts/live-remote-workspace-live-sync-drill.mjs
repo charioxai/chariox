@@ -215,6 +215,12 @@ async function syncHetznerCodexAuth(options) {
   await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
 }
 
+async function stopHetznerRelayOnPort(options, port) {
+  await runHetznerCommand(options, [
+    `if command -v lsof >/dev/null 2>&1; then lsof -tiTCP:${Number(port)} -sTCP:LISTEN | xargs -r kill -9 2>/dev/null || true; fi`,
+  ].join('; ')).catch(() => {})
+}
+
 function mirrorFixturesToHetznerCommand(options, rootDir) {
   const parent = path.dirname(rootDir)
   const base = path.basename(rootDir)
@@ -387,6 +393,7 @@ async function main() {
       if (options.providers.includes('codex')) {
         await syncHetznerCodexAuth(options)
       }
+      await stopHetznerRelayOnPort(options, ports.relayPort)
     }
     if (options.hetznerWorker) {
       relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
@@ -496,16 +503,30 @@ async function main() {
     if (options.restartRelayBeforeSync) {
       await terminateChild(relayChild)
       if (options.hetznerWorker) {
+        await terminateChild(relayTunnel)
+        await stopHetznerRelayOnPort(options, ports.relayPort)
         relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
           ARROBA_REMOTE_REPO: options.hetznerRepo,
           ARROBA_RELAY_HOST: '127.0.0.1',
           ARROBA_RELAY_PORT: String(ports.relayPort),
           ARROBA_RELAY_TOKEN: relayToken,
         }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+        relayTunnel = spawn('ssh', [
+          '-i',
+          options.hetznerKey,
+          '-o',
+          'BatchMode=yes',
+          '-o',
+          'StrictHostKeyChecking=accept-new',
+          '-N',
+          '-L',
+          `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
+          options.hetznerHost,
+        ], { stdio: ['ignore', 'ignore', 'inherit'] })
       } else {
         relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
       }
-      await waitForTcpPort(ports.relayPort)
+      await waitForTcpPort(ports.relayPort, '127.0.0.1', options.hetznerWorker ? 30_000 : 15_000)
       await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
       await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
       await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
@@ -564,6 +585,9 @@ async function main() {
     await terminateChild(workerChild)
     await terminateChild(relayChild)
     await terminateChild(relayTunnel)
+    if (options.hetznerWorker) {
+      await stopHetznerRelayOnPort(options, ports.relayPort)
+    }
     if (options.hetznerWorker && childRootDir) {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
     }
