@@ -313,56 +313,7 @@ fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String
 }
 
 fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
-    if path == ".arrobaignore" {
-        return true;
-    }
-    if path == ".git"
-        || path.starts_with(".git/")
-        || path == ".arroba"
-        || path.starts_with(".arroba/")
-    {
-        return true;
-    }
-    if path.split('/').any(|part| part.starts_with(".env")) {
-        return true;
-    }
-    if path.split('/').any(|part| {
-        part.ends_with(".sock")
-            || part.ends_with(".socket")
-            || part.starts_with("operational-history")
-    }) {
-        return true;
-    }
-    let forced_dirs = [
-        ".codex",
-        ".opencode",
-        ".claude",
-        ".cursor",
-        ".tmp-arroba",
-        ".tmp-live-workspace-live-sync-drill",
-        ".tmp-live-remote-workspace-live-sync-drill",
-        "history",
-        "session-history",
-        "operational-history",
-        "node_modules",
-        "target",
-        ".cache",
-        ".turbo",
-        ".next",
-        "dist",
-        "build",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".gradle",
-        ".m2",
-        ".pnpm-store",
-    ];
-    path.split('/')
-        .any(|part| forced_dirs.iter().any(|excluded| part == *excluded))
+    crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
 }
 
 fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {

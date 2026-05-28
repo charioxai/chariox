@@ -34,6 +34,7 @@ pub mod skill;
 pub mod slice;
 pub mod terminal;
 pub mod transport;
+pub(crate) mod workspace_live_sync_ignore;
 
 pub use app::DaemonApp;
 pub use config::DaemonConfig;
