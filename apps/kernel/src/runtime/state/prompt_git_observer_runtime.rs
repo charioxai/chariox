@@ -982,9 +982,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_live_sync_fans_out_to_second_user_attached_fork() {
-        use base64::Engine as _;
-
+    async fn workspace_live_sync_fans_out_between_second_user_attached_forks() {
         let root = std::env::temp_dir().join(format!(
             "arroba-workspace-live-sync-collab-{}-{}",
             std::process::id(),
@@ -1056,29 +1054,15 @@ mod tests {
 
         std::fs::write(source.join("src/lib.rs"), "seed\nagent change\n")
             .expect("source should change");
-        let change = crate::git_observer::WorkspaceLiveSyncChange {
-            session_id: session_id.clone(),
-            agent_id: "agent-source".to_string(),
-            provider_run_id: "provider-run-1".to_string(),
-            prompt_id: "prompt-1".to_string(),
-            repo_root: source.to_string_lossy().to_string(),
-            worktree_path: source.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            changed_paths: vec!["src/lib.rs".to_string()],
-            file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
-                path: "src/lib.rs".to_string(),
-                previous_path: None,
-                kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
-                before_content_base64: Some(
-                    base64::engine::general_purpose::STANDARD.encode("seed\n"),
-                ),
-                after_content_base64: Some(
-                    base64::engine::general_purpose::STANDARD.encode("seed\nagent change\n"),
-                ),
-                binary: false,
-            }],
-            status_fingerprint: "tracked_workspace_live_sync".to_string(),
-        };
+        let change = workspace_live_sync_text_change(
+            &session_id,
+            "agent-source",
+            "provider-run-1",
+            "prompt-1",
+            &source,
+            "seed\n",
+            "seed\nagent change\n",
+        );
 
         runtime
             .record_and_fanout_workspace_live_sync_change(change, None)
@@ -1099,7 +1083,78 @@ mod tests {
             crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
         );
 
+        std::fs::write(
+            target.join("src/lib.rs"),
+            "seed\nagent change\npeer change\n",
+        )
+        .expect("target should change");
+        let peer_change = workspace_live_sync_text_change(
+            &session_id,
+            "agent-peer",
+            "provider-run-2",
+            "prompt-2",
+            &target,
+            "seed\nagent change\n",
+            "seed\nagent change\npeer change\n",
+        );
+
+        runtime
+            .record_and_fanout_workspace_live_sync_change(peer_change, None)
+            .await;
+
+        assert_eq!(
+            std::fs::read_to_string(source.join("src/lib.rs"))
+                .expect("source file should be readable"),
+            "seed\nagent change\npeer change\n"
+        );
+        let results = runtime.workspace_live_sync_target_results(&session_id);
+        assert_eq!(results.len(), 2);
+        let reverse_result = results
+            .iter()
+            .find(|result| result.source_agent_id == "agent-peer")
+            .expect("peer change should produce a reverse target result");
+        assert_eq!(reverse_result.target_user_id, "local");
+        assert_eq!(reverse_result.path_results[0].path, "src/lib.rs");
+        assert_eq!(
+            reverse_result.path_results[0].status,
+            crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+        );
+
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn workspace_live_sync_text_change(
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+        worktree: &std::path::Path,
+        before: &str,
+        after: &str,
+    ) -> crate::git_observer::WorkspaceLiveSyncChange {
+        use base64::Engine as _;
+
+        crate::git_observer::WorkspaceLiveSyncChange {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            prompt_id: prompt_id.to_string(),
+            repo_root: worktree.to_string_lossy().to_string(),
+            worktree_path: worktree.to_string_lossy().to_string(),
+            branch: crate::git_observer::workspace_live_sync_git_branch(worktree),
+            changed_paths: vec!["src/lib.rs".to_string()],
+            file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
+                path: "src/lib.rs".to_string(),
+                previous_path: None,
+                kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
+                before_content_base64: Some(
+                    base64::engine::general_purpose::STANDARD.encode(before),
+                ),
+                after_content_base64: Some(base64::engine::general_purpose::STANDARD.encode(after)),
+                binary: false,
+            }],
+            status_fingerprint: "tracked_workspace_live_sync".to_string(),
+        }
     }
 
     fn change(status_fingerprint: &str) -> crate::git_observer::WorkspaceLiveSyncChange {

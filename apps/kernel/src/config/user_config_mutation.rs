@@ -260,10 +260,9 @@ impl ArrobaUserConfig {
                     non_empty_config_string("credential_vault.service", value)?
             }
             "providers.workspace_live_sync" => {
-                self.providers.workspace_live_sync =
-                    WorkspaceLiveSyncConfig::from_mode(
-                        WorkspaceLiveSyncMode::parse_config_policy(&value)?,
-                    );
+                self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::from_mode(
+                    WorkspaceLiveSyncMode::parse_config_policy(&value)?,
+                );
             }
             _ => {
                 return Err(DaemonError::InvalidConfig {
