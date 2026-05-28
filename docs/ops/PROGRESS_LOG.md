@@ -2,6 +2,14 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-05-29
+
+### Workspace live sync local validation
+
+- Added a kernel-owned Workspace Live Sync enrollment notice when a session workspace link is attached. The notice is delivered through runtime notices to attached clients, names the attached worktree, reports the current mode, and recommends managed mode or the exact `workspace sync enable` command when action is needed.
+- Re-ran focused kernel validation: `cargo fmt --manifest-path apps/kernel/Cargo.toml --check`, `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture` (126 tests), and `cargo test --manifest-path apps/kernel/Cargo.toml local_request_api_manages_session_workspace_links -- --nocapture`; coverage includes workspace-link enrollment notice polling, collab fanout, remote membership, `.arrobaignore`, force excludes, tracked snapshots, forwarded target-session notices, and conflict/rebase behavior.
+- Revalidated the non-Scalingo Codex live matrix after the enrollment-notice change: `workspace-live-sync:managed-drill`, `workspace-live-sync:tracked-drill`, `workspace-live-sync:same-branch-tracked-drill`, `workspace-live-sync:remote-managed-drill`, `workspace-live-sync:remote-tracked-drill`, `workspace-live-sync:permission-drill`, and `workspace-live-sync:remote-permission-drill` all passed. Also fixed `shell:drill` to initialize its isolated workspace as a Git worktree root and re-ran `node --check apps/cli/scripts/live-shell-scriptability-drill.mjs`, `pnpm --filter @arroba/kernel-client test -- shell-executor` (77 tests), `pnpm --filter @arroba/cli test -- workspace-command-handlers` (1065 tests), and `pnpm --filter @arroba/cli run shell:drill`. Scalingo/staging hosted drills remain intentionally skipped while the platform issue is investigated separately.
+
 ## 2026-05-28
 
 ### Workspace live sync notice validation

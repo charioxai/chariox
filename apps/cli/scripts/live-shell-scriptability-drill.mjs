@@ -53,6 +53,20 @@ async function run(command, args, options = {}) {
   })
 }
 
+async function runChecked(command, args, options = {}) {
+  const result = await run(command, args, options)
+  if (result.code !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  }
+  return result
+}
+
+async function initGitWorktree(root) {
+  await runChecked('git', ['init', '-b', 'main'], { cwd: root })
+  await runChecked('git', ['config', 'user.email', 'shell-drill@example.com'], { cwd: root })
+  await runChecked('git', ['config', 'user.name', 'Shell Drill'], { cwd: root })
+}
+
 async function buildKernel() {
   const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
@@ -127,6 +141,7 @@ async function main() {
   let succeeded = false
   try {
     await mkdir(workspace, { recursive: true })
+    await initGitWorktree(workspace)
     await mkdir(home, { recursive: true })
     await mkdir(scriptsDir, { recursive: true })
     await mkdir(skillDir, { recursive: true })

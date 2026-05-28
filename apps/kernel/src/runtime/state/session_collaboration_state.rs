@@ -176,6 +176,39 @@ impl KernelRuntimeState {
         Ok((session, result.1, result.2))
     }
 
+    pub(crate) fn record_workspace_live_sync_enrollment_notice(
+        &self,
+        session_id: &str,
+        link_name: &str,
+        repo_root: &str,
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) {
+        let mode_label = match mode {
+            crate::config::WorkspaceLiveSyncMode::Managed => "managed",
+            crate::config::WorkspaceLiveSyncMode::Tracked => "tracked",
+            crate::config::WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
+        };
+        let next_action = match mode {
+            crate::config::WorkspaceLiveSyncMode::Managed => {
+                "managed mode is already active for this session"
+            }
+            crate::config::WorkspaceLiveSyncMode::Tracked => {
+                "tracked mode is active; switch with `workspace sync enable managed` when provider write enforcement is supported"
+            }
+            crate::config::WorkspaceLiveSyncMode::Unrestricted => {
+                "enroll with `workspace sync enable managed` (recommended) or `workspace sync enable tracked`"
+            }
+        };
+        self.owned.record_notice(
+            session_id,
+            None,
+            Vec::new(),
+            format!(
+                "Workspace live sync link `{link_name}` attached worktree `{repo_root}`. Current mode: {mode_label}. Recommended mode: managed. Next action: {next_action}."
+            ),
+        );
+    }
+
     pub(crate) fn detach_workspace_link(
         &self,
         session_id: &str,

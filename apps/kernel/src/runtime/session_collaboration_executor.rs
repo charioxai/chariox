@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
 
+use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
     AttachWorkspaceLinkRequest, CreateSessionInviteRequest, CreateWorkspaceLinkRequest,
@@ -50,11 +51,14 @@ pub(crate) async fn execute_session_collaboration_request(
         }
         LocalDaemonRequest::AttachWorkspaceLink(request) => {
             let config = config_projection.snapshot();
+            let default_workspace_live_sync_mode =
+                config.provider_workspace_live_sync_mode("default");
             execute_attach_workspace_link_request(
                 runtime_state,
                 command,
                 config.host_machine_id,
                 config.daemon_id,
+                default_workspace_live_sync_mode,
                 request,
             )
             .await
@@ -190,6 +194,7 @@ pub(crate) async fn execute_attach_workspace_link_request(
     command: &KernelCommand,
     host_machine_id: String,
     kernel_id: String,
+    default_workspace_live_sync_mode: WorkspaceLiveSyncMode,
     request: AttachWorkspaceLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_id = command_caller_user_id(command);
@@ -221,6 +226,15 @@ pub(crate) async fn execute_attach_workspace_link_request(
         branch,
         repo_fingerprint,
     )?;
+    let mode = session
+        .workspace_live_sync_mode()
+        .unwrap_or(default_workspace_live_sync_mode);
+    runtime_state.record_workspace_live_sync_enrollment_notice(
+        session.id(),
+        link.name(),
+        attachment.repo_root(),
+        mode,
+    );
     Ok(LocalDaemonResponse::WorkspaceLinkAttached {
         link,
         attachment,

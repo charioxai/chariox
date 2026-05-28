@@ -120,6 +120,19 @@ fn local_request_api_manages_session_workspace_links() {
         _ => panic!("unexpected local response"),
     };
     let session_id = session.id().to_string();
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session_id.clone(),
+                client_id: "client-workspace-link".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
 
     let denied = harness.dispatch_as_user(
         "stranger",
@@ -149,6 +162,15 @@ fn local_request_api_manages_session_workspace_links() {
     };
     assert_eq!(link.name(), "shared-repo");
 
+    harness
+        .dispatch(LocalDaemonRequest::SetWorkspaceLiveSyncMode(
+            SetWorkspaceLiveSyncModeRequest {
+                session_id: session_id.clone(),
+                mode: crate::config::WorkspaceLiveSyncMode::Unrestricted,
+            },
+        ))
+        .expect("workspace live sync mode should switch to unrestricted");
+
     let attached = match harness
         .dispatch(LocalDaemonRequest::AttachWorkspaceLink(
             AttachWorkspaceLinkRequest {
@@ -173,6 +195,32 @@ fn local_request_api_manages_session_workspace_links() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(attached.attachments().len(), 1);
+    let notices = match harness
+        .dispatch(LocalDaemonRequest::PollRuntimeNotices(
+            PollRuntimeNoticesRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment.id().to_string(),
+            },
+        ))
+        .expect("notice polling should succeed")
+    {
+        LocalDaemonResponse::RuntimeNotices { notices } => notices,
+        _ => panic!("unexpected local response"),
+    };
+    let enrollment_notice = notices
+        .iter()
+        .find(|notice| {
+            notice
+                .message
+                .contains("Workspace live sync link `shared-repo`")
+        })
+        .expect("workspace link attach should emit an enrollment notice");
+    assert!(enrollment_notice
+        .message
+        .contains("Recommended mode: managed"));
+    assert!(enrollment_notice
+        .message
+        .contains("workspace sync enable managed"));
 
     let status = match harness
         .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
