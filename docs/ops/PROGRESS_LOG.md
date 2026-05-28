@@ -2,6 +2,16 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-05-28
+
+### Workspace live sync Hetzner validation closure
+
+- Extended `apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs` with `--hetzner-worker`, matching the remote workspace live sync drill's actual Hetzner topology: relay and worker kernel run on the configured Hetzner host while the home kernel remains local, with Codex auth synchronized and fixture workspaces mirrored before leased provider launch.
+- Updated `apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs` so wrappers can provide an isolated root directory and a post-fixture copy command, and so the drill pumps terminal output while waiting for the workspace live sync permission interaction and final file write.
+- Confirmed Codex `gpt-5.2` remote workspace live sync permission validation in both same-host local relay mode and actual Hetzner worker mode. The remote agent's `write_artifact` request surfaced as a home-kernel permission interaction, approval resumed the same turn, and the expected file landed in the coordinated workspace.
+- Confirmed full Codex workspace live sync validation against the actual Hetzner worker in both tracked and managed modes. Tracked mode covered two targets, explicit cross-branch binding, bidirectional propagation, `.arrobaignore`, outside-turn ignore, no commits, conflict detection, and resolver convergence. Managed mode covered two targets, structured text/opaque writes, move/delete fanout, direct-write blocking, collision behavior, non-overlap rebase, and overlap rejection.
+- Current OpenCode live workspace sync drills are blocked before workspace live sync behavior by provider auth (`Token refresh failed: 401`). Treat current OpenCode live validation as an environment gap until auth is refreshed.
+
 ## 2026-05-15
 
 ### M14B actual Hetzner native TUI worker validation
