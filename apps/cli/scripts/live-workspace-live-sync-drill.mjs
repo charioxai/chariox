@@ -1168,6 +1168,52 @@ async function waitForTrackedTargetOriginFanout({
   throw new Error(`timed out waiting for tracked target-origin fanout; lastStatus=${JSON.stringify(lastStatus)}`)
 }
 
+async function waitForTrackedConflictFileFanout({
+  client,
+  sessionId,
+  attachmentId,
+  getWorkspaceLiveSyncStatusRequest,
+  workspaces,
+  targetWorkspaces,
+  provider,
+  expectedContent,
+  expectConflictsCleared,
+  timeoutMs,
+  pollMs,
+}) {
+  let lastStatus = null
+  const relativePath = `outputs/${provider}-tracked-conflict.txt`
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    lastStatus = unwrapVariant(
+      await client.send(getWorkspaceLiveSyncStatusRequest(sessionId)),
+      'WorkspaceLiveSyncStatus',
+    ).status
+    let contentOk = true
+    for (const workspace of workspaces) {
+      const filePath = path.join(workspace, relativePath)
+      if (!(await fileExists(filePath)) || (await readFile(filePath, 'utf8')) !== expectedContent) {
+        contentOk = false
+        break
+      }
+    }
+    const conflicts = lastStatus.conflicts ?? []
+    const conflictsCleared = targetWorkspaces.every((targetWorkspace) => !conflicts.some((conflict) => (
+      conflict.target_repo_root === targetWorkspace &&
+      conflict.path === relativePath
+    )))
+    if (contentOk && (!expectConflictsCleared || conflictsCleared)) return lastStatus
+    await sleep(pollMs)
+  }
+  const contents = {}
+  for (const workspace of workspaces) {
+    const filePath = path.join(workspace, relativePath)
+    contents[workspace] = await fileExists(filePath) ? await readFile(filePath, 'utf8') : null
+  }
+  throw new Error(`timed out waiting for tracked conflict file fanout; contents=${JSON.stringify(contents)}; lastStatus=${JSON.stringify(lastStatus)}`)
+}
+
 async function runTrackedTargetOriginPhase({
   client,
   session,
@@ -1249,6 +1295,137 @@ async function runTrackedTargetOriginPhase({
     headsBefore,
     headsAfter,
     status,
+  }
+}
+
+async function runTrackedConflictResolutionPhase({
+  client,
+  session,
+  attachment,
+  events,
+  provider,
+  sourceAgent,
+  resolverAgent,
+  workspace,
+  targetWorkspaces,
+  historyDir,
+  timeoutMs,
+  pollMs,
+  getSessionStateRequest,
+  getWorkspaceLiveSyncStatusRequest,
+  submitPromptRequest,
+}) {
+  const allWorkspaces = [workspace, ...targetWorkspaces]
+  const relativePath = `outputs/${provider}-tracked-conflict.txt`
+  const sourceSideContent = `one\n${provider}-tracked-source-conflict\nthree\n`
+  const resolvedContent = `one\n${provider}-tracked-resolved\nthree\n`
+
+  const alignSinceMs = Date.now()
+  const alignMarker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_CONFLICT_ALIGNED`
+  await client.send(submitPromptRequest(session.id, attachment.id, resolverAgent.id, [
+    'This is a live Arroba workspace live sync tracked-mode conflict alignment drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    `Run a direct write in the current workspace so that ${relativePath} becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
+    `After that direct filesystem write completes, reply exactly ${alignMarker} and nothing else.`,
+  ].join('\n'), []))
+
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    events,
+    expectedCompletionCount: 1,
+    completionSinceMs: alignSinceMs,
+    requiredFiles: [path.join(targetWorkspaces[0], relativePath)],
+    forbiddenFiles: [],
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryOutputMarkers({
+    historyDir,
+    markerGroups: [[alignMarker]],
+    sinceMs: alignSinceMs,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [resolverAgent.id],
+    getSessionStateRequest,
+    timeoutMs,
+    pollMs,
+  })
+  const alignedStatus = await waitForTrackedConflictFileFanout({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    getWorkspaceLiveSyncStatusRequest,
+    workspaces: allWorkspaces,
+    targetWorkspaces,
+    provider,
+    expectedContent: sourceSideContent,
+    expectConflictsCleared: false,
+    timeoutMs,
+    pollMs,
+  })
+
+  const resolveSinceMs = Date.now()
+  const resolveMarker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_CONFLICT_RESOLVED`
+  await client.send(submitPromptRequest(session.id, attachment.id, sourceAgent.id, [
+    'This is a live Arroba workspace live sync tracked-mode conflict resolution drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    `Run a direct write in the current workspace so that ${relativePath} becomes exactly "one\\n${provider}-tracked-resolved\\nthree\\n".`,
+    `After that direct filesystem write completes, reply exactly ${resolveMarker} and nothing else.`,
+  ].join('\n'), []))
+
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    events,
+    expectedCompletionCount: 1,
+    completionSinceMs: resolveSinceMs,
+    requiredFiles: [path.join(workspace, relativePath)],
+    forbiddenFiles: [],
+    timeoutMs,
+    pollMs,
+  })
+  await waitForHistoryOutputMarkers({
+    historyDir,
+    markerGroups: [[resolveMarker]],
+    sinceMs: resolveSinceMs,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [sourceAgent.id],
+    getSessionStateRequest,
+    timeoutMs,
+    pollMs,
+  })
+  const resolvedStatus = await waitForTrackedConflictFileFanout({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    getWorkspaceLiveSyncStatusRequest,
+    workspaces: allWorkspaces,
+    targetWorkspaces,
+    provider,
+    expectedContent: resolvedContent,
+    expectConflictsCleared: true,
+    timeoutMs,
+    pollMs,
+  })
+
+  return {
+    alignedStatus,
+    resolvedStatus,
+    resolvedContent,
   }
 }
 
@@ -1373,7 +1550,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     pollMs,
   })
 
-  const status = await waitForTrackedFanout({
+  const conflictStatus = await waitForTrackedFanout({
     client,
     sessionId: session.id,
     attachmentId: attachment.id,
@@ -1384,6 +1561,26 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
+  let resolution = null
+  if (options.trackedBidirectional) {
+    resolution = await runTrackedConflictResolutionPhase({
+      client,
+      session,
+      attachment,
+      events,
+      provider,
+      sourceAgent: agent,
+      resolverAgent: targetOriginAgent.agent,
+      workspace,
+      targetWorkspaces: trackedTargetWorkspaces,
+      historyDir,
+      timeoutMs,
+      pollMs,
+      getSessionStateRequest,
+      getWorkspaceLiveSyncStatusRequest,
+      submitPromptRequest,
+    })
+  }
   await waitForAgentsIdle({
     client,
     sessionId: session.id,
@@ -1393,6 +1590,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
+  const status = resolution?.resolvedStatus ?? conflictStatus
   const sourceHeadAfter = await gitHead(workspace)
   const targetHeadsAfter = Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await gitHead(target)])))
   const changedTargetHead = trackedTargetWorkspaces.find((target) => targetHeadsAfter[target] !== targetHeadsBefore[target])
@@ -1464,6 +1662,8 @@ async function runTrackedWorkspaceLiveSyncDrill({
       targetArrobaignores: Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await readFile(path.join(target, '.arrobaignore'), 'utf8')]))),
     },
     bidirectional,
+    resolution,
+    conflictStatus,
     workspaceLiveSyncStatus: status,
     providerProcesses: processes.map((process) => ({
       processId: process.process_id,

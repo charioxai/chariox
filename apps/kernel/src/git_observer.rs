@@ -50,6 +50,16 @@ pub(crate) struct GitTurnSnapshot {
     pub status_fingerprint: String,
     pub is_dirty: bool,
     pub workspace_live_sync_tracked: bool,
+    #[serde(default)]
+    pub workspace_live_sync_file_snapshots: BTreeMap<String, WorkspaceLiveSyncTrackedFileSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceLiveSyncTrackedFileSnapshot {
+    #[serde(default)]
+    pub content_base64: Option<String>,
+    #[serde(default)]
+    pub binary: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -386,6 +396,14 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n");
+    let workspace_live_sync_file_snapshots = if context.workspace_live_sync_tracked {
+        tracked_workspace_live_sync_dirty_file_snapshots(
+            &context.worktree_path,
+            &status_fingerprint,
+        )
+    } else {
+        BTreeMap::new()
+    };
     Some(GitTurnSnapshot {
         session_id: context.session_id,
         agent_id: context.agent_id,
@@ -422,6 +440,7 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         is_dirty: !status_fingerprint.is_empty(),
         status_fingerprint,
         workspace_live_sync_tracked: context.workspace_live_sync_tracked,
+        workspace_live_sync_file_snapshots,
     })
 }
 
@@ -495,10 +514,13 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     before: &GitTurnSnapshot,
     after: &GitTurnSnapshot,
 ) -> Option<WorkspaceLiveSyncChange> {
-    if before.is_dirty || before.status_fingerprint == after.status_fingerprint {
+    if before.repo_root != after.repo_root || before.worktree_path != after.worktree_path {
         return None;
     }
-    if before.repo_root != after.repo_root || before.worktree_path != after.worktree_path {
+    if before.is_dirty {
+        return tracked_workspace_live_sync_dirty_change_after_turn(before, after);
+    }
+    if before.status_fingerprint == after.status_fingerprint {
         return None;
     }
     let worktree_path = PathBuf::from(&before.worktree_path);
@@ -517,6 +539,82 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
     }
     let file_changes =
         tracked_workspace_live_sync_file_changes(before, &path_changes).unwrap_or_default();
+    Some(WorkspaceLiveSyncChange {
+        session_id: before.session_id.clone(),
+        agent_id: before.agent_id.clone(),
+        provider_run_id: before.provider_run_id.clone(),
+        prompt_id: before.prompt_id.clone(),
+        repo_root: before.repo_root.clone(),
+        worktree_path: before.worktree_path.clone(),
+        branch: before.branch.clone().or_else(|| after.branch.clone()),
+        changed_paths,
+        file_changes,
+        status_fingerprint: after.status_fingerprint.clone(),
+    })
+}
+
+fn tracked_workspace_live_sync_dirty_change_after_turn(
+    before: &GitTurnSnapshot,
+    after: &GitTurnSnapshot,
+) -> Option<WorkspaceLiveSyncChange> {
+    let repo_root = PathBuf::from(&before.repo_root);
+    let worktree_path = PathBuf::from(&after.worktree_path);
+    let revision = before.head_sha.as_deref().unwrap_or("HEAD");
+    let mut paths = before
+        .workspace_live_sync_file_snapshots
+        .keys()
+        .chain(after.workspace_live_sync_file_snapshots.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for change in
+        tracked_workspace_live_sync_path_changes(&after.status_fingerprint, &worktree_path)
+    {
+        paths.insert(change.path);
+    }
+    let mut file_changes = Vec::new();
+    for path in paths {
+        let before_snapshot =
+            tracked_workspace_live_sync_before_file_snapshot(before, &repo_root, revision, &path);
+        let after_snapshot =
+            tracked_workspace_live_sync_after_file_snapshot(after, &worktree_path, &path);
+        if before_snapshot == after_snapshot {
+            continue;
+        }
+        let kind = match (
+            before_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.content_base64.as_ref()),
+            after_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.content_base64.as_ref()),
+        ) {
+            (None, Some(_)) => WorkspaceLiveSyncFileChangeKind::Added,
+            (Some(_), None) => WorkspaceLiveSyncFileChangeKind::Deleted,
+            (Some(_), Some(_)) => WorkspaceLiveSyncFileChangeKind::Modified,
+            (None, None) => continue,
+        };
+        let binary = before_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.binary)
+            || after_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.binary);
+        file_changes.push(WorkspaceLiveSyncFileChange {
+            path: path.clone(),
+            previous_path: None,
+            kind,
+            binary,
+            before_content_base64: before_snapshot.and_then(|snapshot| snapshot.content_base64),
+            after_content_base64: after_snapshot.and_then(|snapshot| snapshot.content_base64),
+        });
+    }
+    if file_changes.is_empty() {
+        return None;
+    }
+    let changed_paths = file_changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
     Some(WorkspaceLiveSyncChange {
         session_id: before.session_id.clone(),
         agent_id: before.agent_id.clone(),
@@ -604,6 +702,58 @@ fn tracked_workspace_live_sync_path_changes(
     paths.into_values().collect()
 }
 
+fn tracked_workspace_live_sync_dirty_file_snapshots(
+    worktree_path: &Path,
+    status_fingerprint: &str,
+) -> BTreeMap<String, WorkspaceLiveSyncTrackedFileSnapshot> {
+    tracked_workspace_live_sync_path_changes(status_fingerprint, worktree_path)
+        .into_iter()
+        .map(|change| {
+            let snapshot =
+                tracked_workspace_live_sync_worktree_snapshot(worktree_path, &change.path);
+            (
+                change.path,
+                WorkspaceLiveSyncTrackedFileSnapshot::from_content_snapshot(snapshot),
+            )
+        })
+        .collect()
+}
+
+fn tracked_workspace_live_sync_before_file_snapshot(
+    before: &GitTurnSnapshot,
+    repo_root: &Path,
+    revision: &str,
+    path: &str,
+) -> Option<WorkspaceLiveSyncTrackedFileSnapshot> {
+    before
+        .workspace_live_sync_file_snapshots
+        .get(path)
+        .cloned()
+        .or_else(|| {
+            tracked_workspace_live_sync_git_blob_snapshot(repo_root, revision, path).map(
+                |snapshot| {
+                    WorkspaceLiveSyncTrackedFileSnapshot::from_content_snapshot(Some(snapshot))
+                },
+            )
+        })
+}
+
+fn tracked_workspace_live_sync_after_file_snapshot(
+    after: &GitTurnSnapshot,
+    worktree_path: &Path,
+    path: &str,
+) -> Option<WorkspaceLiveSyncTrackedFileSnapshot> {
+    after
+        .workspace_live_sync_file_snapshots
+        .get(path)
+        .cloned()
+        .or_else(|| {
+            tracked_workspace_live_sync_worktree_snapshot(worktree_path, path).map(|snapshot| {
+                WorkspaceLiveSyncTrackedFileSnapshot::from_content_snapshot(Some(snapshot))
+            })
+        })
+}
+
 fn tracked_workspace_live_sync_file_changes(
     before: &GitTurnSnapshot,
     path_changes: &[WorkspaceLiveSyncTrackedPathChange],
@@ -659,6 +809,15 @@ fn tracked_workspace_live_sync_file_changes(
 struct WorkspaceLiveSyncTrackedContentSnapshot {
     content_base64: String,
     binary: bool,
+}
+
+impl WorkspaceLiveSyncTrackedFileSnapshot {
+    fn from_content_snapshot(snapshot: Option<WorkspaceLiveSyncTrackedContentSnapshot>) -> Self {
+        Self {
+            binary: snapshot.as_ref().is_some_and(|snapshot| snapshot.binary),
+            content_base64: snapshot.map(|snapshot| snapshot.content_base64),
+        }
+    }
 }
 
 fn tracked_workspace_live_sync_git_blob_snapshot(
@@ -796,8 +955,21 @@ fn workspace_live_sync_apply_add(
     let Some(after_bytes) = after_bytes else {
         return workspace_live_sync_failed(path, "workspace live sync add has no after content");
     };
-    if target_path.exists() {
-        return workspace_live_sync_conflict(path, "target path already exists");
+    match std::fs::read(target_path) {
+        Ok(current) if current == after_bytes => {
+            return workspace_live_sync_applied(
+                path,
+                "target path already contains source content",
+            );
+        }
+        Ok(_) => return workspace_live_sync_conflict(path, "target path already exists"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return workspace_live_sync_failed(
+                path,
+                format!("failed to read target path before add: {error}"),
+            );
+        }
     }
     workspace_live_sync_write_file(path, target_path, &after_bytes)
 }
@@ -814,6 +986,9 @@ fn workspace_live_sync_apply_modify(
     match std::fs::read(target_path) {
         Ok(current) if current == before_bytes => {
             workspace_live_sync_write_file(path, target_path, &after_bytes)
+        }
+        Ok(current) if current == after_bytes => {
+            workspace_live_sync_applied(path, "target path already contains source content")
         }
         Ok(current) => workspace_live_sync_rebase_modify(
             path,
@@ -978,7 +1153,7 @@ fn workspace_live_sync_apply_delete(
         },
         Ok(_) => workspace_live_sync_conflict(path, "target content changed before delete"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            workspace_live_sync_conflict(path, "target path is already missing")
+            workspace_live_sync_applied(path, "target path is already missing")
         }
         Err(error) => workspace_live_sync_failed(
             path,
@@ -999,8 +1174,53 @@ fn workspace_live_sync_apply_rename(
     else {
         return workspace_live_sync_failed(path, "workspace live sync rename is missing content");
     };
-    if target_path.exists() {
-        return workspace_live_sync_conflict(path, "rename target path already exists");
+    match std::fs::read(target_path) {
+        Ok(current) if current == after_bytes => {
+            match std::fs::read(previous_target_path) {
+                Ok(previous_current) if previous_current == before_bytes => {
+                    match std::fs::remove_file(previous_target_path) {
+                        Ok(()) => {
+                            return workspace_live_sync_applied(
+                                path,
+                                "completed already-written rename target",
+                            );
+                        }
+                        Err(error) => return workspace_live_sync_failed(
+                            path,
+                            format!(
+                                "failed to remove rename source after idempotent write: {error}"
+                            ),
+                        ),
+                    }
+                }
+                Ok(_) => {
+                    return workspace_live_sync_conflict(
+                        path,
+                        "rename source content changed before apply",
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return workspace_live_sync_applied(
+                        path,
+                        "rename target already contains source content",
+                    );
+                }
+                Err(error) => {
+                    return workspace_live_sync_failed(
+                        path,
+                        format!("failed to read rename source before idempotent apply: {error}"),
+                    );
+                }
+            }
+        }
+        Ok(_) => return workspace_live_sync_conflict(path, "rename target path already exists"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return workspace_live_sync_failed(
+                path,
+                format!("failed to read rename target before apply: {error}"),
+            );
+        }
     }
     match std::fs::read(previous_target_path) {
         Ok(current) if current == before_bytes => {}
@@ -1599,6 +1819,7 @@ fn truncate_for_metadata(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::process::Command;
 
     use base64::Engine as _;
@@ -1719,6 +1940,68 @@ mod tests {
         let after = tracked_snapshot(true, " M src/lib.rs\n M src/other.rs");
 
         assert!(tracked_workspace_live_sync_change_after_turn(&before, &after).is_none());
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_change_records_dirty_to_dirty_content_delta() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-dirty-delta-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(root.join("outputs")).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "agent@example.com"]);
+        run_git(&root, &["config", "user.name", "Agent"]);
+        std::fs::write(root.join("outputs/conflict.txt"), "one\ntarget\nthree\n")
+            .expect("tracked file should write");
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "seed commit"]);
+        std::fs::write(root.join("outputs/conflict.txt"), "one\nsource\nthree\n")
+            .expect("dirty file should write");
+
+        let before = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&root, "prompt-1")
+        })
+        .expect("dirty pre-turn snapshot should capture");
+        std::fs::write(root.join("outputs/conflict.txt"), "one\nresolved\nthree\n")
+            .expect("dirty file should update again");
+        let after = capture_turn_snapshot(GitTurnContext {
+            workspace_live_sync_tracked: true,
+            ..test_context(&root, "prompt-1")
+        })
+        .expect("dirty post-turn snapshot should capture");
+
+        let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("dirty tracked turn should produce a content delta");
+
+        assert_eq!(change.changed_paths, vec!["outputs/conflict.txt"]);
+        assert_eq!(change.file_changes.len(), 1);
+        assert_eq!(
+            change.file_changes[0].kind,
+            WorkspaceLiveSyncFileChangeKind::Modified
+        );
+        let before_content = base64::engine::general_purpose::STANDARD
+            .decode(
+                change.file_changes[0]
+                    .before_content_base64
+                    .as_deref()
+                    .expect("before content should be present"),
+            )
+            .expect("before content should decode");
+        let after_content = base64::engine::general_purpose::STANDARD
+            .decode(
+                change.file_changes[0]
+                    .after_content_base64
+                    .as_deref()
+                    .expect("after content should be present"),
+            )
+            .expect("after content should decode");
+        assert_eq!(before_content, b"one\nsource\nthree\n");
+        assert_eq!(after_content, b"one\nresolved\nthree\n");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2020,6 +2303,92 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn workspace_live_sync_apply_target_treats_already_applied_paths_as_applied() {
+        let target = std::env::temp_dir().join(format!(
+            "arroba-tracked-sync-idempotent-target-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(target.join("src")).expect("target should be created");
+        std::fs::write(target.join("src/added.rs"), "added\n").expect("target should write");
+        std::fs::write(target.join("src/lib.rs"), "new\n").expect("target should write");
+        std::fs::write(target.join("src/new_name.rs"), "moved\n").expect("target should write");
+        let encode =
+            |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+        let change = WorkspaceLiveSyncChange {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            provider_run_id: "provider-run-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            repo_root: "/source".to_string(),
+            worktree_path: "/source".to_string(),
+            branch: Some("main".to_string()),
+            changed_paths: vec![
+                "src/added.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "src/remove.rs".to_string(),
+                "src/new_name.rs".to_string(),
+            ],
+            file_changes: vec![
+                WorkspaceLiveSyncFileChange {
+                    path: "src/added.rs".to_string(),
+                    previous_path: None,
+                    kind: WorkspaceLiveSyncFileChangeKind::Added,
+                    before_content_base64: None,
+                    after_content_base64: Some(encode("added\n")),
+                    binary: false,
+                },
+                WorkspaceLiveSyncFileChange {
+                    path: "src/lib.rs".to_string(),
+                    previous_path: None,
+                    kind: WorkspaceLiveSyncFileChangeKind::Modified,
+                    before_content_base64: Some(encode("old\n")),
+                    after_content_base64: Some(encode("new\n")),
+                    binary: false,
+                },
+                WorkspaceLiveSyncFileChange {
+                    path: "src/remove.rs".to_string(),
+                    previous_path: None,
+                    kind: WorkspaceLiveSyncFileChangeKind::Deleted,
+                    before_content_base64: Some(encode("remove\n")),
+                    after_content_base64: None,
+                    binary: false,
+                },
+                WorkspaceLiveSyncFileChange {
+                    path: "src/new_name.rs".to_string(),
+                    previous_path: Some("src/old_name.rs".to_string()),
+                    kind: WorkspaceLiveSyncFileChangeKind::Renamed,
+                    before_content_base64: Some(encode("old\n")),
+                    after_content_base64: Some(encode("moved\n")),
+                    binary: false,
+                },
+            ],
+            status_fingerprint: "fingerprint".to_string(),
+        };
+
+        let results = apply_workspace_live_sync_change_to_target(&change, &target);
+
+        assert!(results
+            .iter()
+            .all(|result| result.status == WorkspaceLiveSyncApplyStatus::Applied));
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/added.rs")).expect("target should read"),
+            "added\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib.rs")).expect("target should read"),
+            "new\n"
+        );
+        assert!(!target.join("src/remove.rs").exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/new_name.rs")).expect("target should read"),
+            "moved\n"
+        );
+
         let _ = std::fs::remove_dir_all(&target);
     }
 
@@ -2411,6 +2780,7 @@ mod tests {
             status_fingerprint: status_fingerprint.to_string(),
             is_dirty,
             workspace_live_sync_tracked: true,
+            workspace_live_sync_file_snapshots: BTreeMap::new(),
         }
     }
 
