@@ -22,6 +22,10 @@ const WORKFLOW_RUN_COMPLETION: &str = "System node-level prompt:\nThis node is a
 
 const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "System node-level prompt:\nThis node is authorized to emit intermediate workflow run outputs.\nIf you want to send an intermediate output to the endpoint without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nIntermediate workflow run output does not terminate the workflow run. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream output validation rules still apply.\nDo not finalize the turn until `validate_and_submit_intermediate_workflow_run_output` returns `valid: true` with no warning.\n\n";
 
+const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str = "Generate a git commit subject for the workspace changes supplied by the user.\nRules:\n- Output exactly one concise imperative subject line.\n- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n- Keep it under 72 characters.";
+
+const UTILITY_SEMANTIC_RECALL_SEARCH: &str = "You are running an Arroba recall-search utility. Answer the user's question only from the supplied recall candidates.\nDo not use external knowledge. Do not mention tool calls or runtime mechanics.\nReturn exactly one JSON object matching the JSON Schema supplied by the user.\nRules:\n- Select only event_id values present in Recall candidates.\n- If the candidates do not answer the question, say that in answer and return an empty matches array.\n- Keep answer concise.\n- Output JSON only.";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
     pub(crate) visible_user_prompt: String,
@@ -281,6 +285,14 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new(
             "workflow/run-intermediate-output",
             WORKFLOW_RUN_INTERMEDIATE_OUTPUT,
+        ),
+        BundledPromptTemplate::new(
+            "utility/workspace-commit-message",
+            UTILITY_WORKSPACE_COMMIT_MESSAGE,
+        ),
+        BundledPromptTemplate::new(
+            "utility/semantic-recall-search",
+            UTILITY_SEMANTIC_RECALL_SEARCH,
         ),
     ]
 }

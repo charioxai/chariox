@@ -84,6 +84,22 @@ pub(crate) fn semantic_recall_search_utility_prompt(
     input: &SemanticRecallSearchUtilityInput,
     candidates: &[SemanticRecallMatch],
 ) -> Result<String, DaemonError> {
+    let assembly = semantic_recall_search_utility_prompt_assembly(input, candidates)?;
+    Ok(format!(
+        "{}\n\n{}",
+        assembly.hidden_system_context, assembly.visible_user_prompt
+    ))
+}
+
+pub(crate) struct SemanticRecallSearchUtilityPrompt {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
+}
+
+pub(crate) fn semantic_recall_search_utility_prompt_assembly(
+    input: &SemanticRecallSearchUtilityInput,
+    candidates: &[SemanticRecallMatch],
+) -> Result<SemanticRecallSearchUtilityPrompt, DaemonError> {
     let schema = semantic_recall_search_utility_schema();
     let candidate_json = serde_json::to_string_pretty(
         &candidates
@@ -95,21 +111,20 @@ pub(crate) fn semantic_recall_search_utility_prompt(
         operation: "run semantic recall search utility",
         message: format!("could not encode semantic recall candidates: {error}"),
     })?;
-    Ok(format!(
-        "You are running an Arroba recall-search utility. Answer the user's question only from the supplied recall candidates.\n\
-Do not use external knowledge. Do not mention tool calls or runtime mechanics.\n\
-Return exactly one JSON object matching this JSON Schema:\n{schema}\n\n\
+    Ok(SemanticRecallSearchUtilityPrompt {
+        visible_user_prompt: format!(
+            "JSON Schema:\n{schema}\n\n\
 User question:\n{query}\n\n\
 Recall candidates:\n{candidates}\n\n\
-Rules:\n\
-- Select only event_id values present in Recall candidates.\n\
-- If the candidates do not answer the question, say that in answer and return an empty matches array.\n\
-- Keep answer concise.\n\
-- Output JSON only.",
-        schema = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string()),
-        query = input.query.trim(),
-        candidates = candidate_json,
-    ))
+Output JSON only.",
+            schema = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string()),
+            query = input.query.trim(),
+            candidates = candidate_json,
+        ),
+        hidden_system_context: crate::prompt_assembly::PromptAssemblyService::from_env()?
+            .assemble_hidden_context_only(&["utility/semantic-recall-search"])?
+            .0,
+    })
 }
 
 fn semantic_recall_search_utility_schema() -> serde_json::Value {

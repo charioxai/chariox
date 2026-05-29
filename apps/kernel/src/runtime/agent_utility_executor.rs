@@ -18,10 +18,10 @@ use crate::runtime::history_requests::{
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::semantic_recall_utility::{
-    parse_semantic_recall_search_utility_output, semantic_recall_search_utility_prompt,
+    parse_semantic_recall_search_utility_output, semantic_recall_search_utility_prompt_assembly,
 };
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt;
+use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -164,8 +164,13 @@ async fn run_workspace_commit_message_utility(
     provider_run: RuntimeProviderRun,
     input: WorkspaceCommitMessageUtilityInput,
 ) -> Result<String, DaemonError> {
-    let prompt = workspace_commit_message_utility_prompt(&input)?;
-    run_provider_utility_prompt(provider_run, prompt, "run workspace commit message utility").await
+    let prompt = workspace_commit_message_utility_prompt_assembly(&input)?;
+    run_provider_utility_prompt(
+        provider_run,
+        prompt.into(),
+        "run workspace commit message utility",
+    )
+    .await
 }
 
 async fn run_semantic_recall_search_utility(
@@ -183,10 +188,13 @@ async fn run_semantic_recall_search_utility(
             message: reason,
         });
     }
-    let prompt = semantic_recall_search_utility_prompt(&input, &candidates)?;
-    let output =
-        run_provider_utility_prompt(provider_run, prompt, "run semantic recall search utility")
-            .await?;
+    let prompt = semantic_recall_search_utility_prompt_assembly(&input, &candidates)?;
+    let output = run_provider_utility_prompt(
+        provider_run,
+        prompt.into(),
+        "run semantic recall search utility",
+    )
+    .await?;
     let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
     Ok(AgentUtilityOutput::SemanticRecallSearch {
         answer: parsed.answer,
@@ -203,12 +211,22 @@ fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
 
 async fn run_provider_utility_prompt(
     provider_run: RuntimeProviderRun,
-    prompt: String,
+    prompt: AgentUtilityPromptParts,
     operation: &'static str,
 ) -> Result<String, DaemonError> {
     tokio::task::spawn_blocking(move || match provider_run.adapter_key() {
-        "codex" => run_codex_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT),
-        "opencode" => run_opencode_utility_prompt(&provider_run, &prompt, AGENT_UTILITY_TIMEOUT),
+        "codex" => run_codex_utility_prompt(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            AGENT_UTILITY_TIMEOUT,
+        ),
+        "opencode" => run_opencode_utility_prompt(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            AGENT_UTILITY_TIMEOUT,
+        ),
         adapter_key => Err(DaemonError::LocalTransport {
             operation,
             message: format!(
@@ -221,6 +239,37 @@ async fn run_provider_utility_prompt(
         operation,
         message: format!("agent utility prompt task failed: {error}"),
     })?
+}
+
+struct AgentUtilityPromptParts {
+    visible_user_prompt: String,
+    hidden_system_context: String,
+}
+
+impl From<crate::runtime::workspace_commit_message_utility::WorkspaceCommitMessageUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::workspace_commit_message_utility::WorkspaceCommitMessageUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
+}
+
+impl From<crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
 }
 
 fn random_hex_id() -> String {

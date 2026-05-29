@@ -447,6 +447,7 @@ pub(super) fn submit_opencode_prompt(
 pub(crate) fn run_opencode_utility_prompt(
     run: &RuntimeProviderRun,
     prompt: &str,
+    hidden_system_context: &str,
     timeout: Duration,
 ) -> Result<String, DaemonError> {
     let base_url = run
@@ -479,7 +480,7 @@ pub(crate) fn run_opencode_utility_prompt(
     let mut state = OpenCodeRuntimeState::new(base_url, session_id, event_subscription);
     let envelope = crate::prompt_assembly::PromptEnvelope::new(
         prompt,
-        "",
+        hidden_system_context,
         Vec::new(),
         crate::prompt_assembly::PromptManifest::default(),
     );

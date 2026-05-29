@@ -17,6 +17,7 @@ const CODEX_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub fn run_codex_utility_prompt(
     run: &RuntimeProviderRun,
     prompt: &str,
+    hidden_system_context: &str,
     timeout: Duration,
 ) -> Result<String, DaemonError> {
     let endpoint = run
@@ -57,7 +58,7 @@ pub fn run_codex_utility_prompt(
         run.write_access_mode(),
         run.execution_mode(),
         run.permission_level(),
-        None,
+        hidden_context_for_provider(hidden_system_context),
         input,
         &mut state.buffered_notifications,
     )?;
@@ -108,6 +109,11 @@ pub fn run_codex_utility_prompt(
         });
     }
     Ok(output)
+}
+
+fn hidden_context_for_provider(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn clean_codex_utility_output(output: &str) -> String {
