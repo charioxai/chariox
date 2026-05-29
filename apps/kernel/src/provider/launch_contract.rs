@@ -112,6 +112,11 @@ pub struct LaunchProviderRequest {
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<ArrobaMcpServerConfig>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+    )]
+    pub remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_env_remove: Vec<String>,
     #[serde(
@@ -256,6 +261,7 @@ impl LaunchProviderRequest {
             working_directory: None,
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
+            remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_env_remove: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
@@ -296,6 +302,14 @@ impl LaunchProviderRequest {
 
     pub fn with_mcp_servers(mut self, mcp_servers: Vec<ArrobaMcpServerConfig>) -> Self {
         self.mcp_servers = mcp_servers;
+        self
+    }
+
+    pub fn with_remote_extension_manifest(
+        mut self,
+        manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Self {
+        self.remote_extension_manifest = manifest;
         self
     }
 

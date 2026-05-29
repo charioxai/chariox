@@ -101,6 +101,16 @@ impl KernelRuntimeState {
                     return;
                 }
             };
+            let remote_extension_manifest = match state.remote_extension_manifest_for_agent(&agent)
+            {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let _ = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await;
+                    return;
+                }
+            };
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -128,6 +138,7 @@ impl KernelRuntimeState {
                 prompt,
                 attachments,
                 required_mcps,
+                remote_extension_manifest,
             )
             .await;
             match &result {

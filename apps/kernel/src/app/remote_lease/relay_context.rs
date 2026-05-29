@@ -1,7 +1,8 @@
 use crate::error::DaemonError;
 use crate::execution_lease::RemoteWorkflowTurnContext;
 use crate::transport::relay_peer::{
-    RemoteNativeInteractionContext, RemoteWorkspaceLiveSyncContext,
+    RemoteExtensionInvocationContext, RemoteNativeInteractionContext,
+    RemoteWorkspaceLiveSyncContext,
 };
 
 use super::RemoteLeaseRuntime;
@@ -99,6 +100,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
             leased_agent_id: leased_agent.id.clone(),
             worker_provider_run_id: provider_run_id.to_string(),
             worker_workspace_identity,
+        })
+    }
+
+    pub(crate) fn leased_extension_invocation_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<RemoteExtensionInvocationContext> {
+        let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
+            self.app
+                .providers
+                .get_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+                .map(|run| run.id() == provider_run_id)
+                .unwrap_or(false)
+        })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        Some(RemoteExtensionInvocationContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_provider_run_id: provider_run_id.to_string(),
         })
     }
 }

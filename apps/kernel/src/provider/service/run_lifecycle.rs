@@ -436,6 +436,16 @@ impl ProviderProcessService {
             })
     }
 
+    pub(super) fn update_run_remote_extension_manifest(
+        &mut self,
+        run_id: &str,
+        manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.set_remote_extension_manifest(manifest);
+        Ok(run.clone())
+    }
+
     fn adapter_for(
         &self,
         adapter_key: &str,

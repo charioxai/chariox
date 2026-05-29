@@ -53,6 +53,15 @@ pub struct RemoteMcpCheckContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExtensionInvocationContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub worker_provider_run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteNativeInteractionContext {
     pub home_session_id: String,
     pub home_agent_id: String,
@@ -173,6 +182,10 @@ pub enum RelayPeerRequest {
         execution_mode: crate::provider::AgentExecutionMode,
         permission_level: crate::provider::AgentPermissionLevel,
     },
+    UpdateLeasedAgentRemoteExtensionManifest {
+        leased_agent_id: String,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
     LaunchLeasedNativeProviderRun {
         leased_agent_id: String,
         adapter_key: String,
@@ -187,6 +200,11 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,
@@ -205,6 +223,11 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
@@ -231,6 +254,16 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
+    },
+    InvokeHomeExtensionTool {
+        context: RemoteExtensionInvocationContext,
+        tool: crate::extension::RemoteExtensionTool,
+        arguments: serde_json::Value,
+    },
+    InvokeHomeMcpProxy {
+        context: RemoteExtensionInvocationContext,
+        name: String,
+        payload: serde_json::Value,
     },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
@@ -272,6 +305,9 @@ pub enum RelayPeerResponse {
     LeasedAgentConfigUpdated {
         leased_agent: LeasedAgent,
     },
+    LeasedAgentRemoteExtensionManifestUpdated {
+        leased_agent_id: String,
+    },
     LeasedNativeProviderRunLaunched {
         provider_run: crate::provider::RuntimeProviderRun,
     },
@@ -307,6 +343,17 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skill_package: Option<ArrobaSkillPackage>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    HomeExtensionToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    HomeMcpProxyHandled {
+        response: serde_json::Value,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

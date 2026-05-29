@@ -265,6 +265,7 @@ fn remote_native_provider_run_response(
     };
     let required_mcps =
         required_remote_mcps_for_native_provider_launch(app, &request.session_id, &agent)?;
+    let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
         &relay_config,
@@ -282,6 +283,7 @@ fn remote_native_provider_run_response(
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
+            remote_extension_manifest,
         },
     ))?;
     match response {
@@ -330,6 +332,9 @@ fn required_remote_mcps_for_native_provider_launch(
     session_id: &str,
     agent: &crate::agent::AgentInstance,
 ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+    if agent.remote_execution().is_some() {
+        return Ok(Vec::new());
+    }
     let mcp_grants = agent.mcp_grants();
     if mcp_grants.is_empty() {
         return Ok(Vec::new());

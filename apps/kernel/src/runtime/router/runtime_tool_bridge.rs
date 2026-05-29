@@ -1,6 +1,5 @@
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call as dispatch_runtime_mcp_proxy_call;
 
 impl CommandRouter {
     pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
@@ -14,7 +13,13 @@ impl CommandRouter {
         name: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
-        dispatch_runtime_mcp_proxy_call(&self.provider_run_projection, auth_token, name, payload)
+        self.runtime_state
+            .dispatch_authenticated_mcp_proxy_call(
+                &self.provider_run_projection,
+                auth_token,
+                name,
+                payload,
+            )
             .await
     }
 
@@ -90,11 +95,34 @@ impl CommandRouter {
         (
             crate::transport::runtime_tools::RuntimeToolResult,
             Option<crate::skill::ArrobaSkillPackage>,
+            crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
     > {
         self.runtime_state
             .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
+            .await
+    }
+
+    pub(crate) async fn dispatch_forwarded_home_extension_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        tool: crate::extension::RemoteExtensionTool,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_home_extension_tool_call(context, tool, arguments)
+            .await
+    }
+
+    pub(crate) async fn dispatch_forwarded_home_mcp_proxy_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        name: String,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_home_mcp_proxy_call(context, name, payload)
             .await
     }
 }

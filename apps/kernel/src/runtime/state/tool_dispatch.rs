@@ -11,6 +11,7 @@ mod connector;
 mod credential;
 mod recall;
 mod remote_capability_sync;
+mod remote_extension_proxy;
 mod script;
 mod slice;
 mod workflow_authenticated;
@@ -25,10 +26,18 @@ impl KernelRuntimeState {
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        let provider_runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
             .into_iter()
             .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
             .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
+            .chain(provider_runs.iter().flat_map(|run| {
+                run.remote_extension_manifest()
+                    .home_proxy_runtime_tool_specs()
+            }))
             .chain(self.script_runtime_tool_specs_for_auth_token(auth_token))
             .chain(self.connector_runtime_tool_specs_for_auth_token(auth_token))
             .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
@@ -136,6 +145,16 @@ impl KernelRuntimeState {
                         arguments,
                     )
                     .await;
+            }
+            if let Some(result) = self
+                .try_dispatch_remote_home_extension_runtime_tool_call(
+                    &provider_runs[0],
+                    canonical_tool_name,
+                    arguments.clone(),
+                )
+                .await?
+            {
+                return Ok(result);
             }
             if let Some(result) = self
                 .try_dispatch_script_runtime_tool_call(

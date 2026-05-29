@@ -124,6 +124,19 @@ pub(crate) async fn update_relay_leased_agent_config(
         .await
 }
 
+pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_remote_extension_manifest(
+            leased_agent_id,
+            remote_extension_manifest,
+        )
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn launch_relay_leased_native_provider_run(
     runtime_state: &KernelRuntimeState,
@@ -136,6 +149,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     structured_endpoint: Option<String>,
     provider_session_id: Option<String>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     runtime_state
         .launch_relay_leased_native_provider_run(
@@ -148,6 +162,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            remote_extension_manifest,
         )
         .await
 }
@@ -177,6 +192,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     workflow_context: Option<RemoteWorkflowTurnContext>,
     git_context: Option<RemoteGitTurnContext>,
     required_mcps: Vec<RequiredRemoteMcp>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
     runtime_state
         .submit_relay_leased_prompt(
@@ -186,6 +202,7 @@ pub(crate) async fn submit_relay_leased_prompt(
             workflow_context,
             git_context,
             required_mcps,
+            remote_extension_manifest,
         )
         .await
 }

@@ -49,11 +49,12 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
-        let (mut result, skill_package) = match response {
+        let (mut result, skill_package, remote_extension_manifest) = match response {
             RelayPeerResponse::CapabilityRuntimeToolHandled {
                 result,
                 skill_package,
-            } => (result, skill_package),
+                remote_extension_manifest,
+            } => (result, skill_package, remote_extension_manifest),
             other => {
                 return Err(DaemonError::LocalTransport {
                     operation: "forward leased capability runtime tool",
@@ -61,6 +62,16 @@ impl KernelRuntimeState {
                 });
             }
         };
+        if !remote_extension_manifest.is_empty() {
+            let updated = self
+                .owned
+                .provider_store
+                .update_run_remote_extension_manifest(
+                    provider_run.id(),
+                    remote_extension_manifest,
+                )?;
+            self.owned.provider_run_projection.update(updated);
+        }
         if result.ok {
             if let Some(skill_package) = skill_package {
                 let materialized_root = crate::skill::materialize_skill_package(
@@ -115,17 +126,22 @@ impl KernelRuntimeState {
         (
             crate::transport::runtime_tools::RuntimeToolResult,
             Option<crate::skill::ArrobaSkillPackage>,
+            crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
     > {
-        self.dispatch_capability_runtime_tool_call_for_agent(
-            &context.home_session_id,
-            &context.home_agent_id,
-            &tool_name,
-            arguments,
-            true,
-        )
-        .await
+        let (result, package) = self
+            .dispatch_capability_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+                true,
+            )
+            .await?;
+        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+        let manifest = self.remote_extension_manifest_for_agent(&agent)?;
+        Ok((result, package, manifest))
     }
 
     pub(super) async fn dispatch_capability_runtime_tool_call(
@@ -184,6 +200,9 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let kind = args.kind.as_deref().unwrap_or("all");
+                let remote_home_proxy = agent.remote_execution().is_some();
+                let active_execution_location = if remote_home_proxy { "home" } else { "worker" };
+                let active_definition_origin = if remote_home_proxy { "home" } else { "worker" };
                 if !matches!(kind, "all" | "mcp" | "skill" | "script" | "connector") {
                     return Ok((
                         crate::transport::runtime_tools::RuntimeToolResult {
@@ -210,6 +229,9 @@ impl KernelRuntimeState {
                                 "enabled": mcp.enabled,
                                 "required": mcp.required,
                                 "granted": granted,
+                                "authority": if remote_home_proxy { "home" } else { "worker" },
+                                "definition_origin": active_definition_origin,
+                                "execution_location": active_execution_location,
                                 "effective_when_requested": "next_provider_launch"
                             })
                         })
@@ -232,6 +254,9 @@ impl KernelRuntimeState {
                                 "description": skill.description,
                                 "short_description": skill.short_description,
                                 "granted": granted,
+                                "authority": if remote_home_proxy { "home" } else { "worker" },
+                                "definition_origin": if remote_home_proxy { "projected_snapshot" } else { "worker" },
+                                "execution_location": "none",
                                 "effective_when_requested": "now"
                             })
                         })
@@ -256,6 +281,9 @@ impl KernelRuntimeState {
                                 "runtime": script.runtime,
                                 "definition_hash": script.definition_hash,
                                 "granted": granted,
+                                "authority": if remote_home_proxy { "home" } else { "worker" },
+                                "definition_origin": active_definition_origin,
+                                "execution_location": active_execution_location,
                                 "effective_when_requested": "current_or_next_turn"
                             })
                         })
@@ -301,6 +329,9 @@ impl KernelRuntimeState {
                                 "description": connector.description,
                                 "adapter": connector.adapter,
                                 "granted": grant.is_some(),
+                                "authority": if remote_home_proxy { "home" } else { "worker" },
+                                "definition_origin": active_definition_origin,
+                                "execution_location": active_execution_location,
                                 "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
                                 "operations": operations,
                                 "effective_when_requested": "current_or_next_turn"

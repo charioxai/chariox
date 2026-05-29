@@ -178,6 +178,7 @@ impl KernelRuntimeState {
                 &materialized,
             )?;
             let required_mcps = self.required_remote_mcps_for_agent(&agent)?;
+            let remote_extension_manifest = self.remote_extension_manifest_for_agent(&agent)?;
             let attachments = self
                 .with_app_side_effect(|app| {
                     app.serialize_remote_prompt_attachments(started_next.attachments())
@@ -221,6 +222,7 @@ impl KernelRuntimeState {
                                     started_next,
                                 )),
                                 required_mcps,
+                                remote_extension_manifest,
                             },
                         ),
                     )

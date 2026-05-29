@@ -13,6 +13,114 @@ use super::remote_kernel_selection::{
 };
 
 impl DaemonApp {
+    pub(crate) fn remote_extension_manifest_for_agent(
+        &self,
+        agent: &AgentInstance,
+    ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
+        if agent.remote_execution().is_none() {
+            return Ok(crate::extension::RemoteExtensionManifest::default());
+        }
+        let session = self.sessions.get_session(agent.session_id())?;
+        let mut tools = Vec::new();
+
+        let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
+            session.workspace_id(),
+        )];
+        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+            mcp_roots.push(user_root);
+        }
+        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
+        for name in agent.mcp_grants() {
+            let Some(config) = mcp_registry.get(&name)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote extension manifest",
+                    message: format!("MCP `{name}` is granted but is not installed on home"),
+                });
+            };
+            tools.push(crate::extension::RemoteExtensionTool {
+                kind: crate::extension::ExtensionKind::Mcp,
+                name: name.clone(),
+                tool_name: name,
+                description: "Home-proxied MCP server".to_string(),
+                input_schema: serde_json::json!({}),
+                authority: crate::extension::ExtensionAuthority::Home,
+                definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                safety: None,
+                timeout_sec: config.tool_timeout_sec,
+                version_hash: Some(config.definition_hash()?),
+            });
+        }
+
+        let mut script_roots = vec![crate::script::ArrobaScriptRegistry::project_root(
+            session.workspace_id(),
+        )];
+        if let Some(user_root) = crate::script::ArrobaScriptRegistry::user_root() {
+            script_roots.push(user_root);
+        }
+        let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
+        for grant in agent.script_grants() {
+            let Some(script) = script_registry.get(&grant.name)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote extension manifest",
+                    message: format!(
+                        "script `{}` is granted but is not registered on home",
+                        grant.name
+                    ),
+                });
+            };
+            tools.push(crate::extension::RemoteExtensionTool {
+                kind: crate::extension::ExtensionKind::Script,
+                name: grant.name,
+                tool_name: script.name,
+                description: script.description,
+                input_schema: script.input_schema,
+                authority: crate::extension::ExtensionAuthority::Home,
+                definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                safety: None,
+                timeout_sec: None,
+                version_hash: Some(script.definition_hash),
+            });
+        }
+
+        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        for grant in agent.connector_grants() {
+            let Some(connector) = connector_registry.get(&grant.name)? else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote extension manifest",
+                    message: format!(
+                        "connector `{}` is granted but is not registered on home",
+                        grant.name
+                    ),
+                });
+            };
+            let max_safety = crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
+            for operation in connector.operations {
+                if operation.safety > max_safety {
+                    continue;
+                }
+                tools.push(crate::extension::RemoteExtensionTool {
+                    kind: crate::extension::ExtensionKind::Connector,
+                    name: connector.name.clone(),
+                    tool_name: crate::connector::connector_tool_name(
+                        &connector.name,
+                        &operation.name,
+                    ),
+                    description: operation.description,
+                    input_schema: operation.input_schema,
+                    authority: crate::extension::ExtensionAuthority::Home,
+                    definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                    execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                    safety: Some(operation.safety.as_str().to_string()),
+                    timeout_sec: Some(connector.timeout_ms / 1000),
+                    version_hash: None,
+                });
+            }
+        }
+        Ok(crate::extension::RemoteExtensionManifest { tools })
+    }
+
     pub(crate) fn kernel_ref_is_local(&self, kernel_ref: &str) -> bool {
         let kernel_ref = kernel_ref.trim();
         !kernel_ref.is_empty()

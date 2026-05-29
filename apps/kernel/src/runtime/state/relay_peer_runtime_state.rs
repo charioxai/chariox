@@ -158,6 +158,21 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
+        &self,
+        leased_agent_id: &str,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).update_leased_agent_remote_extension_manifest(
+                &leased_agent_id,
+                remote_extension_manifest,
+            )
+        })
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn launch_relay_leased_native_provider_run(
         &self,
@@ -170,6 +185,7 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let adapter_key = adapter_key.to_string();
@@ -187,6 +203,7 @@ impl KernelRuntimeState {
                 structured_endpoint,
                 provider_session_id,
                 required_mcps,
+                remote_extension_manifest,
             )
         })
         .await
@@ -222,6 +239,7 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
@@ -233,6 +251,7 @@ impl KernelRuntimeState {
                 workflow_context,
                 git_context,
                 required_mcps,
+                remote_extension_manifest,
             )
         })
         .await

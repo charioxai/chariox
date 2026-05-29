@@ -326,6 +326,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(updated.clone())
     }
 
+    pub(crate) fn update_leased_agent_remote_extension_manifest(
+        &mut self,
+        leased_agent_id: &str,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if let Some(run) = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        ) {
+            let updated = self
+                .app
+                .providers
+                .update_run_remote_extension_manifest(run.id(), remote_extension_manifest)?;
+            self.app.update_provider_run_projection(updated);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn execution_lease_count(&self) -> usize {
         self.app.execution_leases.len()

@@ -50,6 +50,11 @@ pub struct RuntimeProviderRun {
     mcp_servers: Vec<ArrobaMcpServerConfig>,
     #[serde(
         default,
+        skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+    )]
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    #[serde(
+        default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
     )]
     write_access_mode: ProviderWriteAccessMode,
@@ -108,6 +113,7 @@ impl RuntimeProviderRun {
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
             mcp_servers: request.mcp_servers.clone(),
+            remote_extension_manifest: request.remote_extension_manifest.clone(),
             write_access_mode: request.write_access_mode,
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
@@ -169,6 +175,7 @@ impl RuntimeProviderRun {
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
             mcp_servers: Vec::new(),
+            remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
@@ -297,6 +304,18 @@ impl RuntimeProviderRun {
 
     pub fn mcp_servers(&self) -> &[ArrobaMcpServerConfig] {
         &self.mcp_servers
+    }
+
+    pub fn remote_extension_manifest(&self) -> &crate::extension::RemoteExtensionManifest {
+        &self.remote_extension_manifest
+    }
+
+    pub fn set_remote_extension_manifest(
+        &mut self,
+        manifest: crate::extension::RemoteExtensionManifest,
+    ) {
+        self.remote_extension_manifest = manifest;
+        self.touch_activity();
     }
 
     pub fn write_access_mode(&self) -> ProviderWriteAccessMode {

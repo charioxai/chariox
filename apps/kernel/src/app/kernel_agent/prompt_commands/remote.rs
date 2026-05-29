@@ -126,6 +126,8 @@ impl<'a> KernelAgentService<'a> {
         let attachments = self
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
+        let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
+        let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
         let result =
             match self
@@ -143,6 +145,7 @@ impl<'a> KernelAgentService<'a> {
                         workflow_context: dispatch.workflow_context.clone(),
                         git_context: Some(remote_git_turn_context(&dispatch)),
                         required_mcps: Vec::new(),
+                        remote_extension_manifest,
                     },
                 )) {
                 Ok(RelayPeerResponse::LeasedPromptSubmitted {
@@ -325,6 +328,8 @@ impl<'a> KernelAgentService<'a> {
                     continue;
                 }
             }
+            let agent = self.app.agents().get_agent(agent_id)?;
+            let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
             let response =
                 self.app
                     .block_on_relay_future(send_peer_request_via_temporary_connection(
@@ -353,6 +358,7 @@ impl<'a> KernelAgentService<'a> {
                                 session_id, agent_id, &peeked,
                             )),
                             required_mcps: Vec::new(),
+                            remote_extension_manifest,
                         },
                     ));
             let remote_provider_run_id = match response {

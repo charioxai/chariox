@@ -141,6 +141,19 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_update_leased_agent_remote_extension_manifest(
+        &self,
+        leased_agent_id: &str,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<(), DaemonError> {
+        relay_peer_runtime::update_relay_leased_agent_remote_extension_manifest(
+            &self.runtime_state,
+            leased_agent_id,
+            remote_extension_manifest,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_launch_leased_native_provider_run(
         &self,
@@ -153,6 +166,7 @@ impl CommandRouter {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         relay_peer_runtime::launch_relay_leased_native_provider_run(
             &self.runtime_state,
@@ -165,6 +179,7 @@ impl CommandRouter {
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            remote_extension_manifest,
         )
         .await
     }
@@ -194,6 +209,7 @@ impl CommandRouter {
         workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
         git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         relay_peer_runtime::submit_relay_leased_prompt(
             &self.runtime_state,
@@ -203,6 +219,7 @@ impl CommandRouter {
             workflow_context,
             git_context,
             required_mcps,
+            remote_extension_manifest,
         )
         .await
     }

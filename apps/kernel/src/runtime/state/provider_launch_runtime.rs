@@ -36,6 +36,7 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let required_mcps = self.required_remote_mcps_for_agent(&agent)?;
+        let remote_extension_manifest = self.remote_extension_manifest_for_agent(&agent)?;
         if !required_mcps.is_empty() {
             self.ensure_remote_mcp_availability_for_agent(&agent)
                 .await?;
@@ -68,6 +69,7 @@ impl KernelRuntimeState {
                 structured_endpoint: request.structured_endpoint.clone(),
                 provider_session_id: request.provider_session_id.clone(),
                 required_mcps,
+                remote_extension_manifest,
             },
         )
         .await?;

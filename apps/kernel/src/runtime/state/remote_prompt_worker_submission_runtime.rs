@@ -8,6 +8,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     prompt: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<String, DaemonError> {
     let result = submit_remote_prompt_to_worker(
         state,
@@ -15,6 +16,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         prompt.clone(),
         attachments.clone(),
         required_mcps.clone(),
+        remote_extension_manifest.clone(),
         "unexpected remote prompt response",
         "remote prompt dispatch timed out waiting for worker response",
     )
@@ -55,6 +57,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         prompt,
         attachments,
         required_mcps,
+        remote_extension_manifest,
         "unexpected remote prompt response after binding refresh",
         "remote prompt dispatch timed out after binding refresh",
     )
@@ -67,6 +70,7 @@ async fn submit_remote_prompt_to_worker(
     prompt: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     unexpected_response_message: &'static str,
     timeout_message: &'static str,
 ) -> Result<String, DaemonError> {
@@ -86,6 +90,7 @@ async fn submit_remote_prompt_to_worker(
                 workflow_context: dispatch.workflow_context.clone(),
                 git_context: Some(remote_git_turn_context(dispatch)),
                 required_mcps,
+                remote_extension_manifest,
             },
         ),
     )

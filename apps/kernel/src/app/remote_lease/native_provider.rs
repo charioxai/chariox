@@ -24,6 +24,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let leased_agent = self
             .app
@@ -63,7 +64,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .map(|required| required.config.clone())
                 .collect(),
         )
+        .with_remote_extension_manifest(remote_extension_manifest.clone())
         .with_variant(variant);
+        let mut mcp_servers = request.mcp_servers.clone();
+        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
+            if !mcp_servers.iter().any(|server| server.name == name) {
+                mcp_servers.push(crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                    name,
+                    "http://127.0.0.1/mcp",
+                ));
+            }
+        }
+        request = request.with_mcp_servers(mcp_servers);
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
         }
@@ -208,6 +220,7 @@ mod tests {
                 None,
                 None,
                 vec![required],
+                crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native run should launch");
 
@@ -220,5 +233,69 @@ mod tests {
         std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&isolation_root);
+    }
+
+    #[test]
+    fn leased_native_provider_launch_projects_home_proxy_mcp_manifest() {
+        let _guard = crate::env_lock::lock();
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let worktree = std::env::temp_dir().join(format!(
+            "arroba-native-provider-home-proxy-mcp-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&worktree).expect("worktree should create");
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let lease = runtime
+            .create_execution_lease("home-kernel", "home-session", "home-agent", "local-user")
+            .expect("lease should create");
+        let leased_agent = runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .expect("leased agent should create");
+        let manifest = crate::extension::RemoteExtensionManifest {
+            tools: vec![crate::extension::RemoteExtensionTool {
+                kind: crate::extension::ExtensionKind::Mcp,
+                name: "home_browser".to_string(),
+                tool_name: "home_browser".to_string(),
+                description: "Home browser".to_string(),
+                input_schema: serde_json::json!({}),
+                authority: crate::extension::ExtensionAuthority::Home,
+                definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                safety: None,
+                timeout_sec: Some(30),
+                version_hash: Some("hash".to_string()),
+            }],
+        };
+
+        let run = runtime
+            .launch_leased_native_provider_run(
+                &leased_agent.id,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                Vec::new(),
+                manifest.clone(),
+            )
+            .expect("native run should launch");
+
+        assert_eq!(run.remote_extension_manifest(), &manifest);
+        assert_eq!(run.mcp_servers().len(), 1);
+        assert_eq!(run.mcp_servers()[0].name, "home_browser");
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 }

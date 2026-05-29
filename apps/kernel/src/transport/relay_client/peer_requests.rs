@@ -162,6 +162,28 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id,
+            remote_extension_manifest,
+        } => {
+            let updated = router
+                .relay_update_leased_agent_remote_extension_manifest(
+                    &leased_agent_id,
+                    remote_extension_manifest,
+                )
+                .await;
+            match updated {
+                Ok(()) => {
+                    RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { leased_agent_id }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id,
             adapter_key,
@@ -172,6 +194,7 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            remote_extension_manifest,
         } => {
             let launched = router
                 .relay_launch_leased_native_provider_run(
@@ -184,6 +207,7 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
+                    remote_extension_manifest,
                 )
                 .await;
             match launched {
@@ -229,6 +253,7 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
+            remote_extension_manifest,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -238,6 +263,7 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
+                    remote_extension_manifest,
                 )
                 .await;
             match submitted {
@@ -400,10 +426,49 @@ pub(super) async fn handle_daemon_peer_request(
                 .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
                 .await;
             match handled {
-                Ok((result, skill_package)) => RelayPeerResponse::CapabilityRuntimeToolHandled {
-                    result,
-                    skill_package,
-                },
+                Ok((result, skill_package, remote_extension_manifest)) => {
+                    RelayPeerResponse::CapabilityRuntimeToolHandled {
+                        result,
+                        skill_package,
+                        remote_extension_manifest,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::InvokeHomeExtensionTool {
+            context,
+            tool,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_home_extension_tool_call(context, tool, arguments)
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::HomeExtensionToolHandled { result },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::InvokeHomeMcpProxy {
+            context,
+            name,
+            payload,
+        } => {
+            let handled = router
+                .dispatch_forwarded_home_mcp_proxy_call(context, name, payload)
+                .await;
+            match handled {
+                Ok(response) => RelayPeerResponse::HomeMcpProxyHandled { response },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

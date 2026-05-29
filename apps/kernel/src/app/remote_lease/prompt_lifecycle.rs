@@ -21,6 +21,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             None,
             None,
             Vec::new(),
+            crate::extension::RemoteExtensionManifest::default(),
         )
     }
 
@@ -32,6 +33,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent = self
             .app
@@ -44,8 +46,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
-        let provider_run_id =
-            self.ensure_leased_provider_run_matches_mcps(&leased_agent, &required_mcps)?;
+        let provider_run_id = self.ensure_leased_provider_run_matches_mcps(
+            &leased_agent,
+            &required_mcps,
+            &remote_extension_manifest,
+        )?;
         if let Some(git_context) = git_context {
             if self
                 .app

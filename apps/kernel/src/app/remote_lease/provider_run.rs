@@ -11,6 +11,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
+        remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
     ) -> Result<String, DaemonError> {
         let lease = self
             .app
@@ -26,6 +27,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         );
         if let Some(run) = existing.as_ref() {
             if provider_run_mcp_set_matches(run, required_mcps)? {
+                if !remote_extension_manifest.is_empty() {
+                    let updated = self.app.providers.update_run_remote_extension_manifest(
+                        run.id(),
+                        remote_extension_manifest.clone(),
+                    )?;
+                    self.app.update_provider_run_projection(updated);
+                }
                 return Ok(run.id().to_string());
             }
             if self
@@ -84,6 +92,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .map(|required| required.config.clone())
                 .collect(),
         );
+        let mut mcp_servers = request.mcp_servers.clone();
+        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
+            if !mcp_servers.iter().any(|server| server.name == name) {
+                mcp_servers.push(crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                    name,
+                    "http://127.0.0.1/mcp",
+                ));
+            }
+        }
+        request = request
+            .with_mcp_servers(mcp_servers)
+            .with_remote_extension_manifest(remote_extension_manifest.clone());
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
         }

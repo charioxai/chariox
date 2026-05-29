@@ -38,6 +38,7 @@ pub(super) fn dispatch_workflow_prompt(
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(app)
             .remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
+        let remote_extension_manifest = app.remote_extension_manifest_for_agent(&target_agent)?;
         let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
             app.config(),
             ClientTarget {
@@ -60,6 +61,7 @@ pub(super) fn dispatch_workflow_prompt(
                     ),
                 }),
                 required_mcps: Vec::new(),
+                remote_extension_manifest,
             },
         ));
         return match response {

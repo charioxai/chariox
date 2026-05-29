@@ -31,6 +31,8 @@ impl KernelRuntimeState {
                     Some(&format!("script:{}", grant.name)),
                 )
                 .await?;
+                self.sync_remote_extension_manifest_for_agent(&agent)
+                    .await?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -48,6 +50,8 @@ impl KernelRuntimeState {
                     Some(&format!("connector:{}", grant.name)),
                 )
                 .await?;
+                self.sync_remote_extension_manifest_for_agent(&agent)
+                    .await?;
                 Ok(agent)
             }
         }
@@ -151,6 +155,8 @@ impl KernelRuntimeState {
                     Some(&format!("script:{name}")),
                 )
                 .await?;
+                self.sync_remote_extension_manifest_for_agent(&agent)
+                    .await?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -166,6 +172,8 @@ impl KernelRuntimeState {
                     Some(&format!("connector:{name}")),
                 )
                 .await?;
+                self.sync_remote_extension_manifest_for_agent(&agent)
+                    .await?;
                 Ok(agent)
             }
         }
@@ -195,6 +203,8 @@ impl KernelRuntimeState {
             .grant_agent_mcp(agent_ref, name.clone(), caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
             .await?;
+        self.sync_remote_extension_manifest_for_agent(&agent)
+            .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
                 session_id: agent.session_id().to_string(),
@@ -215,6 +225,8 @@ impl KernelRuntimeState {
             .owned
             .revoke_agent_mcp(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_revoked", &agent, Some(name))
+            .await?;
+        self.sync_remote_extension_manifest_for_agent(&agent)
             .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
@@ -238,6 +250,8 @@ impl KernelRuntimeState {
         self.append_agent_durable_event("agent.skill_granted", &agent, Some(&name))
             .await?;
         self.ensure_remote_skill_packages_for_agent(&agent).await?;
+        self.sync_remote_extension_manifest_for_agent(&agent)
+            .await?;
         Ok(agent)
     }
 
@@ -252,7 +266,47 @@ impl KernelRuntimeState {
             .revoke_agent_skill(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.skill_revoked", &agent, Some(name))
             .await?;
+        self.sync_remote_extension_manifest_for_agent(&agent)
+            .await?;
         Ok(agent)
+    }
+
+    async fn sync_remote_extension_manifest_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        let manifest = self.remote_extension_manifest_for_agent(agent)?;
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.relay_url = Some(relay_url);
+            config.relay_token = Some(relay_token);
+            config.cloud_relay = None;
+        }
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &config,
+            ClientTarget {
+                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+                leased_agent_id: remote_execution.leased_agent_id,
+                remote_extension_manifest: manifest,
+            },
+        )
+        .await?;
+        match response {
+            RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. } => Ok(()),
+            other => Err(DaemonError::LocalTransport {
+                operation: "sync remote extension manifest",
+                message: format!("unexpected remote extension manifest response: {other:?}"),
+            }),
+        }
     }
 
     pub(crate) async fn update_session_config(
