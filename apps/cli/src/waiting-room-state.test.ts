@@ -9,7 +9,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room state creation normalizes provider model, variant, and theme", () => {
   const catalog = fallbackProviderCatalog()
-  const state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high", "missing-theme")
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high", "missing-theme")
 
   assert.equal(state.focus, "new")
   assert.equal(state.providerId, "opencode")
@@ -71,7 +71,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     worktreeSelectionId: "main",
     sliceSelectionId: "none",
     providerId: "opencode",
-    modelId: "openai/gpt-5.4",
+    modelId: "opencode/gpt-5.4",
     effort: "high",
     themeId: "opencode",
     introStep: 0,

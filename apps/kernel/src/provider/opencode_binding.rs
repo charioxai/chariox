@@ -375,11 +375,11 @@ mod tests {
         let selection = resolve_sync_selection(
             &[],
             OpenCodeConfiguredDefaults {
-                model: Some("openai/gpt-5.4".to_string()),
+                model: Some("opencode/gpt-5.4".to_string()),
                 variant: Some("medium".to_string()),
                 ..OpenCodeConfiguredDefaults::default()
             },
-            "openai/gpt-5.4",
+            "opencode/gpt-5.4",
             Some("high"),
         );
 
@@ -390,17 +390,17 @@ mod tests {
     #[test]
     fn sync_selection_still_uses_message_metadata_for_explicit_runs() {
         let selection = resolve_sync_selection(
-            &[message("openai", "gpt-5.4", "low")],
+            &[message("opencode", "gpt-5.4", "low")],
             OpenCodeConfiguredDefaults {
-                model: Some("openai/gpt-5.4".to_string()),
+                model: Some("opencode/gpt-5.4".to_string()),
                 variant: Some("medium".to_string()),
                 ..OpenCodeConfiguredDefaults::default()
             },
-            "openai/gpt-5.4",
+            "opencode/gpt-5.4",
             Some("high"),
         );
 
-        assert_eq!(selection.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(selection.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(selection.variant.as_deref(), Some("low"));
     }
 
@@ -409,7 +409,7 @@ mod tests {
         let selection = resolve_sync_selection(
             &[],
             OpenCodeConfiguredDefaults {
-                model: Some("openai/gpt-5.4".to_string()),
+                model: Some("opencode/gpt-5.4".to_string()),
                 variant: Some("medium".to_string()),
                 ..OpenCodeConfiguredDefaults::default()
             },
@@ -417,7 +417,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(selection.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(selection.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(selection.variant.as_deref(), Some("medium"));
     }
 }

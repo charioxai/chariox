@@ -19,7 +19,7 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     session_id: "session-1",
     alias: null,
     provider: "opencode",
-    model: "openai/gpt-5",
+    model: "opencode/gpt-5",
     effort: null,
     worktree_id: "worktree-1",
     state: "Idle",
@@ -59,7 +59,7 @@ function layoutNode(id: string, x: number, y: number, width = 30, height = 8): W
     agentId: id,
     alias: null,
     provider: "opencode",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     effort: "high",
     runStatus: null,
     missing: false,
@@ -68,7 +68,7 @@ function layoutNode(id: string, x: number, y: number, width = 30, height = 8): W
     y,
     width,
     height,
-    lines: [id, "provider opencode", "model openai/gpt-5.4", "effort high", "status idle"],
+    lines: [id, "provider opencode", "model opencode/gpt-5.4", "effort high", "status idle"],
   }
 }
 
@@ -150,7 +150,7 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
   assert.doesNotMatch(nodeC!.lines.join("\n"), /agent-c/)
   assert.equal(nodeB!.lines[0], "agent-b (reviewer)")
   assert.equal(nodeB!.lines[1], "provider opencode")
-  assert.equal(nodeB!.lines[2], "model openai/gpt-5")
+  assert.equal(nodeB!.lines[2], "model opencode/gpt-5")
   assert.equal(nodeB!.lines[4], "status idle")
   assert.equal(layout.endpoints[0]?.entryNodeId, "node-a")
 })
@@ -160,7 +160,7 @@ test("buildWorkflowGraphLayout applies live selection metadata to the active age
     workflow: workflow(),
     agents: [
       agent("agent-a"),
-      agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+      agent("agent-b", { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" }),
     ],
     workflowRuns: [],
     selectedNodeId: "node-b",
@@ -168,7 +168,7 @@ test("buildWorkflowGraphLayout applies live selection metadata to the active age
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
   assert.ok(nodeB)
   assert.equal(nodeB!.lines[1], "provider opencode")
-  assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
+  assert.equal(nodeB!.lines[2], "model opencode/gpt-5.4")
   assert.equal(nodeB!.lines[3], "effort high")
   assert.equal(nodeB!.lines[4], "status idle")
 })
@@ -178,7 +178,7 @@ test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
     workflow: workflow(),
     agents: [
       agent("agent-a"),
-      agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+      agent("agent-b", { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" }),
     ],
     workflowRuns: [],
     selectedNodeId: "node-b",
@@ -186,7 +186,7 @@ test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
   assert.ok(nodeB)
   assert.equal(nodeB!.lines[1], "provider opencode")
-  assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
+  assert.equal(nodeB!.lines[2], "model opencode/gpt-5.4")
   assert.equal(nodeB!.lines[3], "effort high")
   assert.equal(nodeB!.lines[4], "status idle")
 })

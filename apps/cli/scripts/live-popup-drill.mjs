@@ -233,7 +233,7 @@ function requireCondition(condition, message, details) {
 }
 
 function defaultModelForProvider(provider) {
-  if (provider === 'opencode') return 'openai/gpt-5.3-codex'
+  if (provider === 'opencode') return 'opencode/gpt-5.3'
   if (provider === 'codex') return 'gpt-5.4'
   return 'gpt-5.4'
 }

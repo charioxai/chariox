@@ -49,7 +49,7 @@ export class OpenCodeServerRun {
 
   async prompt(sessionId, prompt, {
     directory = process.cwd(),
-    model = process.env.OPENCODE_SPIKE_MODEL || 'openai/gpt-5.2',
+    model = process.env.OPENCODE_SPIKE_MODEL || 'opencode/gpt-5.2',
     variant = process.env.OPENCODE_SPIKE_VARIANT || 'low',
   } = {}) {
     const [providerID, modelID] = model.includes('/') ? model.split('/', 2) : ['openai', model]

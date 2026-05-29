@@ -81,7 +81,7 @@ function assert(condition, message, details = null) {
 }
 
 function modelForProvider(provider, model) {
-  if (provider === 'opencode' && !model.includes('/')) return `openai/${opencodeCodexModel(model)}`
+  if (provider === 'opencode' && !model.includes('/')) return `opencode/${model}`
   if (provider === 'codex' && !model.includes('/')) return opencodeCodexModel(model)
   return model
 }

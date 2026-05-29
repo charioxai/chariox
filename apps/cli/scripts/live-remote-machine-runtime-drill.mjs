@@ -114,7 +114,7 @@ function parseArgs(argv) {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }
@@ -262,7 +262,7 @@ async function main() {
       'Options:',
       `  --provider ${DEFAULT_PROVIDER}`,
       `  --model ${DEFAULT_MODEL}`,
-      '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+      '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
       `  --workspace ${DEFAULT_WORKSPACE}`,
       `  --worktree ${DEFAULT_WORKTREE}`,
       `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
@@ -412,7 +412,7 @@ async function main() {
     ])
     const catalog = fallbackProviderCatalog()
     const relayStatus = unwrapVariant(await client.send({ RelayStatus: null }), 'RelayStatus').status
-    const displayState = createWaitingRoomState([], catalog, 'opencode', 'openai/gpt-5.4', 'low')
+    const displayState = createWaitingRoomState([], catalog, 'opencode', 'opencode/gpt-5.4', 'low')
     const displayRows = waitingRoomRows(displayState, [], catalog, {
       relay: relayStatus,
       machines: remoteMachines,

@@ -13,7 +13,7 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     session_id: "session-1",
     alias: null,
     provider: "opencode",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     effort: null,
     worktree_id: "worktree-1",
     state: "Idle",
@@ -115,7 +115,7 @@ test("renderWorkflowOutlineToText keeps graph structure visible while expanding 
   assert.match(rendered, /edge-a -> node-b • agent b1/)
   assert.match(rendered, /edge-b <- node-b • agent b1/)
   assert.match(rendered, /provider opencode/)
-  assert.match(rendered, /model openai\/gpt-5\.4/)
+  assert.match(rendered, /model opencode\/gpt-5\.4/)
   assert.match(rendered, /effort high/)
   assert.match(rendered, /status running/)
   assert.match(rendered, /instructions\n  inspect diff/)

@@ -16,7 +16,7 @@ test("waiting room rows compose start, session, remote, terminal, and theme sect
     created_at_ms: Date.UTC(2026, 0, 1, 9, 0),
     last_used_at_ms: Date.UTC(2026, 0, 1, 10, 0),
   }]
-  const state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  const state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
   const rows = waitingRoomRows(state, sessions, catalog, {
     relay: { configured: true, connected: true, relay_url: "wss://relay.example" },
     terminals: [{ terminal_id: "terminal-1", terminal_type: "cli", paired_at_ms: 0, revoked: false }],

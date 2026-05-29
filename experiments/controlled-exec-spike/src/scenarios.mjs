@@ -370,7 +370,7 @@ export async function runProviderScenarios() {
             "3. Reply exactly CONTROLLED_EXEC_OPENCODE_OK.",
             "Do not just describe the tool call. Actually call the tools."
           ].join("\n"),
-          { directory: cwd, model: process.env.OPENCODE_SPIKE_MODEL || "openai/gpt-5.4", variant: process.env.OPENCODE_SPIKE_VARIANT || "medium" },
+          { directory: cwd, model: process.env.OPENCODE_SPIKE_MODEL || "opencode/gpt-5.4", variant: process.env.OPENCODE_SPIKE_VARIANT || "medium" },
         )
         const elapsedMs = Date.now() - startedAt
         const transcript = await openCodeRun.transcriptText(sessionId, { directory: cwd })

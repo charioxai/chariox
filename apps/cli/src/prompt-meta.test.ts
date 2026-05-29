@@ -8,15 +8,15 @@ test("formatPromptMetaLine renders provider, model, and effort values", () => {
 })
 
 test("formatPromptMetaLine handles defaults and provider-qualified models", () => {
-  assert.equal(formatPromptMetaLine("opencode", "openai/gpt-5.4", ""), "OpenCode • OpenAI GPT-5.4")
+  assert.equal(formatPromptMetaLine("opencode", "opencode/gpt-5.4", ""), "OpenCode • OpenCode GPT-5.4")
   assert.equal(formatPromptMetaLine("opencode", "github-copilot/gpt-5.4", ""), "OpenCode • GitHub-Copilot GPT-5.4")
   assert.equal(formatPromptMetaLine("opencode", "default", "default"), "OpenCode • Default")
 })
 
 test("formatPromptMetaParts assigns bright tones per value", () => {
-  assert.deepEqual(formatPromptMetaParts("opencode", "openai/gpt-5.4", "high"), [
+  assert.deepEqual(formatPromptMetaParts("opencode", "opencode/gpt-5.4", "high"), [
     { kind: "provider", text: "OpenCode", tone: "primary" },
-    { kind: "model", text: "OpenAI GPT-5.4", tone: "secondary" },
+    { kind: "model", text: "OpenCode GPT-5.4", tone: "secondary" },
     { kind: "variant", text: "High", tone: "primary" },
   ])
   assert.deepEqual(formatPromptMetaParts("anthropic", "claude-3.7-sonnet", "low"), [

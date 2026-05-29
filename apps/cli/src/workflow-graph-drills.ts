@@ -273,7 +273,7 @@ function drillAgent(id: string, index: number): AgentInstance {
     session_id: "session-drill",
     alias: aliases[index] ?? null,
     provider: "opencode",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     effort,
     worktree_id: null,
     state: "Idle",

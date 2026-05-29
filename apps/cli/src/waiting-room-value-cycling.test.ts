@@ -20,7 +20,7 @@ test("waiting room focused value cycling normalizes provider and model changes",
     DEFAULT_THEME_REGISTRY,
   )
   let state: WaitingRoomState = {
-    ...createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high"),
+    ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
     focus: "provider" as const,
   }
 
@@ -46,7 +46,7 @@ test("waiting room focused value cycling normalizes provider and model changes",
 
 test("waiting room focused value cycling updates local value selectors", () => {
   const catalog = fallbackProviderCatalog()
-  const state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
   const effortState = cycleWaitingRoomFocusedValue({ ...state, focus: "effort" }, 1, {
     catalog,

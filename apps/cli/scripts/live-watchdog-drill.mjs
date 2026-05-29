@@ -95,7 +95,7 @@ function printHelp() {
     `  --workspace ${repoRoot}`,
     `  --worktree ${repoRoot}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
     `  --interval-seconds ${DEFAULT_INTERVAL_SECONDS}`,
     '  --policy skip|queue',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -109,7 +109,7 @@ function printHelp() {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }

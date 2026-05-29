@@ -96,16 +96,16 @@ node apps/cli/scripts/live-tool-display-fixture-drill.mjs --provider opencode --
 The fixture drill resolved the default local targets as:
 
 - `codex gpt-5.4`
-- `opencode openai/gpt-5.4`
+- `opencode opencode/gpt-5.4`
 
 Codex `gpt-5.4` produced raw provider tool events for Arroba runtime read and
 patch tools and wrote them to `target/tool-display-fixtures/codex-gpt-5.4.jsonl`.
 
-OpenCode `openai/gpt-5.4` initially narrated tool use without invoking tools.
+OpenCode `opencode/gpt-5.4` initially narrated tool use without invoking tools.
 The fixture drill now uses two stricter phases and requires read plus patch
 events before passing. With that prompt shape, OpenCode produced runtime read,
 grep, bash, and runtime patch events and wrote them to
-`target/tool-display-fixtures/opencode-openai_gpt-5.4.jsonl`.
+`target/tool-display-fixtures/opencode-opencode_gpt-5.4.jsonl`.
 
 OpenCode also exposed an important raw-shape difference: Arroba runtime MCP
 tools can arrive as underscore names such as `arroba_read_artifact` and

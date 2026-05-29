@@ -83,17 +83,17 @@ test("formatSplitPaneFooter uses alias and prompt-style model metadata", () => {
 test("formatSplitPaneFooter prefers the active run model for the matching agent", () => {
   const activeRun: SplitPaneFooterActiveRun = {
     agentInstanceId: "agent-a",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     variant: "high",
   }
 
   assert.equal(
     formatSplitPaneFooter(
-      { ...primaryAgent, provider: "opencode", model: "openai/gpt-5.3-codex-spark" },
+      { ...primaryAgent, provider: "opencode", model: "opencode/gpt-5.3" },
       activeRun,
       null,
     ),
-    "Planner • OpenAI • GPT-5.4 • High • build • yolo",
+    "Planner • OpenCode • GPT-5.4 • High • build • yolo",
   )
 })
 
@@ -167,7 +167,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
     },
     activeRun: {
       agentInstanceId: "agent-a",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       variant: "high",
     },
     fallbackModel: "gpt-5.4",
@@ -176,7 +176,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
   assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })
   assert.deepEqual(state.secondary.badge, { label: "READING", tone: "working" })
   assert.equal(state.primary.focused, true)
-  assert.equal(state.primary.info, "Planner • OpenAI • GPT-5.4 • High • build • yolo")
+  assert.equal(state.primary.info, "Planner • OpenCode • GPT-5.4 • High • build • yolo")
 })
 
 test("buildSplitPaneFooterState keeps a pane working while its busy latch is set", () => {

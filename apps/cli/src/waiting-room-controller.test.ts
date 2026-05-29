@@ -54,7 +54,7 @@ test("waiting room activation stages existing worktree selections for session cr
   try {
     const catalog = fallbackProviderCatalog()
     const state = {
-      ...createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high"),
+      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
       worktreeSelectionId: "existing:/workspace-feature",
     }
 
@@ -107,7 +107,7 @@ test("waiting room activation stages create-worktree selections for session crea
   try {
     const catalog = fallbackProviderCatalog()
     const state = {
-      ...createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high"),
+      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
       worktreeSelectionId: "create-worktree",
     }
 
@@ -116,7 +116,7 @@ test("waiting room activation stages create-worktree selections for session crea
       sessions: [],
       catalog,
       currentProvider: "opencode",
-      currentModel: "openai/gpt-5.4",
+      currentModel: "opencode/gpt-5.4",
     })
 
     assert.equal(decision.action, "create")
@@ -138,7 +138,7 @@ test("deriveWaitingRoomStateUpdate normalizes state and reports preference persi
     sessions: [session("session-1"), session("session-2")],
     catalog: catalog(),
     currentProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
   })
 
   assert.equal(update.normalizedState.sessionIndex, 1)
@@ -153,14 +153,14 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
     sessions,
     catalog: catalog(),
     currentProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
   })
   const errorDecision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({ focus: "session" }),
     sessions: [],
     catalog: catalog(),
     currentProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
   })
 
   assert.deepEqual(joinDecision, {
@@ -168,7 +168,7 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
     session: sessions[0],
     launch: {
       provider: "opencode",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       effort: "high",
     },
   })
@@ -447,12 +447,12 @@ test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", ()
 
 test("deriveWaitingRoomModelSelectionDecision validates models and normalizes variants", () => {
   const success = deriveWaitingRoomModelSelectionDecision({
-    modelId: "anthropic/claude-sonnet-4",
+    modelId: "opencode/gpt-5.4",
     state: waitingRoomState(),
     sessions: [session("session-1")],
     catalog: catalog(),
     currentProvider: "opencode",
-    configuredEffort: "high",
+    configuredEffort: "medium",
   })
   const failure = deriveWaitingRoomModelSelectionDecision({
     modelId: "missing/model",
@@ -465,8 +465,8 @@ test("deriveWaitingRoomModelSelectionDecision validates models and normalizes va
 
   assert.equal(success.kind, "success")
   if (success.kind === "success") {
-    assert.equal(success.selectedModelId, "anthropic/claude-sonnet-4")
-    assert.equal(success.nextState.effort, "medium")
+    assert.equal(success.selectedModelId, "opencode/gpt-5.4")
+    assert.equal(success.nextState.effort, "high")
   }
   assert.deepEqual(failure, {
     kind: "error",
@@ -477,7 +477,7 @@ test("deriveWaitingRoomModelSelectionDecision validates models and normalizes va
 test("deriveWaitingRoomVariantSelectionDecision validates variants against the active model", () => {
   const success = deriveWaitingRoomVariantSelectionDecision({
     variant: "low",
-    currentModelId: "openai/gpt-5.4",
+    currentModelId: "opencode/gpt-5.4",
     currentProviderId: "opencode",
     state: waitingRoomState(),
     sessions: [],
@@ -572,7 +572,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
-    modelId: "openai/gpt-5.4",
+    modelId: "opencode/gpt-5.4",
     effort: "high",
     themeId: "opencode",
     introStep: 0,
@@ -609,8 +609,8 @@ function catalog(): ProviderCatalog {
         },
       },
       {
-        id: "openai",
-        name: "OpenAI",
+        id: "opencode",
+        name: "OpenCode Zen",
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
@@ -635,9 +635,9 @@ function catalog(): ProviderCatalog {
     ],
     default: {
       codex: "gpt-5.4",
-      openai: "gpt-5.4",
+      opencode: "gpt-5.4",
       anthropic: "claude-sonnet-4",
     },
-    connected: ["codex", "openai", "anthropic"],
+    connected: ["codex", "opencode", "anthropic"],
   }
 }

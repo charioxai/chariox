@@ -170,7 +170,7 @@ function unwrapOne(response, ...keys) {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${options.model}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   return options.model
 }
 

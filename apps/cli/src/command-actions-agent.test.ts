@@ -143,7 +143,7 @@ test("agent spawn count inherits session defaults for each spawn", async () => {
     id: "agent-source",
     agent_ref: "agent-source",
     provider: "opencode",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
   })
   let currentSession = makeSession({
     focused_agent_id: sourceAgent.id,

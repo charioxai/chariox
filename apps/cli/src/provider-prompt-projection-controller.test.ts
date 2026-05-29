@@ -12,7 +12,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 test("provider prompt projection prefers provider run, then focused agent, then waiting room/defaults", () => {
   let run: RuntimeProviderRun | null = providerRun({
     provider: "openai",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     variant: "low",
   })
   const controller = createProviderPromptProjectionController({
@@ -37,10 +37,10 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 
   assert.deepEqual(controller.currentProviderSelection(), {
     provider: "openai",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     effort: "low",
   })
-  assert.equal(controller.currentModelId(), "openai/gpt-5.4")
+  assert.equal(controller.currentModelId(), "opencode/gpt-5.4")
   assert.equal(controller.currentVariantId(), "low")
 
   run = null
@@ -55,8 +55,8 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 test("provider prompt projection derives prompt meta and usage", () => {
   const controller = createProviderPromptProjectionController({
     getProviderRun: () => providerRun({
-      provider: "openai",
-      model: "openai/gpt-5.4",
+      provider: "opencode",
+      model: "opencode/gpt-5.4",
       variant: "high",
       usage_tokens_total: 42_100,
       usage: {
@@ -75,7 +75,7 @@ test("provider prompt projection derives prompt meta and usage", () => {
 
   assert.deepEqual(
     controller.promptMetaParts().map((part) => part.text),
-    ["OpenAI", "OpenAI GPT-5.4", "High"],
+    ["OpenCode", "OpenCode GPT-5.4", "High"],
   )
   assert.equal(controller.promptUsageMeta()?.tokensLabel, "42,100 tok")
   assert.equal(controller.promptUsageMeta()?.usageLabel, "4%")
@@ -90,7 +90,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
-    modelId: "openai/gpt-5.4",
+    modelId: "opencode/gpt-5.4",
     effort: "high",
     themeId: "opencode",
     introStep: 0,
@@ -128,7 +128,7 @@ function providerRun(overrides: Partial<RuntimeProviderRun> = {}): RuntimeProvid
     adapter_key: "adapter",
     provider: "openai",
     account_profile: "default",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     variant: "high",
     usage_tokens_total: null,
     state: "active",
@@ -140,8 +140,8 @@ function catalog(): ProviderCatalog {
   return {
     all: [
       {
-        id: "openai",
-        name: "OpenAI",
+        id: "opencode",
+        name: "OpenCode Zen",
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
@@ -159,8 +159,8 @@ function catalog(): ProviderCatalog {
       },
     ],
     default: {
-      openai: "gpt-5.4",
+      opencode: "gpt-5.4",
     },
-    connected: ["openai"],
+    connected: ["opencode"],
   }
 }

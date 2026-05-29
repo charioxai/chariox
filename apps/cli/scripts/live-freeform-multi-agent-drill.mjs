@@ -80,7 +80,7 @@ function printHelp() {
     `  --worktree ${repoRoot}`,
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
@@ -129,7 +129,7 @@ const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((va
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
   return options.model
 }

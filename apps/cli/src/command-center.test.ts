@@ -30,7 +30,7 @@ test("buildCommandCenterItems includes config subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -42,7 +42,7 @@ test("buildCommandCenterItems includes config subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
   assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync required"), true)
@@ -55,7 +55,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
   const values = new Set(items.map((item) => item.value))
@@ -75,7 +75,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
   const modeValues = new Set(modeItems.map((item) => item.value))
@@ -90,13 +90,13 @@ test("buildCommandCenterItems filters model options", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "codex",
     focusedProvider: "codex",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
   assert.equal(items.every((item) => item.kind === "model"), true)
   assert.equal(items.some((item) => item.value === "codex/gpt-5.4"), true)
-  assert.equal(items.some((item) => item.value === "openai/gpt-5.4"), false)
+  assert.equal(items.some((item) => item.value === "opencode/gpt-5.4"), false)
 })
 
 test("buildCommandCenterItems exposes Claude provider and models", () => {
@@ -105,7 +105,7 @@ test("buildCommandCenterItems exposes Claude provider and models", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
   assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude"), true)
@@ -152,7 +152,7 @@ test("buildCommandCenterItems closes exact trailing-space commands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -165,7 +165,7 @@ test("buildCommandCenterItems shows the delete agent command", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -178,7 +178,7 @@ test("buildCommandCenterItems keeps the scoped parent visible for grouped comman
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -192,7 +192,7 @@ test("buildCommandCenterItems keeps the parent group visible while filtering sco
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -206,7 +206,7 @@ test("buildCommandCenterItems keeps provider options open after space", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -220,7 +220,7 @@ test("buildCommandCenterItems keeps the parent group visible while filtering pro
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -234,7 +234,7 @@ test("buildCommandCenterItems shows multi-agent view options", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -248,7 +248,7 @@ test("buildCommandCenterItems includes workflow subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
   const labels = new Set(items.map((item) => item.label))
@@ -268,7 +268,7 @@ test("buildCommandCenterItems drills into workflow node subcommands", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -284,7 +284,7 @@ test("buildCommandCenterItems exposes workflow add node all shorthand", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -298,7 +298,7 @@ test("buildCommandCenterItems exposes the focused provider namespace", () => {
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "codex",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 
@@ -311,7 +311,7 @@ test("buildCommandCenterItems lets root slash search surface parent groups from 
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     currentProvider: "opencode",
     focusedProvider: "opencode",
-    currentModel: "openai/gpt-5.4",
+    currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
 

@@ -24,18 +24,18 @@ test("waiting room cycles model and effort from provider catalog", () => {
         },
       },
       {
-        id: "openai",
-        name: "OpenAI",
+        id: "opencode",
+        name: "OpenCode Zen",
         models: {
           "gpt-5.4": { id: "gpt-5.4", name: "GPT-5.4", status: "active", variants: { low: {}, high: {} } },
           "gpt-5-mini": { id: "gpt-5-mini", name: "GPT-5 mini", status: "active", variants: { low: {} } },
         },
       },
     ],
-    default: { codex: "gpt-5.4", openai: "gpt-5.4" },
-    connected: ["codex", "openai"],
+    default: { codex: "gpt-5.4", opencode: "gpt-5.4" },
+    connected: ["codex", "opencode"],
   }
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
   state = moveWaitingRoomFocus(state, [], 1)
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Codex")
@@ -52,7 +52,7 @@ test("waiting room cycles model and effort from provider catalog", () => {
 
 test("waiting room cycles Claude Code as a provider backend", () => {
   const catalog = fallbackProviderCatalog()
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
   state = moveWaitingRoomFocus(state, [], 1)
   state = cycleWaitingRoomValue(state, [], catalog, 1)
@@ -71,7 +71,7 @@ test("waiting room cycles Claude Code as a provider backend", () => {
 
 test("waiting room cycles selectable themes", () => {
   const catalog = fallbackProviderCatalog()
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high", "sober")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high", "sober")
 
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "theme")?.value, "Sober")
 
@@ -114,7 +114,7 @@ test("waiting room cycles existing worktrees and the create-worktree option", ()
 
   try {
     const catalog = fallbackProviderCatalog()
-    let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+    let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
     state = moveWaitingRoomFocus(state, [], 5)
     assert.equal(state.focus, "worktree")
@@ -149,7 +149,7 @@ test("waiting room cycles slices for new sessions", () => {
     created_at_ms: 0,
     updated_at_ms: 0,
   }]
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
   state = moveWaitingRoomFocus(state, [], 7, { slices })
   assert.equal(state.focus, "slice")
@@ -174,7 +174,7 @@ test("waiting room renders indented sections and only previews the last two acti
     attachment_ids: [],
   }))
 
-  let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
   state = moveWaitingRoomFocus(state, sessions, 7)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
@@ -231,7 +231,7 @@ test("waiting room renders session rows with alias text", () => {
     attachment_ids: [],
   }]
 
-  const state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  const state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
   const rows = waitingRoomRows(state, sessions, catalog)
   const aliasedSessionRow = rows.find((row) => row.id === "session:session-1")
 
@@ -258,7 +258,7 @@ test("waiting room marks sessions with public activity as working", () => {
     },
   }]
 
-  const state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  const state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
   const rows = waitingRoomRows(state, sessions, catalog)
   const activeSessionRow = rows.find((row) => row.id === "session:session-1")
 
@@ -269,7 +269,7 @@ test("waiting room marks sessions with public activity as working", () => {
 
 test("waiting room places join below start configuration and makes cloud relay login selectable", () => {
   const catalog = fallbackProviderCatalog()
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
   const rows = waitingRoomRows(state, [], catalog, {
     relay: {
       configured: false,
@@ -319,7 +319,7 @@ test("waiting room places join below start configuration and makes cloud relay l
 
 test("waiting room shows loading rows before inventory arrives", () => {
   const catalog = fallbackProviderCatalog()
-  const state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
   const rows = waitingRoomRows(state, [], catalog, {
     inventoryStatus: "loading",
     loadingFrame: 2,
@@ -333,7 +333,7 @@ test("waiting room shows loading rows before inventory arrives", () => {
 
 test("waiting room shows relay kernels as selectable targets", () => {
   const catalog = fallbackProviderCatalog()
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
   const remote = {
     relay: {
       configured: true,
@@ -375,7 +375,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
 
 test("waiting room makes inactive machines and kernels selectable for deletion", () => {
   const catalog = fallbackProviderCatalog()
-  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
   const remote = {
     relay: {
       configured: true,
@@ -433,7 +433,7 @@ test("waiting room keeps session metadata column widths stable across scroll win
     attachment_ids: [],
   }))
 
-  let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
   state = moveWaitingRoomFocus(state, sessions, 4)
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   const scrolledWindowHeader = firstWindow.find((row) => row.id === "session-header")?.columns

@@ -113,7 +113,7 @@ function printHelp() {
     '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example codex=gpt-5.2 or opencode=openai/gpt-5.2)',
+    '  --provider-model PROVIDER=MODEL (for example codex=gpt-5.2 or opencode=opencode/gpt-5.2)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',

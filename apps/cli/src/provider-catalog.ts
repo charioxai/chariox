@@ -209,5 +209,5 @@ function providerBelongsToBackend(
   if (backendProviderId === "claude") {
     return providerId === "claude"
   }
-  return providerId !== "codex" && providerId !== "claude"
+  return providerId === "opencode"
 }

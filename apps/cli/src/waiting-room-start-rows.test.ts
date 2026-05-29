@@ -99,7 +99,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     worktreeSelectionId: "main",
     sliceSelectionId: "none",
     providerId: "opencode",
-    modelId: "openai/gpt-5.4",
+    modelId: "opencode/gpt-5.4",
     effort: "high",
     themeId: "opencode",
     introStep: 0,

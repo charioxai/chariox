@@ -20,20 +20,20 @@ test("applyProviderRunProfileToSession overlays accepted run profile onto the ma
   const projected = applyProviderRunProfileToSession(
     session({
       agents: [
-        agent("agent-1", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+        agent("agent-1", { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" }),
         agent("agent-2", { provider: "codex", model: "gpt-5.4", effort: "medium" }),
       ],
     }),
     providerRun({
       agent_instance_id: "agent-1",
       provider: "opencode",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       variant: "low",
     }),
   )
 
   assert.equal(projected.agents[0]?.effort, "low")
-  assert.equal(projected.agents[0]?.model, "openai/gpt-5.4")
+  assert.equal(projected.agents[0]?.model, "opencode/gpt-5.4")
   assert.equal(projected.agents[1]?.effort, "medium")
 })
 
@@ -42,7 +42,7 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
     deriveCurrentProviderSelection({
       providerRun: providerRun({
         provider: "openai",
-        model: "openai/gpt-5.4",
+        model: "opencode/gpt-5.4",
         variant: "low",
       }),
       waitingRoomState: waitingRoomState({
@@ -54,7 +54,7 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
     }),
     {
       provider: "openai",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       effort: "low",
     },
   )
@@ -85,8 +85,8 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
 test("derivePromptMetaState formats provider, model, and effort from the current selection", () => {
   const parts = derivePromptMetaState({
     providerRun: providerRun({
-      provider: "openai",
-      model: "openai/gpt-5.4",
+      provider: "opencode",
+      model: "opencode/gpt-5.4",
       variant: "high",
     }),
     waitingRoomState: waitingRoomState(),
@@ -96,7 +96,7 @@ test("derivePromptMetaState formats provider, model, and effort from the current
 
   assert.deepEqual(
     parts.map((part) => part.text),
-    ["OpenAI", "OpenAI GPT-5.4", "High"],
+    ["OpenCode", "OpenCode GPT-5.4", "High"],
   )
 })
 
@@ -104,7 +104,7 @@ test("derivePromptUsageState resolves usage metadata from the provider catalog",
   const usage = derivePromptUsageState({
     providerRun: providerRun({
       provider: "openai",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       usage_tokens_total: 42_100,
       usage: {
         context_tokens: 4096,
@@ -428,7 +428,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
-    modelId: "openai/gpt-5.4",
+    modelId: "opencode/gpt-5.4",
     effort: "high",
     themeId: "opencode",
     introStep: 0,
@@ -455,7 +455,7 @@ function providerRun(overrides: Partial<RuntimeProviderRun> = {}): RuntimeProvid
     adapter_key: "adapter",
     provider: "openai",
     account_profile: "default",
-    model: "openai/gpt-5.4",
+    model: "opencode/gpt-5.4",
     variant: "high",
     usage_tokens_total: null,
     state: "active",
@@ -529,8 +529,8 @@ function catalog(): ProviderCatalog {
   return {
     all: [
       {
-        id: "openai",
-        name: "OpenAI",
+        id: "opencode",
+        name: "OpenCode Zen",
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
@@ -548,8 +548,8 @@ function catalog(): ProviderCatalog {
       },
     ],
     default: {
-      openai: "gpt-5.4",
+      opencode: "gpt-5.4",
     },
-    connected: ["openai"],
+    connected: ["opencode"],
   }
 }

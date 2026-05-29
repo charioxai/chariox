@@ -662,7 +662,7 @@ test("attachBinding restores the focused agent runtime profile for existing sess
   await controller.attachBinding(
     { id: "session-4" },
     false,
-    { provider: "opencode", model: "openai/gpt-5.4", effort: "high" },
+    { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" },
   )
 
   assert.deepEqual(launched, [{
@@ -697,7 +697,7 @@ test("attachBinding syncs CLI provider selection from an existing active provide
       session_id: "session-4b",
       alias: null,
       provider: "opencode",
-      model: "openai/gpt-5.4",
+      model: "opencode/gpt-5.4",
       effort: "high",
       worktree_id: null,
       state: "Idle",
@@ -763,7 +763,7 @@ test("attachBinding syncs CLI provider selection from an existing active provide
   await controller.attachBinding(
     { id: "session-4b" },
     false,
-    { provider: "opencode", model: "openai/gpt-5.4", effort: "high" },
+    { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" },
   )
 
   assert.deepEqual(syncedSelections, [{

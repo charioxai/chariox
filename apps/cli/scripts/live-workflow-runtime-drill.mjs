@@ -130,7 +130,7 @@ function printHelp() {
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     '  --poll-limit 120',
     '  --poll-interval-ms 2000',
@@ -143,7 +143,7 @@ function printHelp() {
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   return options.model
 }
 

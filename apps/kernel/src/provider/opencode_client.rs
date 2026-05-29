@@ -91,14 +91,14 @@ mod tests {
             "id": "message-1",
             "sessionID": "session-1",
             "role": "assistant",
-            "providerID": "openai",
+            "providerID": "opencode",
             "modelID": "gpt-5.4",
             "variant": "medium"
         }))
         .expect("assistant info should parse");
         assert_eq!(
             assistant.resolved_model().as_deref(),
-            Some("openai/gpt-5.4")
+            Some("opencode/gpt-5.4")
         );
         assert_eq!(assistant.resolved_variant().as_deref(), Some("medium"));
 
@@ -107,12 +107,12 @@ mod tests {
             "sessionID": "session-1",
             "role": "user",
             "model": {
-                "providerID": "openai",
+                "providerID": "opencode",
                 "modelID": "gpt-5.4"
             }
         }))
         .expect("user info should parse");
-        assert_eq!(user.resolved_model().as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(user.resolved_model().as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(user.resolved_variant(), None);
     }
 
@@ -120,7 +120,7 @@ mod tests {
     fn resolves_defaults_from_default_agent_before_global_model() {
         let defaults = resolve_configured_defaults(
             &OpenCodeConfig {
-                model: Some("openai/gpt-5.4".to_string()),
+                model: Some("opencode/gpt-5.4".to_string()),
                 default_agent: Some("build".to_string()),
                 agent: BTreeMap::new(),
                 mode: BTreeMap::new(),
@@ -154,7 +154,7 @@ mod tests {
     fn falls_back_to_global_model_when_agent_has_no_model() {
         let defaults = resolve_configured_defaults(
             &OpenCodeConfig {
-                model: Some("openai/gpt-5.4".to_string()),
+                model: Some("opencode/gpt-5.4".to_string()),
                 default_agent: Some("build".to_string()),
                 agent: BTreeMap::new(),
                 mode: BTreeMap::new(),
@@ -167,7 +167,7 @@ mod tests {
                 variant: Some("low".to_string()),
             }],
         );
-        assert_eq!(defaults.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(defaults.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(defaults.variant.as_deref(), Some("low"));
     }
 
@@ -180,7 +180,7 @@ mod tests {
                 agent: BTreeMap::from([(
                     "build".to_string(),
                     OpenCodeConfigAgent {
-                        model: Some("openai/gpt-5.4".to_string()),
+                        model: Some("opencode/gpt-5.4".to_string()),
                         variant: Some("low".to_string()),
                     },
                 )]),
@@ -188,7 +188,7 @@ mod tests {
             },
             &[],
         );
-        assert_eq!(defaults.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(defaults.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(defaults.variant.as_deref(), Some("low"));
         assert_eq!(defaults.selected_agent.as_deref(), Some("build"));
     }
@@ -215,7 +215,7 @@ mod tests {
                 "name": "plan",
                 "mode": "subagent",
                 "hidden": true,
-                "model": "openai/gpt-5.4",
+                "model": "opencode/gpt-5.4",
                 "variant": "medium"
             }
         ]));
@@ -235,7 +235,7 @@ mod tests {
                     mode: "subagent".to_string(),
                     hidden: Some(true),
                     model: Some(OpenCodeSelectedModel {
-                        provider_id: "openai".to_string(),
+                        provider_id: "opencode".to_string(),
                         model_id: "gpt-5.4".to_string(),
                     }),
                     variant: Some("medium".to_string()),
@@ -378,7 +378,7 @@ mod tests {
             assert_eq!(
                 body.get("model"),
                 Some(&serde_json::json!({
-                    "providerID": "openai",
+                    "providerID": "opencode",
                     "modelID": "gpt-5.4",
                 }))
             );
@@ -397,7 +397,7 @@ mod tests {
                 "message-1",
                 "make a plan",
                 &[],
-                Some("openai/gpt-5.4"),
+                Some("opencode/gpt-5.4"),
                 Some("low"),
                 AgentExecutionMode::Plan,
                 false,
