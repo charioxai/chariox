@@ -215,6 +215,10 @@ impl<'a> KernelAgentService<'a> {
         let completed = self
             .app
             .prompt_owner_complete_active_prompt_only(&session_id, &agent_id)?;
+        let _ = self
+            .app
+            .agents()
+            .set_remote_execution_active_worker_provider_run_id(&agent_id, None)?;
         Ok(KernelPromptOwnerCompletion {
             session_id,
             agent_id,

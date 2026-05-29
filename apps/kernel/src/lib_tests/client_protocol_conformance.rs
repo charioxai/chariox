@@ -156,7 +156,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "packages/kernel-client/src/kernel-types.ts",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 68"],
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 69"],
                         ),
                     ],
                 ),
@@ -177,7 +177,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "permissions",
                     vec![evidence(
                         "apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs",
-                        &["workspace-live-sync-permission-passed", "respondToInteractionRequest"],
+                        &[
+                            "workspace-live-sync-permission-passed",
+                            "respondToInteractionRequest",
+                        ],
                     )],
                 ),
                 (
@@ -270,21 +273,29 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "protocol_snapshots",
                     vec![evidence(
                         "apps/kernel/tests/kernel_websocket_integration.rs",
-                        &["AttachToSessionRequest", "resume_from_event_id", "replay_gap"],
+                        &[
+                            "AttachToSessionRequest",
+                            "resume_from_event_id",
+                            "replay_gap",
+                        ],
                     )],
                 ),
                 (
                     "version_rules",
                     vec![evidence(
                         "packages/kernel-client/src/kernel-types.ts",
-                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 68"],
+                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 69"],
                     )],
                 ),
                 (
                     "reconnect_replay",
                     vec![evidence(
                         "apps/cli/src/ipc.test.ts",
-                        &["transport_closed", "transport_resumed", "resume_from_event_id"],
+                        &[
+                            "transport_closed",
+                            "transport_resumed",
+                            "resume_from_event_id",
+                        ],
                     )],
                 ),
                 (
@@ -298,14 +309,21 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "attachments",
                     vec![evidence(
                         "apps/kernel/tests/kernel_websocket_runtime_integration.rs",
-                        &["AttachToSessionRequest", "SubmitPromptRequest", "attachments: Vec::new()"],
+                        &[
+                            "AttachToSessionRequest",
+                            "SubmitPromptRequest",
+                            "attachments: Vec::new()",
+                        ],
                     )],
                 ),
                 (
                     "workflow_events",
                     vec![evidence(
                         "apps/cli/scripts/live-cloud-relay-drill.mjs",
-                        &["cloud-session-scoped-workflow-assertions", "stale workflow revision mutation"],
+                        &[
+                            "cloud-session-scoped-workflow-assertions",
+                            "stale workflow revision mutation",
+                        ],
                     )],
                 ),
             ]),
@@ -330,7 +348,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "version_rules",
                     vec![evidence(
                         "packages/kernel-client/src/kernel-types.ts",
-                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 68"],
+                        &["LOCAL_DAEMON_PROTOCOL_VERSION = 69"],
                     )],
                 ),
                 (
@@ -385,7 +403,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                         ),
                         evidence(
                             "packages/kernel-client/src/kernel-types.ts",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 68"],
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION = 69"],
                         ),
                     ],
                 ),
@@ -407,7 +425,11 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "attachments",
                     vec![evidence(
                         "packages/kernel-client/src/ipc-terminal-runtime-requests.ts",
-                        &["storeTransferredFileRequest", "submitPromptRequest", "attachments"],
+                        &[
+                            "storeTransferredFileRequest",
+                            "submitPromptRequest",
+                            "attachments",
+                        ],
                     )],
                 ),
                 (

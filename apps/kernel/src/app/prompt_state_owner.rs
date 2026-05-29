@@ -181,13 +181,16 @@ impl DaemonApp {
         workflow_node_run_id: &str,
         prompt: impl Into<String>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        let (visible_user_prompt, hidden_system_context) =
+            split_workflow_prompt_for_hidden_context(prompt.into());
         let prompt = PromptQueueItem::new(
             self.sessions.reserve_prompt_id(),
             source_attachment_id,
             target_agent_id,
-            prompt,
+            visible_user_prompt,
             PromptStatus::Queued,
         )
+        .with_hidden_system_context(hidden_system_context)
         .with_workflow_context(workflow_run_id, workflow_node_run_id);
         self.prompt_owner_submit_prepared_prompt(session_id, prompt, false)
     }
@@ -240,4 +243,22 @@ impl DaemonApp {
         }
         Ok(mirrored_session)
     }
+}
+
+fn split_workflow_prompt_for_hidden_context(prompt: String) -> (String, String) {
+    const WORKFLOW_MARKER: &str = "Workflow-level prompt:\n";
+    if let Some(index) = prompt.find(WORKFLOW_MARKER) {
+        let visible = prompt[..index].to_string();
+        let hidden = prompt[index..].to_string();
+        return (visible, strip_native_hidden_markers(hidden));
+    }
+    (prompt, String::new())
+}
+
+fn strip_native_hidden_markers(value: String) -> String {
+    value
+        .replace(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, "")
+        .replace(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, "")
+        .trim()
+        .to_string()
 }

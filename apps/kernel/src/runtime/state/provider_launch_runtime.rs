@@ -75,9 +75,17 @@ impl KernelRuntimeState {
         .await?;
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+                let home_agent_id = agent_id.clone();
                 let projected_run = provider_run
                     .clone()
                     .projected_for_home_agent(request.session_id.clone(), agent_id);
+                let _ = self
+                    .owned
+                    .agent_store
+                    .set_remote_execution_active_worker_provider_run_id(
+                        &home_agent_id,
+                        Some(projected_run.id().to_string()),
+                    )?;
                 self.owned
                     .provider_run_projection
                     .update(projected_run.clone());

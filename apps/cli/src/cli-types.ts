@@ -555,6 +555,7 @@ export type AgentInstance = {
     worker_machine_id: string
     execution_lease_id: string
     leased_agent_id: string
+    active_worker_provider_run_id?: string | null
   } | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null

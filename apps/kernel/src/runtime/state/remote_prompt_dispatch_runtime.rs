@@ -16,6 +16,12 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             match result {
                 Ok(remote_provider_run_id) => {
+                    let _ = owned
+                        .agent_store
+                        .set_remote_execution_active_worker_provider_run_id(
+                            &dispatch.agent_id,
+                            Some(remote_provider_run_id.clone()),
+                        )?;
                     owned.echo_prompt_to_other_attachments(
                         &dispatch.session_id,
                         &remote_provider_run_id,
@@ -26,6 +32,12 @@ impl KernelRuntimeState {
                     Ok(())
                 }
                 Err(error) => {
+                    let _ = owned
+                        .agent_store
+                        .set_remote_execution_active_worker_provider_run_id(
+                            &dispatch.agent_id,
+                            None,
+                        );
                     let _ =
                         owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
                     let _ = owned.session_snapshot(&dispatch.session_id);

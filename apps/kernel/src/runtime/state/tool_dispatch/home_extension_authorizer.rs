@@ -85,6 +85,15 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
                 message: "worker machine does not match home agent binding".to_string(),
             });
         }
+        if remote_execution.active_worker_provider_run_id.as_deref()
+            != Some(context.worker_provider_run_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "home extension invocation",
+                message: "worker provider run does not match active remote agent binding"
+                    .to_string(),
+            });
+        }
         Ok(agent)
     }
 

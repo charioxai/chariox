@@ -167,6 +167,7 @@ impl ProviderProcessService {
         agent_id: String,
         run: &RuntimeProviderRun,
         prompt: &str,
+        hidden_system_context: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         let _ = self.record_run_activity(run.id());
@@ -186,6 +187,7 @@ impl ProviderProcessService {
         let envelope = PromptAssemblyService::from_env()?.assemble_provider_turn(
             run,
             prompt,
+            Some(hidden_system_context),
             attachments.to_vec(),
             mode,
         )?;

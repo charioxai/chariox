@@ -170,6 +170,7 @@ impl PromptAssemblyService {
         &self,
         run: &RuntimeProviderRun,
         visible_user_prompt: &str,
+        additional_hidden_context: Option<&str>,
         attachments: Vec<PromptAttachment>,
         mode: PromptAssemblyMode,
     ) -> Result<PromptEnvelope, DaemonError> {
@@ -189,6 +190,12 @@ impl PromptAssemblyService {
             "runtime/native-permissions"
         };
         self.push_template(execution_template, &mut hidden_fragments, &mut manifest)?;
+        if let Some(additional_hidden_context) = additional_hidden_context
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            hidden_fragments.push(additional_hidden_context.to_string());
+        }
 
         if matches!(
             mode,
@@ -404,6 +411,7 @@ mod tests {
             .assemble_provider_turn(
                 &test_run(false),
                 "visible prompt",
+                None,
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
             )
@@ -437,6 +445,7 @@ mod tests {
             .assemble_provider_turn(
                 &test_run(false),
                 "user visible prompt",
+                None,
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
             )
@@ -464,6 +473,7 @@ mod tests {
             .assemble_provider_turn(
                 &test_run(true),
                 "visible",
+                None,
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
             )
@@ -497,6 +507,7 @@ mod tests {
             .assemble_provider_turn(
                 &test_run(false),
                 "visible",
+                None,
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
             )

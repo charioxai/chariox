@@ -80,6 +80,7 @@ pub(super) fn dispatch_workflow_prompt(
             provider_run_id,
             prompt.source_attachment_id(),
             prompt.prompt(),
+            prompt.hidden_system_context(),
             prompt.attachments(),
         )
     };

@@ -259,6 +259,7 @@ impl ProviderProcessServiceStore {
         agent_id: String,
         run: &RuntimeProviderRun,
         prompt: &str,
+        hidden_system_context: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
@@ -267,6 +268,7 @@ impl ProviderProcessServiceStore {
             agent_id,
             run,
             prompt,
+            hidden_system_context,
             attachments,
         )
     }

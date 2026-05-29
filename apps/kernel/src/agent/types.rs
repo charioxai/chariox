@@ -11,6 +11,8 @@ pub struct RemoteAgentBinding {
     pub execution_lease_id: String,
     pub leased_agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_worker_provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_token: Option<String>,
@@ -458,6 +460,15 @@ impl AgentInstance {
         self.remote_execution = remote_execution;
     }
 
+    pub fn set_remote_execution_active_worker_provider_run_id(
+        &mut self,
+        provider_run_id: Option<String>,
+    ) {
+        if let Some(remote_execution) = self.remote_execution.as_mut() {
+            remote_execution.active_worker_provider_run_id = provider_run_id;
+        }
+    }
+
     pub fn set_remote_extension_manifest_sync(
         &mut self,
         status: Option<RemoteExtensionManifestSyncStatus>,
@@ -719,7 +730,7 @@ pub fn generate_agent_ref() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_agent_layout, AgentInstance, AgentSubstituteProfile, GridPosition};
+    use super::{AgentInstance, AgentSubstituteProfile, GridPosition, calculate_agent_layout};
 
     #[test]
     fn calculate_agent_layout_expands_past_six_agents() {

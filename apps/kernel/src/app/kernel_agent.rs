@@ -27,8 +27,8 @@ mod tests {
     use crate::app::KernelPreparedPromptSubmission;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        test_support::LocalRouterTestHarness, AttachToSessionRequest, LocalDaemonRequest,
-        LocalDaemonResponse,
+        AttachToSessionRequest, LocalDaemonRequest, LocalDaemonResponse,
+        test_support::LocalRouterTestHarness,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{
@@ -77,6 +77,7 @@ mod tests {
                         worker_machine_id: "worker-machine-1".to_string(),
                         execution_lease_id: "lease-1".to_string(),
                         leased_agent_id: "leased-agent-1".to_string(),
+                        active_worker_provider_run_id: None,
                         relay_url: None,
                         relay_token: None,
                     },

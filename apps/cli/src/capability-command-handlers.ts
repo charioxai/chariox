@@ -710,6 +710,7 @@ function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
     `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
     `worker machine: ${agent.remote_execution.worker_machine_id}`,
     `leased agent: ${agent.remote_execution.leased_agent_id}`,
+    `active worker run: ${agent.remote_execution.active_worker_provider_run_id ?? "none"}`,
   ]
   if (status?.manifest_hash) rows.push(`manifest hash: ${status.manifest_hash}`)
   if (status?.last_synced_at_ms) rows.push(`last synced: ${new Date(status.last_synced_at_ms).toISOString()}`)

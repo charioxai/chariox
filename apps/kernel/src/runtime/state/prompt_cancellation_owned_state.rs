@@ -111,14 +111,19 @@ impl KernelRuntimeOwnedState {
                     started_next.source_attachment_id(),
                     started_next.prompt(),
                 );
-                let provider_prompt =
-                    self.apply_granted_skill_summary(session_id, agent_id, &prompt_with_handoff)?;
+                let granted_skill_context =
+                    self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
+                let hidden_system_context = join_hidden_context(
+                    started_next.hidden_system_context(),
+                    &granted_skill_context,
+                );
                 self.provider_store.enqueue_structured_prompt_submit(
                     session_id.to_string(),
                     provider_run_id.to_string(),
                     agent_id.to_string(),
                     &provider_run,
-                    &provider_prompt,
+                    &prompt_with_handoff,
+                    &hidden_system_context,
                     started_next.attachments(),
                 )?;
                 self.note_prompt_started(provider_run_id);
@@ -131,6 +136,7 @@ impl KernelRuntimeOwnedState {
                     prompt_id: started_next.id().to_string(),
                     source_attachment_id: started_next.source_attachment_id().to_string(),
                     prompt: started_next.prompt().to_string(),
+                    hidden_system_context: started_next.hidden_system_context().to_string(),
                     attachments: started_next.attachments().to_vec(),
                 })
             }
@@ -249,5 +255,14 @@ impl KernelRuntimeOwnedState {
                 source_attachment_id: attachment_id.to_string(),
             }),
         }))
+    }
+}
+
+fn join_hidden_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        (first, "") => first.to_string(),
+        ("", second) => second.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
     }
 }

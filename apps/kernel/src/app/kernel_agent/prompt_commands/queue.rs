@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::session::PromptQueueItem;
 use crate::transport::flow_control;
 
-use super::super::{select_next_queued_prompt_candidate, KernelAgentService};
+use super::super::{KernelAgentService, select_next_queued_prompt_candidate};
 
 impl<'a> KernelAgentService<'a> {
     pub(crate) fn advance_next_queued_prompt(
@@ -86,6 +86,7 @@ impl<'a> KernelAgentService<'a> {
                             &provider_run_id,
                             active.source_attachment_id(),
                             active.prompt(),
+                            active.hidden_system_context(),
                             active.attachments(),
                         )
                     {
@@ -137,6 +138,7 @@ impl<'a> KernelAgentService<'a> {
                     &provider_run_id,
                     next.source_attachment_id(),
                     next.prompt(),
+                    next.hidden_system_context(),
                     next.attachments(),
                 )
             {

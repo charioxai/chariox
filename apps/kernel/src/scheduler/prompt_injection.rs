@@ -24,6 +24,12 @@ pub(crate) struct WorkflowNodeTurnPromptContext {
     pub can_emit_intermediate_output: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowTurnPromptAssembly {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
+}
+
 pub(crate) fn render_workflow_turn_prompt_from_messages(
     app: &DaemonApp,
     session_id: &str,
@@ -56,6 +62,29 @@ pub(crate) fn render_workflow_turn_prompt(
     handoff_payloads_json: Option<&str>,
     control_mailbox: Option<&str>,
 ) -> Result<String, DaemonError> {
+    render_workflow_turn_prompt_assembly(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        node_id,
+        endpoint_prompt,
+        handoff_payloads_json,
+        control_mailbox,
+    )
+    .map(|assembly| workflow_assembly_legacy_prompt(&assembly, false))
+}
+
+pub(crate) fn render_workflow_turn_prompt_assembly(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    node_id: &str,
+    endpoint_prompt: &str,
+    handoff_payloads_json: Option<&str>,
+    control_mailbox: Option<&str>,
+) -> Result<WorkflowTurnPromptAssembly, DaemonError> {
     let instruction_ref = workflow_node_instruction_reference(
         app,
         session_id,
@@ -73,7 +102,7 @@ pub(crate) fn render_workflow_turn_prompt(
         )
     });
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
-    Ok(build_workflow_turn_prompt(WorkflowPromptInjectionContext {
+    Ok(build_workflow_turn_prompt_assembly(WorkflowPromptInjectionContext {
         endpoint_prompt: endpoint_prompt.to_string(),
         workflow_prompt: app
             .sessions()
@@ -104,6 +133,14 @@ pub(crate) fn render_workflow_turn_prompt(
 }
 
 pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext) -> String {
+    let hide_in_native_tui = context.hide_in_native_tui;
+    let assembly = build_workflow_turn_prompt_assembly(context);
+    workflow_assembly_legacy_prompt(&assembly, hide_in_native_tui)
+}
+
+pub(crate) fn build_workflow_turn_prompt_assembly(
+    context: WorkflowPromptInjectionContext,
+) -> WorkflowTurnPromptAssembly {
     let reference_line = context
         .instruction_ref
         .as_deref()
@@ -130,7 +167,7 @@ pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext
             context.handoff_payloads_json.as_deref().unwrap_or("[]")
         )
     };
-    let entry_line = if context.endpoint_prompt.trim().is_empty() {
+    let visible_user_prompt = if context.endpoint_prompt.trim().is_empty() {
         String::new()
     } else {
         format!("Endpoint prompt:\n{}\n\n", context.endpoint_prompt.trim())
@@ -149,14 +186,27 @@ pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext
         "Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
         context.workflow_prompt, context.node_instructions, system_prompt, system_node_prompt
     );
-    if context.hide_in_native_tui {
+    WorkflowTurnPromptAssembly {
+        visible_user_prompt,
+        hidden_system_context: workflow_instructions,
+    }
+}
+
+fn workflow_assembly_legacy_prompt(
+    assembly: &WorkflowTurnPromptAssembly,
+    hide_in_native_tui: bool,
+) -> String {
+    if hide_in_native_tui {
         format!(
             "{}{}",
-            entry_line,
-            crate::provider::native_tui_hidden_instructions_block(&workflow_instructions)
+            assembly.visible_user_prompt,
+            crate::provider::native_tui_hidden_instructions_block(&assembly.hidden_system_context)
         )
     } else {
-        format!("{entry_line}{workflow_instructions}")
+        format!(
+            "{}{}",
+            assembly.visible_user_prompt, assembly.hidden_system_context
+        )
     }
 }
 
@@ -581,4 +631,47 @@ fn default_workflow_run_completion_prompt_template() -> &'static str {
 
 fn default_workflow_run_intermediate_output_prompt_template() -> &'static str {
     "System node-level prompt:\nThis node is authorized to emit intermediate workflow run outputs.\nIf you want to send an intermediate output to the endpoint without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nIntermediate workflow run output does not terminate the workflow run. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream output validation rules still apply.\nDo not finalize the turn until `validate_and_submit_intermediate_workflow_run_output` returns `valid: true` with no warning.\n\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_context() -> WorkflowPromptInjectionContext {
+        WorkflowPromptInjectionContext {
+            endpoint_prompt: "ENDPOINT_VISIBLE_TOKEN".to_string(),
+            workflow_prompt: "WORKFLOW_HIDDEN_TOKEN".to_string(),
+            node_instructions: "NODE_HIDDEN_TOKEN".to_string(),
+            instruction_ref: None,
+            handoff_payloads_json: None,
+            outgoing_edge_contracts: String::new(),
+            control_mailbox: None,
+            delivery_token: "workflow-ack:test".to_string(),
+            node_turn: None,
+            base_directory: None,
+            hide_in_native_tui: false,
+        }
+    }
+
+    #[test]
+    fn workflow_prompt_assembly_keeps_endpoint_visible_and_layers_hidden() {
+        let assembly = build_workflow_turn_prompt_assembly(test_context());
+
+        assert!(assembly.visible_user_prompt.contains("ENDPOINT_VISIBLE_TOKEN"));
+        assert!(!assembly.visible_user_prompt.contains("WORKFLOW_HIDDEN_TOKEN"));
+        assert!(!assembly.visible_user_prompt.contains("NODE_HIDDEN_TOKEN"));
+        assert!(assembly.hidden_system_context.contains("WORKFLOW_HIDDEN_TOKEN"));
+        assert!(assembly.hidden_system_context.contains("NODE_HIDDEN_TOKEN"));
+        assert!(!assembly.hidden_system_context.contains("ENDPOINT_VISIBLE_TOKEN"));
+    }
+
+    #[test]
+    fn legacy_workflow_prompt_preserves_effective_context() {
+        let context = test_context();
+        let legacy = build_workflow_turn_prompt(context);
+
+        assert!(legacy.contains("ENDPOINT_VISIBLE_TOKEN"));
+        assert!(legacy.contains("WORKFLOW_HIDDEN_TOKEN"));
+        assert!(legacy.contains("NODE_HIDDEN_TOKEN"));
+    }
 }

@@ -61,17 +61,20 @@ impl KernelRuntimeState {
                 &dispatch.source_attachment_id,
                 &dispatch.prompt,
             );
-            let provider_prompt = owned.apply_granted_skill_summary(
+            let granted_skill_context = owned.granted_skill_hidden_context(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &prompt_with_handoff,
             )?;
+            let hidden_system_context =
+                join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
             return owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
                 &provider_run,
-                &provider_prompt,
+                &prompt_with_handoff,
+                &hidden_system_context,
                 &dispatch.attachments,
             );
         }
@@ -334,6 +337,15 @@ impl KernelRuntimeState {
                 }
             }
         });
+    }
+}
+
+fn join_hidden_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        (first, "") => first.to_string(),
+        ("", second) => second.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
     }
 }
 

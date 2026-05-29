@@ -287,6 +287,7 @@ impl<'a> KernelAgentService<'a> {
                     prompt_id: prompt.id().to_string(),
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
+                    hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: prompt.attachments().to_vec(),
                 });
             }

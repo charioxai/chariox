@@ -83,6 +83,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
         provider_run_id: &str,
         attachment_id: &str,
         prompt: &str,
+        hidden_system_context: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
@@ -114,6 +115,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 agent_id,
                 &provider_run,
                 prompt,
+                hidden_system_context,
                 attachments,
             )?;
             return Ok(());
@@ -164,6 +166,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) prompt_id: String,
     pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
+    pub(crate) hidden_system_context: String,
     pub(crate) attachments: Vec<PromptAttachment>,
 }
 
@@ -295,6 +298,7 @@ impl DaemonApp {
                 dispatch.agent_id.clone(),
                 &provider_run,
                 &dispatch.prompt,
+                &dispatch.hidden_system_context,
                 &dispatch.attachments,
             );
         }
@@ -336,6 +340,12 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         match result {
             Ok(remote_provider_run_id) => {
+                let _ = self
+                    .agents
+                    .set_remote_execution_active_worker_provider_run_id(
+                        &dispatch.agent_id,
+                        Some(remote_provider_run_id.clone()),
+                    )?;
                 self.echo_prompt_to_other_attachments(
                     &dispatch.session_id,
                     &remote_provider_run_id,
@@ -346,6 +356,9 @@ impl DaemonApp {
                 Ok(())
             }
             Err(error) => {
+                let _ = self
+                    .agents
+                    .set_remote_execution_active_worker_provider_run_id(&dispatch.agent_id, None);
                 let _ = self.prompt_owner_cancel_active_prompt_only(
                     &dispatch.session_id,
                     &dispatch.agent_id,

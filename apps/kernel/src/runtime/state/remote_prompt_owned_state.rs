@@ -82,6 +82,9 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let _ = self
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let session = self.session_store.get_session(session_id)?;
         let completed = self
             .prompt_state_owner

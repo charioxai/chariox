@@ -19,8 +19,9 @@ mod remote_machines;
 
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
-    load_provider_catalog, logout_provider_response, provider_auth_status_response,
-    provider_command_catalogs_response, start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
+    PROVIDER_CATALOG_CACHE_TTL, load_provider_catalog, logout_provider_response,
+    provider_auth_status_response, provider_command_catalogs_response,
+    start_provider_login_response,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_record, record_for_machine_id, remote_machine_records,
@@ -309,8 +310,15 @@ fn remote_native_provider_run_response(
                         request.session_id
                     ),
                 })?;
+            let home_agent_id = agent_id.clone();
             let provider_run =
                 provider_run.projected_for_home_agent(request.session_id.clone(), agent_id);
+            let _ = app
+                .agents()
+                .set_remote_execution_active_worker_provider_run_id(
+                    &home_agent_id,
+                    Some(provider_run.id().to_string()),
+                )?;
             app.update_provider_run_projection(provider_run.clone());
             app.sessions_mut().set_active_provider_run(
                 provider_run.session_id(),

@@ -6,8 +6,9 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeSt
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
+    AgentInstance, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
+    GridPosition, RemoteAgentBinding, calculate_agent_layout, generate_agent_ref,
+    recalculate_positions,
 };
 
 #[derive(Debug, Clone)]
@@ -540,6 +541,21 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn set_remote_execution_active_worker_provider_run_id(
+        &mut self,
+        agent_id: &str,
+        provider_run_id: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_remote_execution_active_worker_provider_run_id(provider_run_id);
+        Ok(agent.clone())
+    }
+
     /// Get agent by ID
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.store
@@ -906,6 +922,15 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .bind_remote_execution(agent_id, remote_execution)
+    }
+
+    pub fn set_remote_execution_active_worker_provider_run_id(
+        &self,
+        agent_id: &str,
+        provider_run_id: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_remote_execution_active_worker_provider_run_id(agent_id, provider_run_id)
     }
 
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {

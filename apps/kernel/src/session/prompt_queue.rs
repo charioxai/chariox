@@ -59,6 +59,8 @@ pub struct PromptQueueItem {
     target_agent_id: String,
     prompt: String,
     attachments: Vec<PromptAttachment>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    hidden_system_context: String,
     status: PromptStatus,
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
@@ -78,6 +80,7 @@ impl PromptQueueItem {
             target_agent_id: target_agent_id.into(),
             prompt: prompt.into(),
             attachments: Vec::new(),
+            hidden_system_context: String::new(),
             status,
             workflow_run_id: None,
             workflow_node_run_id: None,
@@ -86,6 +89,11 @@ impl PromptQueueItem {
 
     pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    pub fn with_hidden_system_context(mut self, hidden_system_context: impl Into<String>) -> Self {
+        self.hidden_system_context = hidden_system_context.into();
         self
     }
 
@@ -117,6 +125,10 @@ impl PromptQueueItem {
 
     pub fn attachments(&self) -> &[PromptAttachment] {
         &self.attachments
+    }
+
+    pub fn hidden_system_context(&self) -> &str {
+        &self.hidden_system_context
     }
 
     pub fn status(&self) -> PromptStatus {

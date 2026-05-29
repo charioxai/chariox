@@ -245,6 +245,7 @@ impl DaemonApp {
                 worker_machine_id: worker_kernel.machine_id.clone(),
                 execution_lease_id: lease.id,
                 leased_agent_id: leased_agent.id,
+                active_worker_provider_run_id: None,
                 relay_url: relay_override
                     .as_ref()
                     .and_then(|config| config.relay_url.clone()),

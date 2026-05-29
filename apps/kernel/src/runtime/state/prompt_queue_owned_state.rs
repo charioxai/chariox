@@ -114,6 +114,7 @@ impl KernelRuntimeOwnedState {
             prompt_id: started_next.id().to_string(),
             source_attachment_id: started_next.source_attachment_id().to_string(),
             prompt: started_next.prompt().to_string(),
+            hidden_system_context: started_next.hidden_system_context().to_string(),
             attachments: started_next.attachments().to_vec(),
         }))
     }
