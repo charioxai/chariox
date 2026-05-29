@@ -167,6 +167,7 @@ Remote-agent note:
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
+- home-owned active extensions for remote agents preserve that authority split: the home kernel owns grant/revoke policy, reconstructs the current tool definition before every forwarded invocation, executes scripts/connectors/MCP proxy calls on the home machine, keeps credentials local to home, and records durable audit events. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
 
 ### 3.3.1 Internal Kernel Subsystems
 
