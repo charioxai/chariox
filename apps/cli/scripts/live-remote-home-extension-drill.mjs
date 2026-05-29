@@ -276,6 +276,7 @@ async function main() {
   const workerMachineId = `remote-home-extension-worker-machine-${process.pid}`
   const workerAlias = `remote-home-extension-worker-${process.pid}`
   const remoteRoot = `/tmp/arroba-remote-home-extension-${process.pid}-${Date.now()}`
+  const workerWorktree = options.hetznerWorker ? path.posix.join(remoteRoot, 'workspace') : workspace
 
   let relay = null
   let relayTunnel = null
@@ -369,7 +370,7 @@ def test_run() -> None:
       await runHetznerCommand(options, [
         `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/kernel/target/debug/arroba-kernel'))}`,
         `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
-        `mkdir -p ${shellQuote(remoteRoot)}`,
+        `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)}`,
       ].join('; '))
       await stopHetznerRelayOnPort(options, relayPort)
       relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
@@ -443,7 +444,7 @@ def test_run() -> None:
         ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
         ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
         ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, 'worker-capabilities'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+      }, `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && ./apps/kernel/target/debug/arroba-kernel`)), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {
@@ -568,7 +569,7 @@ operations:
       await mkdir(workerMcpDir, { recursive: true })
       await writeFile(path.join(workerMcpDir, 'home_echo_mcp.json'), workerCollisionMcp, 'utf8')
     }
-    const collisionAgent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-collision-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
+    const collisionAgent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-collision-agent', 'default', workerWorktree, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
     await client.send(grantAgentExtensionRequest(workspace, collisionAgent.id, 'mcp', 'home_echo_mcp'))
     await expectReject('home-proxy MCP collision launch', () => client.send(launchProviderRunRequest(
       session.id,
@@ -585,7 +586,7 @@ operations:
       await rm(path.join(workerMcpDir, 'home_echo_mcp.json'), { force: true })
     }
 
-    const agent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
+    const agent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'default', workerWorktree, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'home_only_lookup', env.name))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', 'home_echo_mcp'))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'connector', 'home_local_api', null, { maxSafety: 'read' }))
