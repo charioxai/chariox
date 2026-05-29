@@ -79,6 +79,7 @@ export {
 export { formatAgentSubstituteSummary } from "./agent-substitute-command-handlers.js"
 export {
   formatAgentCapabilityGrants,
+  formatHomeExtensionAuditEvents,
   parseMcpInstallConfig,
 } from "./capability-command-handlers.js"
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
+import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, formatHomeExtensionAuditEvents, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
@@ -66,6 +66,65 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
   assert.equal(
     formatAgentCapabilityGrants(makeAgent(), "skill"),
     "agent-1 has no skill grants.",
+  )
+})
+
+test("formatHomeExtensionAuditEvents renders diagnostic context without payload bodies", () => {
+  assert.equal(
+    formatHomeExtensionAuditEvents([
+      {
+        kind: "home_extension.grant.created",
+        timestamp_ms: 0,
+        payload: {
+          home_user_id: "alice",
+          caller_user_id: "alice",
+          agent_id: "agent-1",
+          lease_id: "lease-1",
+          worker_kernel_id: "worker-1",
+          active_worker_provider_run_id: "run-1",
+          grant: {
+            kind: "script",
+            name: "home-only",
+            environment: "python",
+            credential_present: true,
+            max_safety: "write",
+          },
+        },
+      },
+      {
+        kind: "home_extension.invoke.completed",
+        timestamp_ms: 1000,
+        payload: {
+          home_user_id: "alice",
+          caller_user_id: "bob",
+          agent_id: "agent-2",
+          lease_id: "lease-2",
+          worker_kernel_id: "worker-2",
+          worker_provider_run_id: "run-2",
+          duration_ms: 42,
+          result_bytes: 128,
+          ok: true,
+          status: "completed",
+          tool: {
+            kind: "connector",
+            name: "linear",
+            tool_name: "linear_create_issue",
+            safety: "write",
+            timeout_sec: 30,
+            version_hash: "hash-1",
+          },
+        },
+      },
+    ]),
+    [
+      "1970-01-01T00:00:00.000Z home_extension.grant.created home-only",
+      "  actor: home=alice caller=alice agent=agent-1 lease=lease-1 worker=worker-1 run=run-1",
+      "  grant: script:home-only env=python credential=yes allow=write",
+      "1970-01-01T00:00:01.000Z home_extension.invoke.completed linear_create_issue completed",
+      "  actor: home=alice caller=bob agent=agent-2 lease=lease-2 worker=worker-2 run=run-2",
+      "  tool: connector:linear as=linear_create_issue safety=write timeout=30s hash=hash-1",
+      "  result: ok=true bytes=128 duration=42ms",
+    ].join("\n"),
   )
 })
 

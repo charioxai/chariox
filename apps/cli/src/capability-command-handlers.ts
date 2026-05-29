@@ -727,16 +727,63 @@ function formatRemoteExtensionSyncStatusLine(status: AgentInstance["remote_exten
   return `${status.state}${revoke}${error}`
 }
 
-function formatHomeExtensionAuditEvents(events: readonly Record<string, unknown>[]): string {
+export function formatHomeExtensionAuditEvents(events: readonly Record<string, unknown>[]): string {
   if (events.length === 0) return "no home extension audit events"
   return events.map((event) => {
     const payload = typeof event.payload === "object" && event.payload ? event.payload as Record<string, unknown> : {}
     const tool = typeof payload.tool === "object" && payload.tool ? payload.tool as Record<string, unknown> : {}
+    const grant = typeof payload.grant === "object" && payload.grant ? payload.grant as Record<string, unknown> : {}
     const status = typeof payload.status === "string" ? ` ${payload.status}` : ""
-    const toolName = typeof tool.tool_name === "string" ? ` ${tool.tool_name}` : ""
+    const toolName = typeof tool.tool_name === "string"
+      ? ` ${tool.tool_name}`
+      : typeof grant.name === "string" ? ` ${grant.name}` : ""
     const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
-    return `${at} ${String(event.kind ?? "event")}${toolName}${status}`
+    const rows = [`${at} ${String(event.kind ?? "event")}${toolName}${status}`]
+    const actor = [
+      fieldPart("home", payload.home_user_id),
+      fieldPart("caller", payload.caller_user_id),
+      fieldPart("agent", payload.agent_id ?? payload.home_agent_id),
+      fieldPart("lease", payload.lease_id),
+      fieldPart("worker", payload.worker_kernel_id),
+      fieldPart("run", payload.worker_provider_run_id ?? payload.active_worker_provider_run_id),
+    ].filter(Boolean)
+    if (actor.length > 0) rows.push(`  actor: ${actor.join(" ")}`)
+    if (Object.keys(tool).length > 0) {
+      const details = [
+        typeof tool.kind === "string" && typeof tool.name === "string" ? `${tool.kind}:${tool.name}` : null,
+        fieldPart("as", tool.tool_name),
+        fieldPart("safety", tool.safety),
+        fieldPart("timeout", typeof tool.timeout_sec === "number" ? `${tool.timeout_sec}s` : tool.timeout_sec),
+        fieldPart("hash", tool.version_hash),
+      ].filter(Boolean)
+      if (details.length > 0) rows.push(`  tool: ${details.join(" ")}`)
+    }
+    if (Object.keys(grant).length > 0) {
+      const details = [
+        typeof grant.kind === "string" && typeof grant.name === "string" ? `${grant.kind}:${grant.name}` : null,
+        fieldPart("env", grant.environment),
+        typeof grant.credential_present === "boolean" ? `credential=${grant.credential_present ? "yes" : "no"}` : null,
+        fieldPart("allow", grant.max_safety),
+      ].filter(Boolean)
+      if (details.length > 0) rows.push(`  grant: ${details.join(" ")}`)
+    }
+    const result = [
+      fieldPart("ok", payload.ok),
+      fieldPart("bytes", payload.result_bytes),
+      fieldPart("duration", typeof payload.duration_ms === "number" ? `${payload.duration_ms}ms` : payload.duration_ms),
+    ].filter(Boolean)
+    if (result.length > 0) rows.push(`  result: ${result.join(" ")}`)
+    if (typeof payload.error === "string" && payload.error) rows.push(`  error: ${payload.error}`)
+    return rows.join("\n")
   }).join("\n")
+}
+
+function fieldPart(label: string, value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return `${label}=${value}`
+  }
+  return null
 }
 
 function readNumberOption(args: string[], flag: string): number | null {
