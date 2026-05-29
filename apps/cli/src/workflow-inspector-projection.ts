@@ -103,17 +103,10 @@ function buildEditInspector(
       `Selected: ${formatComponentSelection(resolved)}`,
       `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
     ],
-    body: selectedNode
-      ? [
-          "Editable node fields",
-          `- instructions: ${selectedNode.instructions?.trim() ? "configured" : "none"}`,
-          `- intermediate-output-schema: ${selectedNode.intermediate_output_schema_ref ?? "none"}`,
-          "",
-          "Use /workflow node instructions set to edit instructions.",
-          "Use /workflow node intermediate-output-schema to edit schema refs.",
-        ].join("\n")
-      : "Select a workflow node, edge, or endpoint to edit prompt/schema fields.",
-    hint: "Press Enter or use /workflow node instructions set to open the node editor.",
+    body: buildEditBody(workflow, resolved, selectedNode),
+    hint: resolved.selection.kind === "node"
+      ? "Press Enter or use /workflow node instructions set to open the node editor."
+      : "Use slash commands to update the selected workflow component.",
   }
 }
 
@@ -297,6 +290,9 @@ function resolveSelectedComponent(
   selectedNodeId: string | null,
   selection: WorkflowComponentSelection | null,
 ): { selection: WorkflowComponentSelection; node: WorkflowNodeDefinition | null } {
+  if (selection?.kind === "workflow") {
+    return { selection, node: null }
+  }
   if (selection?.kind === "edge") {
     const edge = workflow.edges?.find((entry) => entry.id === selection.id) ?? null
     const node = edge ? workflow.nodes?.find((entry) => entry.id === edge.from_node_id) ?? null : null
@@ -329,4 +325,70 @@ function formatComponentSelection(resolved: { selection: WorkflowComponentSelect
   }
   const backingNode = resolved.node ? ` -> node ${resolved.node.id}` : ""
   return `${selection.kind} ${selection.id}${selection.kind === "node" ? "" : backingNode}`
+}
+
+function buildEditBody(
+  workflow: WorkflowDefinition,
+  resolved: { selection: WorkflowComponentSelection; node: WorkflowNodeDefinition | null },
+  selectedNode: WorkflowNodeDefinition | null,
+) {
+  const selection = resolved.selection
+  if (selection.kind === "workflow") {
+    return [
+      "Editable workflow fields",
+      `- alias: ${workflow.alias ?? "none"}`,
+      `- flush-context: ${(workflow.flush_agent_context_before_run ?? true) ? "true" : "false"}`,
+      `- run-output-schema: ${workflow.run_output_schema_ref ?? "none"}`,
+      `- intermediate-output-schema: ${workflow.intermediate_output_schema_ref ?? "none"}`,
+      "",
+      "Use /workflow <workflow-ref> <alias> to rename.",
+      "Use /workflow flush-context to update context flush policy.",
+      "Use /workflow run-output-schema or /workflow intermediate-output-schema to edit schema refs.",
+    ].join("\n")
+  }
+  if (selection.kind === "node") {
+    if (!selectedNode) {
+      return "Selected node no longer exists."
+    }
+    return [
+      "Editable node fields",
+      `- instructions: ${selectedNode.instructions?.trim() ? "configured" : "none"}`,
+      `- intermediate-output-schema: ${selectedNode.intermediate_output_schema_ref ?? "none"}`,
+      `- can-complete-run: ${String(selectedNode.can_complete_workflow_run ?? false)}`,
+      `- can-emit-intermediate-output: ${String(selectedNode.can_emit_intermediate_run_output ?? false)}`,
+      `- max-turns: ${selectedNode.max_turns ?? "none"}`,
+      "",
+      "Use /workflow node instructions set to edit instructions.",
+      "Use /workflow node intermediate-output-schema to edit schema refs.",
+      "Use /workflow node can-complete-run, can-emit-intermediate-output, or max-turns for runtime settings.",
+    ].join("\n")
+  }
+  if (selection.kind === "edge") {
+    const edge = workflow.edges?.find((entry) => entry.id === selection.id) ?? null
+    if (!edge) {
+      return "Selected edge no longer exists."
+    }
+    return [
+      "Editable edge fields",
+      `- from: ${edge.from_node_id}`,
+      `- to: ${edge.to_node_id}`,
+      `- handoff-schema: ${edge.handoff_schema_ref ?? "none"}`,
+      `- validation-policy: ${edge.validation_policy ?? "default"}`,
+      "",
+      "Use /workflow edge remove and /workflow edge add --handoff-schema to replace an edge contract.",
+    ].join("\n")
+  }
+  const endpoint = workflow.endpoints?.find((entry) => entry.id === selection.id) ?? null
+  if (!endpoint) {
+    return "Selected endpoint no longer exists."
+  }
+  return [
+    "Editable endpoint fields",
+    `- alias: ${endpoint.alias ?? "none"}`,
+    `- entry-node: ${endpoint.entry_node_id}`,
+    "",
+    "Use /workflow endpoint alias to rename.",
+    "Use /workflow endpoint bind to change the entry node.",
+    "Use /workflow run <endpoint-ref> <prompt> to start a workflow run.",
+  ].join("\n")
 }

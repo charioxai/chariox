@@ -1324,6 +1324,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workflowInspectorMode,
     setWorkflowInspectorMode,
     selectedWorkflowNodeId,
+    selectedWorkflowComponent,
     pendingAttachments,
     beginSubmittedPromptUi,
     restoreFailedPromptUi,

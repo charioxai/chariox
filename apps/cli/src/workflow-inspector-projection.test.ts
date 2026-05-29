@@ -196,6 +196,104 @@ test("workflow inspector projects selected node agent trace entries", () => {
   assert.equal(inspector?.transcriptEntries?.[0]?.text, "trace output")
 })
 
+test("workflow inspector edit mode describes workflow fields", () => {
+  const inspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          flush_agent_context_before_run: false,
+          run_output_schema_ref: "run.schema.json",
+          intermediate_output_schema_ref: "handoff.schema.json",
+          nodes: [{ id: "node-1", agent_id: "agent-1" }],
+          edges: [],
+          endpoints: [],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    selectedWorkflowComponent: { kind: "workflow" },
+    inspectorMode: "edit",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {},
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.equal(inspector?.title, "Workflow Edit")
+  assert.match(inspector?.body ?? "", /Editable workflow fields/)
+  assert.match(inspector?.body ?? "", /run-output-schema: run\.schema\.json/)
+  assert.match(inspector?.body ?? "", /intermediate-output-schema: handoff\.schema\.json/)
+})
+
+test("workflow inspector edit mode describes edge and endpoint fields", () => {
+  const edgeInspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [
+            { id: "node-1", agent_id: "agent-1" },
+            { id: "node-2", agent_id: "agent-2" },
+          ],
+          edges: [{
+            id: "edge-1",
+            from_node_id: "node-1",
+            to_node_id: "node-2",
+            handoff_schema_ref: "edge.schema.json",
+            validation_policy: "halt",
+          }],
+          endpoints: [{ id: "endpoint-1", alias: "Run", entry_node_id: "node-2" }],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    selectedWorkflowComponent: { kind: "edge", id: "edge-1" },
+    inspectorMode: "edit",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {},
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.match(edgeInspector?.body ?? "", /Editable edge fields/)
+  assert.match(edgeInspector?.body ?? "", /handoff-schema: edge\.schema\.json/)
+  assert.match(edgeInspector?.body ?? "", /validation-policy: halt/)
+
+  const endpointInspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [
+            { id: "node-1", agent_id: "agent-1" },
+            { id: "node-2", agent_id: "agent-2" },
+          ],
+          edges: [],
+          endpoints: [{ id: "endpoint-1", alias: "Run", entry_node_id: "node-2" }],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    selectedWorkflowComponent: { kind: "endpoint", id: "endpoint-1" },
+    inspectorMode: "edit",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {},
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.match(endpointInspector?.body ?? "", /Editable endpoint fields/)
+  assert.match(endpointInspector?.body ?? "", /alias: Run/)
+  assert.match(endpointInspector?.body ?? "", /entry-node: node-2/)
+})
+
 test("workflow inspector resolves edge selection to source node trace", () => {
   const inspector = buildWorkflowInspectorProjection({
     session: baseSession({

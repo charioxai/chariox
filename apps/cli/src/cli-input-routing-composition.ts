@@ -86,6 +86,7 @@ export type CliInputRoutingCompositionDeps = {
   workflowInspectorMode: AnyFn
   setWorkflowInspectorMode: AnyFn
   selectedWorkflowNodeId: AnyFn
+  selectedWorkflowComponent: AnyFn
   pendingAttachments: AnyFn
   beginSubmittedPromptUi: AnyFn
   restoreFailedPromptUi: AnyFn
@@ -500,6 +501,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       return false
     }
     if (event.name === "return" || event.name === "enter") {
+      const component = deps.selectedWorkflowComponent()
+      if (component?.kind && component.kind !== "node") {
+        return setMode("edit")
+      }
       const workflow = deps.sessionState().workflows?.find((entry: { id: string }) => entry.id === deps.selectedWorkflowId()) ?? null
       const node = workflow?.nodes?.find((entry: { id: string }) => entry.id === deps.selectedWorkflowNodeId()) ?? null
       if (!workflow || !node) {
