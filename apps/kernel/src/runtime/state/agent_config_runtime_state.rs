@@ -299,14 +299,37 @@ impl KernelRuntimeState {
                 remote_extension_manifest: manifest,
             },
         )
-        .await?;
-        match response {
-            RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. } => Ok(()),
-            other => Err(DaemonError::LocalTransport {
-                operation: "sync remote extension manifest",
-                message: format!("unexpected remote extension manifest response: {other:?}"),
-            }),
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_extension",
+                    "remote extension manifest sync failed; home validation remains authoritative",
+                    serde_json::json!({
+                        "agent_id": agent.id(),
+                        "worker_kernel_id": remote_execution.worker_kernel_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return Ok(());
+            }
+        };
+        if !matches!(
+            response,
+            RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. }
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.remote_extension",
+                "remote extension manifest sync returned an unexpected response",
+                serde_json::json!({
+                    "agent_id": agent.id(),
+                    "worker_kernel_id": remote_execution.worker_kernel_id,
+                    "response": format!("{response:?}"),
+                }),
+            );
         }
+        Ok(())
     }
 
     pub(crate) async fn update_session_config(
