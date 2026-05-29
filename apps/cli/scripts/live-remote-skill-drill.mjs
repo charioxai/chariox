@@ -234,7 +234,7 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, effort, machineRef) {
+function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, effort, kernelRef) {
   return {
     SpawnAgent: {
       session_id: sessionId,
@@ -243,7 +243,7 @@ function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, 
       model,
       effort,
       worktree_id: worktreeId,
-      machine_ref: machineRef,
+      kernel_ref: kernelRef,
     },
   }
 }
@@ -532,7 +532,7 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerDaemonId,
     )), 'AgentSpawned')
     const agent = spawned.agent
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'skill', 'remote-drill'))
@@ -582,7 +582,7 @@ async function main() {
         options.model,
         workspace,
         options.effort,
-        workerMachineId,
+        workerDaemonId,
       )), 'AgentSpawned')
       const requestAgent = requestSpawned.agent
       const requestOutput = await runLivePrompt(
