@@ -617,10 +617,16 @@ async function historyProviderOutputMarkerGroups({ historyDir, markerGroups, sin
   return remaining.filter((markers) => !outputs.some((output) => markers.some((marker) => output.includes(marker))))
 }
 
-async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, timeoutMs, pollMs }) {
+async function pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId }) {
+  if (!client || !sessionId || !attachmentId) return
+  await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+}
+
+async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
   let missing = markerGroups
   while (Date.now() - started < timeoutMs) {
+    await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     await throwIfProviderError({ historyDir, sinceMs })
     missing = await historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs })
     if (missing.length === 0) return
@@ -654,11 +660,12 @@ async function historyNoticeMessagesSince({ historyDir, sinceMs }) {
   return messages
 }
 
-async function waitForHistoryNotices({ historyDir, requirements, sinceMs, timeoutMs, pollMs }) {
+async function waitForHistoryNotices({ historyDir, requirements, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
   let messages = []
   let missing = requirements
   while (Date.now() - started < timeoutMs) {
+    await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     await throwIfProviderError({ historyDir, sinceMs })
     messages = await historyNoticeMessagesSince({ historyDir, sinceMs })
     missing = requirements.filter((requirement) =>
@@ -796,9 +803,26 @@ function parseManagedToolOutput(rawOutput) {
   return parsed
 }
 
-async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs, pollMs }) {
+async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+  const snapshots = await waitForManagedReadSnapshots({
+    historyDir,
+    artifactPath,
+    count: 1,
+    sinceMs: 0,
+    timeoutMs,
+    pollMs,
+    client,
+    sessionId,
+    attachmentId,
+  })
+  return snapshots[0]
+}
+
+async function waitForManagedReadSnapshots({ historyDir, artifactPath, count, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
+    await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
+    const snapshots = []
     const files = (await readdir(historyDir).catch(() => []))
       .filter((file) => file.endsWith('.jsonl'))
       .map((file) => path.join(historyDir, file))
@@ -812,6 +836,7 @@ async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs,
         } catch {
           continue
         }
+        if ((entry.timestamp_ms ?? 0) < sinceMs) continue
         if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
         let update
         try {
@@ -824,18 +849,25 @@ async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs,
         if (update.input?.path !== artifactPath) continue
         try {
           const output = parseManagedToolOutput(update.output)
-          if (typeof output?.snapshot_id === 'string') return output
+          if (typeof output?.snapshot_id === 'string') {
+            snapshots.push({
+              ...output,
+              agent_id: entry.agent_id ?? null,
+              provider_run_id: entry.provider_run_id ?? null,
+            })
+          }
         } catch {
           continue
         }
       }
     }
+    if (snapshots.length >= count) return snapshots.slice(0, count)
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for managed read snapshot for ${artifactPath}`)
+  throw new Error(`timed out waiting for ${count} managed read snapshots for ${artifactPath}`)
 }
 
-async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, timeoutMs, pollMs }) {
+async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const results = await waitForManagedEditResults({
     historyDir,
     artifactPath,
@@ -843,13 +875,17 @@ async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, tim
     count: 1,
     timeoutMs,
     pollMs,
+    client,
+    sessionId,
+    attachmentId,
   })
   return results[0]
 }
 
-async function waitForManagedEditResults({ historyDir, artifactPath, sinceMs, count, timeoutMs, pollMs }) {
+async function waitForManagedEditResults({ historyDir, artifactPath, sinceMs, count, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
+    await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     const results = []
     const files = (await readdir(historyDir).catch(() => []))
       .filter((file) => file.endsWith('.jsonl'))
@@ -928,20 +964,46 @@ async function runLiveCollisionAndExternalChecks({
     const firstNewText = `FROM_${provider.toUpperCase()}_A`
     const secondNewText = `FROM_${provider.toUpperCase()}_B`
     const tools = workspaceLiveSyncToolNames(provider)
-    const overlapSameAreaEditStartedAt = Date.now()
-    for (const [editAgent, label, newText] of [[agent, 'A', firstNewText], [collider, 'B', secondNewText]]) {
-      const prompt = [
+    const overlapSameAreaReadStartedAt = Date.now()
+    for (const [editAgent, label] of [[agent, 'A'], [collider, 'B']]) {
+      await client.send(submitPromptRequest(session.id, attachment.id, editAgent.id, [
         'This is a live Arroba workspace live sync overlapping-writer drill.',
         'Use only Arroba workspace live sync. Do not use shell commands or native filesystem writes.',
         `First call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","domain":"text"}.`,
-        `Then call \`${tools.edit}\` exactly once using the \`snapshot_id\` from that read, with old_text "TARGET" and the requested new_text.`,
-        'Do not reread or retry if the managed edit is rejected.',
-        `The edit arguments must target {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text"} plus the read snapshot_id.`,
+        `Then reply exactly ${provider.toUpperCase()}_OVERLAP_${label}_READ_DONE.`,
+      ].join('\n'), []))
+    }
+    const overlapReadSnapshots = await waitForManagedReadSnapshots({
+      historyDir,
+      artifactPath: `outputs/${provider}-overlap.txt`,
+      sinceMs: overlapSameAreaReadStartedAt,
+      count: machineRef ? 1 : 2,
+      timeoutMs,
+      pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+    })
+    for (const snapshot of overlapReadSnapshots) {
+      if (snapshot.content_text !== 'one\nTARGET\nthree\n') {
+        throw new Error(`overlap drill read after a write for ${provider}: ${JSON.stringify(overlapReadSnapshots)}`)
+      }
+    }
+    const snapshotByAgentId = new Map(overlapReadSnapshots.map((snapshot) => [snapshot.agent_id, snapshot.snapshot_id]))
+    const overlapSameAreaEditStartedAt = Date.now()
+    for (const [editAgent, label, newText] of [[agent, 'A', firstNewText], [collider, 'B', secondNewText]]) {
+      const snapshotId = snapshotByAgentId.get(editAgent.id) ?? overlapReadSnapshots[0]?.snapshot_id
+      const prompt = [
+        'Continue the live Arroba workspace live sync overlapping-writer drill.',
+        'Use only Arroba workspace live sync. Do not use shell commands or native filesystem writes.',
+        'Do not read, reread, or retry.',
+        'Do not include a range field.',
+        `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text","snapshot_id":${JSON.stringify(snapshotId)}}.`,
         `Then reply exactly ${provider.toUpperCase()}_OVERLAP_${label}_DONE if applied, or ${provider.toUpperCase()}_OVERLAP_${label}_BLOCKED if rejected.`,
       ].join('\n')
       await client.send(submitPromptRequest(session.id, attachment.id, editAgent.id, prompt, []))
     }
-    await waitForManagedEditResults({
+    const overlapEditResults = await waitForManagedEditResults({
       historyDir,
       artifactPath: `outputs/${provider}-overlap.txt`,
       sinceMs: overlapSameAreaEditStartedAt,
@@ -952,27 +1014,16 @@ async function runLiveCollisionAndExternalChecks({
       count: machineRef ? 1 : 2,
       timeoutMs,
       pollMs,
-    })
-    await waitForHistoryOutputMarkers({
-      historyDir,
-      markerGroups: [
-        [`${provider.toUpperCase()}_OVERLAP_A_DONE`, `${provider.toUpperCase()}_OVERLAP_A_BLOCKED`],
-        [`${provider.toUpperCase()}_OVERLAP_B_DONE`, `${provider.toUpperCase()}_OVERLAP_B_BLOCKED`],
-      ],
-      sinceMs: overlapSameAreaEditStartedAt,
-      timeoutMs,
-      pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     if (!machineRef) {
-      await waitForAgentsIdle({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        agentIds: [agent.id, collider.id],
-        getSessionStateRequest,
-        timeoutMs,
-        pollMs,
-      })
+      const appliedCount = overlapEditResults.filter((result) => result?.applied === true).length
+      const conflictCount = overlapEditResults.filter((result) => result?.applied === false && result?.reason?.kind === 'conflict').length
+      if (appliedCount !== 1 || conflictCount !== 1) {
+        throw new Error(`overlap drill expected one applied edit and one conflict for ${provider}: ${JSON.stringify(overlapEditResults)}`)
+      }
     }
     const overlapContent = await readFile(overlapPath, 'utf8')
     const allowedOverlapContents = new Set([
@@ -991,7 +1042,6 @@ async function runLiveCollisionAndExternalChecks({
     })
 
     const spawnCheckAgent = async (suffix) => {
-      if (!machineRef) return agent
       return unwrapVariant(
         await client.send(workspaceLiveSyncSpawnAgentRequest(
           spawnAgentRequest,
@@ -1025,6 +1075,9 @@ async function runLiveCollisionAndExternalChecks({
       artifactPath: `outputs/${provider}-external-nonoverlap.txt`,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     await waitForHistoryOutputMarkers({
       historyDir,
@@ -1032,6 +1085,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: nonOverlapReadStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     if (nonOverlapRead.content_text !== nonOverlapBase) {
       throw new Error(`external non-overlap read happened after external write for ${provider}: ${JSON.stringify(nonOverlapRead.content_text)}`)
@@ -1063,6 +1119,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: nonOverlapEditStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     await waitForHistoryOutputMarkers({
       historyDir,
@@ -1070,6 +1129,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: nonOverlapEditStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     if (nonOverlapEdit?.applied !== true) {
       throw new Error(`external non-overlap edit was not applied for ${provider}: ${JSON.stringify(nonOverlapEdit)}`)
@@ -1099,6 +1161,9 @@ async function runLiveCollisionAndExternalChecks({
       artifactPath: `outputs/${provider}-external-overlap.txt`,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     await waitForHistoryOutputMarkers({
       historyDir,
@@ -1106,6 +1171,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: overlapReadStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     if (overlapRead.content_text !== externalOverlapBase) {
       throw new Error(`external overlap read happened after external write for ${provider}: ${JSON.stringify(overlapRead.content_text)}`)
@@ -1137,6 +1205,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: overlapEditStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     await waitForHistoryOutputMarkers({
       historyDir,
@@ -1147,6 +1218,9 @@ async function runLiveCollisionAndExternalChecks({
       sinceMs: overlapEditStartedAt,
       timeoutMs,
       pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
     })
     if (overlapEdit?.applied !== false || overlapEdit?.reason?.kind !== 'conflict') {
       throw new Error(`external overlap edit was not rejected as a conflict for ${provider}: ${JSON.stringify(overlapEdit)}`)
