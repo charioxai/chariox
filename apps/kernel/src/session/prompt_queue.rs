@@ -199,3 +199,47 @@ pub struct PromptDetachEffect {
     pub removed_active_prompt: bool,
     pub removed_queued_prompt_count: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_queue_item_does_not_serialize_hidden_system_context() {
+        let item = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "VISIBLE_PROMPT_TOKEN",
+            PromptStatus::Queued,
+        )
+        .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN");
+
+        let payload = serde_json::to_string(&item).expect("prompt should serialize");
+
+        assert!(payload.contains("VISIBLE_PROMPT_TOKEN"));
+        assert!(!payload.contains("HIDDEN_CONTEXT_TOKEN"));
+        assert!(!payload.contains("hidden_system_context"));
+    }
+
+    #[test]
+    fn prompt_queue_item_deserialization_drops_hidden_system_context() {
+        let payload = r#"{
+            "id":"prompt-1",
+            "source_attachment_id":"attachment-1",
+            "target_agent_id":"agent-1",
+            "prompt":"VISIBLE_PROMPT_TOKEN",
+            "attachments":[],
+            "hidden_system_context":"HIDDEN_CONTEXT_TOKEN",
+            "status":"Queued",
+            "workflow_run_id":null,
+            "workflow_node_run_id":null
+        }"#;
+
+        let item: PromptQueueItem =
+            serde_json::from_str(payload).expect("prompt should deserialize");
+
+        assert_eq!(item.prompt(), "VISIBLE_PROMPT_TOKEN");
+        assert_eq!(item.hidden_system_context(), "");
+    }
+}
