@@ -13,6 +13,7 @@ export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 
 export type WorkflowInspectorProjection = {
   title: string
+  mode?: WorkflowInspectorMode
   meta: string[]
   body?: string | null
   draft?: string
@@ -64,6 +65,7 @@ function buildNodeInstructionsInspector(
   const agentLabel = node ? workflowAgentDisplayLabel(agent) : "unknown"
   return {
     title: "Node Instructions",
+    mode: "edit",
     meta: [
       `Workflow: ${workflowLabel}`,
       `Node: ${node?.id ?? editor.nodeId}`,
@@ -90,6 +92,7 @@ function buildEditInspector(
     : null
   return {
     title: "Workflow Edit",
+    mode: "edit",
     meta: [
       `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
       `Selected node: ${selectedNode?.id ?? "-"}`,
@@ -123,6 +126,7 @@ function buildTraceInspector(
   const entries = selectedAgent ? input.agentPaneEntries[selectedAgent.id] ?? [] : []
   return {
     title: "Workflow Trace",
+    mode: "trace",
     meta: [
       `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
       `Selected node: ${selectedNode?.id ?? "-"}`,
@@ -260,6 +264,7 @@ function buildLogsInspector(
   const runtimeSummary = buildRuntimeSummary(input)
   return {
     title: "Workflow Logs",
+    mode: "logs",
     meta: [
       ...(runtimeSummary?.meta ?? [`Workflow: ${workflowLabel}`]),
       `Entries: ${consoleState?.entries?.length ?? 0}`,

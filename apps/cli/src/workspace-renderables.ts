@@ -62,6 +62,7 @@ export function buildWorkflowOutlineRenderable(
       onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
       transcriptAgentId?: string | null
       transcriptEntries?: TranscriptEntry[]
+      mode?: "logs" | "trace" | "edit"
     } | null
     transcriptRendering?: {
       syntaxStyle: SyntaxStyle
@@ -111,6 +112,15 @@ export function buildWorkflowOutlineRenderable(
         wrapMode: "word",
       }),
     )
+    if (inspectorConfig.mode) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: formatWorkflowDetailModeTabs(inspectorConfig.mode),
+          fg: theme.textMuted,
+          wrapMode: "none",
+        }),
+      )
+    }
     if (inspectorConfig.meta.length > 0) {
       inspector.add(
         new TextRenderable(renderer, {
@@ -180,6 +190,14 @@ export function buildWorkflowOutlineRenderable(
     mainPane = wrapper
   }
   return mainPane
+}
+
+function formatWorkflowDetailModeTabs(mode: "logs" | "trace" | "edit") {
+  return [
+    mode === "logs" ? "[logs]" : " logs ",
+    mode === "trace" ? "[traces]" : " traces ",
+    mode === "edit" ? "[edit]" : " edit ",
+  ].join("  ")
 }
 
 export function buildNoSessionRenderable(
