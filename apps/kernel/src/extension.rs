@@ -54,6 +54,29 @@ impl RemoteExtensionManifest {
         self.tools.is_empty()
     }
 
+    pub fn validate_unique_tool_names(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), crate::error::DaemonError> {
+        let mut seen = std::collections::BTreeMap::<&str, &RemoteExtensionTool>::new();
+        for tool in &self.tools {
+            if let Some(existing) = seen.insert(tool.tool_name.as_str(), tool) {
+                return Err(crate::error::DaemonError::LocalTransport {
+                    operation,
+                    message: format!(
+                        "home-proxy extension tool name `{}` is duplicated by `{}:{}` and `{}:{}`",
+                        tool.tool_name,
+                        existing.kind.as_str(),
+                        existing.name,
+                        tool.kind.as_str(),
+                        tool.name
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn home_proxy_runtime_tool_specs(
         &self,
     ) -> impl Iterator<Item = crate::transport::runtime_tools::RuntimeToolSpec> + '_ {
@@ -157,6 +180,22 @@ mod tests {
         );
         assert!(manifest.home_proxy_tool("home_script").is_some());
         assert!(manifest.home_proxy_tool("missing").is_none());
+    }
+
+    #[test]
+    fn remote_manifest_rejects_duplicate_home_proxy_tool_names() {
+        let manifest = RemoteExtensionManifest {
+            tools: vec![
+                tool(ExtensionKind::Script, "shared_name"),
+                tool(ExtensionKind::Connector, "shared_name"),
+            ],
+        };
+
+        let error = manifest
+            .validate_unique_tool_names("test manifest")
+            .expect_err("duplicate tool names should be rejected");
+
+        assert!(error.to_string().contains("duplicated"));
     }
 }
 

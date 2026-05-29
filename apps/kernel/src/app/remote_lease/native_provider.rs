@@ -35,6 +35,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
+        self.ensure_home_proxy_manifest_has_no_worker_collisions(
+            &leased_agent,
+            &required_mcps,
+            &remote_extension_manifest,
+            "launch remote native provider run",
+        )?;
         let lease = self
             .app
             .execution_leases

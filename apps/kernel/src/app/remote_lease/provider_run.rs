@@ -7,12 +7,119 @@ use super::mcp_availability::provider_run_mcp_set_matches;
 use super::RemoteLeaseRuntime;
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(super) fn ensure_home_proxy_manifest_has_no_worker_collisions(
+        &self,
+        leased_agent: &LeasedAgent,
+        required_mcps: &[RequiredRemoteMcp],
+        remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        remote_extension_manifest.validate_unique_tool_names(operation)?;
+        if remote_extension_manifest.is_empty() {
+            return Ok(());
+        }
+
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        let mut worker_tool_names = std::collections::BTreeMap::<String, String>::new();
+        for spec in crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
+            .into_iter()
+            .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
+            .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
+            .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
+            .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
+        {
+            worker_tool_names.insert(spec.name, "worker runtime tool".to_string());
+        }
+
+        let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
+            session.worktree_id(),
+        )];
+        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+            mcp_roots.push(user_root);
+        }
+        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
+        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
+            if required_mcps
+                .iter()
+                .any(|required| required.config.name == name)
+                || mcp_registry.get(name)?.is_some()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation,
+                    message: format!(
+                        "home-proxy MCP `{name}` collides with a worker-local MCP; rename one before launching the remote agent"
+                    ),
+                });
+            }
+        }
+
+        let mut script_roots = vec![crate::script::ArrobaScriptRegistry::project_root(
+            session.worktree_id(),
+        )];
+        if let Some(user_root) = crate::script::ArrobaScriptRegistry::user_root() {
+            script_roots.push(user_root);
+        }
+        let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
+        for grant in backing_agent.script_grants() {
+            if let Some(script) = script_registry.get(&grant.name)? {
+                worker_tool_names
+                    .insert(script.name, format!("worker-local script `{}`", grant.name));
+            }
+        }
+
+        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        for grant in backing_agent.connector_grants() {
+            let Some(connector) = connector_registry.get(&grant.name)? else {
+                continue;
+            };
+            let max_safety = crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
+            for operation_config in connector.operations {
+                if operation_config.safety > max_safety {
+                    continue;
+                }
+                worker_tool_names.insert(
+                    crate::connector::connector_tool_name(&connector.name, &operation_config.name),
+                    format!("worker-local connector `{}`", connector.name),
+                );
+            }
+        }
+
+        for tool in &remote_extension_manifest.tools {
+            if tool.execution_location != crate::extension::ExtensionExecutionLocation::Home {
+                continue;
+            }
+            if let Some(worker_source) = worker_tool_names.get(&tool.tool_name) {
+                return Err(DaemonError::LocalTransport {
+                    operation,
+                    message: format!(
+                        "home-proxy extension tool `{}` (`{}:{}`) collides with {worker_source}; rename one before launching the remote agent",
+                        tool.tool_name,
+                        tool.kind.as_str(),
+                        tool.name
+                    ),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) fn ensure_leased_provider_run_matches_mcps(
         &mut self,
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
     ) -> Result<String, DaemonError> {
+        self.ensure_home_proxy_manifest_has_no_worker_collisions(
+            leased_agent,
+            required_mcps,
+            remote_extension_manifest,
+            "remote provider launch",
+        )?;
         let lease = self
             .app
             .execution_leases

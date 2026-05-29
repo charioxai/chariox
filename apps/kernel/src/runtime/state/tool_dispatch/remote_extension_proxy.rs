@@ -88,6 +88,19 @@ impl KernelRuntimeState {
                 .dispatch_remote_home_mcp_proxy_call(&run, name, payload)
                 .await;
         }
+        if run.mcp_servers().iter().any(|server| {
+            server.name == name
+                && matches!(
+                    &server.transport,
+                    crate::mcp::ArrobaMcpTransportConfig::StreamableHttp { url, .. }
+                        if url == "http://127.0.0.1/mcp"
+                )
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "remote MCP proxy",
+                message: format!("home-proxy MCP `{name}` is no longer granted"),
+            });
+        }
         crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call(
             provider_run_projection,
             auth_token,
