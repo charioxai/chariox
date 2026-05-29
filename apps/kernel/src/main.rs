@@ -3,8 +3,19 @@ use std::time::Instant;
 
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), arroba_kernel::DaemonError> {
+fn main() -> Result<(), arroba_kernel::DaemonError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .map_err(|error| arroba_kernel::DaemonError::LocalTransport {
+            operation: "daemon runtime",
+            message: format!("failed to start Tokio runtime: {error}"),
+        })?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), arroba_kernel::DaemonError> {
     let process_started = Instant::now();
     if let Ok(log_path) = arroba_kernel::logging::init_process_logger("daemon") {
         arroba_kernel::logging::info_with_fields(
