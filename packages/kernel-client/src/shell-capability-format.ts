@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  RemoteExtensionManifestSyncStatus,
   ArrobaEnvironmentConfig,
   ArrobaMcpServerConfig,
   ArrobaScriptMetadata,
@@ -80,13 +81,61 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
   if (grants.length === 0) {
     return `${agentLabel} has no ${label} grants.`
   }
+  const placement = agent.remote_execution
+    ? kind === "skill" ? "skill snapshot" : "home-proxy"
+    : "worker-local"
+  const sync = agent.remote_execution
+    ? `\n\nremote extension sync: ${formatRemoteExtensionSyncStatusLine(agent.remote_extension_manifest_sync)}`
+    : ""
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
     const parts = [
+      placement,
       grant.environment ? `env=${grant.environment}` : null,
       grant.credential ? `credential=${grant.credential}` : null,
       grant.max_safety ? `allow=${grant.max_safety}` : null,
     ].filter(Boolean)
     const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : ""
     return `- ${grant.name}${suffix}`
-  }).join("\n")}`
+  }).join("\n")}${sync}`
+}
+
+export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
+  const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+  if (!agent.remote_execution) {
+    return `${agentLabel} is worker-local; no home-proxy manifest is projected.`
+  }
+  const status = agent.remote_extension_manifest_sync
+  const rows = [
+    `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
+    `worker machine: ${agent.remote_execution.worker_machine_id}`,
+    `leased agent: ${agent.remote_execution.leased_agent_id}`,
+  ]
+  if (status?.manifest_hash) rows.push(`manifest hash: ${status.manifest_hash}`)
+  if (status?.last_synced_at_ms) rows.push(`last synced: ${new Date(status.last_synced_at_ms).toISOString()}`)
+  if (status?.last_attempted_at_ms) rows.push(`last attempted: ${new Date(status.last_attempted_at_ms).toISOString()}`)
+  if (status?.last_error) rows.push(`last error: ${status.last_error}`)
+  if (status?.pending_revoke) rows.push("revoke state: pending worker acknowledgement")
+  return rows.join("\n")
+}
+
+export function formatHomeExtensionAuditEvents(events: readonly Record<string, unknown>[]): string {
+  if (events.length === 0) {
+    return "no home extension audit events"
+  }
+  return events.map((event) => {
+    const payload = typeof event.payload === "object" && event.payload ? event.payload as Record<string, unknown> : {}
+    const tool = typeof payload.tool === "object" && payload.tool ? payload.tool as Record<string, unknown> : {}
+    const status = typeof payload.status === "string" ? ` ${payload.status}` : ""
+    const name = typeof tool.tool_name === "string" ? ` ${tool.tool_name}` : ""
+    const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
+    return `${at} ${String(event.kind ?? "event")}${name}${status}`
+  }).join("\n")
+}
+
+function formatRemoteExtensionSyncStatusLine(status?: RemoteExtensionManifestSyncStatus | null): string {
+  if (!status) return "pending"
+  const revoke = status.pending_revoke ? ", pending revoke" : ""
+  const error = status.last_error ? `, ${status.last_error}` : ""
+  return `${status.state}${revoke}${error}`
 }

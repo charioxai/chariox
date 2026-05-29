@@ -379,6 +379,57 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    pub(crate) async fn retry_remote_extension_manifest_sync(
+        &self,
+        agent_ref: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        self.owned.ensure_agent_extension_authority(
+            agent.id(),
+            caller_user_id,
+            "remote extension manifest sync retry",
+        )?;
+        self.sync_remote_extension_manifest_for_agent(&agent)
+            .await?;
+        self.owned.agent_store.get_agent(agent.id())
+    }
+
+    pub(crate) fn list_home_extension_audit_events(
+        &self,
+        agent_ref: &str,
+        caller_user_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::durable_state::DurableStateEvent>, DaemonError> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        self.owned.ensure_agent_extension_authority(
+            agent.id(),
+            caller_user_id,
+            "home extension audit",
+        )?;
+        let events = self
+            .owned
+            .durable_state_store
+            .load_subject_events(agent.id(), limit)?;
+        Ok(events
+            .into_iter()
+            .filter(|event| {
+                event.kind.starts_with("home_extension.")
+                    || event.kind.starts_with("agent.extension")
+                    || event.kind.starts_with("agent.mcp_")
+                    || event.kind.starts_with("agent.skill_")
+            })
+            .collect())
+    }
+
     pub(crate) async fn update_session_config(
         &self,
         session_id: &str,

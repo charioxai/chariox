@@ -64,6 +64,8 @@ export type CapabilityCommandHandlerDeps = {
   testConnector?: (name: string, operation: string, input: Record<string, unknown>, credential?: string | null, allow?: string | null) => Promise<Record<string, unknown>>
   grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
   revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
+  syncRemoteExtensionManifest?: (agentRef: string) => Promise<AgentInstance>
+  listHomeExtensionAudit?: (agentRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
 }
 
 export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | null => {
@@ -157,15 +159,22 @@ export function formatAgentCapabilityGrants(agent: AgentInstance, kind: Extensio
   if (grants.length === 0) {
     return `${agentLabel} has no ${label} grants.`
   }
+  const placement = agent.remote_execution
+    ? kind === "skill" ? "skill snapshot" : "home-proxy"
+    : "worker-local"
+  const sync = agent.remote_execution
+    ? `\n\nremote extension sync: ${formatRemoteExtensionSyncStatusLine(agent.remote_extension_manifest_sync)}`
+    : ""
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
     const parts = [
+      placement,
       grant.environment ? `env=${grant.environment}` : null,
       grant.credential ? `credential=${grant.credential}` : null,
       grant.max_safety ? `allow=${grant.max_safety}` : null,
     ].filter(Boolean)
     const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : ""
     return `- ${grant.name}${suffix}`
-  }).join("\n")}`
+  }).join("\n")}${sync}`
 }
 
 export async function handleMcpSlashCommand(
@@ -621,8 +630,29 @@ export async function handleExtensionSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "extension" }>,
 ): Promise<void> {
   const [action, kind, agentRef, name] = command.args
+  if (action === "sync-status") {
+    const agent = resolveGrantTarget(deps, kind, "usage: /extension sync-status <agent-ref>")
+    if (!agent) return
+    deps.appendNotice(formatRemoteExtensionSyncStatus(agent))
+    deps.flashFooter(`showing remote extension sync for ${agent.agent_ref}`, "info")
+    return
+  }
+  if (action === "sync-retry") {
+    if (!kind || !deps.syncRemoteExtensionManifest) return deps.flashFooter("usage: /extension sync-retry <agent-ref>", "error")
+    const agent = await deps.syncRemoteExtensionManifest(kind)
+    deps.appendNotice(formatRemoteExtensionSyncStatus(agent))
+    deps.flashFooter(`retried remote extension sync for ${agent.agent_ref}`, "info")
+    return
+  }
+  if (action === "audit") {
+    if (!kind || !deps.listHomeExtensionAudit) return deps.flashFooter("usage: /extension audit <agent-ref> [--limit <count>]", "error")
+    const events = await deps.listHomeExtensionAudit(kind, readNumberOption(command.args, "--limit"))
+    deps.appendNotice(formatHomeExtensionAuditEvents(events))
+    deps.flashFooter(`showing home extension audit for ${kind}`, "info")
+    return
+  }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref>", "error")
+    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
     return
   }
   if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector") return deps.flashFooter("extension kind must be mcp, skill, script, or connector", "error")
@@ -667,6 +697,52 @@ export async function handleExtensionSlashCommand(
   if (!deps.revokeAgentScript) return deps.flashFooter("script revoke is not available", "error")
   const agent = await deps.revokeAgentScript(agentRef, name)
   deps.flashFooter(`revoked script ${name} from ${agent.agent_ref}`, "info")
+}
+
+function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
+  const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+  if (!agent.remote_execution) {
+    return `${agentLabel} is worker-local; no home-proxy manifest is projected.`
+  }
+  const status = agent.remote_extension_manifest_sync
+  const rows = [
+    `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
+    `worker machine: ${agent.remote_execution.worker_machine_id}`,
+    `leased agent: ${agent.remote_execution.leased_agent_id}`,
+  ]
+  if (status?.manifest_hash) rows.push(`manifest hash: ${status.manifest_hash}`)
+  if (status?.last_synced_at_ms) rows.push(`last synced: ${new Date(status.last_synced_at_ms).toISOString()}`)
+  if (status?.last_attempted_at_ms) rows.push(`last attempted: ${new Date(status.last_attempted_at_ms).toISOString()}`)
+  if (status?.last_error) rows.push(`last error: ${status.last_error}`)
+  if (status?.pending_revoke) rows.push("revoke state: pending worker acknowledgement")
+  return rows.join("\n")
+}
+
+function formatRemoteExtensionSyncStatusLine(status: AgentInstance["remote_extension_manifest_sync"]): string {
+  if (!status) return "pending"
+  const revoke = status.pending_revoke ? ", pending revoke" : ""
+  const error = status.last_error ? `, ${status.last_error}` : ""
+  return `${status.state}${revoke}${error}`
+}
+
+function formatHomeExtensionAuditEvents(events: readonly Record<string, unknown>[]): string {
+  if (events.length === 0) return "no home extension audit events"
+  return events.map((event) => {
+    const payload = typeof event.payload === "object" && event.payload ? event.payload as Record<string, unknown> : {}
+    const tool = typeof payload.tool === "object" && payload.tool ? payload.tool as Record<string, unknown> : {}
+    const status = typeof payload.status === "string" ? ` ${payload.status}` : ""
+    const toolName = typeof tool.tool_name === "string" ? ` ${tool.tool_name}` : ""
+    const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
+    return `${at} ${String(event.kind ?? "event")}${toolName}${status}`
+  }).join("\n")
+}
+
+function readNumberOption(args: string[], flag: string): number | null {
+  const value = readOption(args, flag)
+  if (!value) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
 }
 
 function formatMcpSummary(mcp: ArrobaMcpServerConfig): string {

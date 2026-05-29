@@ -21,6 +21,20 @@ pub(crate) async fn execute_agent_control_request(
         LocalDaemonRequest::MoveAgentToRemote(request) => {
             execute_move_agent_to_remote_request(runtime_state, caller_user_id, request).await
         }
+        LocalDaemonRequest::SyncRemoteExtensionManifest(request) => {
+            let agent = runtime_state
+                .retry_remote_extension_manifest_sync(&request.agent_ref, caller_user_id)
+                .await?;
+            Ok(LocalDaemonResponse::RemoteExtensionManifestSynced { agent })
+        }
+        LocalDaemonRequest::ListHomeExtensionAudit(request) => {
+            let events = runtime_state.list_home_extension_audit_events(
+                &request.agent_ref,
+                caller_user_id,
+                request.limit.unwrap_or(25),
+            )?;
+            Ok(LocalDaemonResponse::HomeExtensionAuditListed { events })
+        }
         LocalDaemonRequest::RevokeAgentExtension(request) => {
             execute_revoke_agent_extension_request(runtime_state, caller_user_id, request).await
         }

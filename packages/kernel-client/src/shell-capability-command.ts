@@ -23,6 +23,7 @@ import {
   importMcpServersRequest,
   importSkillsRequest,
   installMcpServerRequest,
+  listHomeExtensionAuditRequest,
   installSkillRequest,
   listEnvironmentsRequest,
   listConnectorAdaptersRequest,
@@ -39,6 +40,7 @@ import {
   removeConnectorRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
+  syncRemoteExtensionManifestRequest,
   testConnectorRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
@@ -53,6 +55,8 @@ import {
   formatEnvironmentList,
   formatMcpImportOutcome,
   formatMcpList,
+  formatHomeExtensionAuditEvents,
+  formatRemoteExtensionSyncStatus,
   formatScriptList,
   formatSkillImportOutcome,
   formatSkillList,
@@ -454,8 +458,25 @@ export async function executeExtensionCommand(
   deps: ShellCapabilityCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, kind, agentRef, name] = parsed.args
+  if (action === "sync-status") {
+    const agent = await resolveShellAgent(context, deps, kind)
+    if (!agent.ok) return { ok: false, message: agent.message }
+    return { ok: true, message: formatRemoteExtensionSyncStatus(agent.agent), data: { agent: agent.agent } }
+  }
+  if (action === "sync-retry") {
+    if (!kind) return { ok: false, message: "usage: extension sync-retry <agent-ref>" }
+    const response = await deps.client.send(syncRemoteExtensionManifestRequest(kind))
+    const agent = expectVariant<{ agent: AgentInstance }>(response, "RemoteExtensionManifestSynced").agent
+    return { ok: true, message: formatRemoteExtensionSyncStatus(agent), data: { agent }, contextUpdates: { agentId: agent.id } }
+  }
+  if (action === "audit") {
+    if (!kind) return { ok: false, message: "usage: extension audit <agent-ref> [--limit <count>]" }
+    const response = await deps.client.send(listHomeExtensionAuditRequest(kind, readNumberOption(parsed.args, "--limit")))
+    const events = expectVariant<{ events: Record<string, unknown>[] }>(response, "HomeExtensionAuditListed").events
+    return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
+  }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref]" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
     return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }
@@ -570,6 +591,13 @@ function readOption(args: string[], flag: string): string | null {
   if (index === -1) return null
   const value = args[index + 1]
   return value && !value.startsWith("--") ? value : null
+}
+
+function readNumberOption(args: string[], flag: string): number | null {
+  const value = readOption(args, flag)
+  if (!value) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
 }
 
 function isExtensionKind(value: string | undefined): value is ExtensionKind {

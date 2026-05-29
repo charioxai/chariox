@@ -301,6 +301,18 @@ pub struct RevokeAgentExtensionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRemoteExtensionManifestRequest {
+    pub agent_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListHomeExtensionAuditRequest {
+    pub agent_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMcpServersRequest {
     pub workspace_id: Option<String>,
 }

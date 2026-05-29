@@ -184,6 +184,9 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "extension-grant", label: "grant", description: "Grant an extension to an agent", value: "/extension grant " },
       { id: "extension-revoke", label: "revoke", description: "Revoke an extension from an agent", value: "/extension revoke " },
       { id: "extension-grants", label: "grants", description: "Show extension grants", value: "/extension grants " },
+      { id: "extension-sync-status", label: "sync-status", description: "Show remote extension manifest sync", value: "/extension sync-status " },
+      { id: "extension-sync-retry", label: "sync-retry", description: "Retry remote extension manifest sync", value: "/extension sync-retry " },
+      { id: "extension-audit", label: "audit", description: "Show home extension audit events", value: "/extension audit " },
     ],
   },
   {

@@ -51,6 +51,7 @@ import {
   listConnectorAdapters,
   listCredentials,
   listMcpServers,
+  listHomeExtensionAudit,
   listScripts,
   listSkills,
   registerEnvironment,
@@ -67,6 +68,7 @@ import {
   revokeAgentConnector,
   revokeAgentScript,
   revokeAgentSkill,
+  syncRemoteExtensionManifest,
   uninstallMcpServer,
   uninstallSkill,
   updateMcpServer,
@@ -483,6 +485,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     testConnector: (name, operation, input, credential, allow) => testConnector(client, name, operation, input, credential, allow),
     grantAgentConnector: (agentRef, name, credential, maxSafety) => grantAgentConnector(client, pendingWorkspaceTarget(), agentRef, name, credential, maxSafety),
     revokeAgentConnector: (agentRef, name) => revokeAgentConnector(client, agentRef, name),
+    syncRemoteExtensionManifest: (agentRef) => syncRemoteExtensionManifest(client, agentRef),
+    listHomeExtensionAudit: (agentRef, limit) => listHomeExtensionAudit(client, agentRef, limit),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)

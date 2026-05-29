@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 65;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 66;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -214,6 +214,8 @@ pub enum LocalDaemonRequest {
     AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
+    SyncRemoteExtensionManifest(SyncRemoteExtensionManifestRequest),
+    ListHomeExtensionAudit(ListHomeExtensionAuditRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
@@ -801,6 +803,12 @@ pub enum LocalDaemonResponse {
     },
     AgentMovedToRemote {
         agent: AgentInstance,
+    },
+    RemoteExtensionManifestSynced {
+        agent: AgentInstance,
+    },
+    HomeExtensionAuditListed {
+        events: Vec<crate::durable_state::DurableStateEvent>,
     },
     AgentDestroyed {
         agent: AgentInstance,

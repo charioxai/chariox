@@ -23,6 +23,7 @@ import {
   importMcpServersRequest,
   importSkillsRequest,
   installMcpServerRequest,
+  listHomeExtensionAuditRequest,
   installSkillRequest,
   listEnvironmentsRequest,
   listConnectorsRequest,
@@ -42,6 +43,7 @@ import {
   removeCredentialRequest,
   removeScriptRequest,
   revokeAgentExtensionRequest,
+  syncRemoteExtensionManifestRequest,
   testConnectorRequest,
   uninstallMcpServerRequest,
   uninstallSkillRequest,
@@ -412,4 +414,21 @@ export async function revokeAgentConnector(
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "connector", name))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
+}
+
+export async function syncRemoteExtensionManifest(
+  client: LocalIpcClient,
+  agentRef: string,
+): Promise<AgentInstance> {
+  const response = await client.send<Record<string, unknown>>(syncRemoteExtensionManifestRequest(agentRef))
+  return expectVariant<{ agent: AgentInstance }>(response, "RemoteExtensionManifestSynced").agent
+}
+
+export async function listHomeExtensionAudit(
+  client: LocalIpcClient,
+  agentRef: string,
+  limit?: number | null,
+): Promise<Record<string, unknown>[]> {
+  const response = await client.send<Record<string, unknown>>(listHomeExtensionAuditRequest(agentRef, limit))
+  return expectVariant<{ events: Record<string, unknown>[] }>(response, "HomeExtensionAuditListed").events
 }

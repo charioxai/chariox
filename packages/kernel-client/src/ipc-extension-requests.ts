@@ -130,6 +130,23 @@ export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "ski
   }
 }
 
+export function syncRemoteExtensionManifestRequest(agentRef: string) {
+  return {
+    SyncRemoteExtensionManifest: {
+      agent_ref: agentRef,
+    },
+  }
+}
+
+export function listHomeExtensionAuditRequest(agentRef: string, limit?: number | null) {
+  return {
+    ListHomeExtensionAudit: {
+      agent_ref: agentRef,
+      ...(limit == null ? {} : { limit }),
+    },
+  }
+}
+
 export function registerCredentialRequest(sourcePath: string) {
   return { RegisterCredential: { source_path: sourcePath } }
 }
