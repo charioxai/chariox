@@ -187,6 +187,19 @@ async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {})
   }
 }
 
+async function expectReject(label, fn, expectedText) {
+  try {
+    await fn()
+  } catch (error) {
+    const message = String(error?.message ?? error)
+    if (!message.includes(expectedText)) {
+      throw new Error(`${label} rejected with unexpected error. Expected ${expectedText}, got: ${message}`)
+    }
+    return message
+  }
+  throw new Error(`${label} unexpectedly succeeded`)
+}
+
 async function waitForRuntimeTool(serverUrl, authToken, name, present) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const tools = await callRuntimeMcp(serverUrl, authToken, 'tools/list')
@@ -226,6 +239,7 @@ async function main() {
     await mkdir(workspace, { recursive: true })
     const homeHomeDir = path.join(rootDir, 'home-home')
     const homeCapabilityRoot = path.join(rootDir, 'home-capabilities')
+    const workerCapabilityRoot = path.join(rootDir, 'worker-capabilities')
     const scriptPath = path.join(rootDir, 'home_only_lookup.py')
     await writeFile(scriptPath, `
 MARKER = ${JSON.stringify(homeMarker)}
@@ -338,7 +352,7 @@ def test_run() -> None:
         kernelPort: workerKernelPort,
         mcpPort: workerMcpPort,
         acceptRemoteLeases: true,
-        capabilityRoot: path.join(rootDir, 'worker-capabilities'),
+        capabilityRoot: workerCapabilityRoot,
         socketName: 'worker.sock',
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
@@ -425,6 +439,30 @@ operations:
     await client.send(registerConnectorRequest(connectorPath))
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, 'remote-home-extension-drill')), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `remote-home-extension-${process.pid}`))
+    const workerMcpDir = path.join(workerCapabilityRoot, 'user', 'mcps')
+    await mkdir(workerMcpDir, { recursive: true })
+    await writeFile(path.join(workerMcpDir, 'home_echo_mcp.json'), `${JSON.stringify({
+      name: 'home_echo_mcp',
+      transport: {
+        type: 'streamable_http',
+        url: `http://127.0.0.1:${homeOnlyMcpPort}/mcp`,
+      },
+      enabled: true,
+      required: false,
+    }, null, 2)}\n`, 'utf8')
+    const collisionAgent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-collision-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
+    await client.send(grantAgentExtensionRequest(workspace, collisionAgent.id, 'mcp', 'home_echo_mcp'))
+    await expectReject('home-proxy MCP collision launch', () => client.send(launchProviderRunRequest(
+      session.id,
+      'dev-stub',
+      'default',
+      'default',
+      'low',
+      collisionAgent.id,
+      { nativeTui: true },
+    )), 'collides with a worker-local MCP')
+    await rm(path.join(workerMcpDir, 'home_echo_mcp.json'), { force: true })
+
     const agent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'home_only_lookup', env.name))
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', 'home_echo_mcp'))
