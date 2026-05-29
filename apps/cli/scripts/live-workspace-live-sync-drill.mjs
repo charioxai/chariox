@@ -280,14 +280,8 @@ function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provid
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   return options.model
-}
-
-function opencodeCodexModel(model) {
-  if (model.endsWith('-codex')) return model
-  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
-  return model
 }
 
 function workspaceLiveSyncToolNames(provider) {
@@ -2186,6 +2180,9 @@ async function main() {
         ].join('\n')
       if (provider === 'opencode') {
         await writeFile(path.join(outputsDir, sourceName), patchInitial, 'utf8')
+        for (const targetWorkspace of targetWorkspaces) {
+          await writeFile(path.join(targetWorkspace, 'outputs', sourceName), patchInitial, 'utf8')
+        }
       } else {
         await runPositivePromptPhase({
           provider,

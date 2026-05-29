@@ -75,6 +75,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_snapshot_id_from_arg(
                 && sentinel != "new"
                 && sentinel != "absent"
                 && snapshot_id != "*"
+                && !sentinel.chars().all(|character| character == '0')
         })
         .map(crate::io::ArtifactSnapshotId::new)
 }

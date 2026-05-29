@@ -7,19 +7,19 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - Default live-drill model: `gpt-5.2`.
 - Use older Codex-capable models such as `gpt-5.2` or `gpt-5.3` for routine drills.
 - Use reasoning effort `low` unless the drill is specifically validating reasoning-heavy behavior.
-- For `opencode`, use OpenAI models rather than OpenCode's provider-default or `zen` model family.
-- If an OpenCode drill receives an unqualified model such as `gpt-5.2`, map it to `openai/gpt-5.2`.
+- For `opencode`, prefer explicit `opencode/...` Zen models when validating current OpenCode CLI behavior. The `openai/...` path depends on OpenCode's OpenAI OAuth token and can fail before Arroba behavior is exercised.
+- If an OpenCode drill receives an unqualified model such as `gpt-5.2`, do not treat that as proof the OpenAI OAuth path is healthy; pass an explicit provider override.
 - For `codex`, do not rely on drill-specific bare-model fallback when the exact model matters. Always pass an explicit Codex override such as `--provider-model codex=gpt-5.2` or `--provider-model codex=gpt-5.3`. Several workflow drills map bare `gpt-5.2`/`gpt-5.3` to `gpt-5.2-codex`/`gpt-5.3-codex`; ChatGPT-backed Codex accounts can reject those `*-codex` model ids with HTTP 400, leaving the drill looking stuck with only prompt echo.
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
 node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2
-node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
-node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=openai/gpt-5.2 --provider-model codex=gpt-5.2
+node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
+node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --full
 ```
 
-Add OpenCode to the workspace live sync drills only when OpenCode auth is healthy; current failures with `Token refresh failed: 401` happen before workspace live sync behavior is exercised.
+Use `opencode/gpt-5.2` for OpenCode workspace live sync drills unless the OpenAI OAuth path is explicitly being revalidated.
 
 Workspace Live Sync validation aliases:
 
@@ -34,7 +34,7 @@ pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-restart-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 ```
 
-OpenCode parity aliases use the same scenarios with explicit OpenAI model selection:
+OpenCode parity aliases use the same scenarios with explicit OpenCode Zen model selection:
 
 ```bash
 pnpm --filter @arroba/cli run workspace-live-sync:opencode-managed-drill

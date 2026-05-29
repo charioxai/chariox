@@ -239,6 +239,12 @@ fn workspace_live_sync_snapshot_id_treats_create_sentinel_as_absent() {
         None
     );
     assert_eq!(
+        workspace_live_sync_snapshot_id_from_arg(Some(
+            "00000000000000000000000000000000".to_string()
+        )),
+        None
+    );
+    assert_eq!(
         workspace_live_sync_snapshot_id_from_arg(Some("snap:test".to_string())),
         Some(crate::io::ArtifactSnapshotId::new("snap:test"))
     );
