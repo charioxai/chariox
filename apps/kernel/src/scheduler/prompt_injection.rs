@@ -1,5 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::prompt_assembly::{
+    bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
+    bundled_workflow_turn_template, PromptTemplateRegistry,
+};
 use crate::session::{WorkflowHandoffValidationPolicy, WorkflowMessage};
 use std::path::PathBuf;
 
@@ -102,34 +106,41 @@ pub(crate) fn render_workflow_turn_prompt_assembly(
         )
     });
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
-    Ok(build_workflow_turn_prompt_assembly(WorkflowPromptInjectionContext {
-        endpoint_prompt: endpoint_prompt.to_string(),
-        workflow_prompt: app
-            .sessions()
-            .resolve_workflow_run_ref(session_id, workflow_run_id)
-            .ok()
-            .and_then(|run| run.invocation_prompt().map(str::to_string))
-            .unwrap_or_default(),
-        node_instructions: workflow_node_instructions(app, session_id, workflow_run_id, node_id),
-        instruction_ref,
-        handoff_payloads_json: handoff_payloads_json.map(str::to_string),
-        outgoing_edge_contracts: workflow_outgoing_edge_contracts_block(
-            app,
-            session_id,
-            workflow_run_id,
-            node_id,
-        ),
-        control_mailbox: mailbox_content,
-        delivery_token,
-        node_turn: workflow_node_prompt_context(app, session_id, workflow_run_id, node_id),
-        base_directory: workflow_runtime_base_directory(
-            app,
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        ),
-        hide_in_native_tui: false,
-    }))
+    Ok(build_workflow_turn_prompt_assembly(
+        WorkflowPromptInjectionContext {
+            endpoint_prompt: endpoint_prompt.to_string(),
+            workflow_prompt: app
+                .sessions()
+                .resolve_workflow_run_ref(session_id, workflow_run_id)
+                .ok()
+                .and_then(|run| run.invocation_prompt().map(str::to_string))
+                .unwrap_or_default(),
+            node_instructions: workflow_node_instructions(
+                app,
+                session_id,
+                workflow_run_id,
+                node_id,
+            ),
+            instruction_ref,
+            handoff_payloads_json: handoff_payloads_json.map(str::to_string),
+            outgoing_edge_contracts: workflow_outgoing_edge_contracts_block(
+                app,
+                session_id,
+                workflow_run_id,
+                node_id,
+            ),
+            control_mailbox: mailbox_content,
+            delivery_token,
+            node_turn: workflow_node_prompt_context(app, session_id, workflow_run_id, node_id),
+            base_directory: workflow_runtime_base_directory(
+                app,
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            ),
+            hide_in_native_tui: false,
+        },
+    ))
 }
 
 pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext) -> String {
@@ -253,27 +264,8 @@ fn render_workflow_system_prompt(
 }
 
 fn load_workflow_system_prompt_template(base_directory: Option<&PathBuf>) -> String {
-    let Some(path) = workflow_system_prompt_template_path(base_directory) else {
-        return default_workflow_system_prompt_template().to_string();
-    };
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, default_workflow_system_prompt_template());
-    }
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| default_workflow_system_prompt_template().to_string())
-}
-
-fn workflow_system_prompt_template_path(base_directory: Option<&PathBuf>) -> Option<PathBuf> {
-    let base_directory = base_directory?;
-    Some(
-        base_directory
-            .join(".arroba")
-            .join("system-prompts")
-            .join("workflow-turn.md"),
-    )
+    let _ = base_directory;
+    load_prompt_registry_template("workflow/turn", bundled_workflow_turn_template())
 }
 
 fn render_workflow_node_system_prompt(
@@ -356,61 +348,44 @@ fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> St
 fn load_workflow_run_completion_prompt_template(
     base_directory: Option<&PathBuf>,
 ) -> Option<String> {
-    let path = workflow_run_completion_prompt_template_path(base_directory)?;
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, default_workflow_run_completion_prompt_template());
-    }
-    Some(
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| default_workflow_run_completion_prompt_template().to_string()),
-    )
-}
-
-fn workflow_run_completion_prompt_template_path(
-    base_directory: Option<&PathBuf>,
-) -> Option<PathBuf> {
-    let base_directory = base_directory?;
-    Some(
-        base_directory
-            .join(".arroba")
-            .join("system-prompts")
-            .join("workflow-run-completion.md"),
-    )
+    let _ = base_directory;
+    Some(load_prompt_registry_template(
+        "workflow/run-completion",
+        bundled_workflow_run_completion_template(),
+    ))
 }
 
 fn load_workflow_run_intermediate_output_prompt_template(
     base_directory: Option<&PathBuf>,
 ) -> Option<String> {
-    let path = workflow_run_intermediate_output_prompt_template_path(base_directory)?;
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(
-            &path,
-            default_workflow_run_intermediate_output_prompt_template(),
-        );
-    }
-    Some(
-        std::fs::read_to_string(&path).unwrap_or_else(|_| {
-            default_workflow_run_intermediate_output_prompt_template().to_string()
-        }),
-    )
+    let _ = base_directory;
+    Some(load_prompt_registry_template(
+        "workflow/run-intermediate-output",
+        bundled_workflow_run_intermediate_output_template(),
+    ))
 }
 
-fn workflow_run_intermediate_output_prompt_template_path(
-    base_directory: Option<&PathBuf>,
-) -> Option<PathBuf> {
-    let base_directory = base_directory?;
-    Some(
-        base_directory
-            .join(".arroba")
-            .join("system-prompts")
-            .join("workflow-run-intermediate-output.md"),
-    )
+fn load_prompt_registry_template(template_id: &str, bundled_default: &'static str) -> String {
+    let registry = PromptTemplateRegistry::from_env();
+    if let Err(error) = registry.materialize_bundled_defaults() {
+        tracing::debug!(
+            ?error,
+            template_id,
+            "Failed to materialize prompt registry defaults"
+        );
+        return bundled_default.to_string();
+    }
+    registry
+        .read_required(template_id)
+        .map(|template| template.body)
+        .unwrap_or_else(|error| {
+            tracing::debug!(
+                ?error,
+                template_id,
+                "Failed to read prompt registry template"
+            );
+            bundled_default.to_string()
+        })
 }
 
 fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> Option<String> {
@@ -621,21 +596,34 @@ fn workflow_turn_delivery_token(workflow_node_run_id: &str) -> String {
     format!("workflow-ack:{workflow_node_run_id}")
 }
 
-fn default_workflow_system_prompt_template() -> &'static str {
-    "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes a `handoff_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above, that `handoff_schema_ref`, and your proposed `output.message` JSON. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
-}
-
-fn default_workflow_run_completion_prompt_template() -> &'static str {
-    "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n"
-}
-
-fn default_workflow_run_intermediate_output_prompt_template() -> &'static str {
-    "System node-level prompt:\nThis node is authorized to emit intermediate workflow run outputs.\nIf you want to send an intermediate output to the endpoint without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nIntermediate workflow run output does not terminate the workflow run. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream output validation rules still apply.\nDo not finalize the turn until `validate_and_submit_intermediate_workflow_run_output` returns `valid: true` with no warning.\n\n"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env_lock;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_arroba_home(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let index = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join("arroba-workflow-prompt-tests")
+            .join(format!("{}-{}-{index}", name, std::process::id()))
+    }
+
+    fn set_arroba_home(home: &PathBuf) -> Option<std::ffi::OsString> {
+        let previous = std::env::var_os("ARROBA_HOME");
+        std::env::set_var("ARROBA_HOME", home);
+        previous
+    }
+
+    fn restore_arroba_home(previous: Option<std::ffi::OsString>) {
+        if let Some(previous) = previous {
+            std::env::set_var("ARROBA_HOME", previous);
+        } else {
+            std::env::remove_var("ARROBA_HOME");
+        }
+    }
 
     fn test_context() -> WorkflowPromptInjectionContext {
         WorkflowPromptInjectionContext {
@@ -657,12 +645,20 @@ mod tests {
     fn workflow_prompt_assembly_keeps_endpoint_visible_and_layers_hidden() {
         let assembly = build_workflow_turn_prompt_assembly(test_context());
 
-        assert!(assembly.visible_user_prompt.contains("ENDPOINT_VISIBLE_TOKEN"));
-        assert!(!assembly.visible_user_prompt.contains("WORKFLOW_HIDDEN_TOKEN"));
+        assert!(assembly
+            .visible_user_prompt
+            .contains("ENDPOINT_VISIBLE_TOKEN"));
+        assert!(!assembly
+            .visible_user_prompt
+            .contains("WORKFLOW_HIDDEN_TOKEN"));
         assert!(!assembly.visible_user_prompt.contains("NODE_HIDDEN_TOKEN"));
-        assert!(assembly.hidden_system_context.contains("WORKFLOW_HIDDEN_TOKEN"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("WORKFLOW_HIDDEN_TOKEN"));
         assert!(assembly.hidden_system_context.contains("NODE_HIDDEN_TOKEN"));
-        assert!(!assembly.hidden_system_context.contains("ENDPOINT_VISIBLE_TOKEN"));
+        assert!(!assembly
+            .hidden_system_context
+            .contains("ENDPOINT_VISIBLE_TOKEN"));
     }
 
     #[test]
@@ -673,5 +669,79 @@ mod tests {
         assert!(legacy.contains("ENDPOINT_VISIBLE_TOKEN"));
         assert!(legacy.contains("WORKFLOW_HIDDEN_TOKEN"));
         assert!(legacy.contains("NODE_HIDDEN_TOKEN"));
+    }
+
+    #[test]
+    fn workflow_prompt_assembly_reads_user_edited_registry_template() {
+        let _guard = env_lock::lock();
+        let home = temp_arroba_home("registry-edit");
+        let previous_home = set_arroba_home(&home);
+        let registry = PromptTemplateRegistry::from_env();
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            home.join("prompts").join("workflow").join("turn.md"),
+            "REGISTRY_WORKFLOW_TEMPLATE {{DELIVERY_TOKEN}} {{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}",
+        )
+        .expect("template edit should write");
+
+        let assembly = build_workflow_turn_prompt_assembly(test_context());
+        restore_arroba_home(previous_home);
+
+        assert!(assembly
+            .hidden_system_context
+            .contains("REGISTRY_WORKFLOW_TEMPLATE workflow-ack:test"));
+        assert!(!assembly
+            .visible_user_prompt
+            .contains("REGISTRY_WORKFLOW_TEMPLATE"));
+    }
+
+    #[test]
+    fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
+        let _guard = env_lock::lock();
+        let home = temp_arroba_home("node-fragments");
+        let previous_home = set_arroba_home(&home);
+        let registry = PromptTemplateRegistry::from_env();
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            home.join("prompts")
+                .join("workflow")
+                .join("run-completion.md"),
+            "REGISTRY_COMPLETION_TOKEN\n\n",
+        )
+        .expect("completion template edit should write");
+        fs::write(
+            home.join("prompts")
+                .join("workflow")
+                .join("run-intermediate-output.md"),
+            "REGISTRY_INTERMEDIATE_TOKEN\n\n",
+        )
+        .expect("intermediate template edit should write");
+
+        let mut context = test_context();
+        context.node_turn = Some(WorkflowNodeTurnPromptContext {
+            turn_index: 1,
+            max_turns: Some(2),
+            can_complete_workflow_run: true,
+            can_emit_intermediate_output: true,
+        });
+        let assembly = build_workflow_turn_prompt_assembly(context);
+        restore_arroba_home(previous_home);
+
+        assert!(assembly
+            .hidden_system_context
+            .contains("REGISTRY_COMPLETION_TOKEN"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("REGISTRY_INTERMEDIATE_TOKEN"));
+        assert!(!assembly
+            .visible_user_prompt
+            .contains("REGISTRY_COMPLETION_TOKEN"));
+        assert!(!assembly
+            .visible_user_prompt
+            .contains("REGISTRY_INTERMEDIATE_TOKEN"));
     }
 }
