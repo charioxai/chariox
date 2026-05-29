@@ -5,10 +5,11 @@
 
 use super::*;
 
-mod capability;
 mod capability_registry;
 mod connector;
 mod credential;
+mod extension_list_tool;
+mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
 mod home_extension_execution_policy;
@@ -16,8 +17,10 @@ mod home_mcp_proxy_executor;
 mod home_script_executor;
 mod recall;
 mod remote_capability_sync;
+mod remote_extension_control_plane;
 mod remote_extension_proxy;
 mod script;
+mod skill_package_response;
 mod slice;
 mod worker_home_extension_client;
 mod workflow_authenticated;
