@@ -398,6 +398,68 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
   ])
 })
 
+test("executeShellCommand shows remote extension sync diagnostics", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "hash-1",
+      last_error: "relay offline",
+      pending_revoke: true,
+    },
+    extension_grants: [{ kind: "script", name: "lookup", environment: "py" }],
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("SyncRemoteExtensionManifest" in request) {
+          return { RemoteExtensionManifestSynced: { agent } }
+        }
+        if ("ListHomeExtensionAudit" in request) {
+          return {
+            HomeExtensionAuditListed: {
+              events: [{
+                kind: "home_extension.invoke.completed",
+                timestamp_ms: 1700000000000,
+                payload: { status: "completed", tool: { tool_name: "lookup" } },
+              }],
+            },
+          }
+        }
+        return { AgentsListed: { agents: [agent] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const grantsResult = await executeShellCommand(parseShellCommand("extension grants script"), context, { client: fake.client })
+  const statusResult = await executeShellCommand(parseShellCommand("extension sync-status"), context, { client: fake.client })
+  const retryResult = await executeShellCommand(parseShellCommand("extension sync-retry agent-1"), context, { client: fake.client })
+  const auditResult = await executeShellCommand(parseShellCommand("extension audit agent-1 --limit 1"), context, { client: fake.client })
+
+  assert.equal(grantsResult.ok, true)
+  assert.match(grantsResult.message ?? "", /home-proxy/)
+  assert.match(grantsResult.message ?? "", /remote extension sync: failed, pending revoke, relay offline/)
+  assert.equal(statusResult.ok, true)
+  assert.match(statusResult.message ?? "", /worker kernel: worker-1/)
+  assert.equal(retryResult.ok, true)
+  assert.match(retryResult.message ?? "", /manifest hash: hash-1/)
+  assert.equal(auditResult.ok, true)
+  assert.match(auditResult.message ?? "", /home_extension\.invoke\.completed lookup completed/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    { ListAgents: { session_id: "session-1" } },
+    { SyncRemoteExtensionManifest: { agent_ref: "agent-1" } },
+    { ListHomeExtensionAudit: { agent_ref: "agent-1", limit: 1 } },
+  ])
+})
+
 test("executeShellCommand manages script environments and script extensions", async () => {
   const environment = { name: "py", runtime: { type: "python", python: "/usr/bin/python3" } }
   const script = {
