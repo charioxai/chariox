@@ -640,6 +640,7 @@ export type AgentInstance = {
     leased_agent_id: string
   } | null
   extension_grants?: ExtensionGrant[]
+  remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
   substitutes?: AgentSubstituteProfile[]
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
@@ -653,6 +654,15 @@ export type AgentInstance = {
   grid_col_span: number
   created_at_ms: number
   last_activity_at_ms: number
+}
+
+export type RemoteExtensionManifestSyncStatus = {
+  state: "synced" | "syncing" | "pending" | "failed" | "stale"
+  manifest_hash?: string | null
+  last_attempted_at_ms?: number | null
+  last_synced_at_ms?: number | null
+  last_error?: string | null
+  pending_revoke?: boolean | null
 }
 
 export type AgentSubstituteProfile = {
@@ -1047,7 +1057,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 64
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 65
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

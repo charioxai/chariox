@@ -107,22 +107,24 @@ impl CommandRouter {
     pub(crate) async fn dispatch_forwarded_home_extension_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
         tool: crate::extension::RemoteExtensionTool,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_home_extension_tool_call(context, tool, arguments)
+            .dispatch_forwarded_home_extension_tool_call(context, metadata, tool, arguments)
             .await
     }
 
     pub(crate) async fn dispatch_forwarded_home_mcp_proxy_call(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
         name: String,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_home_mcp_proxy_call(context, name, payload)
+            .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, payload)
             .await
     }
 }

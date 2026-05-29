@@ -59,6 +59,10 @@ pub struct RemoteExtensionInvocationContext {
     pub home_agent_id: String,
     pub leased_agent_id: String,
     pub worker_provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_kernel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_machine_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,11 +261,15 @@ pub enum RelayPeerRequest {
     },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
         tool: crate::extension::RemoteExtensionTool,
         arguments: serde_json::Value,
     },
     InvokeHomeMcpProxy {
         context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
         name: String,
         payload: serde_json::Value,
     },

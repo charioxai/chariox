@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::extension::{ExtensionGrant, ExtensionKind};
+use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
@@ -334,6 +334,21 @@ impl AgentService {
             );
         }
         agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
+    pub fn set_remote_extension_manifest_sync(
+        &mut self,
+        agent_id: &str,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_remote_extension_manifest_sync(status);
         Ok(agent.clone())
     }
 
@@ -791,6 +806,15 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_agent_runtime_profile(agent_id, provider, model, effort, resume_state)
+    }
+
+    pub fn set_remote_extension_manifest_sync(
+        &self,
+        agent_id: &str,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_remote_extension_manifest_sync(agent_id, status)
     }
 
     pub fn update_agent_config(

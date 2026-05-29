@@ -443,11 +443,12 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::InvokeHomeExtensionTool {
             context,
+            metadata,
             tool,
             arguments,
         } => {
             let handled = router
-                .dispatch_forwarded_home_extension_tool_call(context, tool, arguments)
+                .dispatch_forwarded_home_extension_tool_call(context, metadata, tool, arguments)
                 .await;
             match handled {
                 Ok(result) => RelayPeerResponse::HomeExtensionToolHandled { result },
@@ -461,11 +462,12 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::InvokeHomeMcpProxy {
             context,
+            metadata,
             name,
             payload,
         } => {
             let handled = router
-                .dispatch_forwarded_home_mcp_proxy_call(context, name, payload)
+                .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, payload)
                 .await;
             match handled {
                 Ok(response) => RelayPeerResponse::HomeMcpProxyHandled { response },

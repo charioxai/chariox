@@ -124,6 +124,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             home_agent_id: lease.home_agent_id.clone(),
             leased_agent_id: leased_agent.id.clone(),
             worker_provider_run_id: provider_run_id.to_string(),
+            worker_kernel_id: Some(lease.worker_kernel_id.clone()),
+            worker_machine_id: Some(lease.machine_id.clone()),
         })
     }
 }

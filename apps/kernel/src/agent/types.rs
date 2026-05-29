@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::extension::{ExtensionGrant, ExtensionKind};
+use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
@@ -126,6 +126,8 @@ pub struct AgentInstance {
     provider_resume_state: ProviderResumeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     extension_grants: Vec<ExtensionGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_extension_manifest_sync: Option<RemoteExtensionManifestSyncStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +181,7 @@ impl AgentInstance {
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
             extension_grants: Vec::new(),
+            remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
             active_substitute_index: None,
             last_substitution: None,
@@ -272,6 +275,10 @@ impl AgentInstance {
 
     pub fn extension_grants(&self) -> &[ExtensionGrant] {
         &self.extension_grants
+    }
+
+    pub fn remote_extension_manifest_sync(&self) -> Option<&RemoteExtensionManifestSyncStatus> {
+        self.remote_extension_manifest_sync.as_ref()
     }
 
     pub fn granted_extension_names(&self, kind: ExtensionKind) -> Vec<String> {
@@ -449,6 +456,13 @@ impl AgentInstance {
 
     pub fn set_remote_execution(&mut self, remote_execution: Option<RemoteAgentBinding>) {
         self.remote_execution = remote_execution;
+    }
+
+    pub fn set_remote_extension_manifest_sync(
+        &mut self,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) {
+        self.remote_extension_manifest_sync = status;
     }
 
     pub fn grant_extension(&mut self, grant: ExtensionGrant) {

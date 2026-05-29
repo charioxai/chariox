@@ -285,6 +285,21 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
+        let manifest_hash = manifest.manifest_hash();
+        let tool_count = manifest.tools.len();
+        let pending_revoke = agent
+            .remote_extension_manifest_sync()
+            .and_then(|status| status.manifest_hash.as_ref())
+            .is_some_and(|previous_hash| previous_hash != &manifest_hash);
+        let syncing_status = crate::extension::RemoteExtensionManifestSyncStatus::pending(
+            manifest_hash.clone(),
+            pending_revoke,
+        )
+        .syncing();
+        let _ = self
+            .owned
+            .agent_store
+            .set_remote_extension_manifest_sync(agent.id(), Some(syncing_status.clone()));
         let mut config = self.config_snapshot().await;
         if config.relay_url.is_none() {
             config.relay_url = remote_execution.relay_url.clone();
@@ -310,6 +325,10 @@ impl KernelRuntimeState {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
+                let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
+                    agent.id(),
+                    Some(syncing_status.failed(error.to_string())),
+                );
                 crate::logging::warn_with_fields(
                     "daemon.remote_extension",
                     "remote extension manifest sync failed; home validation remains authoritative",
@@ -326,6 +345,10 @@ impl KernelRuntimeState {
             response,
             RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. }
         ) {
+            let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
+                agent.id(),
+                Some(syncing_status.failed("unexpected worker manifest sync response")),
+            );
             crate::logging::warn_with_fields(
                 "daemon.remote_extension",
                 "remote extension manifest sync returned an unexpected response",
@@ -335,6 +358,23 @@ impl KernelRuntimeState {
                     "response": format!("{response:?}"),
                 }),
             );
+        } else {
+            let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
+                agent.id(),
+                Some(crate::extension::RemoteExtensionManifestSyncStatus::synced(
+                    manifest_hash.clone(),
+                )),
+            );
+            self.owned.durable_state_store.append_event(
+                "home_extension.manifest.synced",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent_id": agent.id(),
+                    "worker_kernel_id": remote_execution.worker_kernel_id,
+                    "manifest_hash": manifest_hash,
+                    "tool_count": tool_count,
+                }),
+            )?;
         }
         Ok(())
     }

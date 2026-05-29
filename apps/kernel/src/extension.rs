@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +55,13 @@ impl RemoteExtensionManifest {
         self.tools.is_empty()
     }
 
+    pub fn manifest_hash(&self) -> String {
+        let serialized =
+            serde_json::to_vec(self).unwrap_or_else(|_| b"remote-extension-manifest".to_vec());
+        let digest = Sha256::digest(&serialized);
+        hex_digest(&digest)
+    }
+
     pub fn validate_unique_tool_names(
         &self,
         operation: &'static str,
@@ -107,6 +115,10 @@ impl RemoteExtensionManifest {
     }
 }
 
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteExtensionTool {
     pub kind: ExtensionKind,
@@ -124,6 +136,121 @@ pub struct RemoteExtensionTool {
     pub timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExtensionInvocationMetadata {
+    pub invocation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<String>,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub started_at_ms: u64,
+}
+
+impl RemoteExtensionInvocationMetadata {
+    pub fn new(
+        provider_run_id: &str,
+        tool_name: &str,
+        provider_tool_call_id: Option<String>,
+    ) -> Self {
+        let started_at_ms = crate::session::unix_epoch_ms();
+        let sanitized_tool_name = tool_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        Self {
+            invocation_id: format!("{provider_run_id}:{sanitized_tool_name}:{started_at_ms}"),
+            provider_tool_call_id,
+            attempt: 1,
+            idempotency_key: None,
+            started_at_ms,
+        }
+    }
+}
+
+impl Default for RemoteExtensionInvocationMetadata {
+    fn default() -> Self {
+        Self {
+            invocation_id: format!("legacy-{}", crate::session::unix_epoch_ms()),
+            provider_tool_call_id: None,
+            attempt: 1,
+            idempotency_key: None,
+            started_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteExtensionManifestSyncState {
+    Synced,
+    Syncing,
+    Pending,
+    Failed,
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExtensionManifestSyncStatus {
+    pub state: RemoteExtensionManifestSyncState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempted_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_revoke: Option<bool>,
+}
+
+impl RemoteExtensionManifestSyncStatus {
+    pub fn pending(manifest_hash: String, pending_revoke: bool) -> Self {
+        Self {
+            state: RemoteExtensionManifestSyncState::Pending,
+            manifest_hash: Some(manifest_hash),
+            last_attempted_at_ms: None,
+            last_synced_at_ms: None,
+            last_error: None,
+            pending_revoke: pending_revoke.then_some(true),
+        }
+    }
+
+    pub fn syncing(mut self) -> Self {
+        self.state = RemoteExtensionManifestSyncState::Syncing;
+        self.last_attempted_at_ms = Some(crate::session::unix_epoch_ms());
+        self.last_error = None;
+        self
+    }
+
+    pub fn synced(manifest_hash: String) -> Self {
+        let now = crate::session::unix_epoch_ms();
+        Self {
+            state: RemoteExtensionManifestSyncState::Synced,
+            manifest_hash: Some(manifest_hash),
+            last_attempted_at_ms: Some(now),
+            last_synced_at_ms: Some(now),
+            last_error: None,
+            pending_revoke: None,
+        }
+    }
+
+    pub fn failed(mut self, error: impl Into<String>) -> Self {
+        self.state = RemoteExtensionManifestSyncState::Failed;
+        self.last_attempted_at_ms = Some(crate::session::unix_epoch_ms());
+        self.last_error = Some(error.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -196,6 +323,30 @@ mod tests {
             .expect_err("duplicate tool names should be rejected");
 
         assert!(error.to_string().contains("duplicated"));
+    }
+
+    #[test]
+    fn remote_manifest_hash_changes_with_projected_tools() {
+        let first = RemoteExtensionManifest {
+            tools: vec![tool(ExtensionKind::Script, "home_script")],
+        };
+        let second = RemoteExtensionManifest {
+            tools: vec![tool(ExtensionKind::Script, "home_script_v2")],
+        };
+
+        assert_ne!(first.manifest_hash(), second.manifest_hash());
+    }
+
+    #[test]
+    fn remote_manifest_sync_status_records_pending_revoke_and_failure() {
+        let pending = RemoteExtensionManifestSyncStatus::pending("hash-1".to_string(), true);
+        assert_eq!(pending.state, RemoteExtensionManifestSyncState::Pending);
+        assert_eq!(pending.pending_revoke, Some(true));
+
+        let failed = pending.syncing().failed("relay unavailable");
+        assert_eq!(failed.state, RemoteExtensionManifestSyncState::Failed);
+        assert_eq!(failed.last_error.as_deref(), Some("relay unavailable"));
+        assert!(failed.last_attempted_at_ms.is_some());
     }
 }
 
