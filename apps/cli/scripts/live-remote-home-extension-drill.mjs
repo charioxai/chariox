@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { createHmac } from 'node:crypto'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createHomeExtensionFixtures } from './lib/home-extension-fixtures.mjs'
+import { createRemoteHomeExtensionRelayTokenFactory } from './lib/remote-home-extension-relay-helpers.mjs'
+import { waitForDaemon, waitForRelayTarget, waitForRemoteMachine } from './lib/remote-home-extension-session-helpers.mjs'
+import { callRuntimeMcp, expectReject, expectRuntimeMcpReject, waitForRuntimeTool } from './lib/runtime-mcp-assertions.mjs'
 import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -78,64 +80,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 const unwrapVariant = (response, ...keys) => keys.map((key) => response?.[key]).find((value) => value != null) ?? response
 
-function base64url(input) {
-  return Buffer.from(input).toString('base64url')
-}
-
-function signRelayToken(claims) {
-  const payload = base64url(JSON.stringify(claims))
-  const signature = createHmac('sha256', RELAY_SECRET).update(payload).digest('base64url')
-  return `arroba-scoped-v1.${payload}.${signature}`
-}
-
-function relayClaims({ subject, subjectKind, actions, userId = null }) {
-  return {
-    issuer: RELAY_ISSUER,
-    subject,
-    subject_kind: subjectKind,
-    realm_id: RELAY_REALM,
-    allowed_actions: actions,
-    allowed_targets: null,
-    issued_at_ms: Date.now(),
-    expires_at_ms: Date.now() + 10 * 60_000,
-    token_id: `${subject}-${Date.now()}`,
-    account_id: 'remote-home-extension-drill-account',
-    organization_id: null,
-    user_id: userId,
-    device_id: subject,
-    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
-    client_id: subjectKind === 'client' ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
-    entitlements_version: 'drill',
-  }
-}
-
-function daemonToken(subject, userId) {
-  return signRelayToken(relayClaims({
-    subject,
-    subjectKind: 'kernel',
-    actions: [
-      'daemon_register',
-      'daemon_heartbeat',
-      'client_metadata_read',
-      'client_connect',
-      'packet_route',
-      'peer_request',
-      'peer_event',
-    ],
-    userId,
-  }))
-}
-
-function clientToken(userId) {
-  return signRelayToken(relayClaims({
-    subject: `client-${userId}-${process.pid}-${Date.now()}`,
-    subjectKind: 'client',
-    actions: ['client_connect', 'client_metadata_read', 'packet_route'],
-    userId,
-  }))
-}
-
 async function resolveBinary(binaryPath, manifestPath, binName) {
   try {
     await access(binaryPath)
@@ -186,61 +130,6 @@ async function stopHetznerRelayOnPort(options, port) {
   await runHetznerCommand(options, `fuser -k ${port}/tcp 2>/dev/null || true`).catch(() => {})
 }
 
-async function waitForDaemon(kernelUrl) {
-  let lastError = null
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(kernelUrl)
-    try {
-      await client.send(listRemoteMachinesRequest())
-      await client.close().catch(() => {})
-      return
-    } catch (error) {
-      lastError = error
-      await client.close().catch(() => {})
-      await sleep(250)
-    }
-  }
-  throw new Error(`daemon did not become ready: ${lastError?.message ?? String(lastError)}`)
-}
-
-async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(relayUrl, {
-      relayAuthToken: relayToken,
-      targetDaemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
-    try {
-      await Promise.race([
-        client.send(listRemoteMachinesRequest()),
-        sleep(2_000).then(() => { throw new Error('probe timeout') }),
-      ])
-      await client.close().catch(() => {})
-      return
-    } catch {
-      await client.close().catch(() => {})
-      await sleep(250)
-    }
-  }
-  throw new Error(`relay target ${targetDaemonAlias} did not become reachable`)
-}
-
-async function waitForRemoteMachine(client, machineRef) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const listed = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed')
-    const machines = listed.machines ?? listed.remote_machines ?? []
-    if (machines.some((machine) => (
-      machine.machine_id === machineRef
-      || machine.machine_alias === machineRef
-      || machine.alias === machineRef
-      || machine.display_name === machineRef
-    ))) return
-    await sleep(250)
-  }
-  throw new Error(`remote machine ${machineRef} did not become visible`)
-}
-
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
   child.kill('SIGTERM')
@@ -273,53 +162,6 @@ function daemonEnv({ rootDir, relayUrl, relayToken, daemonId, daemonAlias, machi
   }
 }
 
-async function callRuntimeMcp(serverUrl, authToken, method, params = {}) {
-  const response = await fetch(serverUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: `${Date.now()}`, method, params }),
-  })
-  const json = await response.json()
-  if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
-  return json.result
-}
-
-async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {}) {
-  try {
-    const result = await callRuntimeMcp(serverUrl, authToken, method, params)
-    if (result?.isError) return result
-    throw new Error(`runtime MCP ${method} unexpectedly succeeded: ${JSON.stringify(result)}`)
-  } catch (error) {
-    return { error: String(error?.message ?? error) }
-  }
-}
-
-async function expectReject(label, fn, expectedText) {
-  try {
-    await fn()
-  } catch (error) {
-    const message = String(error?.message ?? error)
-    if (!message.includes(expectedText)) {
-      throw new Error(`${label} rejected with unexpected error. Expected ${expectedText}, got: ${message}`)
-    }
-    return message
-  }
-  throw new Error(`${label} unexpectedly succeeded`)
-}
-
-async function waitForRuntimeTool(serverUrl, authToken, name, present) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const tools = await callRuntimeMcp(serverUrl, authToken, 'tools/list')
-    const found = tools.tools.some((tool) => tool.name === name)
-    if (found === present) return tools
-    await sleep(250)
-  }
-  throw new Error(`tool ${name} did not become ${present ? 'advertised' : 'revoked'}`)
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -342,6 +184,11 @@ async function main() {
   const sharedRelayToken = `remote-home-extension-${process.pid}`
   const homeDaemonId = `remote-home-extension-home-${process.pid}`
   const workerDaemonId = `remote-home-extension-worker-${process.pid}`
+  const { daemonToken, clientToken } = createRemoteHomeExtensionRelayTokenFactory({
+    issuer: RELAY_ISSUER,
+    secret: RELAY_SECRET,
+    realm: RELAY_REALM,
+  })
   const homeRelayToken = options.collab ? daemonToken(homeDaemonId, 'home-user') : sharedRelayToken
   const workerRelayToken = options.collab ? daemonToken(workerDaemonId, 'worker-user') : sharedRelayToken
   const probeRelayToken = options.collab ? clientToken('home-user') : sharedRelayToken
@@ -361,81 +208,22 @@ async function main() {
   let user2Client = null
   let succeeded = false
   try {
-    await mkdir(workspace, { recursive: true })
-    const homeHomeDir = path.join(rootDir, 'home-home')
-    const homeCapabilityRoot = path.join(rootDir, 'home-capabilities')
-    const workerCapabilityRoot = path.join(rootDir, 'worker-capabilities')
-    const scriptPath = path.join(rootDir, 'home_only_lookup.py')
-    await writeFile(scriptPath, `
-MARKER = ${JSON.stringify(homeMarker)}
-
-def run(query: str) -> dict[str, object]:
-    """Return a deterministic home-only lookup result."""
-    with open(MARKER, "w", encoding="utf-8") as handle:
-        handle.write("HOME_SCRIPT_EXECUTED:" + query)
-    return {"query": query, "origin": "home"}
-
-def test_run() -> None:
-    result = run("self-test")
-    assert result["origin"] == "home"
-`, 'utf8')
-    const homeMcpDir = path.join(homeCapabilityRoot, 'user', 'mcps')
-    await mkdir(homeMcpDir, { recursive: true })
-    await writeFile(path.join(homeMcpDir, 'home_echo_mcp.json'), `${JSON.stringify({
-      name: 'home_echo_mcp',
-      transport: {
-        type: 'streamable_http',
-        url: `http://127.0.0.1:${homeOnlyMcpPort}/mcp`,
-      },
-      enabled: true,
-      required: false,
-      tool_timeout_sec: 10,
-    }, null, 2)}\n`, 'utf8')
-    homeOnlyMcp = http.createServer(async (req, res) => {
-      let body = ''
-      req.setEncoding('utf8')
-      for await (const chunk of req) body += chunk
-      const rpc = body ? JSON.parse(body) : {}
-      res.setHeader('content-type', 'application/json')
-      if (rpc.method === 'tools/list') {
-        return res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          id: rpc.id ?? null,
-          result: {
-            tools: [{
-              name: 'home_echo',
-              description: 'Home-only MCP echo tool.',
-              inputSchema: {
-                type: 'object',
-                required: ['text'],
-                properties: { text: { type: 'string' } },
-                additionalProperties: false,
-              },
-            }],
-          },
-        }))
-      }
-      if (rpc.method === 'tools/call' && rpc.params?.name === 'home_echo') {
-        const text = String(rpc.params?.arguments?.text ?? '')
-        await writeFile(homeMcpMarker, `HOME_MCP_EXECUTED:${text}`, 'utf8')
-        return res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          id: rpc.id ?? null,
-          result: {
-            content: [{ type: 'text', text: JSON.stringify({ origin: 'home-mcp', text }) }],
-          },
-        }))
-      }
-      res.end(JSON.stringify({
-        jsonrpc: '2.0',
-        id: rpc.id ?? null,
-        error: { code: -32601, message: `unsupported MCP method ${rpc.method}` },
-      }))
+    const fixtures = await createHomeExtensionFixtures({
+      rootDir,
+      workspace,
+      homeOnlyMcpPort,
+      homeMarker,
+      homeMcpMarker,
+      homeConnectorMarker,
     })
-    await new Promise((resolve, reject) => {
-      homeOnlyMcp.once('error', reject)
-      homeOnlyMcp.listen(homeOnlyMcpPort, '127.0.0.1', resolve)
-    })
+    const {
+      connectorAdapterPath,
+      connectorPath,
+      homeCapabilityRoot,
+      scriptPath,
+      workerCapabilityRoot,
+    } = fixtures
+    homeOnlyMcp = fixtures.homeOnlyMcp
 
     const relayBinary = options.hetznerWorker
       ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay')
@@ -556,15 +344,15 @@ def test_run() -> None:
       })
     }
     const homeUrl = `ws://127.0.0.1:${homeKernelPort}`
-    await waitForDaemon(homeUrl)
+    await waitForDaemon(LocalIpcClient, homeUrl, listRemoteMachinesRequest)
     if (!options.hetznerWorker) {
-      await waitForDaemon(`ws://127.0.0.1:${workerKernelPort}`)
+      await waitForDaemon(LocalIpcClient, `ws://127.0.0.1:${workerKernelPort}`, listRemoteMachinesRequest)
     }
-    await waitForRelayTarget(relayUrl, probeRelayToken, 'home')
-    await waitForRelayTarget(relayUrl, probeRelayToken, 'worker')
+    await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'home', listRemoteMachinesRequest)
+    await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'worker', listRemoteMachinesRequest)
     client = new LocalIpcClient(homeUrl)
     if (!options.collab) {
-      await waitForRemoteMachine(client, workerMachineId)
+      await waitForRemoteMachine(client, workerMachineId, listRemoteMachinesRequest)
     }
 
     const env = unwrap(await client.send(registerEnvironmentRequest(workspace, {
@@ -572,71 +360,6 @@ def test_run() -> None:
       runtime: { type: 'python', python },
     })), 'EnvironmentRegistered').environment
     await client.send(registerScriptRequest(workspace, scriptPath, env.name, 'home_only_lookup'))
-    const connectorAdapterDir = path.join(rootDir, 'home-connector-adapter')
-    await mkdir(connectorAdapterDir, { recursive: true })
-    const connectorAdapterScript = path.join(connectorAdapterDir, 'home_connector_adapter.mjs')
-    await writeFile(connectorAdapterScript, `
-import { appendFileSync, writeFileSync } from 'node:fs'
-import readline from 'node:readline'
-
-const marker = process.argv[2]
-const rl = readline.createInterface({ input: process.stdin })
-rl.on('line', (line) => {
-  const request = JSON.parse(line)
-  if (request.type === 'shutdown') process.exit(0)
-  if (request.type === 'validate') {
-    console.log(JSON.stringify({ id: request.id, ok: true }))
-    return
-  }
-  if (request.type === 'prepare') {
-    console.log(JSON.stringify({ id: request.id, ok: true, result: { credential_targets: [], prepared_config: { arguments: request.arguments ?? {}, config: request.config ?? {} } } }))
-    return
-  }
-  if (request.type === 'call') {
-    const q = String(request.config?.arguments?.q ?? '')
-    writeFileSync(marker, 'HOME_CONNECTOR_EXECUTED:' + q, 'utf8')
-    console.log(JSON.stringify({ id: request.id, ok: true, result: { origin: 'home-connector', q } }))
-    return
-  }
-  appendFileSync(marker + '.errors', 'unsupported request ' + request.type + '\\n')
-  console.log(JSON.stringify({ id: request.id, ok: false, error: 'unsupported request ' + request.type }))
-})
-`, 'utf8')
-    const connectorAdapterPath = path.join(connectorAdapterDir, 'adapter.yaml')
-    const connectorPath = path.join(rootDir, 'home-local-api-connector.yaml')
-    await writeFile(connectorAdapterPath, `
-kind: connector_adapter
-name: home_stub
-version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
-command: ${process.execPath}
-args:
-  - ${connectorAdapterScript}
-  - ${homeConnectorMarker}
-description: Home-only connector adapter for remote extension drill.
-`, 'utf8')
-    await writeFile(connectorPath, `
-kind: connector
-name: home_local_api
-description: Home-only HTTP connector for remote extension drill.
-adapter: home_stub
-credential:
-  required: false
-timeout_ms: 30000
-max_response_bytes: 1048576
-operations:
-  - name: public_echo
-    description: Read home-only connector echo data.
-    safety: read
-    input_schema:
-      type: object
-      required: [q]
-      properties:
-        q: { type: string }
-      additionalProperties: false
-    config:
-      marker: ${homeConnectorMarker}
-`, 'utf8')
     await client.send(registerConnectorAdapterRequest(connectorAdapterPath))
     await client.send(registerConnectorRequest(connectorPath))
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, 'remote-home-extension-drill')), 'SessionCreated').session
