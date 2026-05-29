@@ -281,6 +281,14 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
     ) -> Result<(), DaemonError> {
+        self.sync_remote_extension_manifest_for_agent_inner::<true>(agent)
+            .await
+    }
+
+    async fn sync_remote_extension_manifest_for_agent_inner<const SCHEDULE_RETRIES: bool>(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(());
         };
@@ -329,6 +337,14 @@ impl KernelRuntimeState {
                     agent.id(),
                     Some(syncing_status.failed(error.to_string())),
                 );
+                if SCHEDULE_RETRIES {
+                    self.schedule_remote_extension_manifest_retry(
+                        agent.id().to_string(),
+                        manifest_hash.clone(),
+                        error.to_string(),
+                    )
+                    .await;
+                }
                 crate::logging::warn_with_fields(
                     "daemon.remote_extension",
                     "remote extension manifest sync failed; home validation remains authoritative",
@@ -345,10 +361,19 @@ impl KernelRuntimeState {
             response,
             RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. }
         ) {
+            let error = "unexpected worker manifest sync response".to_string();
             let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
                 agent.id(),
-                Some(syncing_status.failed("unexpected worker manifest sync response")),
+                Some(syncing_status.failed(error.clone())),
             );
+            if SCHEDULE_RETRIES {
+                self.schedule_remote_extension_manifest_retry(
+                    agent.id().to_string(),
+                    manifest_hash.clone(),
+                    error,
+                )
+                .await;
+            }
             crate::logging::warn_with_fields(
                 "daemon.remote_extension",
                 "remote extension manifest sync returned an unexpected response",
@@ -359,6 +384,14 @@ impl KernelRuntimeState {
                 }),
             );
         } else {
+            self.owned
+                .remote_extension_manifest_retry_counts
+                .lock()
+                .await
+                .remove(&remote_extension_manifest_retry_key(
+                    agent.id(),
+                    &manifest_hash,
+                ));
             let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
                 agent.id(),
                 Some(crate::extension::RemoteExtensionManifestSyncStatus::synced(
@@ -377,6 +410,66 @@ impl KernelRuntimeState {
             )?;
         }
         Ok(())
+    }
+
+    async fn schedule_remote_extension_manifest_retry(
+        &self,
+        agent_id: String,
+        manifest_hash: String,
+        error: String,
+    ) {
+        const RETRY_DELAYS_SECONDS: [u64; 3] = [2, 10, 30];
+        let retry_key = remote_extension_manifest_retry_key(&agent_id, &manifest_hash);
+        let attempt = {
+            let mut counts = self
+                .owned
+                .remote_extension_manifest_retry_counts
+                .lock()
+                .await;
+            let count = counts.entry(retry_key.clone()).or_insert(0);
+            if *count >= RETRY_DELAYS_SECONDS.len() as u32 {
+                return;
+            }
+            *count += 1;
+            *count
+        };
+        let delay = RETRY_DELAYS_SECONDS[(attempt - 1) as usize];
+        let _ = self.owned.durable_state_store.append_event(
+            "home_extension.manifest.retry_scheduled",
+            Some(agent_id.clone()),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "manifest_hash": manifest_hash,
+                "attempt": attempt,
+                "delay_sec": delay,
+                "error": error,
+            }),
+        );
+        let state = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(delay));
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) else {
+                    return;
+                };
+                let status_matches = agent
+                    .remote_extension_manifest_sync()
+                    .and_then(|status| status.manifest_hash.as_deref())
+                    == Some(manifest_hash.as_str());
+                if !status_matches {
+                    return;
+                }
+                let _ = state
+                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent)
+                    .await;
+            });
+        });
     }
 
     pub(crate) async fn retry_remote_extension_manifest_sync(
@@ -594,6 +687,10 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_prompt_access(agent_id, caller_user_id, operation)
     }
+}
+
+fn remote_extension_manifest_retry_key(agent_id: &str, manifest_hash: &str) -> String {
+    format!("{agent_id}:{manifest_hash}")
 }
 
 fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {

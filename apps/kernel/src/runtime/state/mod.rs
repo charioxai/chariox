@@ -81,6 +81,7 @@ struct KernelRuntimeOwnedState {
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
     remote_extension_invocations: Arc<Mutex<BTreeMap<String, Option<serde_json::Value>>>>,
+    remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
 }
 
 mod agent_config_owned_state;
@@ -246,6 +247,7 @@ impl KernelRuntimeState {
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 workspace_live_sync_journal,
                 remote_extension_invocations: Arc::new(Mutex::new(BTreeMap::new())),
+                remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
             },
         }
     }
