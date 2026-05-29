@@ -6,11 +6,48 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const realHomeDir = os.homedir()
+
+function parseArgs(argv) {
+  const options = {
+    hetznerWorker: false,
+    hetznerHost: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh', 'arroba_hetzner_staging'),
+    hetznerRepo: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+  }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--hetzner-worker') options.hetznerWorker = true
+    else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
+    else if (arg === '--hetzner-key') options.hetznerKey = argv[++i]
+    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++i]
+    else if (arg === '--help') options.help = true
+    else throw new Error(`unknown argument: ${arg}`)
+  }
+  return options
+}
+
+function printHelp() {
+  console.log([
+    'Usage: node apps/cli/scripts/live-remote-home-extension-drill.mjs [--hetzner-worker]',
+    '',
+    'Runs a home-owned remote extension drill with home/worker kernels:',
+    '- projects home-owned script, MCP, and connector tools to a remote agent',
+    '- verifies execution remains on home',
+    '- verifies revoke stops worker advertisement and stale calls',
+    '- verifies worker-local MCP name collision fails before launch',
+    '',
+    '  --hetzner-worker       Run relay and worker kernel on the configured Hetzner host',
+    '  --hetzner-host HOST    SSH host for --hetzner-worker',
+    '  --hetzner-key PATH     SSH key for --hetzner-worker',
+    '  --hetzner-repo PATH    Remote Arroba checkout containing built binaries',
+  ].join('\n'))
+}
 
 const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
 const {
@@ -74,6 +111,11 @@ async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
     await sleep(100)
   }
   throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
+async function stopHetznerRelayOnPort(options, port) {
+  await runHetznerCommand(options, `pkill -f ${shellQuote(`ARROBA_RELAY_PORT=${port}`)} 2>/dev/null || true`).catch(() => {})
+  await runHetznerCommand(options, `fuser -k ${port}/tcp 2>/dev/null || true`).catch(() => {})
 }
 
 async function waitForDaemon(kernelUrl) {
@@ -211,6 +253,11 @@ async function waitForRuntimeTool(serverUrl, authToken, name, present) {
 }
 
 async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    printHelp()
+    return
+  }
   const python = await resolveExecutable(process.env.PYTHON ?? 'python3')
   const rootDir = path.join(os.tmpdir(), `arroba-remote-home-extension-${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
@@ -228,8 +275,10 @@ async function main() {
   const relayUrl = `ws://127.0.0.1:${relayPort}`
   const workerMachineId = `remote-home-extension-worker-machine-${process.pid}`
   const workerAlias = `remote-home-extension-worker-${process.pid}`
+  const remoteRoot = `/tmp/arroba-remote-home-extension-${process.pid}-${Date.now()}`
 
   let relay = null
+  let relayTunnel = null
   let home = null
   let worker = null
   let homeOnlyMcp = null
@@ -312,14 +361,46 @@ def test_run() -> None:
       homeOnlyMcp.listen(homeOnlyMcpPort, '127.0.0.1', resolve)
     })
 
-    const relayBinary = await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
+    const relayBinary = options.hetznerWorker
+      ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay')
+      : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
     const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
-    relay = spawn(relayBinary, [], {
-      cwd: repoRoot,
-      env: { ...process.env, ARROBA_RELAY_HOST: '127.0.0.1', ARROBA_RELAY_PORT: String(relayPort), ARROBA_RELAY_TOKEN: relayToken },
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
-    await waitForTcpPort(relayPort)
+    if (options.hetznerWorker) {
+      await runHetznerCommand(options, [
+        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/kernel/target/debug/arroba-kernel'))}`,
+        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
+        `mkdir -p ${shellQuote(remoteRoot)}`,
+      ].join('; '))
+      await stopHetznerRelayOnPort(options, relayPort)
+      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(relayPort),
+        ARROBA_RELAY_TOKEN: relayToken,
+      }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      relayTunnel = spawn('ssh', [
+        '-i',
+        options.hetznerKey,
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-N',
+        '-L',
+        `127.0.0.1:${relayPort}:127.0.0.1:${relayPort}`,
+        '-L',
+        `127.0.0.1:${workerMcpPort}:127.0.0.1:${workerMcpPort}`,
+        options.hetznerHost,
+      ], { stdio: ['ignore', 'ignore', 'inherit'] })
+      await waitForTcpPort(relayPort, '127.0.0.1', 30_000)
+    } else {
+      relay = spawn(relayBinary, [], {
+        cwd: repoRoot,
+        env: { ...process.env, ARROBA_RELAY_HOST: '127.0.0.1', ARROBA_RELAY_PORT: String(relayPort), ARROBA_RELAY_TOKEN: relayToken },
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+      await waitForTcpPort(relayPort)
+    }
 
     home = spawn(daemonBinary, [], {
       cwd: repoRoot,
@@ -339,27 +420,57 @@ def test_run() -> None:
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    worker = spawn(daemonBinary, [], {
-      cwd: repoRoot,
-      env: daemonEnv({
-        rootDir,
-        relayUrl,
-        relayToken,
-        daemonId: `remote-home-extension-worker-${process.pid}`,
-        daemonAlias: 'worker',
-        machineId: workerMachineId,
-        machineAlias: workerAlias,
-        kernelPort: workerKernelPort,
-        mcpPort: workerMcpPort,
-        acceptRemoteLeases: true,
-        capabilityRoot: workerCapabilityRoot,
-        socketName: 'worker.sock',
-      }),
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
+    if (options.hetznerWorker) {
+      worker = spawn('ssh', sshArgs(options, remoteEnvCommand({
+        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        PATH: '/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        HOME: path.posix.join(remoteRoot, 'worker-home'),
+        CODEX_HOME: '/root/.codex',
+        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
+        XDG_CONFIG_HOME: path.posix.join(remoteRoot, 'worker-config'),
+        XDG_STATE_HOME: path.posix.join(remoteRoot, 'worker-state'),
+        ARROBA_KERNEL_PORT: String(workerKernelPort),
+        ARROBA_MCP_PORT: String(workerMcpPort),
+        ARROBA_OPENCODE_PORT: String(workerKernelPort + 2000),
+        ARROBA_CODEX_PORT: String(workerKernelPort + 2001),
+        ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+        ARROBA_RELAY_TOKEN: relayToken,
+        ARROBA_DAEMON_ID: `remote-home-extension-worker-${process.pid}`,
+        ARROBA_DAEMON_ALIAS: 'worker',
+        ARROBA_MACHINE_ID: workerMachineId,
+        ARROBA_MACHINE_ALIAS: workerAlias,
+        ARROBA_ACCEPT_REMOTE_LEASES: '1',
+        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
+        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
+        ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, 'worker-capabilities'),
+      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    } else {
+      worker = spawn(daemonBinary, [], {
+        cwd: repoRoot,
+        env: daemonEnv({
+          rootDir,
+          relayUrl,
+          relayToken,
+          daemonId: `remote-home-extension-worker-${process.pid}`,
+          daemonAlias: 'worker',
+          machineId: workerMachineId,
+          machineAlias: workerAlias,
+          kernelPort: workerKernelPort,
+          mcpPort: workerMcpPort,
+          acceptRemoteLeases: true,
+          capabilityRoot: workerCapabilityRoot,
+          socketName: 'worker.sock',
+        }),
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    }
     const homeUrl = `ws://127.0.0.1:${homeKernelPort}`
     await waitForDaemon(homeUrl)
-    await waitForDaemon(`ws://127.0.0.1:${workerKernelPort}`)
+    if (!options.hetznerWorker) {
+      await waitForDaemon(`ws://127.0.0.1:${workerKernelPort}`)
+    }
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
     client = new LocalIpcClient(homeUrl)
@@ -440,8 +551,7 @@ operations:
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, 'remote-home-extension-drill')), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `remote-home-extension-${process.pid}`))
     const workerMcpDir = path.join(workerCapabilityRoot, 'user', 'mcps')
-    await mkdir(workerMcpDir, { recursive: true })
-    await writeFile(path.join(workerMcpDir, 'home_echo_mcp.json'), `${JSON.stringify({
+    const workerCollisionMcp = `${JSON.stringify({
       name: 'home_echo_mcp',
       transport: {
         type: 'streamable_http',
@@ -449,7 +559,15 @@ operations:
       },
       enabled: true,
       required: false,
-    }, null, 2)}\n`, 'utf8')
+    }, null, 2)}\n`
+    if (options.hetznerWorker) {
+      const remoteWorkerMcpDir = path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps')
+      const remoteWorkerMcpPath = path.posix.join(remoteWorkerMcpDir, 'home_echo_mcp.json')
+      await runHetznerCommand(options, `mkdir -p ${shellQuote(remoteWorkerMcpDir)} && cat > ${shellQuote(remoteWorkerMcpPath)} <<'EOF'\n${workerCollisionMcp}EOF`)
+    } else {
+      await mkdir(workerMcpDir, { recursive: true })
+      await writeFile(path.join(workerMcpDir, 'home_echo_mcp.json'), workerCollisionMcp, 'utf8')
+    }
     const collisionAgent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-collision-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
     await client.send(grantAgentExtensionRequest(workspace, collisionAgent.id, 'mcp', 'home_echo_mcp'))
     await expectReject('home-proxy MCP collision launch', () => client.send(launchProviderRunRequest(
@@ -461,7 +579,11 @@ operations:
       collisionAgent.id,
       { nativeTui: true },
     )), 'collides with a worker-local MCP')
-    await rm(path.join(workerMcpDir, 'home_echo_mcp.json'), { force: true })
+    if (options.hetznerWorker) {
+      await runHetznerCommand(options, `rm -f ${shellQuote(path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps', 'home_echo_mcp.json'))}`)
+    } else {
+      await rm(path.join(workerMcpDir, 'home_echo_mcp.json'), { force: true })
+    }
 
     const agent = unwrap(await client.send(spawnAgentRequest(session.id, 'dev-stub', 'home-proxy-agent', 'default', workspace, 'low', undefined, undefined, workerAlias)), 'AgentSpawned').agent
     await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'home_only_lookup', env.name))
@@ -530,12 +652,17 @@ operations:
     if (afterConnectorRevokeMarker !== connectorMarker) throw new Error('revoked home-proxy connector executed after revoke')
 
     succeeded = true
-    console.log('[remote-home-extension-drill] pass', JSON.stringify({ script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
+    console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker', script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
   } finally {
     await client?.close?.().catch(() => {})
     await terminateChild(worker)
     await terminateChild(home)
+    await terminateChild(relayTunnel)
     await terminateChild(relay)
+    if (options.hetznerWorker) {
+      await stopHetznerRelayOnPort(options, relayPort)
+      await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRoot)}`).catch(() => {})
+    }
     await new Promise((resolve) => homeOnlyMcp?.close?.(resolve) ?? resolve())
     if (succeeded) await rm(rootDir, { recursive: true, force: true })
     else console.error(`[remote-home-extension-drill] artifacts kept at ${rootDir}`)
