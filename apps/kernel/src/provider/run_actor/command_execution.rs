@@ -2,11 +2,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error::DaemonError;
+use crate::prompt_assembly::PromptEnvelope;
 use crate::provider::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, RuntimeProviderRun,
 };
-use crate::prompt_assembly::PromptEnvelope;
 
 use super::super::{
     claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
@@ -88,6 +88,74 @@ pub(super) fn execute_abort_command(
     let result = abort_opencode_session(&run_id, &state);
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result
+}
+
+pub(super) fn execute_utility_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: RuntimeProviderRun,
+    envelope: PromptEnvelope,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    let run_id = run.id().to_string();
+    if run.adapter_key() != "claude" || !run.client_interface().is_arroba() {
+        return Err(DaemonError::LocalTransport {
+            operation: "run structured provider utility prompt",
+            message: format!(
+                "structured utility command is not supported for adapter `{}`",
+                run.adapter_key()
+            ),
+        });
+    }
+    let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
+    let result = run_claude_utility_prompt_on_runtime(&run, &mut state, &envelope, timeout);
+    runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+    result
+}
+
+fn run_claude_utility_prompt_on_runtime(
+    run: &RuntimeProviderRun,
+    state: &mut super::super::ClaudeRuntimeState,
+    envelope: &PromptEnvelope,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    submit_claude_prompt(run, state, envelope)?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut output = String::new();
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        let batch = drain_claude_events(run, state)?;
+        for chunk in batch.chunks {
+            if chunk.kind == crate::terminal::TerminalOutputKind::ProviderOutput {
+                output.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            }
+        }
+        if let Some(error) = batch.terminal_failure {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "claude_utility_failed",
+                message: error,
+            });
+        }
+        if batch.prompt_completed {
+            let output = output.trim().to_string();
+            if output.is_empty() {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "claude_utility_empty_output",
+                    message: "Claude utility returned no assistant text".to_string(),
+                });
+            }
+            return Ok(output);
+        }
+    }
+    Err(DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "claude_utility_timeout",
+        message: format!(
+            "Claude utility did not complete within {} ms",
+            timeout.as_millis()
+        ),
+    })
 }
 
 pub(super) fn execute_terminate_command(

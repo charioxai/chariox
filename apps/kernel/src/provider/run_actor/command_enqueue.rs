@@ -43,6 +43,42 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    pub(crate) fn run_utility(
+        &self,
+        provider_run_id: String,
+        run: RuntimeProviderRun,
+        envelope: PromptEnvelope,
+        timeout: std::time::Duration,
+    ) -> Result<String, DaemonError> {
+        self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
+        let sender = self.worker_for_run(&provider_run_id);
+        let (response_tx, response_rx) = std::sync::mpsc::channel();
+        match sender.try_send(ProviderRunActorCommand::Utility {
+            provider_run_id: provider_run_id.clone(),
+            run,
+            envelope,
+            timeout,
+            response: response_tx,
+        }) {
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                return Err(provider_actor_enqueue_error(
+                    "enqueue structured utility prompt",
+                    &provider_run_id,
+                    error.to_string(),
+                ));
+            }
+        }
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!("provider run actor utility response failed: {error}"),
+            })?
+    }
+
     pub(crate) fn spawn_abort(
         &self,
         session_id: String,

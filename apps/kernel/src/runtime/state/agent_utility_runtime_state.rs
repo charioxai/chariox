@@ -57,4 +57,27 @@ impl KernelRuntimeState {
         };
         Ok((agent, provider_run))
     }
+
+    pub(crate) async fn run_structured_provider_utility_prompt(
+        &self,
+        provider_run: crate::provider::RuntimeProviderRun,
+        visible_user_prompt: String,
+        hidden_system_context: String,
+        timeout: tokio::time::Duration,
+    ) -> Result<String, DaemonError> {
+        let provider_store = self.owned.provider_store.clone();
+        tokio::task::spawn_blocking(move || {
+            provider_store.run_structured_utility_prompt(
+                &provider_run,
+                &visible_user_prompt,
+                &hidden_system_context,
+                timeout,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run structured provider utility prompt",
+            message: format!("provider utility prompt task failed: {error}"),
+        })?
+    }
 }

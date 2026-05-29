@@ -273,6 +273,21 @@ impl ProviderProcessServiceStore {
         )
     }
 
+    pub(crate) fn run_structured_utility_prompt(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String, DaemonError> {
+        self.write().run_structured_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+        )
+    }
+
     pub(crate) fn enqueue_structured_prompt_abort(
         &self,
         session_id: String,

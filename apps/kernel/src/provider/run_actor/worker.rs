@@ -3,12 +3,13 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::provider::RuntimeProviderRun;
+use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
+use crate::provider::RuntimeProviderRun;
 
 use super::command_execution::{
     execute_abort_command, execute_output_poll_command, execute_selection_sync_command,
-    execute_submit_command, execute_terminate_command,
+    execute_submit_command, execute_terminate_command, execute_utility_command,
 };
 use super::finished_jobs::{
     push_finished_abort, push_finished_output_poll, push_finished_selection_sync,
@@ -28,6 +29,13 @@ pub(super) enum ProviderRunActorCommand {
         agent_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
+    },
+    Utility {
+        provider_run_id: String,
+        run: RuntimeProviderRun,
+        envelope: PromptEnvelope,
+        timeout: Duration,
+        response: mpsc::Sender<Result<String, DaemonError>>,
     },
     Abort {
         session_id: String,
@@ -77,8 +85,7 @@ impl ProviderRunWorkerDeps {
                         run,
                         envelope,
                     } => {
-                        let result =
-                            execute_submit_command(&self.runtime_registry, run, envelope);
+                        let result = execute_submit_command(&self.runtime_registry, run, envelope);
                         self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptSubmitJob {
                             session_id,
@@ -101,6 +108,18 @@ impl ProviderRunWorkerDeps {
                             result,
                         };
                         push_finished_abort(&self.finished_aborts, finished);
+                    }
+                    ProviderRunActorCommand::Utility {
+                        provider_run_id,
+                        run,
+                        envelope,
+                        timeout,
+                        response,
+                    } => {
+                        let result =
+                            execute_utility_command(&self.runtime_registry, run, envelope, timeout);
+                        let _ = response.send(result);
+                        self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                     }
                     ProviderRunActorCommand::Terminate {
                         provider_run_id,

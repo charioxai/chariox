@@ -110,12 +110,16 @@ pub(crate) async fn run_agent_utility(
             AgentUtilityKind::WorkspaceCommitMessage,
             AgentUtilityInput::WorkspaceCommitMessage(input),
         ) => AgentUtilityOutput::WorkspaceCommitMessage {
-            message: run_workspace_commit_message_utility(provider_run, input).await?,
+            message: run_workspace_commit_message_utility(runtime_state, provider_run, input)
+                .await?,
         },
         (
             AgentUtilityKind::SemanticRecallSearch,
             AgentUtilityInput::SemanticRecallSearch(input),
-        ) => run_semantic_recall_search_utility(archive_config, provider_run, input).await?,
+        ) => {
+            run_semantic_recall_search_utility(runtime_state, archive_config, provider_run, input)
+                .await?
+        }
         (kind, _) => {
             return Err(DaemonError::LocalTransport {
                 operation: agent_utility_operation(kind),
@@ -161,11 +165,13 @@ async fn assert_agent_utility_can_run(
 }
 
 async fn run_workspace_commit_message_utility(
+    runtime_state: &KernelRuntimeState,
     provider_run: RuntimeProviderRun,
     input: WorkspaceCommitMessageUtilityInput,
 ) -> Result<String, DaemonError> {
     let prompt = workspace_commit_message_utility_prompt_assembly(&input)?;
     run_provider_utility_prompt(
+        runtime_state,
         provider_run,
         prompt.into(),
         "run workspace commit message utility",
@@ -174,6 +180,7 @@ async fn run_workspace_commit_message_utility(
 }
 
 async fn run_semantic_recall_search_utility(
+    runtime_state: &KernelRuntimeState,
     archive_config: UserArchiveHistoryConfig,
     provider_run: RuntimeProviderRun,
     input: SemanticRecallSearchUtilityInput,
@@ -190,6 +197,7 @@ async fn run_semantic_recall_search_utility(
     }
     let prompt = semantic_recall_search_utility_prompt_assembly(&input, &candidates)?;
     let output = run_provider_utility_prompt(
+        runtime_state,
         provider_run,
         prompt.into(),
         "run semantic recall search utility",
@@ -210,10 +218,21 @@ fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
 }
 
 async fn run_provider_utility_prompt(
+    runtime_state: &KernelRuntimeState,
     provider_run: RuntimeProviderRun,
     prompt: AgentUtilityPromptParts,
     operation: &'static str,
 ) -> Result<String, DaemonError> {
+    if provider_run.adapter_key() == "claude" {
+        return runtime_state
+            .run_structured_provider_utility_prompt(
+                provider_run,
+                prompt.visible_user_prompt,
+                prompt.hidden_system_context,
+                AGENT_UTILITY_TIMEOUT,
+            )
+            .await;
+    }
     tokio::task::spawn_blocking(move || match provider_run.adapter_key() {
         "codex" => run_codex_utility_prompt(
             &provider_run,

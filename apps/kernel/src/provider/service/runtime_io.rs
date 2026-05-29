@@ -200,6 +200,33 @@ impl ProviderProcessService {
         )
     }
 
+    pub(crate) fn run_structured_utility_prompt(
+        &mut self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String, DaemonError> {
+        if !self.run_uses_structured_prompt_io(run) {
+            return Err(DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!(
+                    "provider run `{}` does not use structured prompt I/O",
+                    run.id()
+                ),
+            });
+        }
+        let envelope = PromptAssemblyService::from_env()?.assemble_provider_turn(
+            run,
+            visible_user_prompt,
+            Some(hidden_system_context),
+            Vec::new(),
+            PromptAssemblyMode::UtilityTurn,
+        )?;
+        self.run_actor_mailbox
+            .run_utility(run.id().to_string(), run.clone(), envelope, timeout)
+    }
+
     pub(crate) fn enqueue_structured_prompt_abort(
         &mut self,
         session_id: String,
