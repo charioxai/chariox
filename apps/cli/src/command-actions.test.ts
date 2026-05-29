@@ -57,11 +57,11 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
 
   assert.equal(
     formatAgentCapabilityGrants(agent, "mcp"),
-    "agent-1 (qa) MCP grants:\n- browser\n- github",
+    "agent-1 (qa) MCP grants:\n- browser (worker-local)\n- github (worker-local)",
   )
   assert.equal(
     formatAgentCapabilityGrants(agent, "skill"),
-    "agent-1 (qa) skill grants:\n- browser-qa",
+    "agent-1 (qa) skill grants:\n- browser-qa (worker-local)",
   )
   assert.equal(
     formatAgentCapabilityGrants(makeAgent(), "skill"),
