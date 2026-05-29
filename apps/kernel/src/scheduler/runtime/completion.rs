@@ -329,7 +329,7 @@ fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutp
         };
         cursor = block_start + end + "```".len();
     }
-    parsed
+    parsed.or_else(|| serde_json::from_str::<WorkflowStructuredOutputEnvelope>(text.trim()).ok())
 }
 
 fn collect_workflow_artifacts_from_dir(
@@ -409,6 +409,23 @@ The provider forgot to close the fence.
 "#,
         )
         .expect("trailing structured output should parse");
+
+        let output = parsed
+            .output
+            .expect("structured output should contain output")
+            .into_output_message()
+            .expect("message should serialize");
+        assert_eq!(output, r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn workflow_structured_output_accepts_bare_json_envelope() {
+        let parsed = parse_workflow_structured_output(
+            r#"
+{"summary":"fixed","output":{"message":"{\"ok\":true}"}}
+"#,
+        )
+        .expect("bare structured output should parse");
 
         let output = parsed
             .output

@@ -397,6 +397,8 @@ async function runCodexTui(options: {
     "--remote",
     options.proxyUrl,
     "--no-alt-screen",
+    "--config",
+    "check_for_update_on_startup=false",
     "-C",
     options.workingDirectory,
     "-m",

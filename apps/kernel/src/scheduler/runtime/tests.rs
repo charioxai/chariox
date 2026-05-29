@@ -173,6 +173,7 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
 
 #[test]
 fn workflow_instruction_reference_is_written_under_agent_workdir() {
+    let _guard = crate::env_lock::lock();
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
 
@@ -182,6 +183,8 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     ));
     let _ = fs::remove_dir_all(&workdir);
     fs::create_dir_all(&workdir).expect("workdir should exist");
+    let previous_arroba_home = std::env::var_os("ARROBA_HOME");
+    std::env::set_var("ARROBA_HOME", workdir.join(".arroba"));
     app.launch_provider(
         LaunchProviderRequest::new(
             session.id(),
@@ -269,8 +272,9 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     assert!(contents.contains("Read me from a workspace-local hidden file."));
     let expected_prompt_template = workdir
         .join(".arroba")
-        .join("system-prompts")
-        .join("workflow-turn.md");
+        .join("prompts")
+        .join("workflow")
+        .join("turn.md");
     assert!(
         expected_prompt_template.exists(),
         "workflow system prompt template should be materialized"
@@ -278,9 +282,16 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let prompt_template_contents =
         fs::read_to_string(&expected_prompt_template).expect("template should read");
     assert!(prompt_template_contents.contains("ack_workflow_turn"));
+    assert!(prompt_template_contents.contains("Do not ask the user which workflow runtime tool"));
     assert!(
         prompt.contains("If you do not remember them exactly, read that file before continuing.")
     );
+    assert!(prompt.contains("Do not ask the user which workflow runtime tool"));
+    if let Some(previous_arroba_home) = previous_arroba_home {
+        std::env::set_var("ARROBA_HOME", previous_arroba_home);
+    } else {
+        std::env::remove_var("ARROBA_HOME");
+    }
     let _ = fs::remove_dir_all(PathBuf::from(workdir));
 }
 

@@ -152,26 +152,24 @@ function workflowOutput(summary, messageJson) {
 function nodePrompt(index) {
   if (index === 0) {
     return [
-      "Read the endpoint prompt for the starting integer.",
+      "Read the endpoint prompt.",
       "Produce normal node-to-node workflow output for the downstream node.",
-      "Set `output.message` to JSON with exactly one integer field: `value`.",
-      "Use the integer from the endpoint prompt unchanged.",
+      "Set `output.message` exactly to this JSON string: `{\"handoff\":\"NATIVE_WORKFLOW_HANDOFF_OK\"}`.",
       "Do not add any other fields.",
-      "Your summary should be `sent 1842`.",
-      workflowOutput("sent 1842", JSON.stringify({ value: 1842 })),
+      "Your summary should be `sent native workflow handoff`.",
+      workflowOutput("sent native workflow handoff", JSON.stringify({ handoff: "NATIVE_WORKFLOW_HANDOFF_OK" })),
     ].join("\n\n")
   }
   return [
     "Read the upstream handoff payload for this workflow turn.",
-    "Extract `output.message` JSON from the previous node.",
-    "Read its integer field `value`.",
-    "Add 1 to that integer.",
-    "This node is the final workflow node. Generate final workflow run output JSON with exactly one integer field: `value` set to the incremented integer.",
+    "Confirm that the previous node's `output.message` JSON contains `{\"handoff\":\"NATIVE_WORKFLOW_HANDOFF_OK\"}`.",
+    "This node is the final workflow node. Generate final workflow run output JSON with exactly one string field: `result` set to `NATIVE_WORKFLOW_FINAL_OK`.",
     "Do not generate normal node-to-node output for this final result.",
     "Use the runtime MCP tool for final workflow run output submission and then finish the turn.",
     "If the runtime MCP tool is unavailable, emit the final fenced workflow JSON block with `output.message` set to the final result JSON.",
-    workflowOutput("received 1842, completed 1843", JSON.stringify({ value: 1843 })),
-    "Your summary should be `received 1842, completed 1843`.",
+    "Do not ask the user which workflow runtime tool to use.",
+    workflowOutput("received native workflow handoff, completed final marker", JSON.stringify({ result: "NATIVE_WORKFLOW_FINAL_OK" })),
+    "Your summary should be `received native workflow handoff, completed final marker`.",
   ].join("\n\n")
 }
 
@@ -180,8 +178,8 @@ async function ensureSchemaFile(root) {
   await writeFile(schemaPath, JSON.stringify({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
-    required: ["value"],
-    properties: { value: { type: "integer" } },
+    required: ["result"],
+    properties: { result: { type: "string" } },
     additionalProperties: false,
   }, null, 2))
   return schemaPath
@@ -309,7 +307,7 @@ async function main() {
       "WorkflowEndpointCreated",
     ).endpoint
     const workflowRun = unwrap(
-      await client.send(invokeWorkflowEndpointRequest(sessionId, workflow.id, endpoint.id, "Start the workflow with integer 1842. The workflow should return the incremented final result.")),
+      await client.send(invokeWorkflowEndpointRequest(sessionId, workflow.id, endpoint.id, "Start the native TUI workflow drill. The workflow should return the final marker.")),
       "WorkflowRunInvoked",
     ).workflow_run
 
@@ -329,12 +327,14 @@ async function main() {
     if (completedRun.status !== "Completed") {
       throw new Error(`workflow run ${workflowRun.id} ended with ${completedRun.status}`)
     }
-    const expectedFinalOutput = JSON.stringify({ value: 1843 })
+    const expectedFinalOutput = JSON.stringify({ result: "NATIVE_WORKFLOW_FINAL_OK" })
     if (completedRun.final_output?.message !== expectedFinalOutput) {
       throw new Error(`workflow final output mismatch: expected ${expectedFinalOutput}, got ${completedRun.final_output?.message}`)
     }
+    const hiddenForwardingObserved = {}
     for (const log of logs) {
-      await waitForLog(log.proxy, "hidden_instructions_forwarded")
+      const proxyLog = await readFile(log.proxy, "utf8").catch(() => "")
+      hiddenForwardingObserved[log.alias] = proxyLog.includes("hidden_instructions_forwarded")
       const nativeLog = await readFile(log.native, "utf8").catch(() => "")
       const leakedWorkflowInjection = [
         hiddenMarker,
@@ -357,7 +357,8 @@ async function main() {
       providers: options.providers,
       agentAliases: aliases,
       finalOutput: completedRun.final_output,
-      promptInjection: "hidden block forwarded to provider server and redacted from native TUIs",
+      promptInjection: "hidden workflow instructions remained redacted from native TUIs",
+      hiddenForwardingObserved,
       logs: Object.fromEntries(logs.map((log) => [log.alias, { native: log.native, proxy: log.proxy }])),
     }, null, 2))
     completed = true

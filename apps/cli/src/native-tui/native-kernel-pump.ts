@@ -23,11 +23,13 @@ export function startNativeKernelPumpLoop(
     if (stopped || inFlight) return
     inFlight = true
     try {
-      const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
-      if (options.onTerminalRecords && "TerminalOutput" in response) {
-        const records = (response.TerminalOutput as { records?: unknown[] }).records
-        if (Array.isArray(records) && records.length > 0) {
-          options.onTerminalRecords(records as TerminalOutputRecord[])
+      if (options.onTerminalRecords) {
+        const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+        if ("TerminalOutput" in response) {
+          const records = (response.TerminalOutput as { records?: unknown[] }).records
+          if (Array.isArray(records) && records.length > 0) {
+            options.onTerminalRecords(records as TerminalOutputRecord[])
+          }
         }
       }
       if (options.pollRuntimeNotices !== false) {
