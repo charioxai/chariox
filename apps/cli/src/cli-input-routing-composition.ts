@@ -83,6 +83,9 @@ export type CliInputRoutingCompositionDeps = {
   setSelectedWorkflowNodeId: AnyFn
   rebuildTranscript: AnyFn
   workflowPromptState: AnyFn
+  workflowInspectorMode: AnyFn
+  setWorkflowInspectorMode: AnyFn
+  selectedWorkflowNodeId: AnyFn
   pendingAttachments: AnyFn
   beginSubmittedPromptUi: AnyFn
   restoreFailedPromptUi: AnyFn
@@ -118,6 +121,8 @@ export type CliInputRoutingCompositionDeps = {
   }
   ensureBackgroundPollersStarted: AnyFn
   workflowNodeInstructionsEditor: AnyFn
+  openWorkflowNodeInstructionsEditor: AnyFn
+  closeWorkflowNodeInstructionsEditor: AnyFn
   focusedAgentInteraction: AnyFn
   interactionChoiceStore: {
     getSelectedIndex: AnyFn
@@ -458,6 +463,55 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
   })
 
+  const handleWorkflowDetailPaneKey = (event: { eventType?: string; name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean }) => {
+    if (
+      !deps.workflowScreenActive()
+      || deps.promptInputRefController.isFocused()
+      || deps.commandCenterOpen()
+      || event.eventType === "release"
+      || event.ctrl
+      || event.meta
+      || event.alt
+    ) {
+      return false
+    }
+    const setMode = (mode: "logs" | "trace" | "edit") => {
+      deps.setWorkflowInspectorMode(mode)
+      deps.rebuildTranscript()
+      return true
+    }
+    if (event.name === "l") {
+      return setMode("logs")
+    }
+    if (event.name === "t") {
+      return setMode("trace")
+    }
+    if (event.name === "e") {
+      return setMode("edit")
+    }
+    if (event.name === "escape") {
+      if (deps.workflowNodeInstructionsEditor()) {
+        deps.closeWorkflowNodeInstructionsEditor()
+        return true
+      }
+      if (deps.workflowInspectorMode() === "edit") {
+        return setMode(deps.selectedWorkflowNodeId() ? "trace" : "logs")
+      }
+      return false
+    }
+    if (event.name === "return" || event.name === "enter") {
+      const workflow = deps.sessionState().workflows?.find((entry: { id: string }) => entry.id === deps.selectedWorkflowId()) ?? null
+      const node = workflow?.nodes?.find((entry: { id: string }) => entry.id === deps.selectedWorkflowNodeId()) ?? null
+      if (!workflow || !node) {
+        deps.flashFooter("select a workflow node to edit", "info")
+        return true
+      }
+      deps.openWorkflowNodeInstructionsEditor(workflow.id, node.id, node.instructions ?? "")
+      return true
+    }
+    return false
+  }
+
   const stdinKeyController = createCliStdinKeyController({
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
@@ -475,6 +529,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     isAttached: deps.isAttached,
     workflowScreenActive: deps.workflowScreenActive,
     cycleWorkflowCanvasNode: deps.cycleWorkflowCanvasNode,
+    handleWorkflowDetailPaneKey,
     cycleAgentFocus: () => {
       void deps.handleCycleAgentFocus()
     },

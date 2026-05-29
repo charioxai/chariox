@@ -163,6 +163,22 @@ test("cli stdin key controller routes prompt attachment edits", () => {
   ])
 })
 
+test("cli stdin key controller routes workflow detail pane keys before prompt navigation", () => {
+  const harness = createHarness({
+    workflowScreenActive: true,
+    workflowDetailHandled: true,
+    parsedEvent: keyEvent("l"),
+  })
+
+  assert.equal(harness.controller.handleData("x"), true)
+  assert.deepEqual(harness.calls(), [
+    "parse:x:true",
+    "session-browser:l",
+    "focused:l",
+    "workflow-detail:l",
+  ])
+})
+
 test("cli stdin key controller falls through to prompt-turn and waiting-room handlers", () => {
   const promptTurnHarness = createHarness({
     promptTurnHandled: true,
@@ -207,6 +223,7 @@ function createHarness(options: {
   pendingAttachmentCount?: number
   promptTurnHandled?: boolean
   waitingRoomHandled?: boolean
+  workflowDetailHandled?: boolean
 } = {}) {
   const calls: string[] = []
   const parsedEvent = options.parsedEvent === undefined
@@ -245,6 +262,10 @@ function createHarness(options: {
     workflowScreenActive: () => options.workflowScreenActive ?? false,
     cycleWorkflowCanvasNode: () => {
       calls.push("cycle-workflow-node")
+    },
+    handleWorkflowDetailPaneKey: (event) => {
+      calls.push(`workflow-detail:${event.name}`)
+      return options.workflowDetailHandled ?? false
     },
     cycleAgentFocus: () => {
       calls.push("cycle-agent-focus")

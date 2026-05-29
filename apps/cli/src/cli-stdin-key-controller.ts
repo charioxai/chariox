@@ -25,6 +25,7 @@ export type CliStdinKeyControllerDeps = {
   isAttached: () => boolean
   workflowScreenActive: () => boolean
   cycleWorkflowCanvasNode: () => void
+  handleWorkflowDetailPaneKey: (event: CliStdinKeyEvent) => boolean
   cycleAgentFocus: () => void
   copyPromptSelection: () => boolean
   activePrompt: () => unknown
@@ -103,6 +104,9 @@ export function createCliStdinKeyController(
         return true
       }
       if (deps.dialogOverlayOpen()) {
+        return true
+      }
+      if (deps.workflowScreenActive() && deps.handleWorkflowDetailPaneKey(event)) {
         return true
       }
       if (event.eventType !== "release" && deps.promptFocused()) {
