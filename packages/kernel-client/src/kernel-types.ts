@@ -39,6 +39,7 @@ export type ArrobaScriptMetadata = {
   description: string
   input_schema: Record<string, unknown>
   definition_hash: string
+  timeout_sec?: number | null
 }
 
 export type ArrobaConnectorDefinition = {
@@ -1058,7 +1059,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 69
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 70
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

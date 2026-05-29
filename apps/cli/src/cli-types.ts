@@ -47,6 +47,7 @@ export type ArrobaScriptMetadata = {
   description: string
   input_schema: Record<string, unknown>
   definition_hash: string
+  timeout_sec?: number | null
 }
 
 export type ArrobaConnectorDefinition = {

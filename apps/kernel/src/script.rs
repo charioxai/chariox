@@ -39,6 +39,8 @@ pub struct ArrobaScriptMetadata {
     pub description: String,
     pub input_schema: Value,
     pub definition_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +69,8 @@ struct StoredScriptMetadata {
     description: String,
     input_schema: Value,
     definition_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,6 +180,8 @@ print(json.dumps({
     }
 }))
 "#;
+
+pub const DEFAULT_SCRIPT_EXECUTION_TIMEOUT_SEC: u64 = 30;
 
 const PYTHON_CALLER: &str = r#"
 import contextlib
@@ -448,6 +454,7 @@ impl ArrobaScriptRegistry {
             description,
             input_schema,
             definition_hash,
+            timeout_sec: None,
         })
     }
 
@@ -480,6 +487,7 @@ impl ArrobaScriptRegistry {
             description: validated.description.clone(),
             input_schema: validated.input_schema.clone(),
             definition_hash: validated.definition_hash.clone(),
+            timeout_sec: validated.timeout_sec,
         };
         fs::write(
             destination.join("metadata.json"),
@@ -546,7 +554,14 @@ impl ArrobaScriptRegistry {
         })?;
         match (&metadata.runtime, &env.runtime) {
             (ArrobaScriptRuntime::Python, ArrobaEnvironmentRuntime::Python { python }) => {
-                execute_python_script(python, &metadata.path, arguments)
+                execute_python_script(
+                    python,
+                    &metadata.path,
+                    arguments,
+                    metadata
+                        .timeout_sec
+                        .unwrap_or(DEFAULT_SCRIPT_EXECUTION_TIMEOUT_SEC),
+                )
             }
             (
                 ArrobaScriptRuntime::TypeScript,
@@ -557,6 +572,9 @@ impl ArrobaScriptRegistry {
                 &metadata.path,
                 &metadata.input_schema,
                 arguments,
+                metadata
+                    .timeout_sec
+                    .unwrap_or(DEFAULT_SCRIPT_EXECUTION_TIMEOUT_SEC),
             ),
             _ => Err(DaemonError::InvalidConfig {
                 field: "environment",
@@ -592,6 +610,7 @@ impl ArrobaScriptRegistry {
             description: stored.description,
             input_schema: stored.input_schema,
             definition_hash: stored.definition_hash,
+            timeout_sec: stored.timeout_sec,
         }
     }
 
@@ -788,6 +807,7 @@ fn execute_python_script(
     python: &Path,
     script: &Path,
     arguments: Value,
+    timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
     let mut child = Command::new(python)
         .arg("-c")
@@ -804,7 +824,7 @@ fn execute_python_script(
             .map_err(io_error("script.execute"))?;
     }
     let status = child
-        .wait_timeout(std::time::Duration::from_secs(30))
+        .wait_timeout(std::time::Duration::from_secs(timeout_sec.max(1)))
         .map_err(io_error("script.execute"))?;
     if status.is_none() {
         let _ = child.kill();
@@ -854,6 +874,7 @@ fn execute_node_script(
     script: &Path,
     input_schema: &Value,
     arguments: Value,
+    timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
     let mut command = Command::new(node);
     if script.extension().and_then(|ext| ext.to_str()) == Some("ts") {
@@ -881,7 +902,7 @@ fn execute_node_script(
             .map_err(io_error("script.execute"))?;
     }
     let status = child
-        .wait_timeout(std::time::Duration::from_secs(30))
+        .wait_timeout(std::time::Duration::from_secs(timeout_sec.max(1)))
         .map_err(io_error("script.execute"))?;
     if status.is_none() {
         let _ = child.kill();

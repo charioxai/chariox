@@ -79,7 +79,11 @@ impl DaemonApp {
                 definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
                 execution_location: crate::extension::ExtensionExecutionLocation::Home,
                 safety: None,
-                timeout_sec: None,
+                timeout_sec: Some(
+                    script
+                        .timeout_sec
+                        .unwrap_or(crate::script::DEFAULT_SCRIPT_EXECUTION_TIMEOUT_SEC),
+                ),
                 version_hash: Some(script.definition_hash),
             });
         }

@@ -43,9 +43,13 @@ impl KernelRuntimeState {
         )
         .await?;
         let result = match tool.kind.clone() {
-            crate::extension::ExtensionKind::Script => {
-                self.dispatch_home_script_tool(&context, &tool, arguments)
-            }
+            crate::extension::ExtensionKind::Script => with_home_extension_timeout(
+                &tool,
+                "home script proxy",
+                self.dispatch_home_script_tool(&context, &tool, arguments),
+            )
+            .await
+            .and_then(enforce_home_extension_runtime_result_limit),
             crate::extension::ExtensionKind::Connector => with_home_extension_timeout(
                 &tool,
                 "home connector proxy",

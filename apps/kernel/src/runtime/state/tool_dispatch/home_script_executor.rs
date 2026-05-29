@@ -5,7 +5,7 @@ use super::home_extension_authorizer::HomeExtensionAuthorizationService;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(in crate::runtime::state::tool_dispatch) fn dispatch_home_script_tool(
+    pub(in crate::runtime::state::tool_dispatch) async fn dispatch_home_script_tool(
         &self,
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         tool: &crate::extension::RemoteExtensionTool,
@@ -46,20 +46,26 @@ impl KernelRuntimeState {
                 }),
             });
         };
-        let result = script_registry.execute(&grant.name, &env, arguments)?;
-        let payload = if result.logs.is_empty() || !result.ok {
-            result.payload
-        } else {
-            serde_json::json!({
-                "result": result.payload,
-                "logs": result.logs,
-            })
-        };
-        super::home_extension_execution_policy::enforce_home_extension_runtime_result_limit(
-            crate::transport::runtime_tools::RuntimeToolResult {
+        let script_name = grant.name;
+        tokio::task::spawn_blocking(move || {
+            let result = script_registry.execute(&script_name, &env, arguments)?;
+            let payload = if result.logs.is_empty() || !result.ok {
+                result.payload
+            } else {
+                serde_json::json!({
+                    "result": result.payload,
+                    "logs": result.logs,
+                })
+            };
+            Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: result.ok,
                 payload,
-            },
-        )
+            })
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "home script proxy",
+            message: error.to_string(),
+        })?
     }
 }
