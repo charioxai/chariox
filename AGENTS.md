@@ -13,6 +13,8 @@ The kernel is the runtime authority. It owns sessions, agents, provider runs, wo
 
 Agents run through provider CLIs or adapters launched by the kernel. Arroba orchestrates them but must not become the provider credential store or provider-internal state owner.
 
+Arroba supports Codex, OpenCode, and Claude through their official provider harnesses only: provider CLIs, provider-local servers, and documented provider-native hooks/protocols. Do not use provider SDKs, third-party agent services, or alternate hosted agent runtimes for Arroba provider execution.
+
 The relay is transport only. It admits scoped connections and routes encrypted packets. It must not become a session authority and must not inspect prompts, outputs, workspace data, provider payloads, or session history.
 
 Primary connectivity:
@@ -27,7 +29,7 @@ Cloud may authenticate users, issue relay tokens, select relay targets, and disp
 
 ## Native Provider TUI Contract
 
-Native provider TUI mode (`arroba codex`, `arroba opencode`, `arroba claude`) must reuse the normal Arroba runtime paths. For local native TUI, provider prompts enter the kernel through the same prompt path as Arroba clients, and Arroba-origin prompts go through the kernel-managed provider run so the provider TUI observes the same turns. For remote native TUI, provider TUIs and Arroba TUIs attach to the home kernel session; the home kernel dispatches to the worker through the existing leased-agent relay protocol; the worker kernel uses the existing provider adapter/server path. For slice-backed native TUI, provider TUIs still attach to the home kernel session; the slice is only the home-managed worker execution environment selected by `slice_ref`. Do not add a parallel prompt, permission, attachment, history, or relay authority path for native TUIs. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/ARCHITECTURE.md` section `5.3.1 Native TUI Client Interface`.
+Native provider TUI mode (`arroba codex`, `arroba opencode`, `arroba claude`) must reuse the normal Arroba runtime paths. For local native TUI, provider prompts enter the kernel through the same prompt path as Arroba clients, and Arroba-origin prompts go through the kernel-managed provider run so the provider TUI observes the same turns. For remote native TUI, provider TUIs and Arroba TUIs attach to the home kernel session; the home kernel dispatches to the worker through the existing leased-agent relay protocol; the worker kernel uses the existing provider adapter/server path. For slice-backed native TUI, provider TUIs still attach to the home kernel session; the slice is only the home-managed worker execution environment selected by `slice_ref`. Do not add a parallel prompt, permission, attachment, history, or relay authority path for native TUIs. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/ARCHITECTURE.md` section `5.3.2 Native TUI Client Interface`.
 
 For native TUI MCP/skills, keep standard home-worker and slice behavior distinct. Standard home-worker does not install or copy MCPs/skills across machines; the user/operator must make matching capabilities available on the worker. Slice-backed native TUI may transfer home skill packages to the child worker because the home kernel manages that execution environment. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md` for the current validation matrix.
 

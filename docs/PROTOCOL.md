@@ -149,6 +149,37 @@ OpenCode-specific structured adapter contract:
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 
+Provider hidden-context injection contract:
+
+- Prompt submission from the kernel to a provider adapter is conceptually a `PromptEnvelope`, not one concatenated string.
+- `visible_user_prompt` is the only prompt body that may be shown in Arroba prompt blobs, terminal input history, native provider prompt boxes, or user-facing prompt echoes.
+- `hidden_system_context` carries Arroba runtime/system prompt material: runtime instructions, Workspace Live Sync instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
+- `attachments` remain structured prompt attachments and are not used to smuggle hidden system instructions.
+- `manifest` records prompt template ids, template hashes or versions, assembly conditions, and the provider injection channel selected for the turn; the manifest is audit/debug metadata, not prompt UI content.
+- Arroba MUST NOT implement hidden context by prepending text to `visible_user_prompt` and later redacting it from UI surfaces.
+- The relay MUST treat prompt envelopes as opaque encrypted payloads and MUST NOT inspect, transform, redact, or split visible versus hidden prompt fields.
+
+Provider adapter hidden-context channels:
+
+- Codex adapters MUST send turn-scoped hidden context through `turn/start.collaborationMode.settings.developer_instructions`.
+- OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
+- Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
+- If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
+- Live provider drills for Codex, OpenCode, and Claude Code validate that these channels are per-turn in current supported harnesses. Prompt assembly changes that touch these channels must keep or update those drills.
+
+Prompt template storage:
+
+- Arroba prompt templates are user-owned markdown files under `~/.arroba/prompts`.
+- Source-controlled defaults may be materialized there for first run, but runtime assembly reads from the registry path rather than hardcoding prompt text in adapter code.
+- Required templates include runtime base instructions, Workspace Live Sync instructions, native permission instructions, slice runtime instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
+- Cloud editing, if introduced later, edits this registry model and must not create a second prompt source of truth.
+
+Provider-local visibility caveat:
+
+- Arroba UI and protocol prompt blobs must hide `hidden_system_context`, but provider-local histories may still store it in provider-native form.
+- Current provider harnesses expose hidden context in internal histories/transcripts: Codex history APIs, OpenCode message `info.system`, and Claude transcript `hook_additional_context`.
+- The protocol guarantee is therefore “not visible in Arroba/native prompt input surfaces,” not “unrecoverable from provider-owned local state.”
+
 ## 3.3.1 Agent Endpoint Direction
 
 Longer-term agent runtimes compatible with Arroba should speak a daemon-facing endpoint contract rather than requiring the daemon to launch only local child processes.
@@ -215,7 +246,8 @@ Native TUI permissions:
 Native TUI hidden context:
 
 - granted skill prompt context and other Arroba-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
-- Codex/OpenCode proxies redact Arroba hidden blocks from provider-TUI-facing protocol traffic while forwarding them to the provider server
+- Codex native TUI hidden context MUST use the same Codex turn-scoped `developer_instructions` channel as ordinary Codex provider runs
+- OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Arroba CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Arroba MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks

@@ -748,7 +748,61 @@ Provider authentication is not part of the control lane in v1; adapters probe an
 
 Provider-facing extension projection is also adapter-owned: the daemon resolves the authoritative extension bindings, and the adapter materializes the provider-specific runtime view.
 
-### 5.3.1 Native TUI Client Interface
+### 5.3.1 Prompt Assembly Service
+
+The kernel owns prompt assembly. Clients, workflow schedulers, provider adapters, native TUI launchers, and utility-call helpers must not concatenate Arroba runtime instructions directly into provider prompt text.
+
+The prompt assembly boundary produces a `PromptEnvelope` with these conceptual fields:
+
+- `visible_user_prompt`: the human or endpoint prompt that should appear in Arroba prompt history and prompt input surfaces
+- `hidden_system_context`: Arroba runtime instructions, workflow-level prompt, node-level instructions, granted MCP/skill summaries, runtime continuation instructions, and utility-specific instructions
+- `attachments`: structured attachments, unchanged from the prompt submission path
+- `manifest`: prompt template ids, template versions or content hashes, assembly conditions, and the provider injection channel used for the turn
+
+Prompt text is loaded from the user-owned Arroba prompt registry under `~/.arroba/prompts`. The source tree may ship default templates, but those defaults are materialized into that registry and then read from disk. New prompt text should be added as a named template file, not as hardcoded Rust or TypeScript string literals. Template loading should fail loudly when a required template is missing or unreadable unless the caller is explicitly in a first-run/default-materialization path.
+
+The registry layout is intentionally ordinary markdown so later Arroba Cloud editing can operate on the same file model:
+
+```text
+~/.arroba/prompts/
+  runtime/base.md
+  runtime/workspace-live-sync.md
+  runtime/native-permissions.md
+  runtime/slice.md
+  workflow/turn.md
+  workflow/run-completion.md
+  workflow/run-intermediate-output.md
+  utility/commit-message.md
+  utility/semantic-recall.md
+  utility/vault.md
+```
+
+Provider adapters inject `hidden_system_context` through provider-native hidden/system surfaces on every turn:
+
+- Codex: `turn/start.collaborationMode.settings.developer_instructions`
+- OpenCode: `POST /session/{id}/prompt_async` request body `system`
+- Claude Code: `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`
+
+Live drills against the installed provider harnesses confirmed these three channels are turn-scoped, not only initialization-scoped. That means a mid-context MCP grant, skill grant, workflow control update, or utility instruction can be reflected in the next turn without a provider-process warm restart. A warm restart remains a fallback for provider capabilities that cannot be changed through a turn-scoped native surface.
+
+Visibility rules:
+
+- Arroba prompt blobs, terminal prompt history, and native TUI prompt input must show only `visible_user_prompt`.
+- Arroba must not implement hidden context by visibly prepending instructions and redacting them later.
+- The manifest may be stored for audit/debug, but hidden prompt body text should not be rendered in prompt UI.
+- Provider-local histories may still expose provider-native hidden context. Codex history APIs, OpenCode message records, and Claude transcripts can all persist their hidden/system context internally; Arroba can keep its own UI clean but cannot make provider-local storage opaque.
+
+Workflow prompt assembly keeps three semantic layers distinct:
+
+- endpoint prompt: visible input for the workflow entry turn
+- workflow-level prompt: hidden shared system context for every agent in that workflow run
+- node-level instructions: hidden per-agent/per-node context
+
+Those layers should only be deduplicated when the assembled text is literally identical after template expansion. Endpoint prompt and workflow/node prompts are not duplicate channels.
+
+Utility prompts such as commit-message generation, semantic recall/history, and vault-related calls use the same assembly service and focused provider run. Arroba should not start a separate provider conversation just to run a utility prompt unless the user explicitly requests that execution model.
+
+### 5.3.2 Native TUI Client Interface
 
 Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]`, `arroba opencode [session-ref]`, or `arroba claude [session-ref]`.
 
@@ -788,7 +842,7 @@ as the worker execution environment. Provider TUIs still attach to the home
 kernel session; `slice_ref` only selects where provider execution runs. Native
 TUI clients must not attach directly to a slice kernel for the product path.
 
-### 5.3.2 OpenCode Structured Adapter
+### 5.3.3 OpenCode Structured Adapter
 
 OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
 
