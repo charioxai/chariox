@@ -498,11 +498,13 @@ mod tests {
         let state = test_runtime_state().await;
         let mut metadata = metadata("invoke-1");
         metadata.idempotency_key = Some("idem-1".to_string());
-        assert!(state
-            .begin_home_extension_invocation(&metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none());
+        assert!(
+            state
+                .begin_home_extension_invocation(&metadata)
+                .await
+                .expect("first invocation should start")
+                .is_none()
+        );
         assert!(
             state
                 .complete_home_extension_invocation(
@@ -524,11 +526,13 @@ mod tests {
     async fn home_extension_invocation_rejects_completed_non_idempotent_duplicate() {
         let state = test_runtime_state().await;
         let metadata = metadata("invoke-2");
-        assert!(state
-            .begin_home_extension_invocation(&metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none());
+        assert!(
+            state
+                .begin_home_extension_invocation(&metadata)
+                .await
+                .expect("first invocation should start")
+                .is_none()
+        );
         assert!(
             state
                 .complete_home_extension_invocation(&metadata, serde_json::json!({"ok": true}))
@@ -551,11 +555,13 @@ mod tests {
     async fn home_extension_invocation_rejects_in_flight_duplicate() {
         let state = test_runtime_state().await;
         let metadata = metadata("invoke-3");
-        assert!(state
-            .begin_home_extension_invocation(&metadata)
-            .await
-            .expect("first invocation should start")
-            .is_none());
+        assert!(
+            state
+                .begin_home_extension_invocation(&metadata)
+                .await
+                .expect("first invocation should start")
+                .is_none()
+        );
 
         let error = state
             .begin_home_extension_invocation(&metadata)
@@ -563,6 +569,72 @@ mod tests {
             .expect_err("in-flight duplicate should be rejected");
         assert!(
             error.to_string().contains("is already in progress"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_cancelled_in_flight_is_not_cached_for_replay() {
+        let state = test_runtime_state().await;
+        let mut metadata = metadata("invoke-4");
+        metadata.idempotency_key = Some("idem-cancelled".to_string());
+        assert!(
+            state
+                .begin_home_extension_invocation(&metadata)
+                .await
+                .expect("first invocation should start")
+                .is_none()
+        );
+
+        state
+            .owned
+            .remote_extension_cancellations
+            .lock()
+            .await
+            .insert(remote_extension_invocation_key(&metadata));
+        assert!(
+            !state
+                .complete_home_extension_invocation(
+                    &metadata,
+                    serde_json::json!({"ok": true, "value": "late"}),
+                )
+                .await,
+            "late completion after cancellation must be suppressed"
+        );
+
+        assert!(
+            state
+                .begin_home_extension_invocation(&metadata)
+                .await
+                .expect("cancelled invocation should not leave replay state behind")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn home_extension_runtime_result_limit_rejects_oversized_payload() {
+        let result = crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "blob": "x".repeat(HOME_EXTENSION_MAX_RESULT_BYTES),
+            }),
+        };
+        let error = enforce_home_extension_runtime_result_limit(result)
+            .expect_err("oversized runtime tool result should be rejected");
+        assert!(
+            error.to_string().contains("home extension result exceeded"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn home_extension_json_result_limit_rejects_oversized_payload() {
+        let error = enforce_home_extension_json_result_limit(serde_json::json!({
+            "blob": "x".repeat(HOME_EXTENSION_MAX_RESULT_BYTES),
+        }))
+        .expect_err("oversized MCP proxy result should be rejected");
+        assert!(
+            error.to_string().contains("home extension result exceeded"),
             "unexpected error: {error}"
         );
     }
