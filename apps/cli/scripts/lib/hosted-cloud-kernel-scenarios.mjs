@@ -1,6 +1,286 @@
-import { mkdir } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import http from "node:http"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
+
+async function callRuntimeMcp(serverUrl, authToken, method, params = {}) {
+  const response = await fetch(serverUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}`, method, params }),
+  })
+  const json = await response.json()
+  if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
+  return json.result
+}
+
+async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {}) {
+  try {
+    const result = await callRuntimeMcp(serverUrl, authToken, method, params)
+    if (result?.isError) return result
+    throw new Error(`runtime MCP ${method} unexpectedly succeeded: ${JSON.stringify(result)}`)
+  } catch (error) {
+    return { error: String(error?.message ?? error) }
+  }
+}
+
+async function waitForRuntimeTool(serverUrl, authToken, name, present) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const tools = await callRuntimeMcp(serverUrl, authToken, "tools/list")
+    const found = tools.tools.some((tool) => tool.name === name)
+    if (found === present) return tools
+    await sleep(250)
+  }
+  throw new Error(`tool ${name} did not become ${present ? "advertised" : "revoked"}`)
+}
+
+async function createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort }) {
+  const homeMarker = path.join(rootDir, "hosted-home-script-marker.txt")
+  const homeMcpMarker = path.join(rootDir, "hosted-home-mcp-marker.txt")
+  const homeConnectorMarker = path.join(rootDir, "hosted-home-connector-marker.txt")
+  const scriptPath = path.join(rootDir, "hosted_home_only_lookup.py")
+  await writeFile(scriptPath, `
+MARKER = ${JSON.stringify(homeMarker)}
+
+def run(query: str) -> dict[str, object]:
+    """Return a deterministic hosted home-only lookup result."""
+    with open(MARKER, "w", encoding="utf-8") as handle:
+        handle.write("HOSTED_HOME_SCRIPT_EXECUTED:" + query)
+    return {"query": query, "origin": "hosted-home"}
+
+def test_run() -> None:
+    result = run("self-test")
+    assert result["origin"] == "hosted-home"
+`, "utf8")
+
+  const homeMcpDir = path.join(homeCapabilityRoot, "user", "mcps")
+  await mkdir(homeMcpDir, { recursive: true })
+  await writeFile(path.join(homeMcpDir, "hosted_home_echo_mcp.json"), `${JSON.stringify({
+    name: "hosted_home_echo_mcp",
+    transport: {
+      type: "streamable_http",
+      url: `http://127.0.0.1:${homeOnlyMcpPort}/mcp`,
+    },
+    enabled: true,
+    required: false,
+    tool_timeout_sec: 10,
+  }, null, 2)}\n`, "utf8")
+
+  const homeOnlyMcp = http.createServer(async (req, res) => {
+    let body = ""
+    req.setEncoding("utf8")
+    for await (const chunk of req) body += chunk
+    const rpc = body ? JSON.parse(body) : {}
+    res.setHeader("content-type", "application/json")
+    if (rpc.method === "tools/list") {
+      return res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: rpc.id ?? null,
+        result: {
+          tools: [{
+            name: "hosted_home_echo",
+            description: "Hosted home-only MCP echo tool.",
+            inputSchema: {
+              type: "object",
+              required: ["text"],
+              properties: { text: { type: "string" } },
+              additionalProperties: false,
+            },
+          }],
+        },
+      }))
+    }
+    if (rpc.method === "tools/call" && rpc.params?.name === "hosted_home_echo") {
+      const text = String(rpc.params?.arguments?.text ?? "")
+      await writeFile(homeMcpMarker, `HOSTED_HOME_MCP_EXECUTED:${text}`, "utf8")
+      return res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: rpc.id ?? null,
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ origin: "hosted-home-mcp", text }) }],
+        },
+      }))
+    }
+    res.end(JSON.stringify({
+      jsonrpc: "2.0",
+      id: rpc.id ?? null,
+      error: { code: -32601, message: `unsupported MCP method ${rpc.method}` },
+    }))
+  })
+  await new Promise((resolve, reject) => {
+    homeOnlyMcp.once("error", reject)
+    homeOnlyMcp.listen(homeOnlyMcpPort, "127.0.0.1", resolve)
+  })
+
+  return {
+    homeMarker,
+    homeMcpMarker,
+    homeConnectorMarker,
+    scriptPath,
+    close: () => new Promise((resolve) => homeOnlyMcp.close(resolve)),
+  }
+}
+
+async function registerHostedHomeExtensions({ client, requests, workspace, rootDir, python, fixtures, unwrap }) {
+  const env = unwrap(await client.send(requests.registerEnvironmentRequest(workspace, {
+    name: "hosted-home-python",
+    runtime: { type: "python", python },
+  })), "EnvironmentRegistered").environment
+  await client.send(requests.registerScriptRequest(workspace, fixtures.scriptPath, env.name, "hosted_home_only_lookup"))
+
+  const connectorAdapterDir = path.join(rootDir, "hosted-home-connector-adapter")
+  await mkdir(connectorAdapterDir, { recursive: true })
+  const connectorAdapterScript = path.join(connectorAdapterDir, "hosted_home_connector_adapter.mjs")
+  await writeFile(connectorAdapterScript, `
+import { appendFileSync, writeFileSync } from 'node:fs'
+import readline from 'node:readline'
+
+const marker = process.argv[2]
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.type === 'shutdown') process.exit(0)
+  if (request.type === 'validate') {
+    console.log(JSON.stringify({ id: request.id, ok: true }))
+    return
+  }
+  if (request.type === 'prepare') {
+    console.log(JSON.stringify({ id: request.id, ok: true, result: { credential_targets: [], prepared_config: { arguments: request.arguments ?? {}, config: request.config ?? {} } } }))
+    return
+  }
+  if (request.type === 'call') {
+    const q = String(request.config?.arguments?.q ?? '')
+    writeFileSync(marker, 'HOSTED_HOME_CONNECTOR_EXECUTED:' + q, 'utf8')
+    console.log(JSON.stringify({ id: request.id, ok: true, result: { origin: 'hosted-home-connector', q } }))
+    return
+  }
+  appendFileSync(marker + '.errors', 'unsupported request ' + request.type + '\\n')
+  console.log(JSON.stringify({ id: request.id, ok: false, error: 'unsupported request ' + request.type }))
+})
+`, "utf8")
+  const connectorAdapterPath = path.join(connectorAdapterDir, "adapter.yaml")
+  const connectorPath = path.join(rootDir, "hosted-home-local-api-connector.yaml")
+  await writeFile(connectorAdapterPath, `
+kind: connector_adapter
+name: hosted_home_stub
+version: 0.1.0
+adapter_protocol: arroba-connector-adapter-v2
+command: ${process.execPath}
+args:
+  - ${connectorAdapterScript}
+  - ${fixtures.homeConnectorMarker}
+description: Hosted home-only connector adapter for remote extension drill.
+`, "utf8")
+  await writeFile(connectorPath, `
+kind: connector
+name: hosted_home_local_api
+description: Hosted home-only HTTP connector for remote extension drill.
+adapter: hosted_home_stub
+credential:
+  required: false
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: public_echo
+    description: Read hosted home-only connector echo data.
+    safety: read
+    input_schema:
+      type: object
+      required: [q]
+      properties:
+        q: { type: string }
+      additionalProperties: false
+    config:
+      marker: ${fixtures.homeConnectorMarker}
+`, "utf8")
+  await client.send(requests.registerConnectorAdapterRequest(connectorAdapterPath))
+  await client.send(requests.registerConnectorRequest(connectorPath))
+  return env
+}
+
+async function assertHostedHomeExtensionProxy({
+  client,
+  requests,
+  workspace,
+  sessionId,
+  agentId,
+  launch,
+  env,
+  fixtures,
+}) {
+  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
+    throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
+  }
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "script", "hosted_home_only_lookup", env.name))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "mcp", "hosted_home_echo_mcp"))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "connector", "hosted_home_local_api", null, { maxSafety: "read" }))
+
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", true)
+  const scriptCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_only_lookup",
+    arguments: { query: "hosted-remote-agent" },
+  })
+  if (scriptCall.isError) throw new Error(`hosted home proxy script returned error: ${JSON.stringify(scriptCall)}`)
+  const scriptMarker = await readFile(fixtures.homeMarker, "utf8")
+  if (scriptMarker !== "HOSTED_HOME_SCRIPT_EXECUTED:hosted-remote-agent") {
+    throw new Error(`hosted home script marker mismatch: ${JSON.stringify(scriptMarker)}`)
+  }
+
+  const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, "/mcp/proxy/hosted_home_echo_mcp")
+  const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/list")
+  if (!mcpTools.tools.some((tool) => tool.name === "hosted_home_echo")) {
+    throw new Error(`hosted home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
+  }
+  const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_echo",
+    arguments: { text: "hosted-remote-mcp" },
+  })
+  if (mcpCall.isError) throw new Error(`hosted home MCP returned error: ${JSON.stringify(mcpCall)}`)
+  const mcpMarker = await readFile(fixtures.homeMcpMarker, "utf8")
+  if (mcpMarker !== "HOSTED_HOME_MCP_EXECUTED:hosted-remote-mcp") {
+    throw new Error(`hosted home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
+  }
+
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", true)
+  const connectorCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_local_api_public_echo",
+    arguments: { q: "hosted-remote-connector" },
+  })
+  if (connectorCall.isError) throw new Error(`hosted home connector returned error: ${JSON.stringify(connectorCall)}`)
+  const connectorMarker = await readFile(fixtures.homeConnectorMarker, "utf8")
+  if (connectorMarker !== "HOSTED_HOME_CONNECTOR_EXECUTED:hosted-remote-connector") {
+    throw new Error(`hosted home connector marker mismatch: ${JSON.stringify(connectorMarker)}`)
+  }
+
+  await client.send(requests.revokeAgentExtensionRequest(agentId, "script", "hosted_home_only_lookup"))
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", false)
+  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_only_lookup",
+    arguments: { query: "hosted-after-revoke" },
+  })
+  const afterRevokeMarker = await readFile(fixtures.homeMarker, "utf8")
+  if (afterRevokeMarker !== scriptMarker) throw new Error("revoked hosted home-proxy script executed after revoke")
+  await client.send(requests.revokeAgentExtensionRequest(agentId, "mcp", "hosted_home_echo_mcp"))
+  await expectRuntimeMcpReject(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_echo",
+    arguments: { text: "hosted-after-mcp-revoke" },
+  })
+  const afterMcpRevokeMarker = await readFile(fixtures.homeMcpMarker, "utf8")
+  if (afterMcpRevokeMarker !== mcpMarker) throw new Error("revoked hosted home-proxy MCP executed after revoke")
+  await client.send(requests.revokeAgentExtensionRequest(agentId, "connector", "hosted_home_local_api"))
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", false)
+  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "hosted_home_local_api_public_echo",
+    arguments: { q: "hosted-after-connector-revoke" },
+  })
+  const afterConnectorRevokeMarker = await readFile(fixtures.homeConnectorMarker, "utf8")
+  if (afterConnectorRevokeMarker !== connectorMarker) throw new Error("revoked hosted home-proxy connector executed after revoke")
+
+  return { sessionId, agentId }
+}
 
 export async function runHostedSecondKernelAssertions({
   LocalIpcClient,
@@ -8,6 +288,9 @@ export async function runHostedSecondKernelAssertions({
   kernelPath,
   rootDir,
   workspace,
+  python,
+  homeCapabilityRoot,
+  homeOnlyMcpPort,
   homeClient,
   ownerProfile,
   ownerClientId,
@@ -35,6 +318,7 @@ export async function runHostedSecondKernelAssertions({
   const workerAlias = `hosted-worker-${process.pid}`
   const workerHome = path.join(rootDir, "worker-home")
   const workerArrobaHome = path.join(workerHome, ".arroba")
+  const workerCapabilityRoot = path.join(rootDir, "worker-capabilities")
 
   log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
   await pairCloudMachineDirect({
@@ -64,12 +348,15 @@ export async function runHostedSecondKernelAssertions({
     ARROBA_ACCEPT_REMOTE_LEASES: "1",
     ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "worker-session-history"),
+    ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
   }
 
   let worker = null
   let workerClient = null
+  let fixtures = null
   const eventLog = []
   try {
+    fixtures = await createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort })
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
     const workerKernelUrl = `ws://127.0.0.1:${workerPorts.kernelPort}/kernel`
@@ -80,6 +367,15 @@ export async function runHostedSecondKernelAssertions({
     })
     await allowDevStubProvider(homeClient, requests, "second-kernel-home")
     await allowDevStubProvider(workerClient, requests, "second-kernel-worker")
+    const env = await registerHostedHomeExtensions({
+      client: homeClient,
+      requests,
+      workspace,
+      rootDir,
+      python,
+      fixtures,
+      unwrap,
+    })
 
     log("second-kernel-client-token-request", { workerAlias })
     const workerClientToken = await issueSessionScopedClientToken(apiUrl, {
@@ -136,6 +432,28 @@ export async function runHostedSecondKernelAssertions({
     )
     log("second-kernel-spawn-agent-ready", { workerDaemonId, agentId: spawned.agent?.id })
     assert(spawned.agent?.remote_execution?.worker_machine_id === workerDaemonId, "remote dev-stub agent should be leased to the second kernel", spawned)
+    const launch = unwrap(
+      await homeClient.send(requests.launchProviderRunRequest(
+        session.id,
+        "dev-stub",
+        "default",
+        "default",
+        "low",
+        spawned.agent.id,
+        { nativeTui: true },
+      )),
+      "ProviderRunLaunched",
+    ).provider_run
+    await assertHostedHomeExtensionProxy({
+      client: homeClient,
+      requests,
+      workspace,
+      sessionId: session.id,
+      agentId: spawned.agent.id,
+      launch,
+      env,
+      fixtures,
+    })
     await homeClient.send(requests.submitPromptRequest(
       session.id,
       attachment.id,
@@ -154,8 +472,10 @@ export async function runHostedSecondKernelAssertions({
       workerAlias,
       agentId: spawned.agent.id,
       completedPromptId: completed.completion?.completed?.id ?? null,
+      homeExtensions: ["script", "mcp", "connector"],
     })
   } finally {
+    await fixtures?.close?.().catch(() => {})
     await closeClient(workerClient, "worker")
     await terminateChild(worker)
   }

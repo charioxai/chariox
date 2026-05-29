@@ -142,6 +142,17 @@ async function buildKernelIfNeeded() {
   return binary
 }
 
+async function resolveExecutable(command) {
+  if (command.includes(path.sep)) {
+    const result = await run("test", ["-x", command])
+    if (result.code === 0) return command
+    throw new Error(`executable ${command} not found`)
+  }
+  const result = await run("sh", ["-lc", `command -v ${shellQuote(command)}`])
+  if (result.code !== 0) throw new Error(`executable ${command} not found on PATH`)
+  return result.stdout.trim()
+}
+
 async function getFreePort() {
   return await new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -163,6 +174,7 @@ async function makePorts() {
   return {
     kernelPort: await getFreePort(),
     mcpPort: await getFreePort(),
+    homeOnlyMcpPort: await getFreePort(),
     opencodePort: await getFreePort(),
     codexPort: await getFreePort(),
   }
@@ -706,6 +718,7 @@ async function main() {
   const workspace = path.join(rootDir, "workspace")
   const homeDir = path.join(rootDir, "home")
   const arrobaHome = path.join(homeDir, ".arroba")
+  const homeCapabilityRoot = path.join(rootDir, "home-capabilities")
   const xdgConfigHome = path.join(homeDir, ".config")
   const xdgStateHome = path.join(homeDir, ".local", "state")
   const xdgRuntimeDir = path.join(homeDir, "run")
@@ -735,6 +748,7 @@ async function main() {
 
     log("build-kernel")
     const kernelPath = await buildKernelIfNeeded()
+    const python = await resolveExecutable(process.env.PYTHON ?? "python3")
 
     const [{ LocalIpcClient }, requests, commandActions] = await Promise.all([
       import("../../../packages/kernel-client/dist/ipc.js"),
@@ -759,6 +773,7 @@ async function main() {
       ARROBA_MACHINE_ALIAS: daemonAlias,
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
+      ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
     }
 
     log("start-kernel")
@@ -951,6 +966,9 @@ async function main() {
         kernelPath,
         rootDir,
         workspace,
+        python,
+        homeCapabilityRoot,
+        homeOnlyMcpPort: ports.homeOnlyMcpPort,
         homeClient: localClient,
         ownerProfile: profileRef.current,
         ownerClientId: clientId,
