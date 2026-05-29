@@ -82,13 +82,14 @@ impl KernelRuntimeState {
                 operation: "mcp.proxy.auth",
                 message: "invalid runtime MCP auth token".to_string(),
             })?;
-        if run
+        if let Some(tool) = run
             .remote_extension_manifest()
             .home_proxy_tool(name)
-            .is_some_and(|tool| tool.kind == crate::extension::ExtensionKind::Mcp)
+            .filter(|tool| tool.kind == crate::extension::ExtensionKind::Mcp)
+            .cloned()
         {
             return self
-                .dispatch_remote_home_mcp_proxy_call(&run, name, payload)
+                .dispatch_remote_home_mcp_proxy_call(&run, name, tool, payload)
                 .await;
         }
         if run.mcp_servers().iter().any(|server| {
@@ -117,6 +118,7 @@ impl KernelRuntimeState {
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
         name: &str,
+        tool: crate::extension::RemoteExtensionTool,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
         let context = self
@@ -153,6 +155,7 @@ impl KernelRuntimeState {
                 context: context.clone(),
                 metadata: metadata.clone(),
                 name: name.to_string(),
+                tool,
                 payload: payload.clone(),
             },
         )

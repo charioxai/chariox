@@ -464,10 +464,11 @@ pub(super) async fn handle_daemon_peer_request(
             context,
             metadata,
             name,
+            tool,
             payload,
         } => {
             let handled = router
-                .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, payload)
+                .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, tool, payload)
                 .await;
             match handled {
                 Ok(response) => RelayPeerResponse::HomeMcpProxyHandled { response },

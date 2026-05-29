@@ -7,21 +7,9 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
         metadata: crate::extension::RemoteExtensionInvocationMetadata,
         name: String,
+        hinted_tool: crate::extension::RemoteExtensionTool,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
-        let hinted_tool = crate::extension::RemoteExtensionTool {
-            kind: crate::extension::ExtensionKind::Mcp,
-            name: name.clone(),
-            tool_name: name.clone(),
-            description: String::new(),
-            input_schema: serde_json::json!({}),
-            authority: crate::extension::ExtensionAuthority::Home,
-            definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
-            execution_location: crate::extension::ExtensionExecutionLocation::Home,
-            safety: None,
-            timeout_sec: None,
-            version_hash: None,
-        };
         let tool =
             match super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
                 .authorize_invocation(&context, &hinted_tool)

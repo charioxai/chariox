@@ -121,10 +121,11 @@ impl CommandRouter {
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
         metadata: crate::extension::RemoteExtensionInvocationMetadata,
         name: String,
+        tool: crate::extension::RemoteExtensionTool,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, payload)
+            .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, tool, payload)
             .await
     }
 

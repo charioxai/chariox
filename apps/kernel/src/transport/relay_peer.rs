@@ -271,6 +271,7 @@ pub enum RelayPeerRequest {
         #[serde(default)]
         metadata: crate::extension::RemoteExtensionInvocationMetadata,
         name: String,
+        tool: crate::extension::RemoteExtensionTool,
         payload: serde_json::Value,
     },
     CancelHomeExtensionInvocation {

@@ -25,15 +25,7 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
                 ),
             });
         };
-        if current_tool.kind != hinted_tool.kind || current_tool.name != hinted_tool.name {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: format!(
-                    "home-proxy tool identity mismatch for `{}`",
-                    hinted_tool.tool_name
-                ),
-            });
-        }
+        validate_projected_tool_matches_current(&current_tool, hinted_tool)?;
         if current_tool.authority != crate::extension::ExtensionAuthority::Home
             || current_tool.definition_origin != crate::extension::ExtensionDefinitionOrigin::Home
             || current_tool.execution_location != crate::extension::ExtensionExecutionLocation::Home
@@ -123,5 +115,92 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
             });
         }
         Ok(agent)
+    }
+}
+
+fn validate_projected_tool_matches_current(
+    current_tool: &crate::extension::RemoteExtensionTool,
+    hinted_tool: &crate::extension::RemoteExtensionTool,
+) -> Result<(), DaemonError> {
+    if current_tool.kind != hinted_tool.kind || current_tool.name != hinted_tool.name {
+        return Err(DaemonError::LocalTransport {
+            operation: "home extension invocation",
+            message: format!(
+                "home-proxy tool identity mismatch for `{}`",
+                hinted_tool.tool_name
+            ),
+        });
+    }
+    if current_tool.tool_name != hinted_tool.tool_name {
+        return Err(DaemonError::LocalTransport {
+            operation: "home extension invocation",
+            message: format!(
+                "home-proxy tool identity mismatch for `{}`",
+                hinted_tool.tool_name
+            ),
+        });
+    }
+    if current_tool.safety != hinted_tool.safety
+        || current_tool.timeout_sec != hinted_tool.timeout_sec
+        || current_tool.version_hash != hinted_tool.version_hash
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "home extension invocation",
+            message: format!(
+                "home-proxy tool projection for `{}` is stale; retry after manifest sync",
+                hinted_tool.tool_name
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(version_hash: Option<&str>) -> crate::extension::RemoteExtensionTool {
+        crate::extension::RemoteExtensionTool {
+            kind: crate::extension::ExtensionKind::Mcp,
+            name: "home_echo_mcp".to_string(),
+            tool_name: "home_echo_mcp".to_string(),
+            description: "Home MCP".to_string(),
+            input_schema: serde_json::json!({}),
+            authority: crate::extension::ExtensionAuthority::Home,
+            definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+            execution_location: crate::extension::ExtensionExecutionLocation::Home,
+            safety: None,
+            timeout_sec: Some(10),
+            version_hash: version_hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn authorizer_rejects_stale_projected_version_hash() {
+        let current = tool(Some("hash-current"));
+        let hinted = tool(Some("hash-stale"));
+        let error = validate_projected_tool_matches_current(&current, &hinted)
+            .expect_err("stale projected version hash should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("stale; retry after manifest sync"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn authorizer_rejects_stale_projected_timeout() {
+        let current = tool(Some("hash-current"));
+        let mut hinted = tool(Some("hash-current"));
+        hinted.timeout_sec = Some(5);
+        let error = validate_projected_tool_matches_current(&current, &hinted)
+            .expect_err("stale projected timeout should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("stale; retry after manifest sync"),
+            "{error}"
+        );
     }
 }
