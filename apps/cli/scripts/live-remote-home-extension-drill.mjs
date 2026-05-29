@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertBinary, terminateChild, waitForTcpPort } from './lib/drill-runtime-helpers.mjs'
+import { joinRemoteHomeExtensionCollaborator } from './lib/remote-home-extension-collab-helpers.mjs'
 import { createHomeExtensionFixtures } from './lib/home-extension-fixtures.mjs'
+import {
+  ensureRemoteHomeExtensionHetznerWorkspace,
+  removeRemoteHomeExtensionHetznerRoot,
+  spawnRemoteHomeExtensionHetznerWorker,
+  startRemoteHomeExtensionHetznerRelay,
+  stopRemoteHomeExtensionHetznerRelay,
+} from './lib/remote-home-extension-hetzner-helpers.mjs'
 import { createRemoteHomeExtensionRelayTokenFactory } from './lib/remote-home-extension-relay-helpers.mjs'
 import { waitForDaemon, waitForRelayTarget, waitForRemoteMachine } from './lib/remote-home-extension-session-helpers.mjs'
 import { callRuntimeMcp, expectReject, expectRuntimeMcpReject, waitForRuntimeTool } from './lib/runtime-mcp-assertions.mjs'
-import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import { runHetznerCommand, shellQuote } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -76,17 +84,12 @@ const {
   spawnAgentRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (response, key) => response?.[key] ?? response
 const unwrapVariant = (response, ...keys) => keys.map((key) => response?.[key]).find((value) => value != null) ?? response
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
+  await assertBinary(binaryPath, manifestPath, binName)
+  return binaryPath
 }
 
 async function resolveExecutable(command) {
@@ -103,38 +106,6 @@ async function resolveExecutable(command) {
     } catch {}
   }
   throw new Error(`executable ${command} not found on PATH`)
-}
-
-async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    const connected = await new Promise((resolve) => {
-      const socket = net.connect({ host, port })
-      socket.once('connect', () => {
-        socket.destroy()
-        resolve(true)
-      })
-      socket.once('error', () => {
-        socket.destroy()
-        resolve(false)
-      })
-    })
-    if (connected) return
-    await sleep(100)
-  }
-  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
-}
-
-async function stopHetznerRelayOnPort(options, port) {
-  await runHetznerCommand(options, `pkill -f ${shellQuote(`ARROBA_RELAY_PORT=${port}`)} 2>/dev/null || true`).catch(() => {})
-  await runHetznerCommand(options, `fuser -k ${port}/tcp 2>/dev/null || true`).catch(() => {})
-}
-
-async function terminateChild(child) {
-  if (!child || child.exitCode != null) return
-  child.kill('SIGTERM')
-  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(5_000)])
-  if (child.exitCode == null) child.kill('SIGKILL')
 }
 
 function daemonEnv({ rootDir, relayUrl, relayToken, daemonId, daemonAlias, machineId, machineAlias, kernelPort, mcpPort, acceptRemoteLeases, capabilityRoot, socketName }) {
@@ -230,37 +201,18 @@ async function main() {
       : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
     const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
     if (options.hetznerWorker) {
-      await runHetznerCommand(options, [
-        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/kernel/target/debug/arroba-kernel'))}`,
-        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
-        `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)}`,
-      ].join('; '))
-      await stopHetznerRelayOnPort(options, relayPort)
-      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
-        ARROBA_REMOTE_REPO: options.hetznerRepo,
-        ARROBA_RELAY_HOST: '127.0.0.1',
-        ARROBA_RELAY_PORT: String(relayPort),
-        ARROBA_RELAY_TOKEN: sharedRelayToken,
-        ...(options.collab ? {
-          ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-          ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-        } : {}),
-      }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
-      relayTunnel = spawn('ssh', [
-        '-i',
-        options.hetznerKey,
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'StrictHostKeyChecking=accept-new',
-        '-N',
-        '-L',
-        `127.0.0.1:${relayPort}:127.0.0.1:${relayPort}`,
-        '-L',
-        `127.0.0.1:${workerMcpPort}:127.0.0.1:${workerMcpPort}`,
-        options.hetznerHost,
-      ], { stdio: ['ignore', 'ignore', 'inherit'] })
-      await waitForTcpPort(relayPort, '127.0.0.1', 30_000)
+      await ensureRemoteHomeExtensionHetznerWorkspace(options, { remoteRoot, workerWorktree })
+      const hetznerRelay = await startRemoteHomeExtensionHetznerRelay({
+        options,
+        relayPort,
+        workerMcpPort,
+        sharedRelayToken,
+        collab: options.collab,
+        issuer: RELAY_ISSUER,
+        secret: RELAY_SECRET,
+      })
+      relay = hetznerRelay.relay
+      relayTunnel = hetznerRelay.tunnel
     } else {
       relay = spawn(relayBinary, [], {
         cwd: repoRoot,
@@ -298,30 +250,17 @@ async function main() {
       stdio: ['ignore', 'ignore', 'inherit'],
     })
     if (options.hetznerWorker) {
-      worker = spawn('ssh', sshArgs(options, remoteEnvCommand({
-        ARROBA_REMOTE_REPO: options.hetznerRepo,
-        PATH: '/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        HOME: path.posix.join(remoteRoot, 'worker-home'),
-        CODEX_HOME: '/root/.codex',
-        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
-        XDG_CONFIG_HOME: path.posix.join(remoteRoot, 'worker-config'),
-        XDG_STATE_HOME: path.posix.join(remoteRoot, 'worker-state'),
-        ARROBA_KERNEL_PORT: String(workerKernelPort),
-        ARROBA_MCP_PORT: String(workerMcpPort),
-        ARROBA_OPENCODE_PORT: String(workerKernelPort + 2000),
-        ARROBA_CODEX_PORT: String(workerKernelPort + 2001),
-        ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
-        ARROBA_RELAY_TOKEN: workerRelayToken,
-        ARROBA_DAEMON_ID: workerDaemonId,
-        ARROBA_DAEMON_ALIAS: 'worker',
-        ARROBA_MACHINE_ID: workerMachineId,
-        ARROBA_MACHINE_ALIAS: workerAlias,
-        ARROBA_ACCEPT_REMOTE_LEASES: '1',
-        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
-        ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, 'worker-capabilities'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && ./apps/kernel/target/debug/arroba-kernel`)), {
-        stdio: ['ignore', 'ignore', 'inherit'],
+      worker = spawnRemoteHomeExtensionHetznerWorker({
+        options,
+        remoteRoot,
+        workerWorktree,
+        relayPort,
+        workerRelayToken,
+        workerDaemonId,
+        workerMachineId,
+        workerAlias,
+        workerKernelPort,
+        workerMcpPort,
       })
     } else {
       worker = spawn(daemonBinary, [], {
@@ -365,14 +304,15 @@ async function main() {
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, 'remote-home-extension-drill')), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `remote-home-extension-${process.pid}`))
     if (options.collab) {
-      const invite = unwrap(await client.send(createSessionInviteRequest(session.id, null, 1, 'full')), 'SessionInviteCreated').invite
-      user2Client = new LocalIpcClient(relayUrl, {
-        relayAuthToken: clientToken('user-2'),
-        targetDaemonAlias: 'home',
-        kernelPingIntervalMs: 60_000,
-        kernelMaxMissedPongs: 10,
+      user2Client = await joinRemoteHomeExtensionCollaborator({
+        LocalIpcClient,
+        client,
+        relayUrl,
+        clientToken,
+        createSessionInviteRequest,
+        joinSessionInviteRequest,
+        sessionId: session.id,
       })
-      await user2Client.send(joinSessionInviteRequest(invite.invite_token, 'user-2'))
     }
     const remoteAgentClient = options.collab ? user2Client : client
     if (!options.collab) {
@@ -514,8 +454,8 @@ async function main() {
     await terminateChild(relayTunnel)
     await terminateChild(relay)
     if (options.hetznerWorker) {
-      await stopHetznerRelayOnPort(options, relayPort)
-      await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRoot)}`).catch(() => {})
+      await stopRemoteHomeExtensionHetznerRelay(options, relayPort)
+      await removeRemoteHomeExtensionHetznerRoot(options, remoteRoot)
     }
     await new Promise((resolve) => homeOnlyMcp?.close?.(resolve) ?? resolve())
     if (succeeded) await rm(rootDir, { recursive: true, force: true })
