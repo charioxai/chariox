@@ -803,6 +803,103 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
 }
 
 #[tokio::test]
+async fn denied_home_extension_invocation_is_audited() {
+    let config = DaemonConfig::for_tests();
+    let home_kernel_id = config.daemon_id.clone();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-home-extension-denied",
+            "worktree-home-extension-denied",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent = spawn_test_agent(&mut app, &session_id, "remote-extension-denied", "dev-stub");
+    app.agents()
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("agent should be remote-backed");
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
+        "provider-run-1",
+        "home-only",
+        None,
+    );
+    let hinted_tool = crate::extension::RemoteExtensionTool {
+        kind: crate::extension::ExtensionKind::Script,
+        name: "home-only".to_string(),
+        tool_name: "home-only".to_string(),
+        description: "forged script hint".to_string(),
+        input_schema: serde_json::json!({}),
+        authority: crate::extension::ExtensionAuthority::Home,
+        definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+        execution_location: crate::extension::ExtensionExecutionLocation::Home,
+        safety: None,
+        timeout_sec: None,
+        version_hash: Some("forged-hash".to_string()),
+    };
+    let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+        home_kernel_id,
+        home_session_id: session_id,
+        home_agent_id: agent.id().to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_provider_run_id: "provider-run-1".to_string(),
+        worker_kernel_id: Some("forged-worker".to_string()),
+        worker_machine_id: Some("worker-machine".to_string()),
+    };
+
+    let denied = router
+        .runtime_state
+        .dispatch_forwarded_home_extension_tool_call(
+            context,
+            metadata,
+            hinted_tool,
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("forged worker identity should be denied");
+    assert!(
+        denied
+            .to_string()
+            .contains("worker kernel does not match home agent binding"),
+        "unexpected denial: {denied}"
+    );
+
+    let events = router
+        .runtime_state
+        .list_home_extension_audit_events(agent.id(), DEFAULT_LOCAL_USER_ID, 10)
+        .expect("audit events should load");
+    let denied_event = events
+        .iter()
+        .find(|event| event.kind == "home_extension.invoke.denied")
+        .expect("denied invocation should be audited");
+    assert_eq!(
+        denied_event
+            .payload
+            .pointer("/status")
+            .and_then(serde_json::Value::as_str),
+        Some("denied")
+    );
+    assert!(denied_event
+        .payload
+        .pointer("/error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("worker kernel does not match home agent binding")));
+}
+
+#[tokio::test]
 async fn remote_session_projection_redacts_other_users_private_agent_and_workflow_state() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app

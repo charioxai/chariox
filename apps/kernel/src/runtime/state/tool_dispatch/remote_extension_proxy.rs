@@ -9,8 +9,17 @@ impl KernelRuntimeState {
         hinted_tool: crate::extension::RemoteExtensionTool,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let tool = HomeExtensionAuthorizationService::new(self)
-            .authorize_invocation(&context, &hinted_tool)?;
+        let tool = match HomeExtensionAuthorizationService::new(self)
+            .authorize_invocation(&context, &hinted_tool)
+        {
+            Ok(tool) => tool,
+            Err(error) => {
+                let _ = self
+                    .append_home_extension_denied_event(&context, &metadata, &hinted_tool, &error)
+                    .await;
+                return Err(error);
+            }
+        };
         if let Some(cached) = self.begin_home_extension_invocation(&metadata).await? {
             return serde_json::from_value(cached).map_err(|error| DaemonError::LocalTransport {
                 operation: "home extension invocation replay",
@@ -23,16 +32,22 @@ impl KernelRuntimeState {
             &metadata,
             &tool,
             None,
+            None,
         )
         .await?;
         let result = match tool.kind.clone() {
             crate::extension::ExtensionKind::Script => {
                 self.dispatch_home_script_tool(&context, &tool, arguments)
             }
-            crate::extension::ExtensionKind::Connector => self
-                .dispatch_home_connector_tool(&context, &tool, arguments)
+            crate::extension::ExtensionKind::Connector => {
+                super::home_extension_execution_policy::with_home_extension_timeout(
+                    &tool,
+                    "home connector proxy",
+                    self.dispatch_home_connector_tool(&context, &tool, arguments),
+                )
                 .await
-                .and_then(super::home_extension_execution_policy::enforce_home_extension_runtime_result_limit),
+                .and_then(super::home_extension_execution_policy::enforce_home_extension_runtime_result_limit)
+            }
             _ => Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
@@ -93,8 +108,17 @@ impl KernelRuntimeState {
             timeout_sec: None,
             version_hash: None,
         };
-        let tool = HomeExtensionAuthorizationService::new(self)
-            .authorize_invocation(&context, &hinted_tool)?;
+        let tool = match HomeExtensionAuthorizationService::new(self)
+            .authorize_invocation(&context, &hinted_tool)
+        {
+            Ok(tool) => tool,
+            Err(error) => {
+                let _ = self
+                    .append_home_extension_denied_event(&context, &metadata, &hinted_tool, &error)
+                    .await;
+                return Err(error);
+            }
+        };
         if let Some(cached) = self.begin_home_extension_invocation(&metadata).await? {
             return Ok(cached);
         }
@@ -104,14 +128,16 @@ impl KernelRuntimeState {
             &metadata,
             &tool,
             None,
+            None,
         )
         .await?;
-        let result = self
-            .dispatch_home_mcp_proxy_tool(&context, &name, payload)
-            .await
-            .and_then(
-                super::home_extension_execution_policy::enforce_home_extension_json_result_limit,
-            );
+        let result = super::home_extension_execution_policy::with_home_extension_timeout(
+            &tool,
+            "home MCP proxy",
+            self.dispatch_home_mcp_proxy_tool(&context, &name, payload),
+        )
+        .await
+        .and_then(super::home_extension_execution_policy::enforce_home_extension_json_result_limit);
         if let Ok(value) = &result {
             self.complete_home_extension_invocation(&metadata, value.clone())
                 .await;
@@ -121,10 +147,22 @@ impl KernelRuntimeState {
                 &metadata,
                 &tool,
                 Some("completed"),
+                None,
             )
             .await?;
         } else {
             self.forget_home_extension_invocation(&metadata).await;
+            if let Err(error) = &result {
+                self.append_home_extension_audit_event(
+                    "home_extension.invoke.completed",
+                    &context,
+                    &metadata,
+                    &tool,
+                    Some("failed"),
+                    Some(&error.to_string()),
+                )
+                .await?;
+            }
         }
         result
     }

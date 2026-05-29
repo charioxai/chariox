@@ -10,6 +10,7 @@ impl KernelRuntimeState {
         metadata: &crate::extension::RemoteExtensionInvocationMetadata,
         tool: &crate::extension::RemoteExtensionTool,
         status: Option<&str>,
+        error: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             kind,
@@ -31,9 +32,28 @@ impl KernelRuntimeState {
                     "version_hash": tool.version_hash,
                 },
                 "status": status,
+                "error": error,
             }),
         )?;
         Ok(())
+    }
+
+    pub(in crate::runtime::state::tool_dispatch) async fn append_home_extension_denied_event(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+        hinted_tool: &crate::extension::RemoteExtensionTool,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.append_home_extension_audit_event(
+            "home_extension.invoke.denied",
+            context,
+            metadata,
+            hinted_tool,
+            Some("denied"),
+            Some(&error.to_string()),
+        )
+        .await
     }
 
     pub(in crate::runtime::state::tool_dispatch) async fn begin_home_extension_invocation(
@@ -163,6 +183,28 @@ pub(in crate::runtime::state::tool_dispatch) fn enforce_home_extension_json_resu
 ) -> Result<serde_json::Value, DaemonError> {
     enforce_home_extension_value_size(&result)?;
     Ok(result)
+}
+
+pub(in crate::runtime::state::tool_dispatch) async fn with_home_extension_timeout<T, Fut>(
+    tool: &crate::extension::RemoteExtensionTool,
+    operation: &'static str,
+    future: Fut,
+) -> Result<T, DaemonError>
+where
+    Fut: std::future::Future<Output = Result<T, DaemonError>>,
+{
+    let Some(timeout_sec) = tool.timeout_sec.filter(|timeout| *timeout > 0) else {
+        return future.await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_sec), future)
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "home extension `{}` timed out after {}s",
+                tool.tool_name, timeout_sec
+            ),
+        })?
 }
 
 fn enforce_home_extension_value_size(value: &serde_json::Value) -> Result<(), DaemonError> {
