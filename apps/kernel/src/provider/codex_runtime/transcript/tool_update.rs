@@ -2,6 +2,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::tool_state::{non_empty, CodexToolTranscriptState};
+use crate::extension::RemoteExtensionManifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CodexToolTranscriptUpdate {
@@ -24,10 +25,17 @@ struct CodexToolTranscriptUpdate {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_location: Option<String>,
 }
 
 pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
     state: &CodexToolTranscriptState,
+    remote_extension_manifest: &RemoteExtensionManifest,
 ) -> Option<String> {
     let item = &state.item;
     let id = item.get("id").and_then(Value::as_str)?.to_string();
@@ -38,7 +46,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             .unwrap_or("updated"),
     );
 
-    let update = match item_type {
+    let mut update = match item_type {
         "commandExecution" => CodexToolTranscriptUpdate {
             id,
             tool: Some("bash".to_string()),
@@ -60,6 +68,9 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             ),
             error: command_execution_error(item),
             raw: command_execution_raw(item),
+            placement: None,
+            authority: None,
+            execution_location: None,
         },
         "fileChange" => CodexToolTranscriptUpdate {
             id,
@@ -79,6 +90,9 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .get("changes")
                 .filter(|value| !is_empty_json_value(value))
                 .map(render_json_value),
+            placement: None,
+            authority: None,
+            execution_location: None,
         },
         "mcpToolCall" => CodexToolTranscriptUpdate {
             id,
@@ -115,6 +129,9 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .and_then(non_empty)
                 .map(str::to_string),
             raw: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
         },
         "dynamicToolCall" => CodexToolTranscriptUpdate {
             id,
@@ -142,6 +159,9 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .filter(|success| !success)
                 .map(|_| "Dynamic tool call failed".to_string()),
             raw: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
         },
         "collabAgentToolCall" => CodexToolTranscriptUpdate {
             id,
@@ -167,11 +187,29 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .map(render_json_value),
             error: None,
             raw: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
         },
         _ => return None,
     };
+    if codex_item_is_home_proxy(item, remote_extension_manifest) {
+        update.placement = Some("home-proxy".to_string());
+        update.authority = Some("home".to_string());
+        update.execution_location = Some("home".to_string());
+    }
 
     serde_json::to_string(&update).ok()
+}
+
+fn codex_item_is_home_proxy(
+    item: &Value,
+    remote_extension_manifest: &RemoteExtensionManifest,
+) -> bool {
+    ["tool", "server"]
+        .into_iter()
+        .filter_map(|field| item.get(field).and_then(Value::as_str))
+        .any(|name| remote_extension_manifest.home_proxy_tool(name).is_some())
 }
 
 fn normalize_codex_tool_status(status: &str) -> String {

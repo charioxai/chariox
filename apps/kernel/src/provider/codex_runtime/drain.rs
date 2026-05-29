@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, ProviderNativeInteractionBridge, RuntimeProviderRun};
 
-use super::events::{apply_notification, backfill_external_completed_turn};
+use super::events::{apply_notification_with_manifest, backfill_external_completed_turn};
 use super::run_config::codex_client_for_run;
 use super::turn::maybe_finalize_terminal_signal;
 use super::{CodexPollResult, CodexRuntimeState};
@@ -25,7 +25,7 @@ pub fn drain_codex_events(
     let mut resolved_usage = None;
 
     for notification in std::mem::take(&mut state.buffered_notifications) {
-        apply_notification(
+        apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
             &mut state.turn_tracker,
@@ -37,6 +37,7 @@ pub fn drain_codex_events(
             &mut prompt_completed,
             &mut terminal_failure,
             &mut resolved_usage,
+            run.remote_extension_manifest(),
         );
     }
 
@@ -48,7 +49,7 @@ pub fn drain_codex_events(
             break;
         };
         drained_to_quiet = false;
-        apply_notification(
+        apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
             &mut state.turn_tracker,
@@ -60,6 +61,7 @@ pub fn drain_codex_events(
             &mut prompt_completed,
             &mut terminal_failure,
             &mut resolved_usage,
+            run.remote_extension_manifest(),
         );
     }
     if !drained_to_quiet {
@@ -77,6 +79,7 @@ pub fn drain_codex_events(
         backfill_external_completed_turn(
             &client,
             state,
+            run.remote_extension_manifest(),
             &mut chunks,
             &mut completions,
             &mut notices,

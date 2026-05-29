@@ -13,7 +13,7 @@ pub(super) use text::{
 };
 pub(super) use tool_state::{
     append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    decode_codex_output_delta_chunk, sync_tool_item, CodexToolTranscriptState,
+    decode_codex_output_delta_chunk, sync_tool_item_with_manifest, CodexToolTranscriptState,
 };
 #[cfg(test)]
 pub(super) use tool_update::render_codex_tool_transcript_update;

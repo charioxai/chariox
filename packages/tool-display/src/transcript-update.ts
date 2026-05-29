@@ -17,6 +17,9 @@ export function mergeToolTranscriptUpdate(
   const output = next.output ?? previous?.output
   const error = next.error ?? previous?.error
   const raw = next.raw ?? previous?.raw
+  const placement = next.placement ?? previous?.placement
+  const authority = next.authority ?? previous?.authority
+  const executionLocation = next.execution_location ?? previous?.execution_location
 
   if (tool !== undefined) merged.tool = tool
   if (status !== undefined) merged.status = status
@@ -27,6 +30,9 @@ export function mergeToolTranscriptUpdate(
   if (output !== undefined) merged.output = output
   if (error !== undefined) merged.error = error
   if (raw !== undefined) merged.raw = raw
+  if (placement !== undefined) merged.placement = placement
+  if (authority !== undefined) merged.authority = authority
+  if (executionLocation !== undefined) merged.execution_location = executionLocation
 
   return merged
 }

@@ -78,7 +78,14 @@ pub(in crate::provider) fn drain_opencode_events(
                             resolved_usage_tokens_total = Some(total_tokens);
                         }
                         record_snapshot_message_metadata(state, &messages);
-                        chunks.extend(render_snapshot_output_chunks(state, &messages).chunks);
+                        chunks.extend(
+                            render_snapshot_output_chunks(
+                                state,
+                                run.remote_extension_manifest(),
+                                &messages,
+                            )
+                            .chunks,
+                        );
                         let snapshot_completions =
                             collect_new_completed_assistant_messages(state, &messages);
                         completions.extend(snapshot_completions);
@@ -107,7 +114,13 @@ pub(in crate::provider) fn drain_opencode_events(
                 )?;
             }
             Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
-                handle_message_part_updated(state, provider_run_id, *part, &mut chunks)?;
+                handle_message_part_updated(
+                    state,
+                    provider_run_id,
+                    run.remote_extension_manifest(),
+                    *part,
+                    &mut chunks,
+                )?;
             }
             Ok(OpenCodeEvent::SessionError {
                 session_id,
@@ -142,7 +155,11 @@ pub(in crate::provider) fn drain_opencode_events(
                                 resolved_usage_tokens_total = Some(total_tokens);
                             }
                             record_snapshot_message_metadata(state, &messages);
-                            let snapshot_chunks = render_snapshot_output_chunks(state, &messages);
+                            let snapshot_chunks = render_snapshot_output_chunks(
+                                state,
+                                run.remote_extension_manifest(),
+                                &messages,
+                            );
                             chunks.extend(snapshot_chunks.chunks);
                             let status_completions =
                                 collect_new_completed_assistant_messages(state, &messages);
@@ -198,7 +215,11 @@ pub(in crate::provider) fn drain_opencode_events(
                         resolved_usage_tokens_total = Some(total_tokens);
                     }
                     record_snapshot_message_metadata(state, &snapshot.messages);
-                    let snapshot_chunks = render_snapshot_output_chunks(state, &snapshot.messages);
+                    let snapshot_chunks = render_snapshot_output_chunks(
+                        state,
+                        run.remote_extension_manifest(),
+                        &snapshot.messages,
+                    );
                     chunks.extend(snapshot_chunks.chunks);
                     if state.last_status_kind.as_deref() != Some(snapshot.status.as_str()) {
                         state.last_status_kind = Some(snapshot.status.clone());
@@ -246,7 +267,11 @@ pub(in crate::provider) fn drain_opencode_events(
                 resolved_usage_tokens_total = Some(total_tokens);
             }
             record_snapshot_message_metadata(state, &snapshot.messages);
-            let snapshot_chunks = render_snapshot_output_chunks(state, &snapshot.messages);
+            let snapshot_chunks = render_snapshot_output_chunks(
+                state,
+                run.remote_extension_manifest(),
+                &snapshot.messages,
+            );
             chunks.extend(snapshot_chunks.chunks);
             let snapshot_completions =
                 collect_new_completed_assistant_messages(state, &snapshot.messages);

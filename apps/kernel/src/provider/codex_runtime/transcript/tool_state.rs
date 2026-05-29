@@ -7,6 +7,7 @@ use crate::terminal::TerminalOutputKind;
 
 use super::item::is_codex_tool_item;
 use super::tool_update::render_codex_tool_transcript_update;
+use crate::extension::RemoteExtensionManifest;
 use crate::provider::codex_runtime::CodexOutputChunk;
 
 #[derive(Debug, Clone)]
@@ -62,9 +63,10 @@ pub(in crate::provider::codex_runtime) fn decode_codex_output_delta_chunk(chunk:
         .unwrap_or_else(|| chunk.to_string())
 }
 
-pub(in crate::provider::codex_runtime) fn sync_tool_item(
+pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     item: &Value,
+    remote_extension_manifest: &RemoteExtensionManifest,
 ) -> Option<CodexOutputChunk> {
     if !is_codex_tool_item(item) {
         return None;
@@ -79,7 +81,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item(
             last_emitted: None,
         });
     entry.item = item.clone();
-    render_tool_chunk_if_changed(&item_id, entry)
+    render_tool_chunk_if_changed(&item_id, entry, remote_extension_manifest)
 }
 
 pub(in crate::provider::codex_runtime) fn append_tool_output_delta(
@@ -100,7 +102,7 @@ pub(in crate::provider::codex_runtime) fn append_tool_output_delta(
             last_emitted: None,
         });
     entry.streamed_output.push_str(delta);
-    render_tool_chunk_if_changed(item_id, entry)
+    render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }
 
 pub(in crate::provider::codex_runtime) fn append_tool_progress(
@@ -120,14 +122,15 @@ pub(in crate::provider::codex_runtime) fn append_tool_progress(
             last_emitted: None,
         });
     entry.progress_messages.push(message.trim().to_string());
-    render_tool_chunk_if_changed(item_id, entry)
+    render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }
 
 fn render_tool_chunk_if_changed(
     item_id: &str,
     state: &mut CodexToolTranscriptState,
+    remote_extension_manifest: &RemoteExtensionManifest,
 ) -> Option<CodexOutputChunk> {
-    let rendered = render_codex_tool_transcript_update(state)?;
+    let rendered = render_codex_tool_transcript_update(state, remote_extension_manifest)?;
     if state.last_emitted.as_deref() == Some(rendered.as_str()) {
         return None;
     }

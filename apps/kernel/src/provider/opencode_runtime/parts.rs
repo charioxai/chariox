@@ -1,6 +1,7 @@
 //! OpenCode streamed message part rendering.
 
 use crate::error::DaemonError;
+use crate::extension::RemoteExtensionManifest;
 use crate::provider::OpenCodePart;
 use crate::terminal::TerminalOutputKind;
 
@@ -78,6 +79,7 @@ pub(super) fn handle_message_part_delta(
 pub(super) fn handle_message_part_updated(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,
+    remote_extension_manifest: &RemoteExtensionManifest,
     part: OpenCodePart,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) -> Result<(), DaemonError> {
@@ -143,7 +145,7 @@ pub(super) fn handle_message_part_updated(
         }
         "tool" => {
             if is_assistant {
-                emit_tool_summary(state, &part, chunks);
+                emit_tool_summary(state, remote_extension_manifest, &part, chunks);
             }
         }
         _ => {}
@@ -179,10 +181,11 @@ fn emit_part_text(
 
 fn emit_tool_summary(
     state: &mut OpenCodeRuntimeState,
+    remote_extension_manifest: &RemoteExtensionManifest,
     part: &OpenCodePart,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    let summary = render_tool_transcript_update(part);
+    let summary = render_tool_transcript_update(part, remote_extension_manifest);
     let previous = state.emitted_tool_summaries.get(&part.id);
     if previous.map(String::as_str) != Some(summary.as_str()) {
         state

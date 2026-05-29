@@ -9,6 +9,9 @@ export type ToolTranscriptUpdate = {
   output?: string
   error?: string
   raw?: string
+  placement?: "worker-local" | "home-proxy" | "skill snapshot" | string
+  authority?: "home" | "worker" | string
+  execution_location?: "home" | "worker" | "none" | string
 }
 
 export type InlineCodeSpan = {

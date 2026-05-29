@@ -5,13 +5,14 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
+use crate::extension::RemoteExtensionManifest;
 use crate::provider::{CodexClient, CodexNotification, ProviderRunTokenUsage};
 use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{
     append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    decode_codex_output_delta_chunk, sync_completed_text_item, sync_tool_item,
+    decode_codex_output_delta_chunk, sync_completed_text_item, sync_tool_item_with_manifest,
     CodexTextTranscriptState, CodexToolTranscriptState,
 };
 use super::turn::{
@@ -20,6 +21,7 @@ use super::turn::{
 };
 use super::{CodexAssistantCompletion, CodexOutputChunk, CodexRuntimeState};
 
+#[cfg(test)]
 pub(super) fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
@@ -32,6 +34,36 @@ pub(super) fn apply_notification(
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
     resolved_usage: &mut Option<ProviderRunTokenUsage>,
+) {
+    apply_notification_with_manifest(
+        notification,
+        active_turn_id,
+        turn_tracker,
+        text_items,
+        tool_items,
+        chunks,
+        _completions,
+        notices,
+        prompt_completed,
+        terminal_failure,
+        resolved_usage,
+        &RemoteExtensionManifest::default(),
+    );
+}
+
+pub(super) fn apply_notification_with_manifest(
+    notification: CodexNotification,
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
+    text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    chunks: &mut Vec<CodexOutputChunk>,
+    _completions: &mut Vec<CodexAssistantCompletion>,
+    notices: &mut Vec<String>,
+    prompt_completed: &mut bool,
+    terminal_failure: &mut Option<String>,
+    resolved_usage: &mut Option<ProviderRunTokenUsage>,
+    remote_extension_manifest: &RemoteExtensionManifest,
 ) {
     match notification {
         CodexNotification::AgentMessageDelta { item_id, delta } => {
@@ -82,7 +114,9 @@ pub(super) fn apply_notification(
             turn_tracker.note_activity();
             trace_codex_tool_item("item_lifecycle", &item);
             note_tool_item_started(turn_tracker, &item);
-            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+            if let Some(chunk) =
+                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
+            {
                 chunks.push(chunk);
             }
         }
@@ -91,7 +125,9 @@ pub(super) fn apply_notification(
             trace_codex_tool_item("item_lifecycle", &item);
             note_tool_item_completed(turn_tracker, &item);
             note_assistant_item_completed(turn_tracker, &item);
-            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+            if let Some(chunk) =
+                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
+            {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(text_items, &item) {
                 chunks.push(chunk);
@@ -103,9 +139,10 @@ pub(super) fn apply_notification(
             cwd,
         } => {
             turn_tracker.note_tool_started(&call_id);
-            if let Some(chunk) = sync_tool_item(
+            if let Some(chunk) = sync_tool_item_with_manifest(
                 tool_items,
                 &codex_exec_command_item(&call_id, command, cwd, None),
+                remote_extension_manifest,
             ) {
                 chunks.push(chunk);
             }
@@ -132,7 +169,9 @@ pub(super) fn apply_notification(
             if let Some(exit_code) = exit_code {
                 item["exitCode"] = json!(exit_code);
             }
-            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+            if let Some(chunk) =
+                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
+            {
                 chunks.push(chunk);
             }
         }
@@ -229,6 +268,7 @@ pub(super) fn apply_notification(
 pub(super) fn backfill_external_completed_turn(
     client: &CodexClient,
     state: &mut CodexRuntimeState,
+    remote_extension_manifest: &RemoteExtensionManifest,
     chunks: &mut Vec<CodexOutputChunk>,
     completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
@@ -265,7 +305,9 @@ pub(super) fn backfill_external_completed_turn(
     }
     if let Some(items) = turn.get("items").and_then(Value::as_array) {
         for item in items {
-            if let Some(chunk) = sync_tool_item(&mut state.tool_items, item) {
+            if let Some(chunk) =
+                sync_tool_item_with_manifest(&mut state.tool_items, item, remote_extension_manifest)
+            {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(&mut state.text_items, item) {
                 chunks.push(chunk);

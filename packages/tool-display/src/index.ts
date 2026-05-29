@@ -74,7 +74,7 @@ export function formatToolTranscriptUpdate(update: ToolTranscriptUpdate) {
   const sections: string[] = []
   const tool = nonEmpty(update.tool) ?? "tool"
   const status = nonEmpty(update.status)
-  sections.push(`**${tool}**${formatToolStatusBadge(status)}`)
+  sections.push(`**${tool}**${formatToolPlacementBadge(update.placement)}${formatToolStatusBadge(status)}`)
 
   const title = nonEmpty(update.title)
   const description = nonEmpty(update.description)
@@ -161,7 +161,7 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
   }
 
   const summary = summarizeToolDisplay(update, patchFiles, markdown)
-  const title = nativeToolDisplayTitle(tool)
+  const title = toolDisplayTitleWithPlacement(nativeToolDisplayTitle(tool), update.placement)
   return {
     version: 1,
     tool,
@@ -174,6 +174,18 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
     },
     blocks,
   }
+}
+
+function toolDisplayTitleWithPlacement(title: string, placement: unknown) {
+  return isHomeProxyPlacement(placement) ? `home-proxy · ${title}` : title
+}
+
+function formatToolPlacementBadge(placement: unknown) {
+  return isHomeProxyPlacement(placement) ? " · HOME-PROXY" : ""
+}
+
+function isHomeProxyPlacement(placement: unknown) {
+  return placement === "home-proxy"
 }
 
 function summarizeToolDisplay(update: ToolTranscriptUpdate, patchFiles: ApplyPatchFile[], markdown: string) {

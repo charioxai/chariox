@@ -134,6 +134,26 @@ test("formatToolDisplay unwraps live MCP envelopes for Arroba mutation output", 
   ])
 })
 
+test("formatToolDisplay distinguishes home-proxy tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-home-1",
+    tool: "home_lookup",
+    placement: "home-proxy",
+    authority: "home",
+    execution_location: "home",
+    status: "completed",
+    input: { query: "status" },
+    output: "ok",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*home_lookup\*\* · HOME-PROXY · COMPLETED/)
+  assert.equal(display.title, "home-proxy · home_lookup")
+  assert.equal(display.collapsed.title, "home-proxy · home_lookup · COMPLETED")
+})
+
 test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {
   assert.equal(
     formatToolTranscriptUpdate({

@@ -1,5 +1,6 @@
 //! OpenCode transcript and status rendering.
 
+use crate::extension::RemoteExtensionManifest;
 use crate::provider::opencode_client::OpenCodePart;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -21,9 +22,18 @@ pub(super) struct ToolTranscriptUpdate {
     pub(super) error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) placement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) authority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) execution_location: Option<String>,
 }
 
-pub(super) fn render_tool_transcript_update(part: &OpenCodePart) -> String {
+pub(super) fn render_tool_transcript_update(
+    part: &OpenCodePart,
+    remote_extension_manifest: &RemoteExtensionManifest,
+) -> String {
     let tool_name = if part.tool.is_empty() {
         "tool"
     } else {
@@ -62,6 +72,9 @@ pub(super) fn render_tool_transcript_update(part: &OpenCodePart) -> String {
             rendered_text.as_deref() != Some(value.as_str())
                 && output.as_deref() != Some(value.as_str())
         });
+    let is_home_proxy = remote_extension_manifest
+        .home_proxy_tool(tool_name)
+        .is_some();
 
     serde_json::to_string(&ToolTranscriptUpdate {
         id: part.id.clone(),
@@ -74,6 +87,9 @@ pub(super) fn render_tool_transcript_update(part: &OpenCodePart) -> String {
         output,
         error,
         raw,
+        placement: is_home_proxy.then(|| "home-proxy".to_string()),
+        authority: is_home_proxy.then(|| "home".to_string()),
+        execution_location: is_home_proxy.then(|| "home".to_string()),
     })
     .unwrap_or_else(|_| {
         format!(

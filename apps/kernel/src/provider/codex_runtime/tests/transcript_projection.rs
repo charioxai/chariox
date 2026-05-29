@@ -491,26 +491,71 @@ fn codex_exec_command_events_render_as_command_execution_tool_updates() {
 
 #[test]
 fn mcp_tool_progress_is_projected_into_tool_text() {
-    let rendered = render_codex_tool_transcript_update(&CodexToolTranscriptState {
-        item: json!({
-            "type": "mcpToolCall",
-            "id": "tool-1",
-            "server": "arroba-runtime",
-            "tool": "validate_workflow_handoff",
-            "status": "inProgress",
-            "arguments": { "value": 1 },
-            "result": null,
-            "error": null,
-            "durationMs": null
-        }),
-        streamed_output: String::new(),
-        progress_messages: vec!["checking schema".to_string()],
-        last_emitted: None,
-    })
+    let rendered = render_codex_tool_transcript_update(
+        &CodexToolTranscriptState {
+            item: json!({
+                "type": "mcpToolCall",
+                "id": "tool-1",
+                "server": "arroba-runtime",
+                "tool": "validate_workflow_handoff",
+                "status": "inProgress",
+                "arguments": { "value": 1 },
+                "result": null,
+                "error": null,
+                "durationMs": null
+            }),
+            streamed_output: String::new(),
+            progress_messages: vec!["checking schema".to_string()],
+            last_emitted: None,
+        },
+        &crate::extension::RemoteExtensionManifest::default(),
+    )
     .expect("payload should render");
 
     let parsed = serde_json::from_str::<Value>(&rendered).expect("payload should deserialize");
     assert_eq!(parsed["tool"], "validate_workflow_handoff");
     assert_eq!(parsed["title"], "arroba-runtime");
     assert_eq!(parsed["text"], "checking schema");
+}
+
+#[test]
+fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
+    let manifest = crate::extension::RemoteExtensionManifest {
+        tools: vec![crate::extension::RemoteExtensionTool {
+            kind: crate::extension::ExtensionKind::Mcp,
+            name: "Home MCP".to_string(),
+            tool_name: "home-mcp".to_string(),
+            description: "Runs on home".to_string(),
+            input_schema: json!({ "type": "object" }),
+            authority: crate::extension::ExtensionAuthority::Home,
+            definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+            execution_location: crate::extension::ExtensionExecutionLocation::Home,
+            safety: None,
+            timeout_sec: Some(5),
+            version_hash: Some("hash-1".to_string()),
+        }],
+    };
+    let rendered = render_codex_tool_transcript_update(
+        &CodexToolTranscriptState {
+            item: json!({
+                "type": "mcpToolCall",
+                "id": "tool-home",
+                "server": "home-mcp",
+                "tool": "lookup",
+                "status": "completed",
+                "arguments": { "value": 1 },
+                "result": { "ok": true }
+            }),
+            streamed_output: String::new(),
+            progress_messages: Vec::new(),
+            last_emitted: None,
+        },
+        &manifest,
+    )
+    .expect("payload should render");
+
+    let parsed = serde_json::from_str::<Value>(&rendered).expect("payload should deserialize");
+    assert_eq!(parsed["placement"], "home-proxy");
+    assert_eq!(parsed["authority"], "home");
+    assert_eq!(parsed["execution_location"], "home");
 }

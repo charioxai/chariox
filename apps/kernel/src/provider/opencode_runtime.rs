@@ -18,6 +18,10 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::extension::{
+        ExtensionAuthority, ExtensionDefinitionOrigin, ExtensionExecutionLocation, ExtensionKind,
+        RemoteExtensionManifest, RemoteExtensionTool,
+    };
     use crate::provider::{
         opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState},
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
@@ -57,27 +61,30 @@ mod tests {
 
     #[test]
     fn renders_structured_tool_update_with_input_and_output() {
-        let payload = render_tool_transcript_update(&OpenCodePart {
-            id: "part-1".to_string(),
-            session_id: "session-1".to_string(),
-            message_id: "message-1".to_string(),
-            kind: "tool".to_string(),
-            text: String::new(),
-            tool: "bash".to_string(),
-            state: Some(OpenCodeToolState {
-                status: "completed".to_string(),
-                input: json!({ "command": "git status" }),
-                output: String::new(),
-                title: String::new(),
-                metadata: json!({
-                    "output": "On branch main",
-                    "description": "Shows working tree status"
+        let payload = render_tool_transcript_update(
+            &OpenCodePart {
+                id: "part-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "tool".to_string(),
+                text: String::new(),
+                tool: "bash".to_string(),
+                state: Some(OpenCodeToolState {
+                    status: "completed".to_string(),
+                    input: json!({ "command": "git status" }),
+                    output: String::new(),
+                    title: String::new(),
+                    metadata: json!({
+                        "output": "On branch main",
+                        "description": "Shows working tree status"
+                    }),
+                    error: String::new(),
+                    raw: String::new(),
                 }),
-                error: String::new(),
-                raw: String::new(),
-            }),
-            time: None,
-        });
+                time: None,
+            },
+            &RemoteExtensionManifest::default(),
+        );
 
         let parsed: ToolTranscriptUpdate =
             serde_json::from_str(&payload).expect("tool payload should deserialize");
@@ -93,6 +100,53 @@ mod tests {
     }
 
     #[test]
+    fn renders_home_proxy_placement_for_remote_extension_tool_update() {
+        let manifest = RemoteExtensionManifest {
+            tools: vec![RemoteExtensionTool {
+                kind: ExtensionKind::Script,
+                name: "Home lookup".to_string(),
+                tool_name: "home_lookup".to_string(),
+                description: "Runs on home".to_string(),
+                input_schema: json!({ "type": "object" }),
+                authority: ExtensionAuthority::Home,
+                definition_origin: ExtensionDefinitionOrigin::Home,
+                execution_location: ExtensionExecutionLocation::Home,
+                safety: None,
+                timeout_sec: Some(5),
+                version_hash: Some("hash-1".to_string()),
+            }],
+        };
+        let payload = render_tool_transcript_update(
+            &OpenCodePart {
+                id: "part-home".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "tool".to_string(),
+                text: String::new(),
+                tool: "home_lookup".to_string(),
+                state: Some(OpenCodeToolState {
+                    status: "completed".to_string(),
+                    input: json!({ "query": "status" }),
+                    output: "ok".to_string(),
+                    title: String::new(),
+                    metadata: json!({}),
+                    error: String::new(),
+                    raw: String::new(),
+                }),
+                time: None,
+            },
+            &manifest,
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("tool payload should deserialize");
+        assert_eq!(parsed["tool"], "home_lookup");
+        assert_eq!(parsed["placement"], "home-proxy");
+        assert_eq!(parsed["authority"], "home");
+        assert_eq!(parsed["execution_location"], "home");
+    }
+
+    #[test]
     fn snapshot_rendering_preserves_reasoning_and_text_order() {
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
@@ -103,6 +157,7 @@ mod tests {
         );
         let rendered = render_snapshot_output_chunks(
             &mut state,
+            &RemoteExtensionManifest::default(),
             &[crate::provider::OpenCodeMessage {
                 info: serde_json::from_value(json!({
                     "id": "message-1",

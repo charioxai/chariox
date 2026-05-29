@@ -1,6 +1,7 @@
 //! OpenCode snapshot reconciliation and rendering.
 
 use crate::error::DaemonError;
+use crate::extension::RemoteExtensionManifest;
 use crate::provider::{OpenCodeClient, OpenCodeMessage, OpenCodeMessageInfo};
 use crate::terminal::TerminalOutputKind;
 
@@ -95,6 +96,7 @@ pub(super) fn latest_assistant_usage_tokens(messages: &[OpenCodeMessage]) -> Opt
 
 pub(super) fn render_snapshot_output_chunks(
     state: &mut OpenCodeRuntimeState,
+    remote_extension_manifest: &RemoteExtensionManifest,
     messages: &[OpenCodeMessage],
 ) -> SnapshotRenderResult {
     let mut chunks = Vec::new();
@@ -128,7 +130,7 @@ pub(super) fn render_snapshot_output_chunks(
                     *emitted = part.text.len();
                 }
                 "tool" => {
-                    let summary = render_tool_transcript_update(part);
+                    let summary = render_tool_transcript_update(part, remote_extension_manifest);
                     let previous = state.emitted_tool_summaries.get(&part.id);
                     if previous.map(String::as_str) != Some(summary.as_str()) {
                         state
