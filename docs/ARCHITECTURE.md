@@ -769,6 +769,7 @@ The registry layout is intentionally ordinary markdown so later Arroba Cloud edi
   runtime/workspace-live-sync.md
   runtime/native-permissions.md
   runtime/slice.md
+  runtime/mcp-skill-continuation.md
   workflow/turn.md
   workflow/run-completion.md
   workflow/run-intermediate-output.md

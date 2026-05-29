@@ -172,7 +172,7 @@ Prompt template storage:
 
 - Arroba prompt templates are user-owned markdown files under `~/.arroba/prompts`.
 - Source-controlled defaults may be materialized there for first run, but runtime assembly reads from the registry path rather than hardcoding prompt text in adapter code.
-- Required templates include runtime base instructions, Workspace Live Sync instructions, native permission instructions, slice runtime instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
+- Required templates include runtime base instructions, Workspace Live Sync instructions, native permission instructions, slice runtime instructions, MCP/skill continuation instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
 - Cloud editing, if introduced later, edits this registry model and must not create a second prompt source of truth.
 
 Provider-local visibility caveat:

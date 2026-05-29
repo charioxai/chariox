@@ -118,16 +118,17 @@ impl KernelRuntimeState {
         )
         .await?;
 
+        let (hidden_system_context, _manifest) =
+            crate::prompt_assembly::PromptAssemblyService::from_env()?
+                .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
         let prompt = crate::session::PromptQueueItem::new(
             self.owned.session_store.reserve_prompt_id(),
             &continuation.source_attachment_id,
             &continuation.agent_id,
-            format!(
-                "MCP `{}` is now loaded. Continue this request exactly:\n\n{}\n\nUse the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.",
-                continuation.mcp_name, continuation.previous_prompt
-            ),
+            continuation.previous_prompt,
             crate::session::PromptStatus::Queued,
-        );
+        )
+        .with_hidden_system_context(hidden_system_context);
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: continuation.session_id,

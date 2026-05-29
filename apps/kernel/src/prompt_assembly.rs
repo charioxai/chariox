@@ -15,6 +15,7 @@ const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
     include_str!("provider/workspace_live_sync_instructions.md");
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
 
 const WORKFLOW_TURN: &str = "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes a `handoff_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above, that `handoff_schema_ref`, and your proposed `output.message` JSON. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements.";
 
@@ -245,6 +246,18 @@ impl PromptAssemblyService {
         Ok((hidden_fragments.join("\n\n"), manifest))
     }
 
+    pub(crate) fn assemble_mcp_skill_continuation_context(
+        &self,
+        mcp_name: &str,
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        let (hidden_context, manifest) =
+            self.assemble_hidden_context_only(&["runtime/mcp-skill-continuation"])?;
+        Ok((
+            hidden_context.replace("{{MCP_NAME}}", mcp_name.trim()),
+            manifest,
+        ))
+    }
+
     fn push_template(
         &self,
         template_id: &str,
@@ -287,6 +300,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new("runtime/workspace-live-sync", RUNTIME_WORKSPACE_LIVE_SYNC),
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new(
+            "runtime/mcp-skill-continuation",
+            RUNTIME_MCP_SKILL_CONTINUATION,
+        ),
         BundledPromptTemplate::new("workflow/turn", WORKFLOW_TURN),
         BundledPromptTemplate::new("workflow/run-completion", WORKFLOW_RUN_COMPLETION),
         BundledPromptTemplate::new(
@@ -538,5 +555,30 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/slice"));
+    }
+
+    #[test]
+    fn mcp_skill_continuation_context_uses_registry_template() {
+        let root = temp_prompt_root("mcp-continuation");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("mcp-skill-continuation.md"),
+            "CONTINUATION_TEMPLATE {{MCP_NAME}}",
+        )
+        .expect("user edit should write");
+        let service = PromptAssemblyService::new(registry);
+
+        let (hidden, manifest) = service
+            .assemble_mcp_skill_continuation_context("playwright")
+            .expect("continuation context should assemble");
+
+        assert_eq!(hidden, "CONTINUATION_TEMPLATE playwright");
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/mcp-skill-continuation"));
     }
 }
