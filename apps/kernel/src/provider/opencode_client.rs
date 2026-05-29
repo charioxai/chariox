@@ -376,6 +376,10 @@ mod tests {
                 serde_json::from_str(body).expect("request body should be JSON");
             assert_eq!(body.get("agent"), Some(&serde_json::json!("plan")));
             assert_eq!(
+                body.get("system"),
+                Some(&serde_json::json!("hidden system context"))
+            );
+            assert_eq!(
                 body.get("model"),
                 Some(&serde_json::json!({
                     "providerID": "opencode",
@@ -397,6 +401,7 @@ mod tests {
                 "message-1",
                 "make a plan",
                 &[],
+                Some("hidden system context"),
                 Some("opencode/gpt-5.4"),
                 Some("low"),
                 AgentExecutionMode::Plan,

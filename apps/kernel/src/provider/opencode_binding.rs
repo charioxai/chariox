@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::session::PromptAttachment;
 use rand::distributions::{Alphanumeric, DistString};
 
 use super::{
@@ -425,16 +424,16 @@ mod tests {
 pub(super) fn submit_opencode_prompt(
     run: &RuntimeProviderRun,
     state: &mut OpenCodeRuntimeState,
-    prompt: &str,
-    attachments: &[PromptAttachment],
+    envelope: &crate::prompt_assembly::PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(run.id(), state.base_url())?;
     let message_id = next_opencode_message_id();
     client.submit_prompt(
         state.session_id(),
         &message_id,
-        prompt,
-        attachments,
+        &envelope.visible_user_prompt,
+        &envelope.attachments,
+        Some(&envelope.hidden_system_context),
         Some(run.model()),
         run.variant(),
         run.execution_mode(),
@@ -478,7 +477,13 @@ pub(crate) fn run_opencode_utility_prompt(
         OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
     )?;
     let mut state = OpenCodeRuntimeState::new(base_url, session_id, event_subscription);
-    if let Err(error) = submit_opencode_prompt(run, &mut state, prompt, &[]) {
+    let envelope = crate::prompt_assembly::PromptEnvelope::new(
+        prompt,
+        "",
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::default(),
+    );
+    if let Err(error) = submit_opencode_prompt(run, &mut state, &envelope) {
         state.stop();
         return Err(error);
     }

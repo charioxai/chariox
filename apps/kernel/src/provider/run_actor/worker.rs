@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::provider::RuntimeProviderRun;
-use crate::session::PromptAttachment;
+use crate::prompt_assembly::PromptEnvelope;
 
 use super::command_execution::{
     execute_abort_command, execute_output_poll_command, execute_selection_sync_command,
@@ -27,8 +27,7 @@ pub(super) enum ProviderRunActorCommand {
         provider_run_id: String,
         agent_id: String,
         run: RuntimeProviderRun,
-        prompt: String,
-        attachments: Vec<PromptAttachment>,
+        envelope: PromptEnvelope,
     },
     Abort {
         session_id: String,
@@ -76,15 +75,10 @@ impl ProviderRunWorkerDeps {
                         provider_run_id,
                         agent_id,
                         run,
-                        prompt,
-                        attachments,
+                        envelope,
                     } => {
-                        let result = execute_submit_command(
-                            &self.runtime_registry,
-                            run,
-                            prompt,
-                            attachments,
-                        );
+                        let result =
+                            execute_submit_command(&self.runtime_registry, run, envelope);
                         self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                         let finished = FinishedProviderPromptSubmitJob {
                             session_id,

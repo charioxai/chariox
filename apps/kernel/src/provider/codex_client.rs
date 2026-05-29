@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn codex_plan_mode_uses_native_collaboration_mode() {
         assert_eq!(
-            codex_collaboration_mode(AgentExecutionMode::Plan, Some("gpt-5.4"), Some("low")),
+            codex_collaboration_mode(AgentExecutionMode::Plan, Some("gpt-5.4"), Some("low"), None),
             Some(json!({
                 "mode": "plan",
                 "settings": {
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn codex_build_mode_resets_native_collaboration_mode() {
         assert_eq!(
-            codex_collaboration_mode(AgentExecutionMode::Build, Some("gpt-5.4"), None),
+            codex_collaboration_mode(AgentExecutionMode::Build, Some("gpt-5.4"), None, None),
             Some(json!({
                 "mode": "default",
                 "settings": {
@@ -219,6 +219,22 @@ mod tests {
                     "developer_instructions": null,
                 }
             }))
+        );
+    }
+
+    #[test]
+    fn codex_collaboration_mode_carries_hidden_developer_instructions() {
+        let mode = codex_collaboration_mode(
+            AgentExecutionMode::Build,
+            Some("gpt-5.4"),
+            None,
+            Some("hidden system context"),
+        )
+        .expect("collaboration mode should build");
+
+        assert_eq!(
+            mode["settings"]["developer_instructions"],
+            json!("hidden system context")
         );
     }
 

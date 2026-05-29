@@ -109,13 +109,40 @@ fn plan_claude_launch_unlocked(
             structured_endpoint: None,
         });
     }
+    let native = prepare_claude_native_tui_files()?;
+    let mut pty_env = BTreeMap::new();
+    pty_env.insert(
+        "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+        native.events_file.display().to_string(),
+    );
+    pty_env.insert(
+        "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+        native.context_file.display().to_string(),
+    );
+    pty_env.insert(
+        "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+        native.context_response_dir.display().to_string(),
+    );
+    pty_env.insert(
+        "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+        native.permission_response_dir.display().to_string(),
+    );
+    pty_env.insert(
+        "ARROBA_CLAUDE_SETTINGS_FILE".to_string(),
+        native.settings_file.display().to_string(),
+    );
+    let mut args = claude_launch_args(request)?;
+    args.extend([
+        "--settings".to_string(),
+        native.settings_file.display().to_string(),
+    ]);
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::External,
         process_label: "claude:stream-json".to_string(),
         pty_target: None,
         pty_program: Some(executable.display().to_string()),
-        pty_args: claude_launch_args(request)?,
-        pty_env: BTreeMap::new(),
+        pty_args: args,
+        pty_env,
         pty_env_remove: claude_provider_env_remove(Some(request)),
         working_directory: request.working_directory.clone(),
         structured_endpoint: Some(CLAUDE_STRUCTURED_ENDPOINT.to_string()),

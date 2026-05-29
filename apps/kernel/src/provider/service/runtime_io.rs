@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::prompt_assembly::{PromptAssemblyMode, PromptAssemblyService};
 use crate::provider::{
     CodexRunSelection, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
     FinishedProviderPromptSubmitJob, ProviderPromptSignalBatch, ProviderRunOperationLanes,
@@ -10,7 +11,6 @@ use super::super::{
     claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
-    workspace_live_sync_policy,
 };
 use super::ProviderProcessService;
 
@@ -178,14 +178,23 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let prompt = workspace_live_sync_policy::apply_structured_prompt_instructions(prompt, run);
+        let mode = if run.client_interface().is_arroba() {
+            PromptAssemblyMode::NormalProviderTurn
+        } else {
+            PromptAssemblyMode::NativeTuiProviderTurn
+        };
+        let envelope = PromptAssemblyService::from_env()?.assemble_provider_turn(
+            run,
+            prompt,
+            attachments.to_vec(),
+            mode,
+        )?;
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,
             agent_id,
             run.clone(),
-            prompt,
-            attachments.to_vec(),
+            envelope,
         )
     }
 

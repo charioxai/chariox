@@ -59,6 +59,7 @@ pub(super) fn codex_collaboration_mode(
     execution_mode: AgentExecutionMode,
     model: Option<&str>,
     effort: Option<&str>,
+    developer_instructions: Option<&str>,
 ) -> Option<Value> {
     let model = model?.trim();
     if model.is_empty() {
@@ -73,12 +74,17 @@ pub(super) fn codex_collaboration_mode(
         AgentExecutionMode::Build => "default",
         AgentExecutionMode::Plan => "plan",
     };
+    let developer_instructions = developer_instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(Value::from)
+        .unwrap_or(Value::Null);
     Some(json!({
         "mode": mode,
         "settings": {
             "model": model,
             "reasoning_effort": effort,
-            "developer_instructions": Value::Null,
+            "developer_instructions": developer_instructions,
         }
     }))
 }

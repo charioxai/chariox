@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod prompt_transcript;
 pub mod provider;
 pub mod pty;
+pub(crate) mod prompt_assembly;
 pub mod runtime;
 pub mod runtime_transport;
 pub mod scheduler;

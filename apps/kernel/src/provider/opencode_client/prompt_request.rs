@@ -15,6 +15,7 @@ impl OpenCodeClient {
         message_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
+        hidden_system_context: Option<&str>,
         model: Option<&str>,
         variant: Option<&str>,
         execution_mode: AgentExecutionMode,
@@ -41,6 +42,12 @@ impl OpenCodeClient {
             "parts": parts,
             "agent": opencode_agent_for_execution_mode(execution_mode),
         });
+        if let Some(system) = hidden_system_context
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["system"] = json!(system);
+        }
         if let Some((provider_id, model_id)) = parse_model(model) {
             body["model"] = json!({
                 "providerID": provider_id,

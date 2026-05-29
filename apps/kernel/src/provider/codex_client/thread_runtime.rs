@@ -150,6 +150,7 @@ impl CodexClient {
         write_access_mode: ProviderWriteAccessMode,
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
+        developer_instructions: Option<&str>,
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
@@ -173,7 +174,9 @@ impl CodexClient {
         if let Some(effort) = effort {
             params["effort"] = json!(effort);
         }
-        if let Some(collaboration_mode) = codex_collaboration_mode(execution_mode, model, effort) {
+        if let Some(collaboration_mode) =
+            codex_collaboration_mode(execution_mode, model, effort, developer_instructions)
+        {
             params["collaborationMode"] = collaboration_mode;
         }
         self.send_request_buffering_notifications(

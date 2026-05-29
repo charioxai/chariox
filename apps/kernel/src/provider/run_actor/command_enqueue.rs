@@ -7,8 +7,7 @@ impl ProviderRunActorMailbox {
         provider_run_id: String,
         agent_id: String,
         run: RuntimeProviderRun,
-        prompt: String,
-        attachments: Vec<PromptAttachment>,
+        envelope: PromptEnvelope,
     ) -> Result<(), DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
@@ -17,8 +16,7 @@ impl ProviderRunActorMailbox {
             provider_run_id: provider_run_id.clone(),
             agent_id,
             run,
-            prompt,
-            attachments,
+            envelope,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -384,8 +382,12 @@ mod tests {
                 "run-1".to_string(),
                 "agent-1".to_string(),
                 runtime_run("run-1"),
-                "hello".to_string(),
-                Vec::new(),
+                crate::prompt_assembly::PromptEnvelope::new(
+                    "hello",
+                    "",
+                    Vec::new(),
+                    crate::prompt_assembly::PromptManifest::default(),
+                ),
             )
             .expect_err("full provider actor queue should reject submit");
 

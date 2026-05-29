@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 
 use serde_json::json;
 
 use crate::error::DaemonError;
-use crate::session::PromptAttachment;
+use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
     claude::claude_launch_args_for_run, AgentExecutionMode, AgentPermissionLevel,
@@ -36,6 +37,8 @@ pub(crate) fn initialize_claude_runtime(
         .to_string();
     let args = run.pty_args().to_vec();
     let env = run.pty_env().clone();
+    let context_file = env.get("ARROBA_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
+    let settings_file = env.get("ARROBA_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
     let env_remove = run.pty_env_remove().to_vec();
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
@@ -54,6 +57,8 @@ pub(crate) fn initialize_claude_runtime(
             env,
             env_remove,
             working_directory,
+            context_file,
+            settings_file,
             child,
             stdin,
             receiver,
@@ -80,12 +85,12 @@ pub(crate) fn initialize_claude_runtime(
 pub(crate) fn submit_claude_prompt(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
-    prompt: &str,
-    attachments: &[PromptAttachment],
+    envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
     if claude_runtime_selection_changed(run, state) {
         restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
     }
+    write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
     state.active_turn_id = Some(turn_id);
@@ -95,7 +100,7 @@ pub(crate) fn submit_claude_prompt(
         "type": "user",
         "message": {
             "role": "user",
-            "content": claude_user_content(prompt, attachments)
+            "content": claude_user_content(&envelope.visible_user_prompt, &envelope.attachments)
         }
     });
     write_json_line(&mut state.stdin, &message)
@@ -184,7 +189,10 @@ fn restart_claude_runtime(
         .session_id
         .as_deref()
         .or_else(|| run.resume_state().claude_session_id());
-    let args = claude_launch_args_for_run(run, resume_session_id)?;
+    let mut args = claude_launch_args_for_run(run, resume_session_id)?;
+    if let Some(settings_file) = &state.settings_file {
+        args.extend(["--settings".to_string(), settings_file.display().to_string()]);
+    }
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &state.program,
@@ -206,6 +214,23 @@ fn restart_claude_runtime(
     state.saw_text_delta = false;
     state.exit_reported = false;
     Ok(())
+}
+
+fn write_claude_hidden_context(
+    provider_run_id: &str,
+    state: &ClaudeRuntimeState,
+    hidden_system_context: &str,
+) -> Result<(), DaemonError> {
+    let Some(path) = &state.context_file else {
+        return Ok(());
+    };
+    std::fs::write(path, hidden_system_context.trim()).map_err(|error| {
+        DaemonError::ProviderProtocol {
+            provider_run_id: provider_run_id.to_string(),
+            operation: "claude_hidden_context_write",
+            message: error.to_string(),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -239,6 +264,8 @@ mod tests {
                 env: Default::default(),
                 env_remove: Vec::new(),
                 working_directory: None,
+                context_file: None,
+                settings_file: None,
                 child,
                 stdin,
                 receiver,

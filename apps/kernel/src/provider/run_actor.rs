@@ -31,7 +31,7 @@ use runtime_slots::ProviderRunRuntimeRegistry;
 use worker::{ProviderRunActorCommand, ProviderRunWorkerDeps};
 
 use crate::error::DaemonError;
-use crate::session::PromptAttachment;
+use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
     opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,

@@ -22,6 +22,8 @@ pub struct ClaudeRuntimeState {
     pub(super) env: BTreeMap<String, String>,
     pub(super) env_remove: Vec<String>,
     pub(super) working_directory: Option<PathBuf>,
+    pub(super) context_file: Option<PathBuf>,
+    pub(super) settings_file: Option<PathBuf>,
     pub(super) child: Child,
     pub(super) stdin: ChildStdin,
     pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
@@ -44,6 +46,8 @@ impl std::fmt::Debug for ClaudeRuntimeState {
         f.debug_struct("ClaudeRuntimeState")
             .field("program", &self.program)
             .field("working_directory", &self.working_directory)
+            .field("context_file", &self.context_file)
+            .field("settings_file", &self.settings_file)
             .field("active_model", &self.active_model)
             .field("active_variant", &self.active_variant)
             .field("active_execution_mode", &self.active_execution_mode)

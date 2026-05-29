@@ -6,7 +6,7 @@ use crate::provider::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, RuntimeProviderRun,
 };
-use crate::session::PromptAttachment;
+use crate::prompt_assembly::PromptEnvelope;
 
 use super::super::{
     claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
@@ -24,8 +24,7 @@ use super::runtime_slots::ProviderRunRuntimeRegistry;
 pub(super) fn execute_submit_command(
     runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
-    prompt: String,
-    attachments: Vec<PromptAttachment>,
+    envelope: PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
@@ -34,7 +33,7 @@ pub(super) fn execute_submit_command(
     }
     if run.adapter_key() == "codex" {
         let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
-        let result = submit_codex_prompt(&run, &mut state, &prompt, &attachments);
+        let result = submit_codex_prompt(&run, &mut state, &envelope);
         runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
         return result;
     }
@@ -43,7 +42,7 @@ pub(super) fn execute_submit_command(
             return Ok(());
         }
         let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
-        let result = submit_claude_prompt(&run, &mut state, &prompt, &attachments);
+        let result = submit_claude_prompt(&run, &mut state, &envelope);
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
@@ -52,7 +51,7 @@ pub(super) fn execute_submit_command(
     }
 
     let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
-    let result = submit_opencode_prompt(&run, &mut state, &prompt, &attachments);
+    let result = submit_opencode_prompt(&run, &mut state, &envelope);
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result
 }

@@ -3,8 +3,8 @@
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
+use crate::prompt_assembly::PromptEnvelope;
 use crate::provider::{CodexClient, CodexNotification, RuntimeProviderRun};
-use crate::session::PromptAttachment;
 
 use super::input::codex_input;
 use super::run_config::{codex_client_for_run, normalize_codex_model, normalize_variant};
@@ -14,8 +14,7 @@ use super::CodexRuntimeState;
 pub fn submit_codex_prompt(
     run: &RuntimeProviderRun,
     state: &mut CodexRuntimeState,
-    prompt: &str,
-    attachments: &[PromptAttachment],
+    envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let client = codex_client_for_run(run, state.endpoint(), None)?;
     let cwd = run
@@ -23,7 +22,7 @@ pub fn submit_codex_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
-    let input = codex_input(prompt, attachments);
+    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
     let thread_id = state.thread_id().to_string();
     let response = match client.turn_start(
         &mut state.socket,
@@ -35,6 +34,7 @@ pub fn submit_codex_prompt(
         run.write_access_mode(),
         run.execution_mode(),
         run.permission_level(),
+        hidden_context_for_provider(&envelope.hidden_system_context),
         input,
         &mut state.buffered_notifications,
     ) {
@@ -60,6 +60,11 @@ pub fn submit_codex_prompt(
         }),
     );
     Ok(())
+}
+
+fn hidden_context_for_provider(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 pub fn abort_codex_turn(

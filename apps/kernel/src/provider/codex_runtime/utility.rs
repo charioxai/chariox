@@ -57,6 +57,7 @@ pub fn run_codex_utility_prompt(
         run.write_access_mode(),
         run.execution_mode(),
         run.permission_level(),
+        None,
         input,
         &mut state.buffered_notifications,
     )?;
