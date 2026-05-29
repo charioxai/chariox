@@ -365,6 +365,24 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_request_extension",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if agent.remote_execution().is_some()
+                    && agent.owner_user_id() != session.owner_user_id()
+                {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": "home-owned extensions for collaborator remote agents must be granted by the home session owner",
+                                "agent_ref": agent.agent_ref(),
+                                "kind": args.kind,
+                                "name": args.name,
+                                "authority": "home",
+                                "owner_user_id": session.owner_user_id(),
+                            }),
+                        },
+                        None,
+                    ));
+                }
                 let mut skill_payload = serde_json::Value::Null;
                 let mut skill_package = None;
                 let (agent, effective_when, requires_provider_restart) = match args.kind.as_str() {

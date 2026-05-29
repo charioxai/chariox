@@ -7,7 +7,7 @@ impl KernelRuntimeOwnedState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent extension")?;
+        self.ensure_agent_extension_authority(agent_ref, caller_user_id, "grant agent extension")?;
         let agent = self.agent_store.grant_extension(agent_ref, grant)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
@@ -20,7 +20,7 @@ impl KernelRuntimeOwnedState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent extension")?;
+        self.ensure_agent_extension_authority(agent_ref, caller_user_id, "revoke agent extension")?;
         let agent = self.agent_store.revoke_extension(agent_ref, kind, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
@@ -32,7 +32,7 @@ impl KernelRuntimeOwnedState {
         name: String,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent capability")?;
+        self.ensure_agent_extension_authority(agent_ref, caller_user_id, "grant agent capability")?;
         let agent = self.agent_store.grant_mcp(agent_ref, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
@@ -44,7 +44,11 @@ impl KernelRuntimeOwnedState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent capability")?;
+        self.ensure_agent_extension_authority(
+            agent_ref,
+            caller_user_id,
+            "revoke agent capability",
+        )?;
         let agent = self.agent_store.revoke_mcp(agent_ref, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
@@ -56,7 +60,7 @@ impl KernelRuntimeOwnedState {
         name: String,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "grant agent capability")?;
+        self.ensure_agent_extension_authority(agent_ref, caller_user_id, "grant agent capability")?;
         let agent = self.agent_store.grant_skill(agent_ref, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
@@ -68,7 +72,11 @@ impl KernelRuntimeOwnedState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.ensure_agent_ref_owner(agent_ref, caller_user_id, "revoke agent capability")?;
+        self.ensure_agent_extension_authority(
+            agent_ref,
+            caller_user_id,
+            "revoke agent capability",
+        )?;
         let agent = self.agent_store.revoke_skill(agent_ref, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)

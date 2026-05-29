@@ -70,6 +70,40 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn ensure_agent_extension_authority(
+        &self,
+        agent_ref: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
+        if agent.remote_execution().is_some() {
+            let session = self.session_store.get_session(agent.session_id())?;
+            if session.owner_user_id() == user_id {
+                return Ok(agent);
+            }
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: user_id.to_string(),
+                owner_user_id: session.owner_user_id().to_string(),
+                resource: format!("home extensions for remote-backed agent `{agent_ref}`"),
+                operation,
+            });
+        }
+        if agent.owner_user_id() == user_id {
+            Ok(agent)
+        } else {
+            Err(DaemonError::OwnershipAccessDenied {
+                user_id: user_id.to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+                resource: format!("agent `{agent_ref}`"),
+                operation,
+            })
+        }
+    }
+
     pub(super) fn destroy_agent(
         &self,
         agent_id: &str,

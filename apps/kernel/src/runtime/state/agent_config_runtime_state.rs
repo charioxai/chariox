@@ -68,8 +68,11 @@ impl KernelRuntimeState {
             .agent_store
             .get_agent(agent_ref)
             .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
-        self.owned
-            .ensure_agent_owner(agent.id(), caller_user_id, "grant agent extension")?;
+        self.owned.ensure_agent_extension_authority(
+            agent.id(),
+            caller_user_id,
+            "grant agent extension",
+        )?;
         let session = self.owned.session_store.get_session(agent.session_id())?;
         let mut reserved = static_runtime_tool_names();
         let script_registry = crate::script::ArrobaScriptRegistry::new(
@@ -190,8 +193,11 @@ impl KernelRuntimeState {
             .agent_store
             .get_agent(agent_ref)
             .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
-        self.owned
-            .ensure_agent_owner(existing.id(), caller_user_id, "grant agent capability")?;
+        self.owned.ensure_agent_extension_authority(
+            existing.id(),
+            caller_user_id,
+            "grant agent capability",
+        )?;
         if existing.remote_execution().is_some() && !existing.mcp_grants().contains(&name) {
             let mut checked = existing.clone();
             checked.grant_mcp(name.clone());
