@@ -105,11 +105,13 @@ impl KernelRuntimeOwnedState {
         Ok(
             crate::scheduler::prompt_injection::build_workflow_turn_prompt(
                 crate::scheduler::prompt_injection::WorkflowPromptInjectionContext {
+                    workflow_ref: Some(workflow.id().to_string()),
                     endpoint_prompt: endpoint_prompt.to_string(),
                     workflow_prompt: workflow_run
                         .invocation_prompt()
                         .map(str::to_string)
                         .unwrap_or_default(),
+                    node_id: Some(node_id.to_string()),
                     node_instructions: node
                         .and_then(|node| node.instructions())
                         .map(str::trim)

@@ -2,14 +2,16 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::prompt_assembly::{
     bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
-    bundled_workflow_turn_template, PromptTemplateRegistry,
+    bundled_workflow_turn_template, PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
 use crate::session::{WorkflowHandoffValidationPolicy, WorkflowMessage};
 use std::path::PathBuf;
 
 pub(crate) struct WorkflowPromptInjectionContext {
+    pub workflow_ref: Option<String>,
     pub endpoint_prompt: String,
     pub workflow_prompt: String,
+    pub node_id: Option<String>,
     pub node_instructions: String,
     pub instruction_ref: Option<String>,
     pub handoff_payloads_json: Option<String>,
@@ -32,6 +34,7 @@ pub(crate) struct WorkflowNodeTurnPromptContext {
 pub(crate) struct WorkflowTurnPromptAssembly {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,
+    pub(crate) manifest: PromptManifest,
 }
 
 pub(crate) fn render_workflow_turn_prompt_from_messages(
@@ -106,15 +109,21 @@ pub(crate) fn render_workflow_turn_prompt_assembly(
         )
     });
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
+    let workflow_run = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok();
     Ok(build_workflow_turn_prompt_assembly(
         WorkflowPromptInjectionContext {
+            workflow_ref: workflow_run
+                .as_ref()
+                .map(|run| run.workflow_id().to_string()),
             endpoint_prompt: endpoint_prompt.to_string(),
-            workflow_prompt: app
-                .sessions()
-                .resolve_workflow_run_ref(session_id, workflow_run_id)
-                .ok()
+            workflow_prompt: workflow_run
+                .as_ref()
                 .and_then(|run| run.invocation_prompt().map(str::to_string))
                 .unwrap_or_default(),
+            node_id: Some(node_id.to_string()),
             node_instructions: workflow_node_instructions(
                 app,
                 session_id,
@@ -152,6 +161,7 @@ pub(crate) fn build_workflow_turn_prompt(context: WorkflowPromptInjectionContext
 pub(crate) fn build_workflow_turn_prompt_assembly(
     context: WorkflowPromptInjectionContext,
 ) -> WorkflowTurnPromptAssembly {
+    let mut manifest = PromptManifest::current();
     let reference_line = context
         .instruction_ref
         .as_deref()
@@ -185,14 +195,30 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     };
     let system_prompt = render_workflow_system_prompt(
         context.base_directory.as_ref(),
+        &mut manifest,
         &context.delivery_token,
         &payload_block,
         &context.outgoing_edge_contracts,
         &reference_line,
         &control_line,
     );
-    let system_node_prompt =
-        render_workflow_node_system_prompt(context.base_directory.as_ref(), &context.node_turn);
+    let system_node_prompt = render_workflow_node_system_prompt(
+        context.base_directory.as_ref(),
+        &context.node_turn,
+        &mut manifest,
+    );
+    if let Some(workflow_ref) = context.workflow_ref.as_deref() {
+        manifest.push_body(
+            format!("workflow/{workflow_ref}/prompt"),
+            &context.workflow_prompt,
+        );
+    }
+    if let Some(node_id) = context.node_id.as_deref() {
+        manifest.push_body(
+            format!("workflow-node/{node_id}/instructions"),
+            &context.node_instructions,
+        );
+    }
     let workflow_instructions = format!(
         "Workflow-level prompt:\n{}\n\nNode-level instructions:\n{}\n\n{}\n{}",
         context.workflow_prompt, context.node_instructions, system_prompt, system_node_prompt
@@ -200,6 +226,7 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     WorkflowTurnPromptAssembly {
         visible_user_prompt,
         hidden_system_context: workflow_instructions,
+        manifest,
     }
 }
 
@@ -248,6 +275,7 @@ fn workflow_node_instructions(
 
 fn render_workflow_system_prompt(
     base_directory: Option<&PathBuf>,
+    manifest: &mut PromptManifest,
     delivery_token: &str,
     payload_block: &str,
     edge_contract_block: &str,
@@ -255,7 +283,9 @@ fn render_workflow_system_prompt(
     control_line: &str,
 ) -> String {
     let template = load_workflow_system_prompt_template(base_directory);
+    manifest.push_body(template.id.clone(), &template.body);
     template
+        .body
         .replace("{{DELIVERY_TOKEN}}", delivery_token)
         .replace("{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}", payload_block)
         .replace("{{OUTGOING_EDGE_CONTRACTS_BLOCK}}", edge_contract_block)
@@ -263,7 +293,7 @@ fn render_workflow_system_prompt(
         .replace("{{CONTROL_MAILBOX_BLOCK}}", control_line)
 }
 
-fn load_workflow_system_prompt_template(base_directory: Option<&PathBuf>) -> String {
+fn load_workflow_system_prompt_template(base_directory: Option<&PathBuf>) -> PromptTemplate {
     let _ = base_directory;
     load_prompt_registry_template("workflow/turn", bundled_workflow_turn_template())
 }
@@ -271,8 +301,9 @@ fn load_workflow_system_prompt_template(base_directory: Option<&PathBuf>) -> Str
 fn render_workflow_node_system_prompt(
     base_directory: Option<&PathBuf>,
     context: &Option<WorkflowNodeTurnPromptContext>,
+    manifest: &mut PromptManifest,
 ) -> String {
-    let fragments = workflow_node_prompt_fragments(base_directory, context);
+    let fragments = workflow_node_prompt_fragments(base_directory, context, manifest);
     if fragments.is_empty() {
         return String::new();
     }
@@ -310,6 +341,7 @@ fn workflow_node_prompt_context(
 fn workflow_node_prompt_fragments(
     base_directory: Option<&PathBuf>,
     context: &Option<WorkflowNodeTurnPromptContext>,
+    manifest: &mut PromptManifest,
 ) -> Vec<String> {
     let mut fragments = Vec::new();
     if let Some(context) = context {
@@ -318,12 +350,14 @@ fn workflow_node_prompt_fragments(
             if let Some(fragment) =
                 load_workflow_run_intermediate_output_prompt_template(base_directory)
             {
-                fragments.push(fragment);
+                manifest.push_body(fragment.id.clone(), &fragment.body);
+                fragments.push(fragment.body);
             }
         }
         if context.can_complete_workflow_run {
             if let Some(fragment) = load_workflow_run_completion_prompt_template(base_directory) {
-                fragments.push(fragment);
+                manifest.push_body(fragment.id.clone(), &fragment.body);
+                fragments.push(fragment.body);
             }
         }
         if let Some(fragment) = workflow_last_turn_notice_block(context) {
@@ -347,7 +381,7 @@ fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> St
 
 fn load_workflow_run_completion_prompt_template(
     base_directory: Option<&PathBuf>,
-) -> Option<String> {
+) -> Option<PromptTemplate> {
     let _ = base_directory;
     Some(load_prompt_registry_template(
         "workflow/run-completion",
@@ -357,7 +391,7 @@ fn load_workflow_run_completion_prompt_template(
 
 fn load_workflow_run_intermediate_output_prompt_template(
     base_directory: Option<&PathBuf>,
-) -> Option<String> {
+) -> Option<PromptTemplate> {
     let _ = base_directory;
     Some(load_prompt_registry_template(
         "workflow/run-intermediate-output",
@@ -365,7 +399,10 @@ fn load_workflow_run_intermediate_output_prompt_template(
     ))
 }
 
-fn load_prompt_registry_template(template_id: &str, bundled_default: &'static str) -> String {
+fn load_prompt_registry_template(
+    template_id: &str,
+    bundled_default: &'static str,
+) -> PromptTemplate {
     let registry = PromptTemplateRegistry::from_env();
     if let Err(error) = registry.materialize_bundled_defaults() {
         tracing::debug!(
@@ -373,19 +410,22 @@ fn load_prompt_registry_template(template_id: &str, bundled_default: &'static st
             template_id,
             "Failed to materialize prompt registry defaults"
         );
-        return bundled_default.to_string();
+        return PromptTemplate {
+            id: template_id.to_string(),
+            body: bundled_default.trim().to_string(),
+        };
     }
-    registry
-        .read_required(template_id)
-        .map(|template| template.body)
-        .unwrap_or_else(|error| {
-            tracing::debug!(
-                ?error,
-                template_id,
-                "Failed to read prompt registry template"
-            );
-            bundled_default.to_string()
-        })
+    registry.read_required(template_id).unwrap_or_else(|error| {
+        tracing::debug!(
+            ?error,
+            template_id,
+            "Failed to read prompt registry template"
+        );
+        PromptTemplate {
+            id: template_id.to_string(),
+            body: bundled_default.trim().to_string(),
+        }
+    })
 }
 
 fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> Option<String> {
@@ -627,8 +667,10 @@ mod tests {
 
     fn test_context() -> WorkflowPromptInjectionContext {
         WorkflowPromptInjectionContext {
+            workflow_ref: Some("workflow-test".to_string()),
             endpoint_prompt: "ENDPOINT_VISIBLE_TOKEN".to_string(),
             workflow_prompt: "WORKFLOW_HIDDEN_TOKEN".to_string(),
+            node_id: Some("node-test".to_string()),
             node_instructions: "NODE_HIDDEN_TOKEN".to_string(),
             instruction_ref: None,
             handoff_payloads_json: None,
@@ -695,6 +737,21 @@ mod tests {
         assert!(!assembly
             .visible_user_prompt
             .contains("REGISTRY_WORKFLOW_TEMPLATE"));
+        assert!(assembly
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "workflow/turn"));
+        assert!(assembly
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "workflow/workflow-test/prompt"));
+        assert!(assembly
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "workflow-node/node-test/instructions"));
     }
 
     #[test]
@@ -743,5 +800,15 @@ mod tests {
         assert!(!assembly
             .visible_user_prompt
             .contains("REGISTRY_INTERMEDIATE_TOKEN"));
+        assert!(assembly
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "workflow/run-completion"));
+        assert!(assembly
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "workflow/run-intermediate-output"));
     }
 }

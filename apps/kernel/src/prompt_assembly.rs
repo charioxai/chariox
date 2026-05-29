@@ -56,6 +56,22 @@ pub(crate) struct PromptManifest {
     pub(crate) entries: Vec<PromptManifestEntry>,
 }
 
+impl PromptManifest {
+    pub(crate) fn current() -> Self {
+        Self {
+            version: PROMPT_REGISTRY_VERSION.to_string(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub(crate) fn push_body(&mut self, template_id: impl Into<String>, body: &str) {
+        self.entries.push(PromptManifestEntry {
+            template_id: template_id.into(),
+            sha256: sha256_hex(body),
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptManifestEntry {
     pub(crate) template_id: String,
@@ -179,10 +195,7 @@ impl PromptAssemblyService {
         mode: PromptAssemblyMode,
     ) -> Result<PromptEnvelope, DaemonError> {
         let mut hidden_fragments = Vec::new();
-        let mut manifest = PromptManifest {
-            version: PROMPT_REGISTRY_VERSION.to_string(),
-            entries: Vec::new(),
-        };
+        let mut manifest = PromptManifest::current();
 
         self.push_template("runtime/base", &mut hidden_fragments, &mut manifest)?;
         if current_kernel_is_slice() {
@@ -225,10 +238,7 @@ impl PromptAssemblyService {
         template_ids: &[&str],
     ) -> Result<(String, PromptManifest), DaemonError> {
         let mut hidden_fragments = Vec::new();
-        let mut manifest = PromptManifest {
-            version: PROMPT_REGISTRY_VERSION.to_string(),
-            entries: Vec::new(),
-        };
+        let mut manifest = PromptManifest::current();
         for template_id in template_ids {
             self.push_template(template_id, &mut hidden_fragments, &mut manifest)?;
         }
@@ -242,10 +252,7 @@ impl PromptAssemblyService {
         manifest: &mut PromptManifest,
     ) -> Result<(), DaemonError> {
         let template = self.registry.read_required(template_id)?;
-        manifest.entries.push(PromptManifestEntry {
-            template_id: template.id,
-            sha256: sha256_hex(&template.body),
-        });
+        manifest.push_body(template.id.clone(), &template.body);
         if !template.body.trim().is_empty() {
             fragments.push(template.body);
         }
