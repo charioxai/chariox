@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static REMOTE_EXTENSION_INVOCATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,8 +170,11 @@ impl RemoteExtensionInvocationMetadata {
                 }
             })
             .collect::<String>();
+        let sequence = REMOTE_EXTENSION_INVOCATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         Self {
-            invocation_id: format!("{provider_run_id}:{sanitized_tool_name}:{started_at_ms}"),
+            invocation_id: format!(
+                "{provider_run_id}:{sanitized_tool_name}:{started_at_ms}:{sequence}"
+            ),
             provider_tool_call_id,
             attempt: 1,
             idempotency_key: None,
@@ -179,12 +185,14 @@ impl RemoteExtensionInvocationMetadata {
 
 impl Default for RemoteExtensionInvocationMetadata {
     fn default() -> Self {
+        let started_at_ms = crate::session::unix_epoch_ms();
+        let sequence = REMOTE_EXTENSION_INVOCATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         Self {
-            invocation_id: format!("legacy-{}", crate::session::unix_epoch_ms()),
+            invocation_id: format!("legacy-{started_at_ms}-{sequence}"),
             provider_tool_call_id: None,
             attempt: 1,
             idempotency_key: None,
-            started_at_ms: crate::session::unix_epoch_ms(),
+            started_at_ms,
         }
     }
 }
@@ -347,6 +355,16 @@ mod tests {
         assert_eq!(failed.state, RemoteExtensionManifestSyncState::Failed);
         assert_eq!(failed.last_error.as_deref(), Some("relay unavailable"));
         assert!(failed.last_attempted_at_ms.is_some());
+    }
+
+    #[test]
+    fn remote_extension_invocation_ids_are_unique_for_fast_calls() {
+        let first = RemoteExtensionInvocationMetadata::new("run-1", "tool", None);
+        let second = RemoteExtensionInvocationMetadata::new("run-1", "tool", None);
+
+        assert_ne!(first.invocation_id, second.invocation_id);
+        assert!(first.invocation_id.starts_with("run-1:tool:"));
+        assert!(second.invocation_id.starts_with("run-1:tool:"));
     }
 }
 
