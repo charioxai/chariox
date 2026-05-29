@@ -286,13 +286,14 @@ impl KernelRuntimeState {
         };
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
         let mut config = self.config_snapshot().await;
-        if let (Some(relay_url), Some(relay_token)) = (
-            remote_execution.relay_url.clone(),
-            remote_execution.relay_token.clone(),
-        ) {
-            config.relay_url = Some(relay_url);
-            config.relay_token = Some(relay_token);
-            config.cloud_relay = None;
+        if config.relay_url.is_none() {
+            config.relay_url = remote_execution.relay_url.clone();
+        }
+        if config.relay_token.is_none() {
+            config.relay_token = remote_execution.relay_token.clone();
+            if config.relay_token.is_some() {
+                config.cloud_relay = None;
+            }
         }
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
             &config,

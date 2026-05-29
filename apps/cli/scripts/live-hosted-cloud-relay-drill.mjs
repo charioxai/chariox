@@ -340,6 +340,7 @@ async function issueSessionScopedClientToken(apiUrl, {
   clientId,
   sessionId,
   targetDaemonAlias,
+  allowUnpairedClientSubject,
 }) {
   const runtime = await postJson(`${apiUrl}/relay/token`, {
     sessionToken,
@@ -351,6 +352,7 @@ async function issueSessionScopedClientToken(apiUrl, {
     clientId,
     sessionId,
     allowedTargets: [targetDaemonAlias],
+    ...(allowUnpairedClientSubject ? { allowUnpairedClientSubject: true } : {}),
   })
   assert(runtime.token, "session-scoped relay token should be returned", runtime)
   return runtime.token
@@ -417,6 +419,78 @@ async function manualCloudDeviceLogin({ role, clientId, clientAlias, localClient
     await sleep(Math.max(result.interval_seconds ?? 2, 1) * 1000)
   }
   throw new Error(`${role} cloud login timed out`)
+}
+
+function appendCookies(jar, response) {
+  const setCookie = response.headers.getSetCookie?.() ?? []
+  for (const cookie of setCookie) {
+    const pair = cookie.split(";", 1)[0]
+    const index = pair.indexOf("=")
+    if (index > 0) jar.set(pair.slice(0, index), pair.slice(index + 1))
+  }
+}
+
+function cookieHeader(jar) {
+  return [...jar].map(([name, value]) => `${name}=${value}`).join("; ")
+}
+
+async function devBrowserCloudLogin({ role }) {
+  if (!devAuthSecret) {
+    throw new Error("ARROBA_CLOUD_DEV_AUTH_SECRET is required for hosted browser dev login")
+  }
+  const slug = `hosted-${role}-${process.pid}-${Date.now()}`
+  const email = `ma.gutierrez.estevez+${slug}@gmail.com`
+  const jar = new Map()
+  const csrfResponse = await fetch(`${apiUrl}/auth/csrf`)
+  if (!csrfResponse.ok) {
+    throw new Error(`GET /auth/csrf failed with ${csrfResponse.status}: ${await csrfResponse.text()}`)
+  }
+  appendCookies(jar, csrfResponse)
+  const csrf = await csrfResponse.json()
+  log(`${role}-dev-browser-login`, { accountSlug: slug, email })
+  const loginResponse = await fetch(`${apiUrl}/auth/dev/browser-login`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-arroba-dev-auth-secret": devAuthSecret,
+      cookie: cookieHeader(jar),
+    },
+    body: JSON.stringify({
+      email,
+      accountSlug: slug,
+      displayName: `Hosted ${role} drill`,
+      providerSubject: `dev|${slug}`,
+    }),
+  })
+  if (!loginResponse.ok) {
+    throw new Error(`POST /auth/dev/browser-login failed with ${loginResponse.status}: ${await loginResponse.text()}`)
+  }
+  appendCookies(jar, loginResponse)
+  const cloudSessionResponse = await fetch(`${apiUrl}/auth/cloud-session`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "csrf-token": csrf.csrfToken,
+      cookie: cookieHeader(jar),
+    },
+    body: JSON.stringify({ accountSlug: slug, accountName: slug }),
+  })
+  if (!cloudSessionResponse.ok) {
+    throw new Error(`POST /auth/cloud-session failed with ${cloudSessionResponse.status}: ${await cloudSessionResponse.text()}`)
+  }
+  const result = await cloudSessionResponse.json()
+  return {
+    profile: {
+      email: result.profile.email,
+      accountId: result.profile.accountId,
+      userId: result.profile.userId,
+      accountSlug: result.profile.accountSlug,
+      realmId: result.profile.realmId,
+      relayUrl: result.profile.relayUrl,
+      issuerId: result.profile.issuerId,
+    },
+    cloudSessionToken: result.cloudSessionToken,
+  }
 }
 
 async function waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, targetDaemonAlias) {
@@ -930,6 +1004,48 @@ async function main() {
       })
     }
 
+    if (runSecondKernel) {
+      await runHostedSecondKernelAssertions({
+        LocalIpcClient,
+        requests,
+        kernelPath,
+        rootDir,
+        workspace,
+        session: created.session,
+        python,
+        homeCapabilityRoot,
+        homeOnlyMcpPort: ports.homeOnlyMcpPort,
+        collabExtensions: runMultiUser,
+        homeDaemonAlias: daemonAlias,
+        homeClient: localClient,
+        ownerProfile: profileRef.current,
+        ownerClientId: clientId,
+        apiUrl,
+        repoRoot,
+        pollTimeoutMs,
+        log,
+        assert,
+        unwrap,
+        makeWorkerPorts,
+        pairCloudMachineDirect,
+        issueMachineRelayToken,
+        issueSessionScopedClientToken,
+        postJson,
+        manualCloudDeviceLogin,
+        devBrowserCloudLogin,
+        installSendRetry,
+        expectReject,
+        waitForLocalDaemon,
+        allowDevStubProvider,
+        waitForRelayTarget,
+        waitForRemoteMachine,
+        waitForCompletion,
+        closeClient,
+        terminateChild,
+        spawnProcess,
+      })
+    }
+
     if (runMultiUser) {
       await runHostedMultiUserAssertions({
         LocalIpcClient,
@@ -956,40 +1072,6 @@ async function main() {
         reason: devAuthSecret
           ? "set ARROBA_CLOUD_HOSTED_MULTI_USER=1"
           : "set ARROBA_CLOUD_HOSTED_MULTI_USER=1 and approve owner, peer, and third browser logins, or set ARROBA_CLOUD_DEV_AUTH_SECRET",
-      })
-    }
-
-    if (runSecondKernel) {
-      await runHostedSecondKernelAssertions({
-        LocalIpcClient,
-        requests,
-        kernelPath,
-        rootDir,
-        workspace,
-        python,
-        homeCapabilityRoot,
-        homeOnlyMcpPort: ports.homeOnlyMcpPort,
-        homeClient: localClient,
-        ownerProfile: profileRef.current,
-        ownerClientId: clientId,
-        apiUrl,
-        repoRoot,
-        pollTimeoutMs,
-        log,
-        assert,
-        unwrap,
-        makeWorkerPorts,
-        pairCloudMachineDirect,
-        issueMachineRelayToken,
-        issueSessionScopedClientToken,
-        waitForLocalDaemon,
-        allowDevStubProvider,
-        waitForRelayTarget,
-        waitForRemoteMachine,
-        waitForCompletion,
-        closeClient,
-        terminateChild,
-        spawnProcess,
       })
     }
 

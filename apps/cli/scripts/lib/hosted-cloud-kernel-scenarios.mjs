@@ -28,13 +28,15 @@ async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {})
 }
 
 async function waitForRuntimeTool(serverUrl, authToken, name, present) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  let lastTools = null
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     const tools = await callRuntimeMcp(serverUrl, authToken, "tools/list")
+    lastTools = tools
     const found = tools.tools.some((tool) => tool.name === name)
     if (found === present) return tools
     await sleep(250)
   }
-  throw new Error(`tool ${name} did not become ${present ? "advertised" : "revoked"}`)
+  throw new Error(`tool ${name} did not become ${present ? "advertised" : "revoked"}: ${JSON.stringify(lastTools)}`)
 }
 
 async function createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort }) {
@@ -201,6 +203,12 @@ operations:
   return env
 }
 
+async function grantHostedHomeExtensionAccess({ client, requests, workspace, agentId, env }) {
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "script", "hosted_home_only_lookup", env.name))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "mcp", "hosted_home_echo_mcp"))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "connector", "hosted_home_local_api", null, { maxSafety: "read" }))
+}
+
 async function assertHostedHomeExtensionProxy({
   client,
   requests,
@@ -210,22 +218,20 @@ async function assertHostedHomeExtensionProxy({
   launch,
   env,
   fixtures,
+  label = "hosted",
 }) {
   if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
     throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
   }
-  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "script", "hosted_home_only_lookup", env.name))
-  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "mcp", "hosted_home_echo_mcp"))
-  await client.send(requests.grantAgentExtensionRequest(workspace, agentId, "connector", "hosted_home_local_api", null, { maxSafety: "read" }))
-
   await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", true)
+  const scriptQuery = `${label}-remote-agent`
   const scriptCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
     name: "hosted_home_only_lookup",
-    arguments: { query: "hosted-remote-agent" },
+    arguments: { query: scriptQuery },
   })
   if (scriptCall.isError) throw new Error(`hosted home proxy script returned error: ${JSON.stringify(scriptCall)}`)
   const scriptMarker = await readFile(fixtures.homeMarker, "utf8")
-  if (scriptMarker !== "HOSTED_HOME_SCRIPT_EXECUTED:hosted-remote-agent") {
+  if (scriptMarker !== `HOSTED_HOME_SCRIPT_EXECUTED:${scriptQuery}`) {
     throw new Error(`hosted home script marker mismatch: ${JSON.stringify(scriptMarker)}`)
   }
 
@@ -234,24 +240,26 @@ async function assertHostedHomeExtensionProxy({
   if (!mcpTools.tools.some((tool) => tool.name === "hosted_home_echo")) {
     throw new Error(`hosted home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
   }
+  const mcpText = `${label}-remote-mcp`
   const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
     name: "hosted_home_echo",
-    arguments: { text: "hosted-remote-mcp" },
+    arguments: { text: mcpText },
   })
   if (mcpCall.isError) throw new Error(`hosted home MCP returned error: ${JSON.stringify(mcpCall)}`)
   const mcpMarker = await readFile(fixtures.homeMcpMarker, "utf8")
-  if (mcpMarker !== "HOSTED_HOME_MCP_EXECUTED:hosted-remote-mcp") {
+  if (mcpMarker !== `HOSTED_HOME_MCP_EXECUTED:${mcpText}`) {
     throw new Error(`hosted home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
   }
 
   await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", true)
+  const connectorQuery = `${label}-remote-connector`
   const connectorCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
     name: "hosted_home_local_api_public_echo",
-    arguments: { q: "hosted-remote-connector" },
+    arguments: { q: connectorQuery },
   })
   if (connectorCall.isError) throw new Error(`hosted home connector returned error: ${JSON.stringify(connectorCall)}`)
   const connectorMarker = await readFile(fixtures.homeConnectorMarker, "utf8")
-  if (connectorMarker !== "HOSTED_HOME_CONNECTOR_EXECUTED:hosted-remote-connector") {
+  if (connectorMarker !== `HOSTED_HOME_CONNECTOR_EXECUTED:${connectorQuery}`) {
     throw new Error(`hosted home connector marker mismatch: ${JSON.stringify(connectorMarker)}`)
   }
 
@@ -282,15 +290,178 @@ async function assertHostedHomeExtensionProxy({
   return { sessionId, agentId }
 }
 
+async function assertHostedCollaboratorHomeExtensions({
+  LocalIpcClient,
+  requests,
+  homeClient,
+  ownerProfile,
+  ownerClientId,
+  homeDaemonAlias,
+  workspace,
+  workerWorkspace,
+  session,
+  workerDaemonId,
+  env,
+  fixtures,
+  apiUrl,
+  log,
+  assert,
+  unwrap,
+  postJson,
+  issueSessionScopedClientToken,
+  devBrowserCloudLogin,
+  installSendRetry,
+  expectReject,
+}) {
+  log("second-kernel-collab-extension-start", { sessionId: session.id })
+  const localInvite = unwrap(
+    await homeClient.send(requests.createSessionInviteRequest(session.id, null, 1, "full")),
+    "SessionInviteCreated",
+  )
+  const cloudInvite = unwrap(
+    await homeClient.send(requests.createCloudSessionInviteRequest(session.id, {
+      displayName: "Hosted home extension collab drill",
+      maxUses: 1,
+    })),
+    "CloudSessionInviteCreated",
+  )
+  const localInviteToken = localInvite.invite?.invite_token
+  const cloudInviteToken = cloudInvite.invite?.invite_token
+  assert(localInviteToken, "hosted extension collab local invite token should be returned", localInvite)
+  assert(cloudInviteToken, "hosted extension collab cloud invite token should be returned", cloudInvite)
+
+  const peerClientId = `${ownerClientId}-extension-peer-${Date.now()}`
+  const ownerScopedToken = await issueSessionScopedClientToken(apiUrl, {
+    sessionToken: ownerProfile.cloudSessionToken,
+    accountId: ownerProfile.accountId,
+    realmId: ownerProfile.realmId,
+    subject: ownerClientId,
+    userId: ownerProfile.userId,
+    clientId: ownerClientId,
+    sessionId: session.id,
+    targetDaemonAlias: homeDaemonAlias,
+  })
+  const ownerScopedClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
+    relayAuthToken: ownerScopedToken,
+    targetDaemonAlias: homeDaemonAlias,
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  }), "extension-owner-relay")
+  let peerRemoteClient = null
+  try {
+    const peerLogin = await devBrowserCloudLogin({ role: "extension-peer" })
+    const peerProfile = peerLogin.profile
+    assert(peerProfile.userId !== ownerProfile.userId, "extension peer login must use a different cloud user", {
+      ownerUserId: ownerProfile.userId,
+      peerUserId: peerProfile.userId,
+    })
+    const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
+      sessionToken: peerLogin.cloudSessionToken,
+    })
+    assert(peerAcceptance.userId === peerProfile.userId, "extension peer should accept cloud invite as itself", peerAcceptance)
+    const peerRelayToken = await issueSessionScopedClientToken(apiUrl, {
+      sessionToken: peerLogin.cloudSessionToken,
+      accountId: ownerProfile.accountId,
+      realmId: ownerProfile.realmId,
+      subject: `browser:${peerProfile.userId}:${Date.now()}`,
+      userId: peerProfile.userId,
+      clientId: peerClientId,
+      sessionId: session.id,
+      targetDaemonAlias: homeDaemonAlias,
+      allowUnpairedClientSubject: true,
+    })
+    peerRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
+      relayAuthToken: peerRelayToken,
+      targetDaemonAlias: homeDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    }), "extension-peer-relay")
+    await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
+    const agent = unwrap(
+      await peerRemoteClient.send(requests.spawnAgentRequest(
+        session.id,
+        "dev-stub",
+        "hosted-extension-peer-agent",
+        "hosted-extension-collab",
+        workerWorkspace,
+        "low",
+        undefined,
+        undefined,
+        workerDaemonId,
+      )),
+      "AgentSpawned",
+    ).agent
+    assert(agent.owner_user_id === peerProfile.userId, "hosted extension peer agent should be owned by peer user", agent)
+    await expectReject(
+      peerRemoteClient.send(requests.grantAgentExtensionRequest(workspace, agent.id, "script", "hosted_home_only_lookup", env.name)),
+      "hosted extension peer granting home script",
+      "home extensions for remote-backed agent",
+    )
+    await grantHostedHomeExtensionAccess({
+      client: ownerScopedClient,
+      requests,
+      workspace,
+      agentId: agent.id,
+      env,
+    })
+    const launch = unwrap(
+      await peerRemoteClient.send(requests.launchProviderRunRequest(
+        session.id,
+        "dev-stub",
+        "default",
+        "default",
+        "low",
+        agent.id,
+        { nativeTui: true },
+      )),
+      "ProviderRunLaunched",
+    ).provider_run
+    const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+      name: "arroba.request_extension",
+      arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
+    })
+    if (!deniedRequest.isError || !JSON.stringify(deniedRequest).includes("home-owned extensions for collaborator remote agents")) {
+      throw new Error(`hosted extension collaborator request_extension returned unexpected result: ${JSON.stringify(deniedRequest)}`)
+    }
+    await expectReject(
+      peerRemoteClient.send(requests.revokeAgentExtensionRequest(agent.id, "mcp", "hosted_home_echo_mcp")),
+      "hosted extension peer revoking home MCP",
+      "home extensions for remote-backed agent",
+    )
+    await assertHostedHomeExtensionProxy({
+      client: ownerScopedClient,
+      requests,
+      workspace,
+      sessionId: session.id,
+      agentId: agent.id,
+      launch,
+      env,
+      fixtures,
+      label: "collab",
+    })
+    log("second-kernel-collab-extension-pass", {
+      sessionId: session.id,
+      agentId: agent.id,
+      peerUserId: peerProfile.userId,
+    })
+  } finally {
+    await peerRemoteClient?.close().catch(() => {})
+    await ownerScopedClient.close().catch(() => {})
+  }
+}
+
 export async function runHostedSecondKernelAssertions({
   LocalIpcClient,
   requests,
   kernelPath,
   rootDir,
   workspace,
+  session: existingSession = null,
   python,
   homeCapabilityRoot,
   homeOnlyMcpPort,
+  collabExtensions = false,
+  homeDaemonAlias,
   homeClient,
   ownerProfile,
   ownerClientId,
@@ -304,6 +475,11 @@ export async function runHostedSecondKernelAssertions({
   pairCloudMachineDirect,
   issueMachineRelayToken,
   issueSessionScopedClientToken,
+  postJson,
+  manualCloudDeviceLogin,
+  devBrowserCloudLogin,
+  installSendRetry,
+  expectReject,
   waitForLocalDaemon,
   allowDevStubProvider,
   waitForRelayTarget,
@@ -319,6 +495,7 @@ export async function runHostedSecondKernelAssertions({
   const workerHome = path.join(rootDir, "worker-home")
   const workerArrobaHome = path.join(workerHome, ".arroba")
   const workerCapabilityRoot = path.join(rootDir, "worker-capabilities")
+  const workerWorkspace = path.join(rootDir, "worker-workspace")
 
   log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
   await pairCloudMachineDirect({
@@ -331,6 +508,7 @@ export async function runHostedSecondKernelAssertions({
     machineId: workerDaemonId,
   })
   await mkdir(workerArrobaHome, { recursive: true })
+  await mkdir(workerWorkspace, { recursive: true })
   const workerEnv = {
     ...process.env,
     HOME: workerHome,
@@ -360,7 +538,7 @@ export async function runHostedSecondKernelAssertions({
     log("start-second-kernel", { workerAlias })
     worker = spawnProcess(kernelPath, [], { cwd: repoRoot, env: workerEnv, name: "worker-kernel" })
     const workerKernelUrl = `ws://127.0.0.1:${workerPorts.kernelPort}/kernel`
-    await waitForLocalDaemon(LocalIpcClient, requests, workerKernelUrl, workspace)
+    await waitForLocalDaemon(LocalIpcClient, requests, workerKernelUrl, workerWorkspace)
     workerClient = new LocalIpcClient(workerKernelUrl, {
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
@@ -399,11 +577,11 @@ export async function runHostedSecondKernelAssertions({
     log("second-kernel-relay-target-ready", { workerAlias })
 
     await waitForRemoteMachine(homeClient, requests, workerDaemonId)
-    const created = unwrap(
+    const ownsSession = existingSession == null
+    const session = existingSession ?? unwrap(
       await homeClient.send(requests.createSessionRequest(workspace, workspace)),
       "SessionCreated",
-    )
-    const session = created.session
+    ).session
     const attachment = unwrap(
       await homeClient.send(requests.attachToSessionRequest(session.id, `hosted-second-kernel-${Date.now()}`)),
       "SessionAttached",
@@ -422,7 +600,7 @@ export async function runHostedSecondKernelAssertions({
         "dev-stub",
         "hosted-worker-agent",
         "hosted-second-kernel",
-        workspace,
+        workerWorkspace,
         "low",
         undefined,
         undefined,
@@ -432,6 +610,13 @@ export async function runHostedSecondKernelAssertions({
     )
     log("second-kernel-spawn-agent-ready", { workerDaemonId, agentId: spawned.agent?.id })
     assert(spawned.agent?.remote_execution?.worker_machine_id === workerDaemonId, "remote dev-stub agent should be leased to the second kernel", spawned)
+    await grantHostedHomeExtensionAccess({
+      client: homeClient,
+      requests,
+      workspace,
+      agentId: spawned.agent.id,
+      env,
+    })
     const launch = unwrap(
       await homeClient.send(requests.launchProviderRunRequest(
         session.id,
@@ -453,7 +638,33 @@ export async function runHostedSecondKernelAssertions({
       launch,
       env,
       fixtures,
+      label: "single",
     })
+    if (collabExtensions) {
+      await assertHostedCollaboratorHomeExtensions({
+        LocalIpcClient,
+        requests,
+        homeClient,
+        ownerProfile,
+        ownerClientId,
+        homeDaemonAlias,
+        workspace,
+        workerWorkspace,
+        session,
+        workerDaemonId,
+        env,
+        fixtures,
+        apiUrl,
+        log,
+        assert,
+        unwrap,
+        postJson,
+        issueSessionScopedClientToken,
+        devBrowserCloudLogin,
+        installSendRetry,
+        expectReject,
+      })
+    }
     await homeClient.send(requests.submitPromptRequest(
       session.id,
       attachment.id,
@@ -466,7 +677,9 @@ export async function runHostedSecondKernelAssertions({
       "PromptCompleted",
     )
     await waitForCompletion(eventLog, pollTimeoutMs, 0)
-    await homeClient.send(requests.endSessionRequest(session.id)).catch(() => {})
+    if (ownsSession) {
+      await homeClient.send(requests.endSessionRequest(session.id)).catch(() => {})
+    }
     log("second-kernel-pass", {
       machineId: workerDaemonId,
       workerAlias,
