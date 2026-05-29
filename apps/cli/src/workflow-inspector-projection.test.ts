@@ -107,7 +107,7 @@ test("workflow inspector projects runtime state for the selected workflow node",
   assert.equal(inspector?.title, "Workflow Logs")
   assert.deepEqual(inspector?.meta.slice(0, 5), [
     "Workflow: workflow-1 (Release)",
-    "Selected node: node-1",
+    "Selected: node node-1",
     "Agent: agent-a (Builder)",
     "Run: run-new",
     "Run status: failed",
@@ -143,7 +143,7 @@ test("workflow inspector redacts collaborator-owned node agent ids", () => {
 
   assert.deepEqual(inspector?.meta.slice(0, 3), [
     "Workflow: workflow-1 (Release)",
-    "Selected node: node-1",
+    "Selected: node node-1",
     "Agent: another collaborator's agent",
   ])
   assert.doesNotMatch(inspector?.meta.join("\n") ?? "", /agent-hidden/)
@@ -194,6 +194,84 @@ test("workflow inspector projects selected node agent trace entries", () => {
   assert.equal(inspector?.title, "Workflow Trace")
   assert.equal(inspector?.transcriptAgentId, "agent-1")
   assert.equal(inspector?.transcriptEntries?.[0]?.text, "trace output")
+})
+
+test("workflow inspector resolves edge selection to source node trace", () => {
+  const inspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      agents: [
+        agent({ id: "agent-1", agent_ref: "agent-a" }),
+        agent({ id: "agent-2", agent_ref: "agent-b" }),
+      ],
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [
+            { id: "node-1", agent_id: "agent-1" },
+            { id: "node-2", agent_id: "agent-2" },
+          ],
+          edges: [{ id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }],
+          endpoints: [],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-2",
+    selectedWorkflowComponent: { kind: "edge", id: "edge-1" },
+    inspectorMode: "trace",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {
+      "agent-1": [{ id: 1, role: "assistant", text: "source trace" }],
+      "agent-2": [{ id: 2, role: "assistant", text: "target trace" }],
+    },
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.equal(inspector?.title, "Workflow Trace")
+  assert.equal(inspector?.meta[1], "Selected: edge edge-1 -> node node-1")
+  assert.equal(inspector?.transcriptAgentId, "agent-1")
+  assert.equal(inspector?.transcriptEntries?.[0]?.text, "source trace")
+})
+
+test("workflow inspector resolves endpoint selection to entry node trace", () => {
+  const inspector = buildWorkflowInspectorProjection({
+    session: baseSession({
+      agents: [
+        agent({ id: "agent-1", agent_ref: "agent-a" }),
+        agent({ id: "agent-2", agent_ref: "agent-b" }),
+      ],
+      workflows: [
+        {
+          id: "workflow-1",
+          alias: "Release",
+          nodes: [
+            { id: "node-1", agent_id: "agent-1" },
+            { id: "node-2", agent_id: "agent-2" },
+          ],
+          edges: [],
+          endpoints: [{ id: "endpoint-1", alias: "Run", entry_node_id: "node-2" }],
+        },
+      ],
+    }),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    selectedWorkflowComponent: { kind: "endpoint", id: "endpoint-1" },
+    inspectorMode: "trace",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {
+      "agent-1": [{ id: 1, role: "assistant", text: "old trace" }],
+      "agent-2": [{ id: 2, role: "assistant", text: "entry trace" }],
+    },
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.equal(inspector?.title, "Workflow Trace")
+  assert.equal(inspector?.meta[1], "Selected: endpoint endpoint-1 -> node node-2")
+  assert.equal(inspector?.transcriptAgentId, "agent-2")
+  assert.equal(inspector?.transcriptEntries?.[0]?.text, "entry trace")
 })
 
 function baseSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {

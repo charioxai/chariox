@@ -3,9 +3,12 @@ import type { TextareaRenderable } from "@opentui/core"
 import type {
   RuntimeSession,
   TranscriptEntry,
+  WorkflowDefinition,
+  WorkflowNodeDefinition,
   WorkflowRun,
 } from "./cli-types.js"
 import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
 import { resolveActiveWorkflowRun } from "./workflow-prompt-state.js"
 
@@ -29,6 +32,7 @@ type WorkflowInspectorProjectionInput = {
   session: RuntimeSession
   selectedWorkflowId: string | null
   selectedWorkflowNodeId: string | null
+  selectedWorkflowComponent?: WorkflowComponentSelection | null
   inspectorMode: WorkflowInspectorMode
   nodeInstructionsEditor: WorkflowNodeInstructionsEditor | null
   agentPaneEntries: Record<string, TranscriptEntry[]>
@@ -86,7 +90,8 @@ function buildEditInspector(
   if (!workflow) {
     return null
   }
-  const selectedNode = workflow.nodes?.find((entry) => entry.id === input.selectedWorkflowNodeId) ?? null
+  const resolved = resolveSelectedComponent(workflow, input.selectedWorkflowNodeId, input.selectedWorkflowComponent ?? null)
+  const selectedNode = resolved.node
   const selectedAgent = selectedNode
     ? input.session.agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
     : null
@@ -95,7 +100,7 @@ function buildEditInspector(
     mode: "edit",
     meta: [
       `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
-      `Selected node: ${selectedNode?.id ?? "-"}`,
+      `Selected: ${formatComponentSelection(resolved)}`,
       `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
     ],
     body: selectedNode
@@ -107,7 +112,7 @@ function buildEditInspector(
           "Use /workflow node instructions set to edit instructions.",
           "Use /workflow node intermediate-output-schema to edit schema refs.",
         ].join("\n")
-      : "Select a workflow node to edit prompt/schema fields.",
+      : "Select a workflow node, edge, or endpoint to edit prompt/schema fields.",
     hint: "Press Enter or use /workflow node instructions set to open the node editor.",
   }
 }
@@ -119,7 +124,8 @@ function buildTraceInspector(
   if (!workflow) {
     return null
   }
-  const selectedNode = workflow.nodes?.find((entry) => entry.id === input.selectedWorkflowNodeId) ?? null
+  const resolved = resolveSelectedComponent(workflow, input.selectedWorkflowNodeId, input.selectedWorkflowComponent ?? null)
+  const selectedNode = resolved.node
   const selectedAgent = selectedNode
     ? input.session.agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
     : null
@@ -129,13 +135,13 @@ function buildTraceInspector(
     mode: "trace",
     meta: [
       `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
-      `Selected node: ${selectedNode?.id ?? "-"}`,
+      `Selected: ${formatComponentSelection(resolved)}`,
       `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
       `Entries: ${entries.length}`,
     ],
     body: selectedAgent
       ? entries.length > 0 ? null : "No trace entries for the selected agent yet."
-      : "Select a workflow node to show its backing agent trace.",
+      : "Select a workflow node, edge, or endpoint to show its backing agent trace.",
     transcriptAgentId: selectedAgent?.id ?? null,
     transcriptEntries: entries,
     hint: "The bottom prompt targets this selected workflow agent.",
@@ -147,7 +153,8 @@ function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowI
   if (!workflow) {
     return null
   }
-  const selectedNode = workflow.nodes?.find((entry) => entry.id === input.selectedWorkflowNodeId) ?? null
+  const resolved = resolveSelectedComponent(workflow, input.selectedWorkflowNodeId, input.selectedWorkflowComponent ?? null)
+  const selectedNode = resolved.node
   const selectedAgent = selectedNode
     ? input.session.agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
     : null
@@ -155,7 +162,7 @@ function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowI
   const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
   const meta = [
     `Workflow: ${workflowLabel}`,
-    `Selected node: ${selectedNode?.id ?? "-"}`,
+    `Selected: ${formatComponentSelection(resolved)}`,
     `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
     `Run: ${workflowRun?.id ?? "-"}`,
     `Run status: ${String(workflowRun?.status ?? "idle").toLowerCase()}`,
@@ -283,4 +290,43 @@ function resolveLatestWorkflowRun(workflowId: string, workflowRuns: WorkflowRun[
       .filter((entry) => entry.workflow_id === workflowId)
       .sort((left, right) => right.created_at_ms - left.created_at_ms)[0]
     ?? null
+}
+
+function resolveSelectedComponent(
+  workflow: WorkflowDefinition,
+  selectedNodeId: string | null,
+  selection: WorkflowComponentSelection | null,
+): { selection: WorkflowComponentSelection; node: WorkflowNodeDefinition | null } {
+  if (selection?.kind === "edge") {
+    const edge = workflow.edges?.find((entry) => entry.id === selection.id) ?? null
+    const node = edge ? workflow.nodes?.find((entry) => entry.id === edge.from_node_id) ?? null : null
+    return { selection, node }
+  }
+  if (selection?.kind === "endpoint") {
+    const endpoint = workflow.endpoints?.find((entry) => entry.id === selection.id) ?? null
+    const node = endpoint ? workflow.nodes?.find((entry) => entry.id === endpoint.entry_node_id) ?? null : null
+    return { selection, node }
+  }
+  if (selection?.kind === "node") {
+    return {
+      selection,
+      node: workflow.nodes?.find((entry) => entry.id === selection.id) ?? null,
+    }
+  }
+  if (selectedNodeId) {
+    return {
+      selection: { kind: "node", id: selectedNodeId },
+      node: workflow.nodes?.find((entry) => entry.id === selectedNodeId) ?? null,
+    }
+  }
+  return { selection: { kind: "workflow" }, node: null }
+}
+
+function formatComponentSelection(resolved: { selection: WorkflowComponentSelection; node: WorkflowNodeDefinition | null }) {
+  const selection = resolved.selection
+  if (selection.kind === "workflow") {
+    return "workflow"
+  }
+  const backingNode = resolved.node ? ` -> node ${resolved.node.id}` : ""
+  return `${selection.kind} ${selection.id}${selection.kind === "node" ? "" : backingNode}`
 }

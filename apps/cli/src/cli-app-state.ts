@@ -56,6 +56,7 @@ import type {
 import type {
   WorkflowInspectorMode,
 } from "./workflow-inspector-projection.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import type {
   WorkflowNodeInstructionsEditor,
 } from "./workflow-node-instructions-editor-controller.js"
@@ -176,6 +177,7 @@ export function createCliAppState(options: {
   const [workspaceLiveSyncStatus, setWorkspaceLiveSyncStatus] = createSignal<WorkspaceLiveSyncStatus | null>(null)
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
+  const [selectedWorkflowComponent, setSelectedWorkflowComponent] = createSignal<WorkflowComponentSelection | null>({ kind: "workflow" })
   const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<WorkflowInspectorMode>("logs")
   const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
 
@@ -310,6 +312,8 @@ export function createCliAppState(options: {
     setSelectedWorkflowId,
     selectedWorkflowNodeId,
     setSelectedWorkflowNodeId,
+    selectedWorkflowComponent,
+    setSelectedWorkflowComponent,
     workflowInspectorMode,
     setWorkflowInspectorMode,
     workflowNodeInstructionsEditor,

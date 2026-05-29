@@ -16,6 +16,7 @@ export type CliAppWorkflowProjectionCompositionDeps = Record<string, any> & {
   sessionState: AnyFn
   selectedWorkflowId: AnyFn
   selectedWorkflowNodeId: AnyFn
+  selectedWorkflowComponent: AnyFn
   workflowInspectorMode: AnyFn
   workflowNodeInstructionsEditor: AnyFn
   agentPaneEntries: AnyFn
@@ -44,6 +45,7 @@ export function createCliAppWorkflowProjectionComposition(
     getSession: deps.sessionState,
     getSelectedWorkflowId: deps.selectedWorkflowId,
     getSelectedWorkflowNodeId: deps.selectedWorkflowNodeId,
+    getSelectedWorkflowComponent: deps.selectedWorkflowComponent,
     getInspectorMode: deps.workflowInspectorMode,
     getNodeInstructionsEditor: deps.workflowNodeInstructionsEditor,
     getAgentPaneEntries: deps.agentPaneEntries,
@@ -82,6 +84,7 @@ export type CliAppWorkflowActionCompositionDeps = Record<string, any> & {
   selectedWorkflowId: AnyFn
   selectedWorkflowNodeId: AnyFn
   setSelectedWorkflowNodeId: AnyFn
+  setSelectedWorkflowComponent: AnyFn
   workspaceScreenMode: AnyFn
   applyResponseLayout: AnyFn
 }
@@ -121,6 +124,7 @@ export function createCliAppWorkflowActionComposition(
     setSelectedWorkflowId: deps.setSelectedWorkflowId,
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
     setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,
+    setSelectedWorkflowComponent: deps.setSelectedWorkflowComponent,
     setWorkflowInspectorMode: deps.setWorkflowInspectorMode,
     workspaceScreenMode: deps.workspaceScreenMode,
     setWorkspaceScreenMode: deps.setWorkspaceScreenMode,

@@ -24,6 +24,7 @@ import {
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
 import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import {
   arrobaArtFrame,
   waitingRoomMenuMinWidth,
@@ -50,7 +51,9 @@ export function buildWorkflowOutlineRenderable(
     workflowRuns: WorkflowRun[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
+    selectedComponent?: WorkflowComponentSelection | null
     onSelectNode: (nodeId: string | null) => void
+    onSelectComponent?: (selection: WorkflowComponentSelection, backingNodeId: string | null) => void
     inspector?: {
       title: string
       meta: string[]

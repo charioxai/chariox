@@ -1,4 +1,5 @@
 import type { AgentInstance, WorkflowDefinition, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
+import type { WorkflowComponentSelection } from "../workflow-component-selection.js"
 import { collaboratorAgentLabel, workflowAgentRefDisplayLabel } from "../workflow-collaboration-labels.js"
 import type { WorkflowOutline, WorkflowOutlineEdgeItem, WorkflowOutlineNodeItem } from "./types.js"
 
@@ -7,6 +8,7 @@ export function buildWorkflowOutline(options: {
   agents: AgentInstance[]
   workflowRuns?: WorkflowRun[]
   selectedNodeId: string | null
+  selectedComponent?: WorkflowComponentSelection | null
 }): WorkflowOutline {
   const nodes = options.workflow.nodes ?? []
   const edges = options.workflow.edges ?? []
@@ -55,20 +57,22 @@ export function buildWorkflowOutline(options: {
       instructions: node.instructions ?? null,
       missing: !agent,
       selected: node.id === options.selectedNodeId,
+      selectedComponent: options.selectedComponent?.kind === "node" && options.selectedComponent.id === node.id,
       outgoingEdges: edges
         .filter((edge) => edge.from_node_id === node.id)
         .sort((left, right) => compareEdgeTargets(left.to_node_id, right.to_node_id, nodeOrder) || compareByMapIndex(left.id, right.id, edgeIndexById))
-        .map((edge) => buildEdgeItem(edge.id, edge.to_node_id, nodeById, agentById)),
+        .map((edge) => buildEdgeItem(edge.id, edge.from_node_id, edge.to_node_id, nodeById, agentById)),
       incomingEdges: edges
         .filter((edge) => edge.to_node_id === node.id)
         .sort((left, right) => compareEdgeTargets(left.from_node_id, right.from_node_id, nodeOrder) || compareByMapIndex(left.id, right.id, edgeIndexById))
-        .map((edge) => buildEdgeItem(edge.id, edge.from_node_id, nodeById, agentById)),
+        .map((edge) => buildEdgeItem(edge.id, edge.from_node_id, edge.from_node_id, nodeById, agentById)),
       entryEndpoints: endpoints
         .filter((endpoint) => endpoint.entry_node_id === node.id)
         .sort((left, right) => compareByMapIndex(left.id, right.id, endpointIndexById))
         .map((endpoint) => ({
           id: endpoint.id,
           alias: endpoint.alias,
+          entryNodeId: endpoint.entry_node_id,
         })),
       failureCount: failureCountByNodeId.get(node.id) ?? 0,
       recentFailures,
@@ -91,6 +95,7 @@ export function buildWorkflowOutline(options: {
 
 function buildEdgeItem(
   edgeId: string,
+  fromNodeId: string,
   adjacentNodeId: string,
   nodeById: Map<string, WorkflowNodeDefinition>,
   agentById: Map<string, AgentInstance>,
@@ -99,6 +104,7 @@ function buildEdgeItem(
   const adjacentAgent = adjacentNode ? agentById.get(adjacentNode.agent_id) ?? null : null
   return {
     id: edgeId,
+    fromNodeId,
     nodeId: adjacentNodeId,
     agentId: adjacentNode?.agent_id ?? adjacentNodeId,
     agentRef: adjacentNode ? workflowAgentRefDisplayLabel(adjacentAgent) : collaboratorAgentLabel,

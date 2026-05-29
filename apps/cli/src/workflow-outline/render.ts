@@ -3,6 +3,7 @@ import { BoxRenderable, MouseButton, TextAttributes, TextRenderable } from "@ope
 
 import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "../cli-types.js"
 import { theme } from "../theme.js"
+import type { WorkflowComponentSelection } from "../workflow-component-selection.js"
 import { resolveSelectedWorkflow, resolveSelectedWorkflowNodeId } from "../workflow-graph/selection.js"
 import { buildWorkflowOutline } from "./build.js"
 import { buildWorkflowOutlineNodeLines } from "./text.js"
@@ -15,7 +16,9 @@ export function buildWorkflowOutlineRenderable(
     workflowRuns: WorkflowRun[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
+    selectedComponent?: WorkflowComponentSelection | null
     onSelectNode: (nodeId: string | null) => void
+    onSelectComponent?: (selection: WorkflowComponentSelection, backingNodeId: string | null) => void
   },
 ) {
   const selectedWorkflow = resolveSelectedWorkflow(options.workflows, options.selectedWorkflowId)
@@ -29,6 +32,7 @@ export function buildWorkflowOutlineRenderable(
     agents: options.agents,
     workflowRuns: options.workflowRuns,
     selectedNodeId,
+    ...(options.selectedComponent !== undefined ? { selectedComponent: options.selectedComponent } : {}),
   })
 
   const wrapper = new BoxRenderable(renderer, {
@@ -73,8 +77,8 @@ export function buildWorkflowOutlineRenderable(
       width: "100%",
       flexDirection: "column",
       border: ["left", "top", "right", "bottom"],
-      borderColor: node.missing ? theme.error : node.selected ? theme.primary : theme.borderSubtle,
-      backgroundColor: node.selected ? theme.backgroundPanel : theme.backgroundElement,
+      borderColor: node.missing ? theme.error : node.selectedComponent ? theme.primary : node.selected ? theme.secondary : theme.borderSubtle,
+      backgroundColor: node.selectedComponent || node.selected ? theme.backgroundPanel : theme.backgroundElement,
       paddingLeft: 1,
       paddingRight: 1,
       paddingTop: 0,
@@ -85,7 +89,11 @@ export function buildWorkflowOutlineRenderable(
         return
       }
       event.stopPropagation()
-      options.onSelectNode(node.id)
+      if (options.onSelectComponent) {
+        options.onSelectComponent({ kind: "node", id: node.id }, node.id)
+      } else {
+        options.onSelectNode(node.id)
+      }
     }
     for (const line of buildNodeLines(node)) {
       nodeBox.add(
@@ -96,6 +104,22 @@ export function buildWorkflowOutlineRenderable(
           wrapMode: "word",
         }),
       )
+    }
+    if (options.onSelectComponent) {
+      for (const endpoint of node.entryEndpoints) {
+        nodeBox.add(buildComponentSelector(renderer, {
+          label: `endpoint ${endpoint.id}${endpoint.alias ? ` (${endpoint.alias})` : ""}`,
+          selected: options.selectedComponent?.kind === "endpoint" && options.selectedComponent.id === endpoint.id,
+          onSelect: () => options.onSelectComponent?.({ kind: "endpoint", id: endpoint.id }, endpoint.entryNodeId),
+        }))
+      }
+      for (const edge of node.outgoingEdges) {
+        nodeBox.add(buildComponentSelector(renderer, {
+          label: `edge ${edge.id} -> ${edge.nodeId}`,
+          selected: options.selectedComponent?.kind === "edge" && options.selectedComponent.id === edge.id,
+          onSelect: () => options.onSelectComponent?.({ kind: "edge", id: edge.id }, edge.fromNodeId),
+        }))
+      }
     }
     wrapper.add(nodeBox)
   }
@@ -120,6 +144,31 @@ export function buildWorkflowOutlineRenderable(
   }
 
   return wrapper
+}
+
+function buildComponentSelector(
+  renderer: ReturnType<typeof useRenderer>,
+  options: { label: string; selected: boolean; onSelect: () => void },
+) {
+  const row = new BoxRenderable(renderer, {
+    width: "100%",
+    backgroundColor: options.selected ? theme.backgroundPanel : theme.backgroundElement,
+    paddingLeft: 1,
+  })
+  row.onMouseUp = (event) => {
+    if (event.button !== MouseButton.LEFT) {
+      return
+    }
+    event.stopPropagation()
+    options.onSelect()
+  }
+  row.add(new TextRenderable(renderer, {
+    content: `> ${options.label}`,
+    fg: options.selected ? theme.primary : theme.textMuted,
+    attributes: options.selected ? TextAttributes.BOLD : TextAttributes.NONE,
+    wrapMode: "word",
+  }))
+  return row
 }
 
 function buildNodeLines(node: Parameters<typeof buildWorkflowOutlineNodeLines>[0]) {

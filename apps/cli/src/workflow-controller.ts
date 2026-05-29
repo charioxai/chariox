@@ -1,6 +1,7 @@
 import type { RuntimeSession } from "./cli-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import { createWorkflowDefinitionController } from "./workflow-definition-controller.js"
 import { createWorkflowRuntimeController } from "./workflow-runtime-controller.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
@@ -23,6 +24,7 @@ type WorkflowControllerDeps = {
   setSelectedWorkflowId: (value: string | null) => void
   selectedWorkflowNodeId: () => string | null
   setSelectedWorkflowNodeId: (value: string | null) => void
+  setSelectedWorkflowComponent?: (value: WorkflowComponentSelection | null) => void
   setWorkflowInspectorMode?: (value: WorkflowInspectorMode) => void
   workspaceScreenMode: () => WorkspaceScreenMode
   setWorkspaceScreenMode: (value: WorkspaceScreenMode) => void
@@ -38,6 +40,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     setSelectedWorkflowId: deps.setSelectedWorkflowId,
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
     setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,
+    ...(deps.setSelectedWorkflowComponent ? { setSelectedWorkflowComponent: deps.setSelectedWorkflowComponent } : {}),
     workspaceScreenMode: deps.workspaceScreenMode,
     setWorkspaceScreenMode: deps.setWorkspaceScreenMode,
     rebuildTranscript: deps.rebuildTranscript,

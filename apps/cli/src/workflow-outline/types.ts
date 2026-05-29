@@ -1,5 +1,6 @@
 export type WorkflowOutlineEdgeItem = {
   id: string
+  fromNodeId: string
   nodeId: string
   agentId: string
   agentRef: string
@@ -9,6 +10,7 @@ export type WorkflowOutlineEdgeItem = {
 export type WorkflowOutlineEndpointItem = {
   id: string
   alias: string | null
+  entryNodeId: string
 }
 
 export type WorkflowOutlineNodeItem = {
@@ -23,6 +25,7 @@ export type WorkflowOutlineNodeItem = {
   instructions: string | null
   missing: boolean
   selected: boolean
+  selectedComponent: boolean
   outgoingEdges: WorkflowOutlineEdgeItem[]
   incomingEdges: WorkflowOutlineEdgeItem[]
   entryEndpoints: WorkflowOutlineEndpointItem[]

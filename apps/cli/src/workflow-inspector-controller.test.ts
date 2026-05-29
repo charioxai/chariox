@@ -29,11 +29,11 @@ test("workflow inspector controller projects current runtime selection", () => {
   })
 
   assert.equal(controller.project()?.title, "Workflow Trace")
-  assert.equal(controller.project()?.meta.includes("Selected node: node-a"), true)
+  assert.equal(controller.project()?.meta.includes("Selected: node node-a"), true)
 
   selectedNodeId = null
 
-  assert.equal(controller.project()?.meta.includes("Selected node: -"), true)
+  assert.equal(controller.project()?.meta.includes("Selected: workflow"), true)
 })
 
 test("workflow inspector controller wires node-instructions editor callbacks", () => {

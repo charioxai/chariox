@@ -5,6 +5,7 @@ import {
   resolveSelectedWorkflow,
 } from "./workflow-graph/index.js"
 import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 
 type WorkflowScreenControllerDeps = {
   isAttached: () => boolean
@@ -13,6 +14,7 @@ type WorkflowScreenControllerDeps = {
   setSelectedWorkflowId: (value: string | null) => void
   selectedWorkflowNodeId: () => string | null
   setSelectedWorkflowNodeId: (value: string | null) => void
+  setSelectedWorkflowComponent?: (value: WorkflowComponentSelection | null) => void
   setWorkflowInspectorMode?: (value: WorkflowInspectorMode) => void
   workspaceScreenMode: () => WorkspaceScreenMode
   setWorkspaceScreenMode: (value: WorkspaceScreenMode) => void
@@ -45,6 +47,7 @@ export function createWorkflowScreenController(deps: WorkflowScreenControllerDep
   const selectWorkflowCanvas = (workflowId: string | null) => {
     deps.setSelectedWorkflowId(workflowId)
     deps.setSelectedWorkflowNodeId(null)
+    deps.setSelectedWorkflowComponent?.({ kind: "workflow" })
     deps.setWorkflowInspectorMode?.("logs")
     if (workflowScreenActive()) {
       deps.rebuildTranscript()
@@ -57,6 +60,7 @@ export function createWorkflowScreenController(deps: WorkflowScreenControllerDep
       return
     }
     deps.setSelectedWorkflowNodeId(nextNodeId)
+    deps.setSelectedWorkflowComponent?.(nextNodeId ? { kind: "node", id: nextNodeId } : { kind: "workflow" })
     deps.setWorkflowInspectorMode?.(nextNodeId ? "trace" : "logs")
     if (workflowScreenActive()) {
       deps.rebuildTranscript()

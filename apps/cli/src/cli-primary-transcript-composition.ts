@@ -49,6 +49,8 @@ export type CliPrimaryTranscriptCompositionDeps = {
   selectedWorkflowId: AnyFn
   selectedWorkflowNodeId: AnyFn
   setSelectedWorkflowNodeId: AnyFn
+  selectedWorkflowComponent: AnyFn
+  setSelectedWorkflowComponent: AnyFn
   setWorkflowInspectorMode: AnyFn
   workflowScreenActive: AnyFn
   workflowInspector: AnyFn
@@ -122,9 +124,17 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       workflowRuns: deps.sessionState().workflow_runs ?? [],
       selectedWorkflowId: deps.selectedWorkflowId(),
       selectedNodeId: deps.selectedWorkflowNodeId(),
+      selectedComponent: deps.selectedWorkflowComponent(),
       onSelectNode: (nodeId) => {
         deps.setSelectedWorkflowNodeId(nodeId)
+        deps.setSelectedWorkflowComponent(nodeId ? { kind: "node", id: nodeId } : { kind: "workflow" })
         deps.setWorkflowInspectorMode(nodeId ? "trace" : "logs")
+        rebuildTranscript()
+      },
+      onSelectComponent: (selection, backingNodeId) => {
+        deps.setSelectedWorkflowComponent(selection)
+        deps.setSelectedWorkflowNodeId(backingNodeId)
+        deps.setWorkflowInspectorMode(selection.kind === "workflow" ? "logs" : "trace")
         rebuildTranscript()
       },
       inspector: deps.workflowInspector(),

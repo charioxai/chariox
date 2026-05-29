@@ -12,11 +12,13 @@ import {
 import type {
   WorkflowNodeInstructionsEditor,
 } from "./workflow-node-instructions-editor-controller.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 
 type WorkflowInspectorControllerDeps = {
   getSession: () => RuntimeSession
   getSelectedWorkflowId: () => string | null
   getSelectedWorkflowNodeId: () => string | null
+  getSelectedWorkflowComponent?: () => WorkflowComponentSelection | null
   getInspectorMode: () => WorkflowInspectorMode
   getNodeInstructionsEditor: () => WorkflowNodeInstructionsEditor | null
   getAgentPaneEntries: () => Record<string, TranscriptEntry[]>
@@ -34,6 +36,7 @@ export function createWorkflowInspectorController(
       session: deps.getSession(),
       selectedWorkflowId: deps.getSelectedWorkflowId(),
       selectedWorkflowNodeId: deps.getSelectedWorkflowNodeId(),
+      selectedWorkflowComponent: deps.getSelectedWorkflowComponent?.() ?? null,
       inspectorMode: deps.getInspectorMode(),
       nodeInstructionsEditor: deps.getNodeInstructionsEditor(),
       agentPaneEntries: deps.getAgentPaneEntries(),
