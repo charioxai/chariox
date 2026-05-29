@@ -2,6 +2,7 @@ import type { TextareaRenderable } from "@opentui/core"
 
 import type {
   RuntimeSession,
+  TranscriptEntry,
 } from "./cli-types.js"
 import {
   buildWorkflowInspectorProjection,
@@ -18,6 +19,7 @@ type WorkflowInspectorControllerDeps = {
   getSelectedWorkflowNodeId: () => string | null
   getInspectorMode: () => WorkflowInspectorMode
   getNodeInstructionsEditor: () => WorkflowNodeInstructionsEditor | null
+  getAgentPaneEntries: () => Record<string, TranscriptEntry[]>
   updateNodeInstructionsDraft: (draft: string) => void
   setNodeInstructionsInputRef: (editor: TextareaRenderable | null) => void
 }
@@ -34,6 +36,7 @@ export function createWorkflowInspectorController(
       selectedWorkflowNodeId: deps.getSelectedWorkflowNodeId(),
       inspectorMode: deps.getInspectorMode(),
       nodeInstructionsEditor: deps.getNodeInstructionsEditor(),
+      agentPaneEntries: deps.getAgentPaneEntries(),
       updateNodeInstructionsDraft: deps.updateNodeInstructionsDraft,
       setNodeInstructionsInputRef: deps.setNodeInstructionsInputRef,
     })

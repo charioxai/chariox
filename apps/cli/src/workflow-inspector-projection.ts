@@ -2,13 +2,14 @@ import type { TextareaRenderable } from "@opentui/core"
 
 import type {
   RuntimeSession,
+  TranscriptEntry,
   WorkflowRun,
 } from "./cli-types.js"
 import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
 import { resolveActiveWorkflowRun } from "./workflow-prompt-state.js"
 
-export type WorkflowInspectorMode = "runtime" | "terminal"
+export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 
 export type WorkflowInspectorProjection = {
   title: string
@@ -19,6 +20,8 @@ export type WorkflowInspectorProjection = {
   hint?: string | null
   onDraftChange?: ((draft: string) => void) | null
   onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
+  transcriptAgentId?: string | null
+  transcriptEntries?: TranscriptEntry[]
 }
 
 type WorkflowInspectorProjectionInput = {
@@ -27,6 +30,7 @@ type WorkflowInspectorProjectionInput = {
   selectedWorkflowNodeId: string | null
   inspectorMode: WorkflowInspectorMode
   nodeInstructionsEditor: WorkflowNodeInstructionsEditor | null
+  agentPaneEntries: Record<string, TranscriptEntry[]>
   updateNodeInstructionsDraft: (draft: string) => void
   setNodeInstructionsInputRef: (editor: TextareaRenderable | null) => void
 }
@@ -37,9 +41,13 @@ export function buildWorkflowInspectorProjection(
   if (input.nodeInstructionsEditor) {
     return buildNodeInstructionsInspector(input)
   }
-  return input.inspectorMode === "terminal"
-    ? buildTerminalInspector(input)
-    : buildRuntimeInspector(input)
+  if (input.inspectorMode === "trace") {
+    return buildTraceInspector(input)
+  }
+  if (input.inspectorMode === "edit") {
+    return buildEditInspector(input)
+  }
+  return buildLogsInspector(input)
 }
 
 function buildNodeInstructionsInspector(
@@ -69,9 +77,68 @@ function buildNodeInstructionsInspector(
   }
 }
 
-function buildRuntimeInspector(
+function buildEditInspector(
   input: WorkflowInspectorProjectionInput,
 ): WorkflowInspectorProjection | null {
+  const workflow = input.session.workflows?.find((entry) => entry.id === input.selectedWorkflowId) ?? null
+  if (!workflow) {
+    return null
+  }
+  const selectedNode = workflow.nodes?.find((entry) => entry.id === input.selectedWorkflowNodeId) ?? null
+  const selectedAgent = selectedNode
+    ? input.session.agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
+    : null
+  return {
+    title: "Workflow Edit",
+    meta: [
+      `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
+      `Selected node: ${selectedNode?.id ?? "-"}`,
+      `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
+    ],
+    body: selectedNode
+      ? [
+          "Editable node fields",
+          `- instructions: ${selectedNode.instructions?.trim() ? "configured" : "none"}`,
+          `- intermediate-output-schema: ${selectedNode.intermediate_output_schema_ref ?? "none"}`,
+          "",
+          "Use /workflow node instructions set to edit instructions.",
+          "Use /workflow node intermediate-output-schema to edit schema refs.",
+        ].join("\n")
+      : "Select a workflow node to edit prompt/schema fields.",
+    hint: "Press Enter or use /workflow node instructions set to open the node editor.",
+  }
+}
+
+function buildTraceInspector(
+  input: WorkflowInspectorProjectionInput,
+): WorkflowInspectorProjection | null {
+  const workflow = input.session.workflows?.find((entry) => entry.id === input.selectedWorkflowId) ?? null
+  if (!workflow) {
+    return null
+  }
+  const selectedNode = workflow.nodes?.find((entry) => entry.id === input.selectedWorkflowNodeId) ?? null
+  const selectedAgent = selectedNode
+    ? input.session.agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
+    : null
+  const entries = selectedAgent ? input.agentPaneEntries[selectedAgent.id] ?? [] : []
+  return {
+    title: "Workflow Trace",
+    meta: [
+      `Workflow: ${workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id}`,
+      `Selected node: ${selectedNode?.id ?? "-"}`,
+      `Agent: ${selectedNode ? workflowAgentDisplayLabel(selectedAgent) : "-"}`,
+      `Entries: ${entries.length}`,
+    ],
+    body: selectedAgent
+      ? entries.length > 0 ? null : "No trace entries for the selected agent yet."
+      : "Select a workflow node to show its backing agent trace.",
+    transcriptAgentId: selectedAgent?.id ?? null,
+    transcriptEntries: entries,
+    hint: "The bottom prompt targets this selected workflow agent.",
+  }
+}
+
+function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowInspectorProjection | null {
   const workflow = input.session.workflows?.find((entry) => entry.id === input.selectedWorkflowId) ?? null
   if (!workflow) {
     return null
@@ -180,7 +247,7 @@ function buildRuntimeInspector(
   }
 }
 
-function buildTerminalInspector(
+function buildLogsInspector(
   input: WorkflowInspectorProjectionInput,
 ): WorkflowInspectorProjection | null {
   const workflow = input.session.workflows?.find((entry) => entry.id === input.selectedWorkflowId) ?? null
@@ -190,14 +257,18 @@ function buildTerminalInspector(
   const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
   const consoleState = (input.session.workflow_consoles ?? []).find((entry) => entry.workflow_id === workflow.id) ?? null
   const body = (consoleState?.entries ?? []).map((entry) => entry.text ?? "").join("")
+  const runtimeSummary = buildRuntimeSummary(input)
   return {
-    title: "Workflow Terminal",
+    title: "Workflow Logs",
     meta: [
-      `Workflow: ${workflowLabel}`,
+      ...(runtimeSummary?.meta ?? [`Workflow: ${workflowLabel}`]),
       `Entries: ${consoleState?.entries?.length ?? 0}`,
     ],
-    body: body.length > 0 ? body : "No workflow terminal output yet.",
-    hint: "Use /workflow terminal [workflow-ref] to keep this console visible while the workflow runs.",
+    body: [
+      body.length > 0 ? body : "No workflow logs captured yet.",
+      runtimeSummary?.body ? `\n${runtimeSummary.body}` : "",
+    ].join(""),
+    hint: "Use /workflow run, /workflow runs, /workflow cancel, and /workflow resume to manage runs.",
   }
 }
 

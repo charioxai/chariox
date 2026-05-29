@@ -62,7 +62,7 @@ function workflowPromptState(): WorkflowPromptState {
     workflow: null,
     workflowRun: null,
     selectedNodeId: null,
-    endpoint: null,
+    selectedAgent: null,
     enabled: false,
     disabledReason: null,
   }

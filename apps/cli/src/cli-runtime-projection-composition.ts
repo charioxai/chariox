@@ -77,6 +77,7 @@ export function createCliRuntimeProjectionComposition(
     workflowScreenActive: workflowScreenShowing(),
     workflows: deps.sessionState().workflows ?? [],
     workflowRuns: deps.sessionState().workflow_runs ?? [],
+    agents: deps.sessionState().agents ?? [],
     selectedWorkflowId: deps.selectedWorkflowId(),
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId(),
   }))

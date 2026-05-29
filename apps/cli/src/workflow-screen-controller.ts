@@ -4,6 +4,7 @@ import {
   cycleWorkflowNodeId,
   resolveSelectedWorkflow,
 } from "./workflow-graph/index.js"
+import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
 
 type WorkflowScreenControllerDeps = {
   isAttached: () => boolean
@@ -12,6 +13,7 @@ type WorkflowScreenControllerDeps = {
   setSelectedWorkflowId: (value: string | null) => void
   selectedWorkflowNodeId: () => string | null
   setSelectedWorkflowNodeId: (value: string | null) => void
+  setWorkflowInspectorMode?: (value: WorkflowInspectorMode) => void
   workspaceScreenMode: () => WorkspaceScreenMode
   setWorkspaceScreenMode: (value: WorkspaceScreenMode) => void
   rebuildTranscript: () => void
@@ -43,6 +45,7 @@ export function createWorkflowScreenController(deps: WorkflowScreenControllerDep
   const selectWorkflowCanvas = (workflowId: string | null) => {
     deps.setSelectedWorkflowId(workflowId)
     deps.setSelectedWorkflowNodeId(null)
+    deps.setWorkflowInspectorMode?.("logs")
     if (workflowScreenActive()) {
       deps.rebuildTranscript()
     }
@@ -54,6 +57,7 @@ export function createWorkflowScreenController(deps: WorkflowScreenControllerDep
       return
     }
     deps.setSelectedWorkflowNodeId(nextNodeId)
+    deps.setWorkflowInspectorMode?.(nextNodeId ? "trace" : "logs")
     if (workflowScreenActive()) {
       deps.rebuildTranscript()
     }

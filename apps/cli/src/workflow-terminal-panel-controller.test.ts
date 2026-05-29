@@ -10,7 +10,7 @@ test("workflow terminal panel opens on the workflow screen", () => {
 
   assert.deepEqual(harness.calls, [
     "clear:node-instructions",
-    "inspector:terminal",
+    "inspector:logs",
     "selected:workflow-1",
     "screen:workflow",
     "rebuild",
@@ -24,7 +24,7 @@ test("workflow terminal panel does not switch screen when workflow screen is alr
 
   assert.deepEqual(harness.calls, [
     "clear:node-instructions",
-    "inspector:terminal",
+    "inspector:logs",
     "selected:workflow-2",
     "rebuild",
   ])

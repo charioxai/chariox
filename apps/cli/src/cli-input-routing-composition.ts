@@ -247,11 +247,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workflowPromptSubmitController = createWorkflowPromptSubmitController({
     getWorkflowPromptState: deps.workflowPromptState,
     getPendingAttachmentCount: () => deps.pendingAttachments().length,
-    beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
-    restoreFailedPromptUi: deps.restoreFailedPromptUi,
-    invokeWorkflowEndpoint: deps.invokeWorkflowEndpoint,
-    getSessionId: () => deps.sessionState().id,
-    recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
+    submitAgentPrompt: (rawPrompt, targetAgentId) => normalPromptSubmitController.submit(rawPrompt, targetAgentId),
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
   })

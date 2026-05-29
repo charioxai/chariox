@@ -21,13 +21,14 @@ test("workflow inspector controller projects current runtime selection", () => {
     getSession: () => session(),
     getSelectedWorkflowId: () => "workflow-a",
     getSelectedWorkflowNodeId: () => selectedNodeId,
-    getInspectorMode: () => "runtime",
+    getInspectorMode: () => "trace",
     getNodeInstructionsEditor: () => null,
+    getAgentPaneEntries: () => ({}),
     updateNodeInstructionsDraft: () => {},
     setNodeInstructionsInputRef: () => {},
   })
 
-  assert.equal(controller.project()?.title, "Workflow Runtime")
+  assert.equal(controller.project()?.title, "Workflow Trace")
   assert.equal(controller.project()?.meta.includes("Selected node: node-a"), true)
 
   selectedNodeId = null
@@ -37,7 +38,7 @@ test("workflow inspector controller projects current runtime selection", () => {
 
 test("workflow inspector controller wires node-instructions editor callbacks", () => {
   let draft = "existing"
-  let mode: WorkflowInspectorMode = "terminal"
+  let mode: WorkflowInspectorMode = "logs"
   let inputRefSet = false
   let editor: WorkflowNodeInstructionsEditor | null = {
     workflowId: "workflow-a",
@@ -50,6 +51,7 @@ test("workflow inspector controller wires node-instructions editor callbacks", (
     getSelectedWorkflowNodeId: () => "node-a",
     getInspectorMode: () => mode,
     getNodeInstructionsEditor: () => editor,
+    getAgentPaneEntries: () => ({}),
     updateNodeInstructionsDraft: (nextDraft) => {
       draft = nextDraft
     },
@@ -71,7 +73,7 @@ test("workflow inspector controller wires node-instructions editor callbacks", (
 
   editor = null
 
-  assert.equal(controller.project()?.title, "Workflow Terminal")
+  assert.equal(controller.project()?.title, "Workflow Logs")
 })
 
 function session(): RuntimeSession {

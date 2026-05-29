@@ -14,12 +14,13 @@ test("workflow inspector projects node instruction editor metadata and callbacks
     session: baseSession(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
-    inspectorMode: "runtime",
+    inspectorMode: "logs",
     nodeInstructionsEditor: {
       workflowId: "workflow-1",
       nodeId: "node-1",
       draft: "draft instructions",
     },
+    agentPaneEntries: {},
     updateNodeInstructionsDraft: (draft) => {
       calls.push(`draft:${draft}`)
     },
@@ -96,14 +97,15 @@ test("workflow inspector projects runtime state for the selected workflow node",
     }),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
-    inspectorMode: "runtime",
+    inspectorMode: "logs",
     nodeInstructionsEditor: null,
+    agentPaneEntries: {},
     updateNodeInstructionsDraft: () => {},
     setNodeInstructionsInputRef: () => {},
   })
 
-  assert.equal(inspector?.title, "Workflow Runtime")
-  assert.deepEqual(inspector?.meta, [
+  assert.equal(inspector?.title, "Workflow Logs")
+  assert.deepEqual(inspector?.meta.slice(0, 5), [
     "Workflow: workflow-1 (Release)",
     "Selected node: node-1",
     "Agent: agent-a (Builder)",
@@ -132,8 +134,9 @@ test("workflow inspector redacts collaborator-owned node agent ids", () => {
     }),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
-    inspectorMode: "runtime",
+    inspectorMode: "logs",
     nodeInstructionsEditor: null,
+    agentPaneEntries: {},
     updateNodeInstructionsDraft: () => {},
     setNodeInstructionsInputRef: () => {},
   })
@@ -146,7 +149,7 @@ test("workflow inspector redacts collaborator-owned node agent ids", () => {
   assert.doesNotMatch(inspector?.meta.join("\n") ?? "", /agent-hidden/)
 })
 
-test("workflow inspector projects terminal console output", () => {
+test("workflow inspector projects workflow log output", () => {
   const inspector = buildWorkflowInspectorProjection({
     session: baseSession({
       workflow_consoles: [
@@ -161,18 +164,36 @@ test("workflow inspector projects terminal console output", () => {
     }),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
-    inspectorMode: "terminal",
+    inspectorMode: "logs",
     nodeInstructionsEditor: null,
+    agentPaneEntries: {},
     updateNodeInstructionsDraft: () => {},
     setNodeInstructionsInputRef: () => {},
   })
 
-  assert.equal(inspector?.title, "Workflow Terminal")
-  assert.deepEqual(inspector?.meta, [
-    "Workflow: workflow-1 (Release)",
-    "Entries: 2",
-  ])
-  assert.equal(inspector?.body, "first\nsecond\n")
+  assert.equal(inspector?.title, "Workflow Logs")
+  assert.equal(inspector?.meta[0], "Workflow: workflow-1 (Release)")
+  assert.equal(inspector?.meta.at(-1), "Entries: 2")
+  assert.match(inspector?.body ?? "", /first\nsecond\n/)
+})
+
+test("workflow inspector projects selected node agent trace entries", () => {
+  const inspector = buildWorkflowInspectorProjection({
+    session: baseSession(),
+    selectedWorkflowId: "workflow-1",
+    selectedWorkflowNodeId: "node-1",
+    inspectorMode: "trace",
+    nodeInstructionsEditor: null,
+    agentPaneEntries: {
+      "agent-1": [{ id: 1, role: "assistant", text: "trace output" }],
+    },
+    updateNodeInstructionsDraft: () => {},
+    setNodeInstructionsInputRef: () => {},
+  })
+
+  assert.equal(inspector?.title, "Workflow Trace")
+  assert.equal(inspector?.transcriptAgentId, "agent-1")
+  assert.equal(inspector?.transcriptEntries?.[0]?.text, "trace output")
 })
 
 function baseSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {

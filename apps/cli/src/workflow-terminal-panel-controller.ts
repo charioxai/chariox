@@ -1,6 +1,7 @@
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
 
-export type WorkflowTerminalInspectorMode = "terminal"
+export type WorkflowTerminalInspectorMode = WorkflowInspectorMode
 
 type WorkflowTerminalPanelControllerDeps = {
   clearNodeInstructionsEditor: () => void
@@ -12,16 +13,16 @@ type WorkflowTerminalPanelControllerDeps = {
 }
 
 export type WorkflowTerminalPanelController = {
-  open(workflowId: string): void
+  open(workflowId: string, mode?: WorkflowInspectorMode): void
 }
 
 export function createWorkflowTerminalPanelController(
   deps: WorkflowTerminalPanelControllerDeps,
 ): WorkflowTerminalPanelController {
   return {
-    open(workflowId) {
+    open(workflowId, mode = "logs") {
       deps.clearNodeInstructionsEditor()
-      deps.setWorkflowInspectorMode("terminal")
+      deps.setWorkflowInspectorMode(mode)
       deps.setSelectedWorkflowId(workflowId)
       if (!deps.workflowScreenShowing()) {
         deps.setWorkspaceScreenMode("workflow")

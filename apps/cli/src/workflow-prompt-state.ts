@@ -1,19 +1,18 @@
-import type { WorkflowDefinition, WorkflowEndpointDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { resolveSelectedWorkflow, resolveSelectedWorkflowNodeId } from "./workflow-graph/selection.js"
 
 export type WorkflowPromptState = {
   workflow: WorkflowDefinition | null
   workflowRun: WorkflowRun | null
   selectedNodeId: string | null
-  endpoint: WorkflowEndpointDefinition | null
+  selectedAgent: AgentInstance | null
   enabled: boolean
   disabledReason: string | null
 }
 
 export type WorkflowPromptSubmitDecision = {
   ok: true
-  workflowId: string
-  endpointId: string
+  targetAgentId: string
 } | {
   ok: false
   message: string
@@ -37,18 +36,25 @@ export function deriveWorkflowPromptState(options: {
   workflowScreenActive: boolean
   workflows: WorkflowDefinition[]
   workflowRuns: WorkflowRun[]
+  agents: AgentInstance[]
   selectedWorkflowId: string | null
   selectedWorkflowNodeId: string | null
 }): WorkflowPromptState {
   const workflow = resolveSelectedWorkflow(options.workflows, options.selectedWorkflowId)
   const selectedNodeId = resolveSelectedWorkflowNodeId(workflow, options.selectedWorkflowNodeId)
+  const selectedNode = selectedNodeId
+    ? workflow?.nodes?.find((node) => node.id === selectedNodeId) ?? null
+    : null
+  const selectedAgent = selectedNode
+    ? options.agents.find((agent) => agent.id === selectedNode.agent_id) ?? null
+    : null
 
   if (!options.workflowScreenActive) {
     return {
       workflow,
       workflowRun: workflow ? resolveActiveWorkflowRun(workflow.id, options.workflowRuns) : null,
       selectedNodeId,
-      endpoint: null,
+      selectedAgent,
       enabled: false,
       disabledReason: null,
     }
@@ -59,55 +65,39 @@ export function deriveWorkflowPromptState(options: {
       workflow: null,
       workflowRun: null,
       selectedNodeId: null,
-      endpoint: null,
+      selectedAgent: null,
       enabled: false,
       disabledReason: "no workflow selected",
     }
   }
 
-  const endpoints = workflow.endpoints ?? []
-  if (endpoints.length === 0) {
+  if (!selectedNodeId || !selectedNode) {
     return {
       workflow,
-      workflowRun: null,
+      workflowRun: resolveActiveWorkflowRun(workflow.id, options.workflowRuns),
       selectedNodeId,
-      endpoint: null,
+      selectedAgent: null,
       enabled: false,
-      disabledReason: "no workflow endpoints configured",
+      disabledReason: "no workflow node selected",
     }
   }
 
-  const workflowRun = resolveActiveWorkflowRun(workflow.id, options.workflowRuns)
-  if (!workflowRun) {
+  if (!selectedAgent) {
     return {
       workflow,
-      workflowRun: null,
+      workflowRun: resolveActiveWorkflowRun(workflow.id, options.workflowRuns),
       selectedNodeId,
-      endpoint: null,
+      selectedAgent: null,
       enabled: false,
-      disabledReason: "no active workflow run",
-    }
-  }
-
-  const endpoint = selectedNodeId
-    ? endpoints.find((candidate) => candidate.entry_node_id === selectedNodeId) ?? null
-    : null
-  if (!endpoint) {
-    return {
-      workflow,
-      workflowRun,
-      selectedNodeId,
-      endpoint: null,
-      enabled: false,
-      disabledReason: "selected node has no endpoint",
+      disabledReason: "selected node agent unavailable",
     }
   }
 
   return {
     workflow,
-    workflowRun,
+    workflowRun: resolveActiveWorkflowRun(workflow.id, options.workflowRuns),
     selectedNodeId,
-    endpoint,
+    selectedAgent,
     enabled: true,
     disabledReason: null,
   }
@@ -128,14 +118,7 @@ export function validateWorkflowPromptSubmit(options: {
       tone: "info",
     }
   }
-  if (options.pendingAttachmentCount > 0) {
-    return {
-      ok: false,
-      message: "workflow endpoint prompts do not support attachments",
-      tone: "error",
-    }
-  }
-  if (!options.state.workflow || !options.state.endpoint) {
+  if (!options.state.workflow || !options.state.selectedAgent) {
     return {
       ok: false,
       message: "workflow prompt target unavailable",
@@ -144,13 +127,8 @@ export function validateWorkflowPromptSubmit(options: {
   }
   return {
     ok: true,
-    workflowId: options.state.workflow.id,
-    endpointId: options.state.endpoint.id,
+    targetAgentId: options.state.selectedAgent.id,
   }
-}
-
-export function formatWorkflowInvocationPrompt(rawPrompt: string) {
-  return rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
 }
 
 export function formatWorkflowPromptPlaceholder(options: {
@@ -162,16 +140,18 @@ export function formatWorkflowPromptPlaceholder(options: {
   if (!options.workflowScreenActive) {
     return options.attachedPlaceholder
   }
-  if (options.state.enabled && options.state.endpoint) {
-    return `Send prompt to endpoint ${formatWorkflowEndpointLabel(options.state.endpoint)}`
+  if (options.state.enabled && options.state.selectedAgent) {
+    return `Prompt workflow agent ${formatWorkflowAgentLabel(options.state.selectedAgent)}`
   }
   return options.state.disabledReason
     ? `Workflow prompt disabled: ${options.state.disabledReason}. Use /workflow ...`
     : "Workflow prompt disabled. Use /workflow ..."
 }
 
-export function formatWorkflowEndpointLabel(endpoint: WorkflowEndpointDefinition) {
-  return endpoint.alias ? `${endpoint.id} (${endpoint.alias})` : endpoint.id
+export function formatWorkflowAgentLabel(agent: AgentInstance) {
+  const alias = agent.alias?.trim()
+  const ref = agent.agent_ref?.trim()
+  return alias ? `${ref || agent.id} (${alias})` : ref || agent.id
 }
 
 function isTerminalWorkflowRunStatus(status: string) {

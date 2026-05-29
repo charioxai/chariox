@@ -3,6 +3,7 @@ import {
   TextareaRenderable,
   TextAttributes,
   TextRenderable,
+  type SyntaxStyle,
   type RGBA,
 } from "@opentui/core"
 import type { useRenderer } from "@opentui/solid"
@@ -10,6 +11,7 @@ import type { useRenderer } from "@opentui/solid"
 import type {
   AgentInstance,
   RuntimeSession,
+  TranscriptEntry,
   WorkflowDefinition,
   WorkflowRun,
 } from "./cli-types.js"
@@ -17,6 +19,10 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT, type SessionListEntry } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { ThemeRegistry } from "./theme-registry.js"
+import {
+  buildTranscriptEntryRenderable,
+  type TranscriptSurfaceTone,
+} from "./transcript-render.js"
 import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {
   arrobaArtFrame,
@@ -25,7 +31,6 @@ import {
   waitingRoomRows,
 } from "./waiting-room.js"
 import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
-import { renderWorkspaceShellTranscript, type WorkspaceShellEntry } from "./workspace-shell.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
 
@@ -55,12 +60,15 @@ export function buildWorkflowOutlineRenderable(
       hint?: string | null
       onDraftChange?: ((draft: string) => void) | null
       onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
+      transcriptAgentId?: string | null
+      transcriptEntries?: TranscriptEntry[]
     } | null
-    shellPane?: {
-      entries: WorkspaceShellEntry[]
-      sessionId?: string | null
-      agentId?: string | null
-    } | null
+    transcriptRendering?: {
+      syntaxStyle: SyntaxStyle
+      onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void
+      onToggleBlob: (entryId: number, collapsed: boolean) => void
+      surfaceTone: TranscriptSurfaceTone
+    }
   },
 ) {
   const outline = buildWorkflowOutlinePaneRenderable(renderer, options)
@@ -131,6 +139,25 @@ export function buildWorkflowOutlineRenderable(
       }
       inspectorConfig.onEditorRef?.(textarea)
       inspector.add(textarea)
+    } else if (inspectorConfig.transcriptEntries && inspectorConfig.transcriptEntries.length > 0 && options.transcriptRendering) {
+      const transcript = new BoxRenderable(renderer, {
+        flexGrow: 1,
+        minHeight: 8,
+        width: "100%",
+        flexDirection: "column",
+      })
+      for (const entry of inspectorConfig.transcriptEntries) {
+        const renderable = buildTranscriptEntryRenderable(
+          renderer,
+          entry,
+          options.transcriptRendering.syntaxStyle,
+          options.transcriptRendering.onToggleTurn,
+          options.transcriptRendering.onToggleBlob,
+          options.transcriptRendering.surfaceTone,
+        )
+        transcript.add(renderable.wrapper)
+      }
+      inspector.add(transcript)
     } else if (inspectorConfig.body) {
       inspector.add(
         new TextRenderable(renderer, {
@@ -152,57 +179,7 @@ export function buildWorkflowOutlineRenderable(
     wrapper.add(inspector)
     mainPane = wrapper
   }
-
-  if (!options.shellPane) {
-    return mainPane
-  }
-
-  const wrapper = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    width: "100%",
-    gap: 0,
-  })
-  const left = new BoxRenderable(renderer, {
-    flexGrow: 2,
-    minWidth: 48,
-  })
-  left.add(mainPane)
-  wrapper.add(left)
-
-  const shell = new BoxRenderable(renderer, {
-    flexGrow: 1,
-    minWidth: 34,
-    border: ["left"],
-    borderColor: theme.borderSubtle,
-    customBorderChars: SplitBorder.customBorderChars,
-    paddingLeft: 1,
-    paddingRight: 1,
-    paddingTop: 1,
-    paddingBottom: 1,
-    flexDirection: "column",
-    gap: 1,
-  })
-  shell.add(new TextRenderable(renderer, {
-    content: "arroba-shell",
-    fg: theme.primary,
-    attributes: TextAttributes.BOLD,
-    wrapMode: "none",
-  }))
-  shell.add(new TextRenderable(renderer, {
-    content: [
-      `session: ${options.shellPane.sessionId ?? "-"}`,
-      `agent: ${options.shellPane.agentId ?? "-"}`,
-    ].join("  "),
-    fg: theme.textMuted,
-    wrapMode: "word",
-  }))
-  shell.add(new TextRenderable(renderer, {
-    content: renderWorkspaceShellTranscript(options.shellPane.entries),
-    fg: theme.text,
-    wrapMode: "word",
-  }))
-  wrapper.add(shell)
-  return wrapper
+  return mainPane
 }
 
 export function buildNoSessionRenderable(

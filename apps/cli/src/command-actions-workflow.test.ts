@@ -986,7 +986,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
     args: ["terminal", "workflow-1"],
   })
   assert.equal(openedWorkflowTerminalId, "workflow-1")
-  assert.equal(flashedMessage, "opened workflow terminal for workflow-1")
+  assert.equal(flashedMessage, "opened workflow logs pane for workflow-1")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")

@@ -222,7 +222,17 @@ export const COMMAND_TREE: CommandNode[] = [
       },
       { id: "workflow-cancel", label: "cancel", description: "Cancel a workflow run", value: "/workflow cancel " },
       { id: "workflow-resume", label: "resume", description: "Resume a stopped workflow run", value: "/workflow resume " },
-      { id: "workflow-terminal", label: "terminal", description: "Show the shared workflow console in the I/O panel", value: "/workflow terminal " },
+      {
+        id: "workflow-pane",
+        label: "pane",
+        description: "Switch workflow detail pane",
+        value: "/workflow pane ",
+        children: [
+          { id: "workflow-pane-logs", label: "logs", description: "Show workflow logs", value: "/workflow pane logs " },
+          { id: "workflow-pane-trace", label: "trace", description: "Show selected agent trace", value: "/workflow pane trace " },
+          { id: "workflow-pane-edit", label: "edit", description: "Show workflow component editor", value: "/workflow pane edit " },
+        ],
+      },
       {
         id: "workflow-watchdog",
         label: "watchdog",

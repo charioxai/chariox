@@ -23,8 +23,8 @@ test("workflow terminal command opens the resolved workflow terminal", async () 
     "upsert:workflow-1",
     "select:workflow-1",
     "show",
-    "open:workflow-1",
-    "footer:info:opened workflow terminal for workflow-1",
+    "open:workflow-1:logs",
+    "footer:info:opened workflow logs pane for workflow-1",
   ])
 })
 
@@ -56,6 +56,22 @@ test("workflow terminal command reports usage without a workflow target", async 
   ])
 })
 
+test("workflow pane command opens requested detail mode", async () => {
+  const harness = createHarness({
+    workflowRefOrSelected: (workflowRef) => workflowRef ?? "workflow-selected",
+  })
+
+  await handleWorkflowTerminalCommand(harness.deps, ["pane", "trace", "workflow-1"])
+
+  assert.deepEqual(harness.calls, [
+    "upsert:workflow-1",
+    "select:workflow-1",
+    "show",
+    "open:workflow-1:trace",
+    "footer:info:opened workflow trace pane for workflow-1",
+  ])
+})
+
 function createHarness(overrides: Partial<WorkflowTerminalCommandDeps>) {
   const calls: string[] = []
   const deps: WorkflowTerminalCommandDeps = {
@@ -71,8 +87,8 @@ function createHarness(overrides: Partial<WorkflowTerminalCommandDeps>) {
     showWorkflowScreen: () => {
       calls.push("show")
     },
-    openWorkflowTerminalPanel: (workflowId) => {
-      calls.push(`open:${workflowId}`)
+    openWorkflowTerminalPanel: (workflowId, mode) => {
+      calls.push(`open:${workflowId}:${mode}`)
     },
     flashFooter: (message, tone) => {
       calls.push(`footer:${tone}:${message}`)

@@ -270,7 +270,7 @@ function printUsage() {
     "  /workflow runs [w]    list workflow runs for the session or one workflow",
     "  /workflow cancel <r>  cancel a workflow run",
     "  /workflow resume <r>  resume a stopped workflow run",
-    "  /workflow terminal [w] show the workflow terminal in the I/O panel",
+    "  /workflow pane logs|trace|edit [w] switch workflow detail pane",
     "  /workflow watchdog ... manage scheduled endpoint triggers",
     "  /workflow <id> <a>    assign an alias to an existing workflow",
     "  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs",

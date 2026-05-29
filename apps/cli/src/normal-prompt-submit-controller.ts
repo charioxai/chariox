@@ -56,7 +56,7 @@ export type NormalPromptSubmitControllerDeps = {
 }
 
 export type NormalPromptSubmitController = {
-  submit(rawPrompt: string): Promise<void>
+  submit(rawPrompt: string, targetAgentIdOverride?: string | null): Promise<void>
 }
 
 export function createNormalPromptSubmitController(
@@ -65,13 +65,13 @@ export function createNormalPromptSubmitController(
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   return {
-    async submit(rawPrompt) {
+    async submit(rawPrompt, targetAgentIdOverride) {
       const prompt = formatPromptSubmissionBody(rawPrompt)
       const rawAttachments = pendingPromptAttachmentsToParts(deps.getPendingAttachments())
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
-        const targetAgentId = deps.getFocusedAgentId()
+        const targetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
         deps.logInfo?.("submitting prompt", {
           chars: prompt.length,
           attachments: rawAttachments.length,

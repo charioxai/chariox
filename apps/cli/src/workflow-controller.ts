@@ -1,5 +1,6 @@
 import type { RuntimeSession } from "./cli-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
 import { createWorkflowDefinitionController } from "./workflow-definition-controller.js"
 import { createWorkflowRuntimeController } from "./workflow-runtime-controller.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
@@ -22,6 +23,7 @@ type WorkflowControllerDeps = {
   setSelectedWorkflowId: (value: string | null) => void
   selectedWorkflowNodeId: () => string | null
   setSelectedWorkflowNodeId: (value: string | null) => void
+  setWorkflowInspectorMode?: (value: WorkflowInspectorMode) => void
   workspaceScreenMode: () => WorkspaceScreenMode
   setWorkspaceScreenMode: (value: WorkspaceScreenMode) => void
   rebuildTranscript: () => void
@@ -40,6 +42,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     setWorkspaceScreenMode: deps.setWorkspaceScreenMode,
     rebuildTranscript: deps.rebuildTranscript,
     applyResponseLayout: deps.applyResponseLayout,
+    ...(deps.setWorkflowInspectorMode ? { setWorkflowInspectorMode: deps.setWorkflowInspectorMode } : {}),
   })
   const workflowSessionState = createWorkflowSessionStateController({
     sessionState: deps.sessionState,

@@ -467,6 +467,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     selectedWorkflowNodeId,
     workflowInspectorMode,
     workflowNodeInstructionsEditor,
+    agentPaneEntries,
     setSelectedWorkflowId,
     setSelectedWorkflowNodeId,
   })
@@ -1064,6 +1065,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     selectedWorkflowId,
     selectedWorkflowNodeId,
     setSelectedWorkflowNodeId,
+    setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector,
     workspaceShellEntries,

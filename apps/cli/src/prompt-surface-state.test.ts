@@ -22,7 +22,7 @@ test("derivePromptPlaceholder uses waiting-room placeholder while detached", () 
   )
 })
 
-test("derivePromptPlaceholder reflects workflow endpoint eligibility while attached", () => {
+test("derivePromptPlaceholder reflects workflow agent eligibility while attached", () => {
   assert.equal(
     derivePromptPlaceholder({
       attached: true,
@@ -40,12 +40,28 @@ test("derivePromptPlaceholder reflects workflow endpoint eligibility while attac
       workflowScreenActive: true,
       workflowPromptState: workflowPromptState({
         enabled: true,
-        endpoint: { id: "endpoint-1", alias: "start", entry_node_id: "node-1" },
+        selectedAgent: {
+          id: "agent-1",
+          agent_ref: "agent-1",
+          session_id: "session-1",
+          alias: "Builder",
+          provider: "codex",
+          model: "gpt-5",
+          worktree_id: null,
+          state: "Idle",
+          is_processing: false,
+          grid_row: 0,
+          grid_col: 0,
+          grid_row_span: 1,
+          grid_col_span: 1,
+          created_at_ms: 1,
+          last_activity_at_ms: 1,
+        },
       }),
       attachedPlaceholder: "Write your next prompt here",
       detachedPlaceholder: "Choose a session",
     }),
-    "Send prompt to endpoint endpoint-1 (start)",
+    "Prompt workflow agent agent-1 (Builder)",
   )
 })
 
@@ -110,7 +126,7 @@ function workflowPromptState(overrides: Partial<WorkflowPromptState>): WorkflowP
     workflow: null,
     workflowRun: null,
     selectedNodeId: null,
-    endpoint: null,
+    selectedAgent: null,
     enabled: false,
     disabledReason: null,
     ...overrides,

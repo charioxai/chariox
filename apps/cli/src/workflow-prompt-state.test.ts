@@ -1,10 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import {
   deriveWorkflowPromptState,
-  formatWorkflowInvocationPrompt,
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
   resolveActiveWorkflowRun,
@@ -21,63 +20,50 @@ test("resolveActiveWorkflowRun returns the newest non-terminal run", () => {
   assert.equal(active?.id, "run-3")
 })
 
-test("deriveWorkflowPromptState requires endpoints, active run, and selected endpoint node", () => {
-  const baseWorkflow = workflow({
-    endpoints: [{ id: "endpoint-1", alias: "start", entry_node_id: "node-1" }],
-  })
-
+test("deriveWorkflowPromptState targets the selected workflow node agent", () => {
   assert.equal(
     deriveWorkflowPromptState({
       workflowScreenActive: true,
-      workflows: [workflow({ endpoints: [] })],
+      workflows: [workflow({ nodes: [] })],
       workflowRuns: [],
+      agents: agents(),
       selectedWorkflowId: "workflow-1",
       selectedWorkflowNodeId: "node-1",
     }).disabledReason,
-    "no workflow endpoints configured",
+    "no workflow node selected",
   )
 
   assert.equal(
     deriveWorkflowPromptState({
       workflowScreenActive: true,
-      workflows: [baseWorkflow],
+      workflows: [workflow()],
       workflowRuns: [],
+      agents: [agent("agent-2")],
       selectedWorkflowId: "workflow-1",
       selectedWorkflowNodeId: "node-1",
     }).disabledReason,
-    "no active workflow run",
-  )
-
-  assert.equal(
-    deriveWorkflowPromptState({
-      workflowScreenActive: true,
-      workflows: [baseWorkflow],
-      workflowRuns: [workflowRun({ id: "run-1", status: "Running" })],
-      selectedWorkflowId: "workflow-1",
-      selectedWorkflowNodeId: "node-2",
-    }).disabledReason,
-    "selected node has no endpoint",
+    "selected node agent unavailable",
   )
 
   const eligible = deriveWorkflowPromptState({
     workflowScreenActive: true,
-    workflows: [baseWorkflow],
-    workflowRuns: [workflowRun({ id: "run-1", status: "Running" })],
+    workflows: [workflow()],
+    workflowRuns: [],
+    agents: agents(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
   })
 
   assert.equal(eligible.enabled, true)
-  assert.equal(eligible.endpoint?.id, "endpoint-1")
+  assert.equal(eligible.selectedAgent?.id, "agent-1")
 })
 
 test("formatWorkflowPromptPlaceholder reflects workflow eligibility", () => {
   const enabledState = deriveWorkflowPromptState({
     workflowScreenActive: true,
-    workflows: [workflow({
-      endpoints: [{ id: "endpoint-1", alias: "start", entry_node_id: "node-1" }],
-    })],
-    workflowRuns: [workflowRun({ id: "run-1", status: "Running" })],
+    workflows: [workflow()],
+    workflowRuns: [],
+    agents: agents(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
   })
@@ -88,13 +74,14 @@ test("formatWorkflowPromptPlaceholder reflects workflow eligibility", () => {
       attachedPlaceholder: "Write your next prompt here",
       detachedPlaceholder: "Start a session",
     }),
-    "Send prompt to endpoint endpoint-1 (start)",
+    "Prompt workflow agent agent-1 (Builder)",
   )
 
   const disabledState = deriveWorkflowPromptState({
     workflowScreenActive: true,
-    workflows: [workflow({ endpoints: [] })],
+    workflows: [workflow({ nodes: [] })],
     workflowRuns: [],
+    agents: agents(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
   })
@@ -105,7 +92,7 @@ test("formatWorkflowPromptPlaceholder reflects workflow eligibility", () => {
       attachedPlaceholder: "Write your next prompt here",
       detachedPlaceholder: "Start a session",
     }),
-    "Workflow prompt disabled: no workflow endpoints configured. Use /workflow ...",
+    "Workflow prompt disabled: no workflow node selected. Use /workflow ...",
   )
 })
 
@@ -118,10 +105,9 @@ test("isWorkflowCommandInput requires slash as the first character", () => {
 test("validateWorkflowPromptSubmit returns footer decisions", () => {
   const enabledState = deriveWorkflowPromptState({
     workflowScreenActive: true,
-    workflows: [workflow({
-      endpoints: [{ id: "endpoint-1", alias: "start", entry_node_id: "node-1" }],
-    })],
-    workflowRuns: [workflowRun({ id: "run-1", status: "Running" })],
+    workflows: [workflow()],
+    workflowRuns: [],
+    agents: agents(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
   })
@@ -131,23 +117,14 @@ test("validateWorkflowPromptSubmit returns footer decisions", () => {
     pendingAttachmentCount: 0,
   }), {
     ok: true,
-    workflowId: "workflow-1",
-    endpointId: "endpoint-1",
-  })
-
-  assert.deepEqual(validateWorkflowPromptSubmit({
-    state: enabledState,
-    pendingAttachmentCount: 1,
-  }), {
-    ok: false,
-    message: "workflow endpoint prompts do not support attachments",
-    tone: "error",
+    targetAgentId: "agent-1",
   })
 
   const disabledState = deriveWorkflowPromptState({
     workflowScreenActive: true,
-    workflows: [workflow({ endpoints: [] })],
+    workflows: [workflow({ nodes: [] })],
     workflowRuns: [],
+    agents: agents(),
     selectedWorkflowId: "workflow-1",
     selectedWorkflowNodeId: "node-1",
   })
@@ -156,14 +133,9 @@ test("validateWorkflowPromptSubmit returns footer decisions", () => {
     pendingAttachmentCount: 0,
   }), {
     ok: false,
-    message: "prompt disabled: no workflow endpoints configured",
+    message: "prompt disabled: no workflow node selected",
     tone: "info",
   })
-})
-
-test("formatWorkflowInvocationPrompt terminates endpoint prompts", () => {
-  assert.equal(formatWorkflowInvocationPrompt("hello"), "hello\n")
-  assert.equal(formatWorkflowInvocationPrompt("hello\n"), "hello\n")
 })
 
 function workflow(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition {
@@ -177,6 +149,30 @@ function workflow(overrides: Partial<WorkflowDefinition> = {}): WorkflowDefiniti
     edges: [],
     endpoints: [],
     ...overrides,
+  }
+}
+
+function agents(): AgentInstance[] {
+  return [agent("agent-1", "Builder"), agent("agent-2", "Reviewer")]
+}
+
+function agent(id: string, alias: string | null = null): AgentInstance {
+  return {
+    id,
+    agent_ref: id,
+    session_id: "session-1",
+    alias,
+    provider: "codex",
+    model: "gpt-5",
+    worktree_id: null,
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
   }
 }
 

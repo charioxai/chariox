@@ -197,7 +197,7 @@ export type WorkflowCommandHandlerDeps = {
   closeWorkflowNodeInstructionsEditor?: () => void
   getWorkflowNodeInstructionsDraft?: () => string
   getWorkflowNodeInstructionsContext?: () => { workflowId: string; nodeId: string } | null
-  openWorkflowTerminalPanel?: (workflowId: string) => void
+  openWorkflowTerminalPanel?: (workflowId: string, mode?: "logs" | "trace" | "edit") => void
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
 }
 
@@ -266,6 +266,15 @@ export async function handleWorkflowSlashCommand(
   }
 
   if (subcommand === "terminal") {
+    await handleWorkflowTerminalCommand({
+      ...deps,
+      sessionWorkflows: () => deps.sessionState().workflows ?? [],
+      workflowRefOrSelected: context.workflowRefOrSelected,
+    }, args)
+    return
+  }
+
+  if (subcommand === "pane") {
     await handleWorkflowTerminalCommand({
       ...deps,
       sessionWorkflows: () => deps.sessionState().workflows ?? [],
