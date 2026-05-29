@@ -127,4 +127,14 @@ impl CommandRouter {
             .dispatch_forwarded_home_mcp_proxy_call(context, metadata, name, payload)
             .await
     }
+
+    pub(crate) async fn cancel_forwarded_home_extension_invocation(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
+    ) -> Result<bool, DaemonError> {
+        self.runtime_state
+            .cancel_forwarded_home_extension_invocation(context, metadata)
+            .await
+    }
 }

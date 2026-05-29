@@ -3,6 +3,45 @@ use super::*;
 const HOME_EXTENSION_MAX_RESULT_BYTES: usize = 1024 * 1024;
 
 impl KernelRuntimeState {
+    pub(in crate::runtime::state::tool_dispatch) async fn cancel_home_extension_invocation(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+    ) -> Result<bool, DaemonError> {
+        super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
+            .authorize_invocation_context(context)?;
+        let key = remote_extension_invocation_key(metadata);
+        let in_flight = self
+            .owned
+            .remote_extension_invocations
+            .lock()
+            .await
+            .get(&key)
+            .is_some_and(Option::is_none);
+        if in_flight {
+            self.owned
+                .remote_extension_cancellations
+                .lock()
+                .await
+                .insert(key);
+        }
+        self.owned.durable_state_store.append_event(
+            "home_extension.invoke.cancelled",
+            Some(context.home_agent_id.clone()),
+            serde_json::json!({
+                "home_session_id": context.home_session_id,
+                "home_agent_id": context.home_agent_id,
+                "leased_agent_id": context.leased_agent_id,
+                "worker_provider_run_id": context.worker_provider_run_id,
+                "worker_kernel_id": context.worker_kernel_id,
+                "worker_machine_id": context.worker_machine_id,
+                "invocation": metadata,
+                "status": if in_flight { "cancelled" } else { "not_in_flight" },
+            }),
+        )?;
+        Ok(in_flight)
+    }
+
     pub(in crate::runtime::state::tool_dispatch) async fn append_home_extension_audit_event(
         &self,
         kind: &'static str,
@@ -65,6 +104,15 @@ impl KernelRuntimeState {
             .as_deref()
             .unwrap_or(metadata.invocation_id.as_str())
             .to_string();
+        if self
+            .owned
+            .remote_extension_cancellations
+            .lock()
+            .await
+            .contains(&key)
+        {
+            return Err(home_extension_cancelled_error(metadata));
+        }
         let mut invocations = self.owned.remote_extension_invocations.lock().await;
         if let Some(existing) = invocations.get(&key) {
             if let Some(cached) = existing {
@@ -95,30 +143,42 @@ impl KernelRuntimeState {
         &self,
         metadata: &crate::extension::RemoteExtensionInvocationMetadata,
         result: serde_json::Value,
-    ) {
-        let key = metadata
-            .idempotency_key
-            .as_deref()
-            .unwrap_or(metadata.invocation_id.as_str())
-            .to_string();
+    ) -> bool {
+        let key = remote_extension_invocation_key(metadata);
+        if self
+            .owned
+            .remote_extension_cancellations
+            .lock()
+            .await
+            .remove(&key)
+        {
+            self.owned
+                .remote_extension_invocations
+                .lock()
+                .await
+                .remove(&key);
+            return false;
+        }
         self.owned
             .remote_extension_invocations
             .lock()
             .await
             .insert(key, Some(result));
+        true
     }
 
     pub(in crate::runtime::state::tool_dispatch) async fn forget_home_extension_invocation(
         &self,
         metadata: &crate::extension::RemoteExtensionInvocationMetadata,
     ) {
-        let key = metadata
-            .idempotency_key
-            .as_deref()
-            .unwrap_or(metadata.invocation_id.as_str())
-            .to_string();
+        let key = remote_extension_invocation_key(metadata);
         self.owned
             .remote_extension_invocations
+            .lock()
+            .await
+            .remove(&key);
+        self.owned
+            .remote_extension_cancellations
             .lock()
             .await
             .remove(&key);
@@ -169,6 +229,28 @@ impl KernelRuntimeState {
         )?;
         Ok(())
     }
+}
+
+pub(in crate::runtime::state::tool_dispatch) fn home_extension_cancelled_error(
+    metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "home extension invocation cancellation",
+        message: format!(
+            "home extension invocation `{}` was cancelled",
+            metadata.invocation_id
+        ),
+    }
+}
+
+fn remote_extension_invocation_key(
+    metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+) -> String {
+    metadata
+        .idempotency_key
+        .as_deref()
+        .unwrap_or(metadata.invocation_id.as_str())
+        .to_string()
 }
 
 pub(in crate::runtime::state::tool_dispatch) fn enforce_home_extension_runtime_result_limit(

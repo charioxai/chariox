@@ -14,6 +14,42 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         hinted_tool: &crate::extension::RemoteExtensionTool,
     ) -> Result<crate::extension::RemoteExtensionTool, DaemonError> {
+        let agent = self.authorize_invocation_context(context)?;
+        let manifest = self.state.remote_extension_manifest_for_agent(&agent)?;
+        let Some(current_tool) = manifest.home_proxy_tool(&hinted_tool.tool_name).cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "home extension invocation",
+                message: format!(
+                    "home-proxy extension tool `{}` is no longer granted",
+                    hinted_tool.tool_name
+                ),
+            });
+        };
+        if current_tool.kind != hinted_tool.kind || current_tool.name != hinted_tool.name {
+            return Err(DaemonError::LocalTransport {
+                operation: "home extension invocation",
+                message: format!(
+                    "home-proxy tool identity mismatch for `{}`",
+                    hinted_tool.tool_name
+                ),
+            });
+        }
+        if current_tool.authority != crate::extension::ExtensionAuthority::Home
+            || current_tool.definition_origin != crate::extension::ExtensionDefinitionOrigin::Home
+            || current_tool.execution_location != crate::extension::ExtensionExecutionLocation::Home
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "home extension invocation",
+                message: "home-proxy tool placement is invalid".to_string(),
+            });
+        }
+        Ok(current_tool)
+    }
+
+    pub(in crate::runtime::state::tool_dispatch) fn authorize_invocation_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let config = self.state.owned.config_projection.snapshot();
         if config.daemon_id != context.home_kernel_id {
             return Err(DaemonError::LocalTransport {
@@ -57,35 +93,7 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
                 message: "worker machine does not match home agent binding".to_string(),
             });
         }
-        let manifest = self.state.remote_extension_manifest_for_agent(&agent)?;
-        let Some(current_tool) = manifest.home_proxy_tool(&hinted_tool.tool_name).cloned() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: format!(
-                    "home-proxy extension tool `{}` is no longer granted",
-                    hinted_tool.tool_name
-                ),
-            });
-        };
-        if current_tool.kind != hinted_tool.kind || current_tool.name != hinted_tool.name {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: format!(
-                    "home-proxy tool identity mismatch for `{}`",
-                    hinted_tool.tool_name
-                ),
-            });
-        }
-        if current_tool.authority != crate::extension::ExtensionAuthority::Home
-            || current_tool.definition_origin != crate::extension::ExtensionDefinitionOrigin::Home
-            || current_tool.execution_location != crate::extension::ExtensionExecutionLocation::Home
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "home-proxy tool placement is invalid".to_string(),
-            });
-        }
-        Ok(current_tool)
+        Ok(agent)
     }
 
     pub(in crate::runtime::state::tool_dispatch) fn authorize_granted_agent(

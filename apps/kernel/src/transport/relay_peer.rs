@@ -273,6 +273,11 @@ pub enum RelayPeerRequest {
         name: String,
         payload: serde_json::Value,
     },
+    CancelHomeExtensionInvocation {
+        context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
+    },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
@@ -362,6 +367,10 @@ pub enum RelayPeerResponse {
     },
     HomeMcpProxyHandled {
         response: serde_json::Value,
+    },
+    HomeExtensionInvocationCancelled {
+        invocation_id: String,
+        cancelled: bool,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

@@ -314,6 +314,8 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
+        self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
+            .await;
         let leased_agent_id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).cancel_leased_prompt(&leased_agent_id)

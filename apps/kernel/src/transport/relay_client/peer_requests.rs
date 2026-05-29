@@ -479,6 +479,24 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::CancelHomeExtensionInvocation { context, metadata } => {
+            let invocation_id = metadata.invocation_id.clone();
+            let cancelled = router
+                .cancel_forwarded_home_extension_invocation(context, metadata)
+                .await;
+            match cancelled {
+                Ok(cancelled) => RelayPeerResponse::HomeExtensionInvocationCancelled {
+                    invocation_id,
+                    cancelled,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change } => {
             let applied = router
                 .relay_apply_workspace_live_sync_change(context, change)
