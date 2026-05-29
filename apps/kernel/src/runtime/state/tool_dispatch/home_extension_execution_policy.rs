@@ -445,6 +445,129 @@ fn remote_extension_invocation_key(
         .to_string()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn test_runtime_state() -> KernelRuntimeState {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .expect("daemon bootstrap should succeed"),
+        ));
+        let app_locked = app.lock().await;
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(&app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.slices(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
+
+    fn metadata(invocation_id: &str) -> crate::extension::RemoteExtensionInvocationMetadata {
+        crate::extension::RemoteExtensionInvocationMetadata {
+            invocation_id: invocation_id.to_string(),
+            provider_tool_call_id: None,
+            attempt: 1,
+            idempotency_key: None,
+            started_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_replays_completed_idempotent_result() {
+        let state = test_runtime_state().await;
+        let mut metadata = metadata("invoke-1");
+        metadata.idempotency_key = Some("idem-1".to_string());
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
+        assert!(
+            state
+                .complete_home_extension_invocation(
+                    &metadata,
+                    serde_json::json!({"ok": true, "value": 42}),
+                )
+                .await
+        );
+
+        let replayed = state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("idempotent duplicate should replay")
+            .expect("replay should return cached result");
+        assert_eq!(replayed, serde_json::json!({"ok": true, "value": 42}));
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_rejects_completed_non_idempotent_duplicate() {
+        let state = test_runtime_state().await;
+        let metadata = metadata("invoke-2");
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
+        assert!(
+            state
+                .complete_home_extension_invocation(&metadata, serde_json::json!({"ok": true}))
+                .await
+        );
+
+        let error = state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect_err("non-idempotent duplicate should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate non-idempotent home extension invocation"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_rejects_in_flight_duplicate() {
+        let state = test_runtime_state().await;
+        let metadata = metadata("invoke-3");
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
+
+        let error = state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect_err("in-flight duplicate should be rejected");
+        assert!(
+            error.to_string().contains("is already in progress"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
 pub(in crate::runtime::state::tool_dispatch) fn enforce_home_extension_runtime_result_limit(
     result: crate::transport::runtime_tools::RuntimeToolResult,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
