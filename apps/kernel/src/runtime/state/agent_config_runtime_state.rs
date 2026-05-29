@@ -31,7 +31,13 @@ impl KernelRuntimeState {
                     Some(&format!("script:{}", grant.name)),
                 )
                 .await?;
-                self.sync_remote_extension_manifest_for_agent(&agent)
+                self.append_home_extension_grant_audit_event(
+                    "home_extension.grant.created",
+                    &agent,
+                    caller_user_id,
+                    &grant,
+                )?;
+                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
                     .await?;
                 Ok(agent)
             }
@@ -50,7 +56,13 @@ impl KernelRuntimeState {
                     Some(&format!("connector:{}", grant.name)),
                 )
                 .await?;
-                self.sync_remote_extension_manifest_for_agent(&agent)
+                self.append_home_extension_grant_audit_event(
+                    "home_extension.grant.created",
+                    &agent,
+                    caller_user_id,
+                    &grant,
+                )?;
+                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
                     .await?;
                 Ok(agent)
             }
@@ -158,7 +170,14 @@ impl KernelRuntimeState {
                     Some(&format!("script:{name}")),
                 )
                 .await?;
-                self.sync_remote_extension_manifest_for_agent(&agent)
+                self.append_home_extension_named_grant_audit_event(
+                    "home_extension.grant.revoked",
+                    &agent,
+                    caller_user_id,
+                    crate::extension::ExtensionKind::Script,
+                    name,
+                )?;
+                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
                     .await?;
                 Ok(agent)
             }
@@ -175,7 +194,14 @@ impl KernelRuntimeState {
                     Some(&format!("connector:{name}")),
                 )
                 .await?;
-                self.sync_remote_extension_manifest_for_agent(&agent)
+                self.append_home_extension_named_grant_audit_event(
+                    "home_extension.grant.revoked",
+                    &agent,
+                    caller_user_id,
+                    crate::extension::ExtensionKind::Connector,
+                    name,
+                )?;
+                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
                     .await?;
                 Ok(agent)
             }
@@ -209,7 +235,14 @@ impl KernelRuntimeState {
             .grant_agent_mcp(agent_ref, name.clone(), caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_granted", &agent, Some(&name))
             .await?;
-        self.sync_remote_extension_manifest_for_agent(&agent)
+        self.append_home_extension_named_grant_audit_event(
+            "home_extension.grant.created",
+            &agent,
+            caller_user_id,
+            crate::extension::ExtensionKind::Mcp,
+            &name,
+        )?;
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
             .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
@@ -232,7 +265,14 @@ impl KernelRuntimeState {
             .revoke_agent_mcp(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.mcp_revoked", &agent, Some(name))
             .await?;
-        self.sync_remote_extension_manifest_for_agent(&agent)
+        self.append_home_extension_named_grant_audit_event(
+            "home_extension.grant.revoked",
+            &agent,
+            caller_user_id,
+            crate::extension::ExtensionKind::Mcp,
+            name,
+        )?;
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
             .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
@@ -256,7 +296,14 @@ impl KernelRuntimeState {
         self.append_agent_durable_event("agent.skill_granted", &agent, Some(&name))
             .await?;
         self.ensure_remote_skill_packages_for_agent(&agent).await?;
-        self.sync_remote_extension_manifest_for_agent(&agent)
+        self.append_home_extension_named_grant_audit_event(
+            "home_extension.grant.created",
+            &agent,
+            caller_user_id,
+            crate::extension::ExtensionKind::Skill,
+            &name,
+        )?;
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
             .await?;
         Ok(agent)
     }
@@ -272,7 +319,14 @@ impl KernelRuntimeState {
             .revoke_agent_skill(agent_ref, name, caller_user_id)?;
         self.append_agent_durable_event("agent.skill_revoked", &agent, Some(name))
             .await?;
-        self.sync_remote_extension_manifest_for_agent(&agent)
+        self.append_home_extension_named_grant_audit_event(
+            "home_extension.grant.revoked",
+            &agent,
+            caller_user_id,
+            crate::extension::ExtensionKind::Skill,
+            name,
+        )?;
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
             .await?;
         Ok(agent)
     }
@@ -280,14 +334,16 @@ impl KernelRuntimeState {
     async fn sync_remote_extension_manifest_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,
+        caller_user_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        self.sync_remote_extension_manifest_for_agent_inner::<true>(agent)
+        self.sync_remote_extension_manifest_for_agent_inner::<true>(agent, caller_user_id)
             .await
     }
 
     async fn sync_remote_extension_manifest_for_agent_inner<const SCHEDULE_RETRIES: bool>(
         &self,
         agent: &crate::agent::AgentInstance,
+        caller_user_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(());
@@ -339,7 +395,8 @@ impl KernelRuntimeState {
                 );
                 if SCHEDULE_RETRIES {
                     self.schedule_remote_extension_manifest_retry(
-                        agent.id().to_string(),
+                        agent,
+                        caller_user_id,
                         manifest_hash.clone(),
                         error.to_string(),
                     )
@@ -368,7 +425,8 @@ impl KernelRuntimeState {
             );
             if SCHEDULE_RETRIES {
                 self.schedule_remote_extension_manifest_retry(
-                    agent.id().to_string(),
+                    agent,
+                    caller_user_id,
                     manifest_hash.clone(),
                     error,
                 )
@@ -398,15 +456,16 @@ impl KernelRuntimeState {
                     manifest_hash.clone(),
                 )),
             );
+            let mut payload = self.home_extension_agent_audit_payload(agent, caller_user_id);
+            payload.insert(
+                "manifest_hash".to_string(),
+                serde_json::json!(manifest_hash),
+            );
+            payload.insert("tool_count".to_string(), serde_json::json!(tool_count));
             self.owned.durable_state_store.append_event(
                 "home_extension.manifest.synced",
                 Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent_id": agent.id(),
-                    "worker_kernel_id": remote_execution.worker_kernel_id,
-                    "manifest_hash": manifest_hash,
-                    "tool_count": tool_count,
-                }),
+                serde_json::Value::Object(payload),
             )?;
         }
         Ok(())
@@ -414,11 +473,13 @@ impl KernelRuntimeState {
 
     async fn schedule_remote_extension_manifest_retry(
         &self,
-        agent_id: String,
+        agent: &crate::agent::AgentInstance,
+        caller_user_id: Option<&str>,
         manifest_hash: String,
         error: String,
     ) {
         const RETRY_DELAYS_SECONDS: [u64; 3] = [2, 10, 30];
+        let agent_id = agent.id().to_string();
         let retry_key = remote_extension_manifest_retry_key(&agent_id, &manifest_hash);
         let attempt = {
             let mut counts = self
@@ -434,16 +495,18 @@ impl KernelRuntimeState {
             *count
         };
         let delay = RETRY_DELAYS_SECONDS[(attempt - 1) as usize];
+        let mut payload = self.home_extension_agent_audit_payload(agent, caller_user_id);
+        payload.insert(
+            "manifest_hash".to_string(),
+            serde_json::json!(manifest_hash),
+        );
+        payload.insert("attempt".to_string(), serde_json::json!(attempt));
+        payload.insert("delay_sec".to_string(), serde_json::json!(delay));
+        payload.insert("error".to_string(), serde_json::json!(error));
         let _ = self.owned.durable_state_store.append_event(
             "home_extension.manifest.retry_scheduled",
             Some(agent_id.clone()),
-            serde_json::json!({
-                "agent_id": agent_id,
-                "manifest_hash": manifest_hash,
-                "attempt": attempt,
-                "delay_sec": delay,
-                "error": error,
-            }),
+            serde_json::Value::Object(payload),
         );
         let state = self.clone();
         std::thread::spawn(move || {
@@ -466,7 +529,7 @@ impl KernelRuntimeState {
                     return;
                 }
                 let _ = state
-                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent)
+                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None)
                     .await;
             });
         });
@@ -487,9 +550,123 @@ impl KernelRuntimeState {
             caller_user_id,
             "remote extension manifest sync retry",
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent)
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
             .await?;
         self.owned.agent_store.get_agent(agent.id())
+    }
+
+    fn append_home_extension_grant_audit_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        caller_user_id: &str,
+        grant: &crate::extension::ExtensionGrant,
+    ) -> Result<(), DaemonError> {
+        if agent.remote_execution().is_none() {
+            return Ok(());
+        }
+        let mut payload = self.home_extension_agent_audit_payload(agent, Some(caller_user_id));
+        payload.insert(
+            "grant".to_string(),
+            serde_json::json!({
+                "kind": grant.kind.as_str(),
+                "name": grant.name,
+                "environment": grant.environment,
+                "credential_present": grant.credential.is_some(),
+                "max_safety": grant.max_safety,
+            }),
+        );
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(agent.id().to_string()),
+            serde_json::Value::Object(payload),
+        )?;
+        Ok(())
+    }
+
+    fn append_home_extension_named_grant_audit_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        caller_user_id: &str,
+        extension_kind: crate::extension::ExtensionKind,
+        name: &str,
+    ) -> Result<(), DaemonError> {
+        if agent.remote_execution().is_none() {
+            return Ok(());
+        }
+        let mut payload = self.home_extension_agent_audit_payload(agent, Some(caller_user_id));
+        payload.insert(
+            "grant".to_string(),
+            serde_json::json!({
+                "kind": extension_kind.as_str(),
+                "name": name,
+            }),
+        );
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(agent.id().to_string()),
+            serde_json::Value::Object(payload),
+        )?;
+        Ok(())
+    }
+
+    pub(in crate::runtime::state) fn home_extension_agent_audit_payload(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        caller_user_id: Option<&str>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok();
+        let remote_execution = agent.remote_execution();
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "home_session_id".to_string(),
+            serde_json::json!(agent.session_id()),
+        );
+        payload.insert(
+            "home_user_id".to_string(),
+            serde_json::json!(session.as_ref().map(|session| session.owner_user_id())),
+        );
+        payload.insert(
+            "caller_user_id".to_string(),
+            serde_json::json!(caller_user_id),
+        );
+        payload.insert("agent_id".to_string(), serde_json::json!(agent.id()));
+        payload.insert(
+            "agent_ref".to_string(),
+            serde_json::json!(agent.agent_ref()),
+        );
+        payload.insert(
+            "agent_owner_user_id".to_string(),
+            serde_json::json!(agent.owner_user_id()),
+        );
+        payload.insert(
+            "lease_id".to_string(),
+            serde_json::json!(remote_execution.map(|remote| remote.execution_lease_id.as_str())),
+        );
+        payload.insert(
+            "leased_agent_id".to_string(),
+            serde_json::json!(remote_execution.map(|remote| remote.leased_agent_id.as_str())),
+        );
+        payload.insert(
+            "worker_kernel_id".to_string(),
+            serde_json::json!(remote_execution.map(|remote| remote.worker_kernel_id.as_str())),
+        );
+        payload.insert(
+            "worker_machine_id".to_string(),
+            serde_json::json!(remote_execution.map(|remote| remote.worker_machine_id.as_str())),
+        );
+        payload.insert(
+            "active_worker_provider_run_id".to_string(),
+            serde_json::json!(
+                remote_execution.and_then(|remote| remote.active_worker_provider_run_id.as_deref())
+            ),
+        );
+        payload
     }
 
     pub(crate) fn list_home_extension_audit_events(

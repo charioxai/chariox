@@ -738,7 +738,7 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
         kind: crate::local::ExtensionKind::Script,
         name: "home-only".to_string(),
         environment: Some("test-env".to_string()),
-        credential: None,
+        credential: Some("home-secret-token".to_string()),
         max_safety: None,
     });
 
@@ -762,12 +762,67 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
         .expect("home owner should grant home-owned remote extension")
     {
         LocalDaemonResponse::AgentExtensionGranted { agent } => {
-            assert!(
-                agent.has_extension_grant(crate::extension::ExtensionKind::Script, "home-only")
-            );
+            assert!(agent.has_extension_grant(crate::extension::ExtensionKind::Script, "home-only"));
         }
         other => panic!("unexpected grant response: {other:?}"),
     }
+    let grant_events = router
+        .runtime_state
+        .list_home_extension_audit_events(peer_agent.id(), DEFAULT_LOCAL_USER_ID, 20)
+        .expect("grant audit events should load");
+    let grant_event = grant_events
+        .iter()
+        .find(|event| {
+            event.kind == "home_extension.grant.created"
+                && event
+                    .payload
+                    .pointer("/grant/kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("script")
+        })
+        .expect("home extension grant should be audited");
+    assert_eq!(
+        grant_event
+            .payload
+            .pointer("/home_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        grant_event
+            .payload
+            .pointer("/caller_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        grant_event
+            .payload
+            .pointer("/agent_owner_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some("user-2")
+    );
+    assert_eq!(
+        grant_event
+            .payload
+            .pointer("/lease_id")
+            .and_then(serde_json::Value::as_str),
+        Some("lease-1")
+    );
+    assert_eq!(
+        grant_event
+            .payload
+            .pointer("/grant/credential_present")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        !grant_event
+            .payload
+            .to_string()
+            .contains("home-secret-token"),
+        "audit event must not serialize credential material"
+    );
 
     let revoke =
         LocalDaemonRequest::RevokeAgentExtension(crate::local::RevokeAgentExtensionRequest {
@@ -801,6 +856,35 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
         }
         other => panic!("unexpected revoke response: {other:?}"),
     }
+    let revoke_events = router
+        .runtime_state
+        .list_home_extension_audit_events(peer_agent.id(), DEFAULT_LOCAL_USER_ID, 20)
+        .expect("revoke audit events should load");
+    let revoke_event = revoke_events
+        .iter()
+        .find(|event| {
+            event.kind == "home_extension.grant.revoked"
+                && event
+                    .payload
+                    .pointer("/grant/kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("script")
+        })
+        .expect("home extension revoke should be audited");
+    assert_eq!(
+        revoke_event
+            .payload
+            .pointer("/caller_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        revoke_event
+            .payload
+            .pointer("/agent_owner_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some("user-2")
+    );
 
     let _ = std::fs::remove_dir_all(&workspace);
 }
@@ -896,12 +980,46 @@ async fn denied_home_extension_invocation_is_audited() {
             .and_then(serde_json::Value::as_str),
         Some("denied")
     );
+    assert!(denied_event
+        .payload
+        .pointer("/error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("worker kernel does not match home agent binding")));
+    assert_eq!(
+        denied_event
+            .payload
+            .pointer("/home_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        denied_event
+            .payload
+            .pointer("/caller_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        denied_event
+            .payload
+            .pointer("/lease_id")
+            .and_then(serde_json::Value::as_str),
+        Some("lease-1")
+    );
+    assert_eq!(
+        denied_event
+            .payload
+            .pointer("/worker_provider_run_id")
+            .and_then(serde_json::Value::as_str),
+        Some("provider-run-1")
+    );
     assert!(
         denied_event
             .payload
-            .pointer("/error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|error| error.contains("worker kernel does not match home agent binding"))
+            .pointer("/duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "denied invocation should include duration"
     );
 }
 
@@ -972,6 +1090,35 @@ async fn home_extension_invocation_cancellation_is_authorized_and_audited() {
             .pointer("/status")
             .and_then(serde_json::Value::as_str),
         Some("not_in_flight")
+    );
+    assert_eq!(
+        event
+            .payload
+            .pointer("/home_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        event
+            .payload
+            .pointer("/caller_user_id")
+            .and_then(serde_json::Value::as_str),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        event
+            .payload
+            .pointer("/lease_id")
+            .and_then(serde_json::Value::as_str),
+        Some("lease-1")
+    );
+    assert!(
+        event
+            .payload
+            .pointer("/duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "cancellation audit should include duration"
     );
 }
 

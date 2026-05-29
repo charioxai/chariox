@@ -54,35 +54,38 @@ impl KernelRuntimeState {
                 let error = super::home_extension_execution_policy::home_extension_cancelled_error(
                     &metadata,
                 );
-                self.append_home_extension_audit_event(
+                self.append_home_mcp_proxy_result_audit_event(
                     "home_extension.invoke.completed",
                     &context,
                     &metadata,
                     &tool,
                     Some("cancelled"),
+                    serde_json::to_vec(value).ok().map(|bytes| bytes.len()),
                     Some(&error.to_string()),
                 )
                 .await?;
                 return Err(error);
             }
-            self.append_home_extension_audit_event(
+            self.append_home_mcp_proxy_result_audit_event(
                 "home_extension.invoke.completed",
                 &context,
                 &metadata,
                 &tool,
                 Some("completed"),
+                serde_json::to_vec(value).ok().map(|bytes| bytes.len()),
                 None,
             )
             .await?;
         } else {
             self.forget_home_extension_invocation(&metadata).await;
             if let Err(error) = &result {
-                self.append_home_extension_audit_event(
+                self.append_home_mcp_proxy_result_audit_event(
                     "home_extension.invoke.completed",
                     &context,
                     &metadata,
                     &tool,
                     Some("failed"),
+                    None,
                     Some(&error.to_string()),
                 )
                 .await?;
@@ -116,5 +119,40 @@ impl KernelRuntimeState {
             operation: "home MCP proxy",
             message: error.to_string(),
         })?
+    }
+
+    async fn append_home_mcp_proxy_result_audit_event(
+        &self,
+        kind: &'static str,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+        tool: &crate::extension::RemoteExtensionTool,
+        status: Option<&str>,
+        result_bytes: Option<usize>,
+        error: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let mut payload = self.home_extension_invocation_audit_payload(context, metadata);
+        payload.insert("executor".to_string(), serde_json::json!("mcp"));
+        payload.insert("invocation".to_string(), serde_json::json!(metadata));
+        payload.insert(
+            "tool".to_string(),
+            serde_json::json!({
+                "kind": tool.kind.as_str(),
+                "name": tool.name,
+                "tool_name": tool.tool_name,
+                "safety": tool.safety,
+                "timeout_sec": tool.timeout_sec,
+                "version_hash": tool.version_hash,
+            }),
+        );
+        payload.insert("status".to_string(), serde_json::json!(status));
+        payload.insert("result_bytes".to_string(), serde_json::json!(result_bytes));
+        payload.insert("error".to_string(), serde_json::json!(error));
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(context.home_agent_id.clone()),
+            serde_json::Value::Object(payload),
+        )?;
+        Ok(())
     }
 }

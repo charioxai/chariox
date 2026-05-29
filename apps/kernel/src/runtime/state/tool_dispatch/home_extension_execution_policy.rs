@@ -141,16 +141,19 @@ impl KernelRuntimeState {
         self.owned.durable_state_store.append_event(
             "home_extension.invoke.cancelled",
             Some(context.home_agent_id.clone()),
-            serde_json::json!({
-                "home_session_id": context.home_session_id,
-                "home_agent_id": context.home_agent_id,
-                "leased_agent_id": context.leased_agent_id,
-                "worker_provider_run_id": context.worker_provider_run_id,
-                "worker_kernel_id": context.worker_kernel_id,
-                "worker_machine_id": context.worker_machine_id,
-                "invocation": metadata,
-                "status": if in_flight { "cancelled" } else { "not_in_flight" },
-            }),
+            {
+                let mut payload = self.home_extension_invocation_audit_payload(context, metadata);
+                payload.insert("invocation".to_string(), serde_json::json!(metadata));
+                payload.insert(
+                    "status".to_string(),
+                    serde_json::json!(if in_flight {
+                        "cancelled"
+                    } else {
+                        "not_in_flight"
+                    }),
+                );
+                serde_json::Value::Object(payload)
+            },
         )?;
         Ok(in_flight)
     }
@@ -164,28 +167,25 @@ impl KernelRuntimeState {
         status: Option<&str>,
         error: Option<&str>,
     ) -> Result<(), DaemonError> {
+        let mut payload = self.home_extension_invocation_audit_payload(context, metadata);
+        payload.insert("invocation".to_string(), serde_json::json!(metadata));
+        payload.insert(
+            "tool".to_string(),
+            serde_json::json!({
+                "kind": tool.kind.as_str(),
+                "name": tool.name,
+                "tool_name": tool.tool_name,
+                "safety": tool.safety,
+                "timeout_sec": tool.timeout_sec,
+                "version_hash": tool.version_hash,
+            }),
+        );
+        payload.insert("status".to_string(), serde_json::json!(status));
+        payload.insert("error".to_string(), serde_json::json!(error));
         self.owned.durable_state_store.append_event(
             kind,
             Some(context.home_agent_id.clone()),
-            serde_json::json!({
-                "home_session_id": context.home_session_id,
-                "home_agent_id": context.home_agent_id,
-                "leased_agent_id": context.leased_agent_id,
-                "worker_provider_run_id": context.worker_provider_run_id,
-                "worker_kernel_id": context.worker_kernel_id,
-                "worker_machine_id": context.worker_machine_id,
-                "invocation": metadata,
-                "tool": {
-                    "kind": tool.kind.as_str(),
-                    "name": tool.name,
-                    "tool_name": tool.tool_name,
-                    "safety": tool.safety,
-                    "timeout_sec": tool.timeout_sec,
-                    "version_hash": tool.version_hash,
-                },
-                "status": status,
-                "error": error,
-            }),
+            serde_json::Value::Object(payload),
         )?;
         Ok(())
     }
@@ -316,31 +316,106 @@ impl KernelRuntimeState {
             ),
             Err(error) => ("failed", None, None, Some(error.to_string())),
         };
+        let mut payload = self.home_extension_invocation_audit_payload(context, metadata);
+        payload.insert("executor".to_string(), serde_json::json!(executor));
+        payload.insert("invocation".to_string(), serde_json::json!(metadata));
+        payload.insert(
+            "tool".to_string(),
+            serde_json::json!({
+                "kind": tool.kind.as_str(),
+                "name": tool.name,
+                "tool_name": tool.tool_name,
+                "safety": tool.safety,
+                "timeout_sec": tool.timeout_sec,
+                "version_hash": tool.version_hash,
+            }),
+        );
+        payload.insert("status".to_string(), serde_json::json!(status));
+        payload.insert("ok".to_string(), serde_json::json!(ok));
+        payload.insert("result_bytes".to_string(), serde_json::json!(result_bytes));
+        payload.insert("error".to_string(), serde_json::json!(error));
         self.owned.durable_state_store.append_event(
             "home_extension.invoke.completed",
             Some(context.home_agent_id.clone()),
-            serde_json::json!({
-                "executor": executor,
-                "home_session_id": context.home_session_id,
-                "home_agent_id": context.home_agent_id,
-                "leased_agent_id": context.leased_agent_id,
-                "worker_provider_run_id": context.worker_provider_run_id,
-                "worker_kernel_id": context.worker_kernel_id,
-                "worker_machine_id": context.worker_machine_id,
-                "invocation": metadata,
-                "tool": {
-                    "kind": tool.kind.as_str(),
-                    "name": tool.name,
-                    "tool_name": tool.tool_name,
-                    "safety": tool.safety,
-                },
-                "status": status,
-                "ok": ok,
-                "result_bytes": result_bytes,
-                "error": error,
-            }),
+            serde_json::Value::Object(payload),
         )?;
         Ok(())
+    }
+
+    pub(in crate::runtime::state::tool_dispatch) fn home_extension_invocation_audit_payload(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(&context.home_agent_id)
+            .ok();
+        let session = self
+            .owned
+            .session_store
+            .get_session(&context.home_session_id)
+            .ok();
+        let remote_execution = agent.as_ref().and_then(|agent| agent.remote_execution());
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "home_session_id".to_string(),
+            serde_json::json!(context.home_session_id),
+        );
+        payload.insert(
+            "home_user_id".to_string(),
+            serde_json::json!(session.as_ref().map(|session| session.owner_user_id())),
+        );
+        payload.insert(
+            "caller_user_id".to_string(),
+            serde_json::json!(agent.as_ref().map(|agent| agent.owner_user_id())),
+        );
+        payload.insert(
+            "agent_id".to_string(),
+            serde_json::json!(context.home_agent_id),
+        );
+        payload.insert(
+            "agent_ref".to_string(),
+            serde_json::json!(agent.as_ref().map(|agent| agent.agent_ref())),
+        );
+        payload.insert(
+            "agent_owner_user_id".to_string(),
+            serde_json::json!(agent.as_ref().map(|agent| agent.owner_user_id())),
+        );
+        payload.insert(
+            "lease_id".to_string(),
+            serde_json::json!(remote_execution.map(|remote| remote.execution_lease_id.as_str())),
+        );
+        payload.insert(
+            "leased_agent_id".to_string(),
+            serde_json::json!(context.leased_agent_id),
+        );
+        payload.insert(
+            "worker_provider_run_id".to_string(),
+            serde_json::json!(context.worker_provider_run_id),
+        );
+        payload.insert(
+            "active_worker_provider_run_id".to_string(),
+            serde_json::json!(
+                remote_execution.and_then(|remote| remote.active_worker_provider_run_id.as_deref())
+            ),
+        );
+        payload.insert(
+            "worker_kernel_id".to_string(),
+            serde_json::json!(context.worker_kernel_id),
+        );
+        payload.insert(
+            "worker_machine_id".to_string(),
+            serde_json::json!(context.worker_machine_id),
+        );
+        payload.insert(
+            "duration_ms".to_string(),
+            serde_json::json!(
+                crate::session::unix_epoch_ms().saturating_sub(metadata.started_at_ms)
+            ),
+        );
+        payload
     }
 }
 
