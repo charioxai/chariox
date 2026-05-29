@@ -18,7 +18,6 @@ mod home_script_executor;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
-mod remote_extension_proxy;
 mod script;
 mod skill_package_response;
 mod slice;
