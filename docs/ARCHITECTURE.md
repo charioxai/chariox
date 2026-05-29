@@ -802,6 +802,8 @@ Those layers should only be deduplicated when the assembled text is literally id
 
 Utility prompts such as commit-message generation, semantic recall/history, and vault-related calls use the same assembly service and focused provider run. Arroba should not start a separate provider conversation just to run a utility prompt unless the user explicitly requests that execution model.
 
+The live validation path for this boundary is `pnpm --filter @arroba/cli run prompt-assembly:drill`. It runs real Codex, OpenCode, and Claude turns through the kernel with an edited temporary prompt registry, verifies the provider can use the hidden registry token, and verifies Arroba user-prompt history remains visible-prompt only.
+
 ### 5.3.2 Native TUI Client Interface
 
 Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]`, `arroba opencode [session-ref]`, or `arroba claude [session-ref]`.
