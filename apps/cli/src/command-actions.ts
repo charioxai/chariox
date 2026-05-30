@@ -90,7 +90,7 @@ type CommandActionDeps =
   & ConfigCommandHandlerDeps
   & RemoteMachineCommandHandlerDeps
   & CapabilityCommandHandlerDeps
-  & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
+  & Omit<SliceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
   & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
   & Omit<SessionCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
   & Omit<AgentCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
@@ -228,7 +228,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleSliceCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "slice" }>,
   ): Promise<void> => {
-    await handleSliceSlashCommand({ ...deps, currentWorktreeTarget }, command)
+    await handleSliceSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
   }
 
   const handleKernelCommand = async (

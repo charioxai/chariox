@@ -180,6 +180,7 @@ async function runSliceSlashCommandDrill(client, workspace) {
   const footers = []
   const openedUrls = []
   const deps = {
+    currentWorkspaceTarget: () => workspace,
     currentWorktreeTarget: () => workspace,
     focusedAgentId: () => null,
     resolveSessionAgent: () => ({ agent: null, error: null }),
@@ -194,6 +195,8 @@ async function runSliceSlashCommandDrill(client, workspace) {
       name: options.name,
       backend: options.backend,
       displayMode: options.displayMode,
+      workspaceId: options.workspaceId,
+      worktreeId: options.worktreeId,
       workspaceMount: options.workspaceMount,
       workerKernelRef: options.workerKernelRef,
       displayUrl: options.displayUrl,
@@ -214,6 +217,8 @@ async function runSliceSlashCommandDrill(client, workspace) {
   await handleSliceSlashCommand(deps, sliceSlashCommand('create', 'slice-cli-command', '--headed'))
   const commandSlice = variant(await client.send(getSliceRequest('slice-cli-command')), 'Slice').slice
   assert(commandSlice.display_mode === 'headed', '/slice create --headed should create a headed slice')
+  assert(commandSlice.workspace_id === workspace, '/slice create should scope the slice to the current workspace')
+  assert(commandSlice.worktree_id === workspace, '/slice create should scope the slice to the current worktree')
   assert(commandSlice.workspace_mount === workspace, '/slice create should mount the current worktree')
   await handleSliceSlashCommand(deps, sliceSlashCommand('start', commandSlice.id))
   const started = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice

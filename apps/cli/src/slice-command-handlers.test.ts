@@ -40,6 +40,8 @@ test("slice command create passes display mode and current worktree mount", asyn
   assert.deepEqual(harness.createdSlices, [{
     name: "qa",
     displayMode: "headed",
+    workspaceId: "/repo",
+    worktreeId: "/repo/wt",
     workspaceMount: "/repo/wt",
     workerKernelRef: null,
     displayUrl: null,
@@ -164,6 +166,7 @@ function sliceHarness(options: {
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
   const deps: SliceCommandHandlerDeps = {
+    currentWorkspaceTarget: () => "/repo",
     currentWorktreeTarget: () => "/repo/wt",
     focusedAgentId: () => focusedAgent.id,
     resolveSessionAgent: () => ({ agent: focusedAgent, error: null }),

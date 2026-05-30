@@ -12,12 +12,15 @@ type SliceCreateOptions = {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  workspaceId?: string | null
+  worktreeId?: string | null
   workspaceMount?: string | null
   workerKernelRef?: string | null
   displayUrl?: string | null
 }
 
 export type SliceCommandHandlerDeps = {
+  currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
   focusedAgentId: () => string | null
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
@@ -158,6 +161,8 @@ function parseSliceCreateOptions(
   workerKernelRef?: string | null
   displayUrl?: string | null
   workspaceMount?: string | null
+  workspaceId?: string | null
+  worktreeId?: string | null
   displayMode?: "headless" | "headed"
   error?: string
 } {
@@ -165,6 +170,8 @@ function parseSliceCreateOptions(
   let backend: "local_docker" | "ssh_docker" | undefined
   let workerKernelRef: string | null | undefined
   let displayUrl: string | null | undefined
+  let workspaceId: string | null | undefined = deps.currentWorkspaceTarget()
+  let worktreeId: string | null | undefined = deps.currentWorktreeTarget()
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
   let displayMode: "headless" | "headed" | undefined
   let error: string | undefined
@@ -212,6 +219,7 @@ function parseSliceCreateOptions(
         break
       }
       workspaceMount = value === "none" ? null : value
+      worktreeId = value === "none" ? null : value
       index += 1
       continue
     }
@@ -223,6 +231,8 @@ function parseSliceCreateOptions(
     ...(backend !== undefined ? { backend } : {}),
     ...(workerKernelRef !== undefined ? { workerKernelRef } : {}),
     ...(displayUrl !== undefined ? { displayUrl } : {}),
+    ...(workspaceId !== undefined ? { workspaceId } : {}),
+    ...(worktreeId !== undefined ? { worktreeId } : {}),
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
     ...(displayMode !== undefined ? { displayMode } : {}),
     ...(error !== undefined ? { error } : {}),
@@ -256,6 +266,8 @@ async function createSlice(
     name: parsed.name,
     ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
     ...(parsed.displayMode !== undefined ? { displayMode: parsed.displayMode } : {}),
+    ...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
+    ...(parsed.worktreeId !== undefined ? { worktreeId: parsed.worktreeId } : {}),
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),
     workerKernelRef: parsed.workerKernelRef ?? null,
     displayUrl: parsed.displayUrl ?? null,
