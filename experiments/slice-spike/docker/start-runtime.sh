@@ -17,6 +17,14 @@ MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
 CAPABILITY_ISOLATION_ROOT="${ARROBA_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.arroba/managed-capabilities}"
 mkdir -p "$LOGS"
 mkdir -p "$CAPABILITY_ISOLATION_ROOT"
+mkdir -p "$HOME/.arroba" /tmp/arroba-slice-state
+
+if [[ ! -f "$HOME/.arroba/config.toml" ]]; then
+  cat >"$HOME/.arroba/config.toml" <<'EOF'
+[state]
+path = "/tmp/arroba-slice-state/kernel.db"
+EOF
+fi
 
 screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true

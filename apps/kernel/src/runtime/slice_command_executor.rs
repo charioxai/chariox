@@ -312,16 +312,8 @@ async fn discover_started_slice_worker(
 }
 
 fn local_docker_slice_relay(
-    config_projection: &DaemonConfigProjectionStore,
+    _config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
 ) -> crate::slice::LocalDockerSliceRelay {
-    let config = config_projection.snapshot();
-    match (config.relay_url, config.relay_token) {
-        (Some(relay_url), Some(relay_token)) => crate::slice::LocalDockerSliceRelay {
-            relay_url: relay_url.clone(),
-            container_relay_url: Some(relay_url),
-            relay_token,
-        },
-        _ => crate::slice::local_docker_private_relay(slice),
-    }
+    crate::slice::local_docker_private_relay(slice)
 }
