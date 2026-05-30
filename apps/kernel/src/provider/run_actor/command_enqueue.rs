@@ -128,11 +128,25 @@ impl ProviderRunActorMailbox {
                 .remove(&provider_run_id)
                 .unwrap_or_else(|| self.worker_deps().spawn(provider_run_id.clone()))
         };
+        let (completion_tx, completion_rx) = mpsc::channel();
         match sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
             run,
+            completion: completion_tx,
         }) {
-            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Ok(()) => {
+                self.operation_lanes.record_command_enqueued();
+                if let Err(error) = completion_rx.recv_timeout(Duration::from_secs(15)) {
+                    crate::logging::error_with_fields(
+                        "daemon.provider_run_actor",
+                        "provider run actor terminate command did not complete before cleanup",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
                 self.clear_structured_prompt_io_in_flight(&provider_run_id);

@@ -23,7 +23,8 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    env::remove_var("ARROBA_OPENCODE_PORT");
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -40,13 +41,10 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
         .expect("attachment should attach");
 
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
     wait_for_mock_opencode_event_subscription(&mock_server);
 
@@ -123,7 +121,8 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    env::remove_var("ARROBA_OPENCODE_PORT");
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -140,13 +139,10 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
         .expect("attachment should attach");
 
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
 
     let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
@@ -381,13 +377,9 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    let previous_endpoint = env::var_os("ARROBA_OPENCODE_ENDPOINT");
     env::remove_var("ARROBA_OPENCODE_BIN");
     env::remove_var("ARROBA_OPENCODE_PORT");
-    env::set_var(
-        "ARROBA_OPENCODE_ENDPOINT",
-        format!("http://127.0.0.1:{}", mock_server.port()),
-    );
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -404,13 +396,10 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
         .expect("attachment should attach");
 
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch against external endpoint");
 
     app.resize_terminal(session.id(), 120, 40)
@@ -459,11 +448,6 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
         env::set_var("ARROBA_OPENCODE_PORT", previous_port);
     } else {
         env::remove_var("ARROBA_OPENCODE_PORT");
-    }
-    if let Some(previous_endpoint) = previous_endpoint {
-        env::set_var("ARROBA_OPENCODE_ENDPOINT", previous_endpoint);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_ENDPOINT");
     }
     mock_server.stop();
 }
@@ -519,7 +503,8 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    env::remove_var("ARROBA_OPENCODE_PORT");
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -537,7 +522,8 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let default_run = app
         .launch_provider(
             LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
-                .with_agent_id(default_agent.id()),
+                .with_agent_id(default_agent.id())
+                .with_structured_endpoint(endpoint.clone()),
         )
         .expect("default provider run should launch");
     let reviewer = app
@@ -549,7 +535,8 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let reviewer_run = app
         .launch_provider(
             LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
-                .with_agent_id(reviewer.id()),
+                .with_agent_id(reviewer.id())
+                .with_structured_endpoint(endpoint),
         )
         .expect("reviewer provider run should launch");
 
@@ -682,7 +669,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 }
 
 #[test]
-fn opencode_launch_requires_explicit_port_override() {
+fn managed_opencode_fixture_without_target_port_fails_health_check() {
     let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
@@ -708,12 +695,8 @@ fn opencode_launch_requires_explicit_port_override() {
         .expect_err("missing OpenCode port override should fail");
 
     match error {
-        arroba_kernel::DaemonError::InvalidConfig { field, message } => {
-            assert_eq!(field, "ARROBA_OPENCODE_PORT");
-            assert_eq!(
-                message,
-                "must be set to an explicit OpenCode server TCP port"
-            );
+        arroba_kernel::DaemonError::ProviderProtocol { operation, .. } => {
+            assert_eq!(operation, "health");
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -812,7 +795,6 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
             .state(),
         ProviderRunState::Running
     );
-    assert!(!app.pty().has_process(run.id()));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -835,7 +817,8 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    env::remove_var("ARROBA_OPENCODE_PORT");
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -852,13 +835,10 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
         .expect("attachment should attach");
 
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
 
     let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(

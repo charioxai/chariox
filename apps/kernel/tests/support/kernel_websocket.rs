@@ -23,6 +23,14 @@ pub fn reserved_kernel_listener() -> (u16, TcpListener) {
     (port, listener)
 }
 
+pub fn unused_tcp_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
+    listener
+        .local_addr()
+        .expect("listener address should exist")
+        .port()
+}
+
 pub async fn connect_with_retry(url: &str) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
     for _ in 0..20 {
         match connect_async(url).await {

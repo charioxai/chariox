@@ -503,6 +503,7 @@ fn handle_mock_opencode_request(
                 Value::Object(status_map)
             }
         }
+        ("POST", path) if path.starts_with("/mcp/") && path.ends_with("/connect") => json!(true),
         ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
             let response_delay = state
                 .lock()

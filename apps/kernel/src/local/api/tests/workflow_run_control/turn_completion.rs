@@ -128,16 +128,13 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let active_prompt = invoke_session
         .active_prompt()
         .expect("workflow invoke should create an active prompt");
+    let active_mechanics = workflow_mechanics_text(active_prompt);
     assert!(active_prompt
         .prompt()
         .contains("Endpoint prompt:\nkick off the ack flow"));
-    assert!(active_prompt
-        .prompt()
-        .contains("Node instruction reference (daemon-managed):"));
-    assert!(active_prompt.prompt().contains("`ack_workflow_turn`"));
-    assert!(!active_prompt
-        .prompt()
-        .contains("Control mailbox (daemon-managed):"));
+    assert!(active_mechanics.contains("Node instruction reference (daemon-managed):"));
+    assert!(active_mechanics.contains("`ack_workflow_turn`"));
+    assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
 
     let first_run_id = workflow_run.node_runs()[0].id().to_string();
     let first_token = "workflow-ack:".to_string() + &first_run_id;
@@ -215,12 +212,9 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
             .cloned()
             .expect("second node prompt should be active")
     });
-    assert!(second_active_prompt
-        .prompt()
-        .contains("Workflow handoff payloads (JSON array):"));
-    assert!(second_active_prompt
-        .prompt()
-        .contains("`ack_workflow_turn`"));
+    let second_mechanics = workflow_mechanics_text(&second_active_prompt);
+    assert!(second_mechanics.contains("Workflow handoff payloads (JSON array):"));
+    assert!(second_mechanics.contains("`ack_workflow_turn`"));
 
     let second_run_id = routed
         .active_node_run_id()
@@ -547,4 +541,12 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
     assert!(!active_prompt
         .prompt()
         .contains("Control mailbox (daemon-managed):"));
+}
+
+fn workflow_mechanics_text(prompt: &crate::session::PromptQueueItem) -> &str {
+    if prompt.hidden_system_context().is_empty() {
+        prompt.prompt()
+    } else {
+        prompt.hidden_system_context()
+    }
 }

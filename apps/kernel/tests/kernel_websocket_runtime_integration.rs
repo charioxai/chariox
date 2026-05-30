@@ -24,6 +24,7 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.session_history_read_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
@@ -153,6 +154,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.provider_catalog_read_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
@@ -271,6 +273,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.provider_process_list_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
@@ -392,6 +395,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.provider_runtime_init_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
@@ -527,6 +531,7 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -853,6 +858,7 @@ async fn kernel_websocket_reports_async_provider_launch_failure() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -963,6 +969,7 @@ async fn kernel_websocket_replaces_starting_provider_launch() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.provider_runtime_init_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
@@ -1053,6 +1060,7 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

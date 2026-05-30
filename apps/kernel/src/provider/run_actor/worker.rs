@@ -45,6 +45,7 @@ pub(super) enum ProviderRunActorCommand {
     Terminate {
         provider_run_id: String,
         run: RuntimeProviderRun,
+        completion: mpsc::Sender<()>,
     },
     SyncSelection {
         provider_run_id: String,
@@ -124,6 +125,7 @@ impl ProviderRunWorkerDeps {
                     ProviderRunActorCommand::Terminate {
                         provider_run_id,
                         run,
+                        completion,
                     } => {
                         if let Err(error) = execute_terminate_command(&self.runtime_registry, run) {
                             crate::logging::error_with_fields(
@@ -142,6 +144,7 @@ impl ProviderRunWorkerDeps {
                             .remove(&provider_run_id);
                         self.runtime_registry
                             .clear_runtime_state(&provider_run_id, true);
+                        let _ = completion.send(());
                         break;
                     }
                     ProviderRunActorCommand::SyncSelection {

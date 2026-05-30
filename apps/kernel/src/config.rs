@@ -170,11 +170,16 @@ impl DaemonConfig {
         config.user_config.state.path = Some(
             std::env::temp_dir()
                 .join("arroba-tests")
-                .join(format!("kernel-state-{}-{}.db", std::process::id(), index))
+                .join(format!("kernel-state-{}-{}", std::process::id(), index))
+                .join("state.db")
                 .display()
                 .to_string(),
         );
         config.user_config.workflow.max_queues_per_workflow = Some(10);
+        config.user_config.providers.workspace_live_sync =
+            crate::config::WorkspaceLiveSyncConfig::from_mode(
+                crate::config::WorkspaceLiveSyncMode::Unrestricted,
+            );
         config
     }
 
@@ -849,6 +854,14 @@ service = "arroba-test"
         assert!(config.provider_requires_workspace_live_sync("opencode"));
         assert!(config.provider_requires_workspace_live_sync("default"));
         assert!(!config.provider_tracks_workspace_live_sync("codex"));
+    }
+
+    #[test]
+    fn test_config_defaults_to_unrestricted_workspace_live_sync() {
+        let config = DaemonConfig::for_tests();
+
+        assert!(!config.provider_requires_workspace_live_sync("dev-stub"));
+        assert!(!config.provider_tracks_workspace_live_sync("dev-stub"));
     }
 
     #[test]

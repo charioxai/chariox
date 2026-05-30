@@ -20,6 +20,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -118,6 +119,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -287,6 +289,7 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.kernel_websocket_queue_capacity = 4;
     config.kernel_websocket_write_delay_ms = 200;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
@@ -402,6 +405,7 @@ async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained(
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -503,6 +507,7 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -568,6 +573,7 @@ async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -650,6 +656,7 @@ async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -731,6 +738,7 @@ async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
     let mut config = DaemonConfig::for_tests();
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
     config.kernel_websocket_queue_capacity = 64;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
