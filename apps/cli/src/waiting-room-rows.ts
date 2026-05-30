@@ -8,6 +8,10 @@ import {
   waitingRoomSessions,
   waitingRoomSessionTitleWidth,
 } from "./waiting-room-session-rows.js"
+import {
+  waitingRoomSliceRows,
+  waitingRoomSliceTitleWidth,
+} from "./waiting-room-slice-rows.js"
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import {
   formatWaitingRoomTerminalTitle,
@@ -38,6 +42,7 @@ export function waitingRoomRows(
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
   const titleWidth = Math.max(
     waitingRoomSessionTitleWidth(sessions),
+    waitingRoomSliceTitleWidth(remote),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
   )
@@ -55,6 +60,7 @@ export function waitingRoomRows(
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),
+    ...waitingRoomSliceRows(remote, titleWidth),
     ...waitingRoomTerminalRows(state, remote, titleWidth),
     {
       id: "theme",
