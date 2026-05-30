@@ -11,6 +11,7 @@ export type WaitingRoomFocus =
   | "worktree"
   | "collaborators"
   | "slice"
+  | "slice-display"
   | "theme"
   | "join-sessions"
   | "session"
@@ -37,6 +38,7 @@ export type WaitingRoomState = {
   terminalIndex: number
   worktreeSelectionId: string
   sliceSelectionId?: string
+  sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
   modelId: string
   effort: string

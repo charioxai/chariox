@@ -33,6 +33,7 @@ test("waiting room start rows render configuration labels and join action", () =
     "worktree",
     "collaborators",
     "slice",
+    "slice-display",
     "join-header",
   ])
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
@@ -41,6 +42,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (0 agents)")
+  assert.equal(rows.find((row) => row.id === "slice-display")?.value, "new slices only")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })

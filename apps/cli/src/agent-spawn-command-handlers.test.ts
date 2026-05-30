@@ -47,7 +47,7 @@ test("agent spawn command count inherits session defaults and launches each agen
   assert.equal(flashedMessage, "spawned 2 agents from session defaults")
 })
 
-test("agent spawn command can create and start a new headed slice", async () => {
+test("agent spawn command can create and start a new slice", async () => {
   let currentSession = session()
   const calls: string[] = []
   let flashedMessage = ""
@@ -97,11 +97,11 @@ test("agent spawn command can create and start a new headed slice", async () => 
       return { agent: nextAgent, session: currentSession }
     },
     refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
-  }, ["builder", "codex/gpt-5.4", "--slice", "new:headed", "--worktree", "/workspace-feature", "--branch", "feature/login"])
+  }, ["builder", "codex/gpt-5.4", "--slice", "new", "--worktree", "/workspace-feature", "--branch", "feature/login"])
 
   assert.deepEqual(calls, [
     "prepare:/workspace-feature:feature/login",
-    "create:headed:/workspace-feature",
+    "create:headless:/workspace-feature",
     "start:slice-created",
     "spawn:builder:/workspace-feature:slice-created",
     "run:null",

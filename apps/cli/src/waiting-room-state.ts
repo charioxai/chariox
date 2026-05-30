@@ -49,6 +49,7 @@ export function createWaitingRoomState(
       terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
       sliceSelectionId: "none",
+      sliceDisplayMode: "headless",
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
@@ -68,7 +69,7 @@ export function normalizeWaitingRoomState(
   catalog: ProviderCatalog,
   themeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY,
   remote: WaitingRoomRemoteState = {},
-) {
+): WaitingRoomState {
   const visibleSessions = waitingRoomSessions(sessions)
   const previewSessions = waitingRoomPreviewSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
@@ -103,10 +104,15 @@ export function normalizeWaitingRoomState(
     terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
     sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
+    sliceDisplayMode: normalizeSliceDisplayMode(state.sliceDisplayMode),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
     themeId: normalizeThemeName(state.themeId, themeRegistry),
   }
+}
+
+function normalizeSliceDisplayMode(value: WaitingRoomState["sliceDisplayMode"]): NonNullable<WaitingRoomState["sliceDisplayMode"]> {
+  return value === "headed" ? "headed" : "headless"
 }
 
 function normalizeBackendProvider(value: string): BackendProviderId {

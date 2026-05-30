@@ -14,7 +14,7 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "sliceSelectionId">,
+  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "sliceSelectionId" | "sliceDisplayMode">,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -122,6 +122,16 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "slice",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "slice-display",
+      title: "Slice Display",
+      value: state.sliceSelectionId === "new" ? state.sliceDisplayMode ?? "headless" : "new slices only",
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "slice-display",
       selectable: true,
       scrollbar: "",
     },

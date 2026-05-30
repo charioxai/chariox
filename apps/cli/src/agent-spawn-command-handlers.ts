@@ -165,11 +165,8 @@ async function prepareSliceForSpawn(
 }
 
 function sliceCreateMode(value: string): { displayMode: "headless" | "headed" } | null {
-  if (value === "new" || value === "new:headless") {
+  if (value === "new") {
     return { displayMode: "headless" }
-  }
-  if (value === "new:headed") {
-    return { displayMode: "headed" }
   }
   return null
 }

@@ -68,7 +68,15 @@ test("waiting room focused value cycling updates local value selectors", () => {
     remote: { slices: [slice()] },
     normalizeState: (next) => next,
   })
-  assert.equal(sliceState.sliceSelectionId, "new:headless")
+  assert.equal(sliceState.sliceSelectionId, "new")
+
+  const sliceDisplayState = cycleWaitingRoomFocusedValue({ ...sliceState, focus: "slice-display" }, 1, {
+    catalog,
+    themeRegistry: DEFAULT_THEME_REGISTRY,
+    remote: { slices: [slice()] },
+    normalizeState: (next) => next,
+  })
+  assert.equal(sliceDisplayState.sliceDisplayMode, "headed")
 })
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

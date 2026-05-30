@@ -95,6 +95,13 @@ export function cycleWaitingRoomFocusedValue(
       ),
     }
   }
+  if (state.focus === "slice-display" && state.sliceSelectionId === "new") {
+    const sliceDisplayMode: NonNullable<WaitingRoomState["sliceDisplayMode"]> = state.sliceDisplayMode === "headed" ? "headless" : "headed"
+    return {
+      ...state,
+      sliceDisplayMode,
+    }
+  }
   return state
 }
 

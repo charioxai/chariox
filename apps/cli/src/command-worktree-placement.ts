@@ -115,7 +115,7 @@ export function parsePlacementOptions(
     if (arg === "--slice" && allowMachine) {
       const value = args[index + 1]
       if (!value || value.startsWith("--")) {
-        error = "usage: /agent spawn [alias] [model] --slice off|new|new:headed|new:headless|<slice-ref>"
+        error = "usage: /agent spawn [alias] [model] --slice off|new|<slice-ref>"
         break
       }
       sliceRef = value === "off" ? undefined : value
@@ -136,7 +136,7 @@ export function parsePlacementOptions(
   if (!error && machineRef && sliceRef) {
     error = "usage: /agent spawn uses either --machine or --slice, not both"
   }
-  const sliceCreatesPlacement = sliceRef === "new" || sliceRef === "new:headless" || sliceRef === "new:headed"
+  const sliceCreatesPlacement = sliceRef === "new"
   if (!error && sliceRef && !sliceCreatesPlacement && (directory || gitRequested)) {
     error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
   }
@@ -166,7 +166,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(args, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|new:headed|new:headless|<slice-ref>]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>]"
   }
   return {
     ...parsed,

@@ -51,7 +51,7 @@ export function waitingRoomChoice(
     sliceInventory: allSlices[state.sliceIndex ?? 0] ?? null,
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),
-    sliceCreate: selectedWaitingRoomSliceCreateMode(state.sliceSelectionId),
+    sliceCreate: selectedWaitingRoomSliceCreateMode(state.sliceSelectionId, state.sliceDisplayMode),
     providerId: state.providerId,
     model,
     effort: state.effort,
