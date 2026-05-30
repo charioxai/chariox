@@ -72,10 +72,15 @@ export function formatWaitingRoomSliceLabel(slice: SliceRecord) {
 export function formatWaitingRoomSliceOption(slice: SliceRecord) {
   const agents = slice.agent_ids?.length ?? 0
   const auth = (slice.provider_auth ?? [])
-    .map((entry) => entry.alias || entry.email || entry.account_id || entry.auth_type || entry.state)
+    .map(formatSliceAuthIdentity)
     .filter(Boolean)
     .join(",")
   return `${formatWaitingRoomSliceLabel(slice)} (${agents} agent${agents === 1 ? "" : "s"}${auth ? `, ${auth}` : ""})`
+}
+
+function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {
+  const identity = entry.email || entry.account_id || entry.auth_type || entry.state
+  return entry.alias && entry.alias !== identity ? `${entry.alias} (${identity})` : identity
 }
 
 export function cycleWaitingRoomSliceSelectionId(

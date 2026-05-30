@@ -61,6 +61,24 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
   assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "new:headed")
 })
 
+test("waiting room slice labels keep aliases and extracted auth identities visible", () => {
+  const slices = waitingRoomSlices({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        agent_ids: ["agent-1"],
+        provider_auth: [
+          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1" },
+          { provider: "claude", state: "authenticated", email: "user@example.com" },
+        ],
+      }),
+    ],
+  })
+
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (1 agent, work (acct-1),user@example.com)")
+})
+
 test("waiting room slices filter reusable slices by selected worktree", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",
