@@ -276,7 +276,7 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.ended", &session, "runtime_end_session")
             .await?;
-        self.destroy_session_attached_slices(session.id()).await?;
+        self.detach_session_slices(&session).await?;
         Ok(session)
     }
 
@@ -298,15 +298,27 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
             .await?;
-        self.destroy_session_attached_slices(session.id()).await?;
+        self.detach_session_slices(&session).await?;
         Ok(session)
     }
 
-    async fn destroy_session_attached_slices(&self, session_id: &str) -> Result<(), DaemonError> {
+    async fn detach_session_slices(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let session_id = session.id();
         let attached_slices = self.owned.slice_store.list_by_session(session_id);
         for slice in attached_slices {
+            let mut detached = slice;
+            for agent in session.agents() {
+                detached = self.owned.slice_store.detach_agent(
+                    &detached.id,
+                    agent.id(),
+                    crate::session::unix_epoch_ms(),
+                )?;
+            }
             let detached = self.owned.slice_store.detach_session(
-                &slice.id,
+                &detached.id,
                 session_id,
                 crate::session::unix_epoch_ms(),
             )?;

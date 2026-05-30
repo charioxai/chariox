@@ -234,6 +234,75 @@ async fn end_session_uses_session_lane_and_removes_lane_registration() {
 }
 
 #[tokio::test]
+async fn end_session_detaches_reusable_slice_agents() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new("workspace", "worktree")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let second_agent = spawn_test_agent(&mut app, &session_id, "second", "dev-stub");
+    let slice = app
+        .slices()
+        .create(
+            app.config().daemon_id.as_str(),
+            app.config().host_machine_id.as_str(),
+            crate::slice::CreateSliceInput {
+                name: "test-slice".to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                workspace_id: Some("workspace".to_string()),
+                worktree_id: Some("worktree".to_string()),
+                workspace_mount: Some("worktree".to_string()),
+                worker_kernel_ref: Some("slice:test-slice".to_string()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                now_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("slice should be created");
+    app.slices()
+        .attach_agent(
+            &slice.id,
+            &session_id,
+            first_agent.id(),
+            crate::session::unix_epoch_ms(),
+        )
+        .expect("first agent should attach");
+    app.slices()
+        .attach_agent(
+            &slice.id,
+            &session_id,
+            second_agent.id(),
+            crate::session::unix_epoch_ms(),
+        )
+        .expect("second agent should attach");
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_command = KernelCommand::from_local_request("cmd-end-slice", None, None, &end_request);
+
+    router
+        .dispatch(end_command, end_request)
+        .await
+        .expect("end session should detach slice agents");
+
+    let app_guard = app.lock().await;
+    let detached = app_guard
+        .slices()
+        .resolve(&slice.id)
+        .expect("slice should remain reusable");
+    assert!(detached.agent_ids.is_empty());
+    assert!(detached.session_ids.is_empty());
+}
+
+#[tokio::test]
 async fn delete_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

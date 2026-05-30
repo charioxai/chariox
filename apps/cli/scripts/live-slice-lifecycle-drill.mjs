@@ -52,6 +52,18 @@ async function assertDockerReady() {
   }
 }
 
+async function currentDockerHost() {
+  if (process.env.DOCKER_HOST?.trim()) return process.env.DOCKER_HOST
+  const result = await run('docker', ['context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}'])
+  if (result.code !== 0) return null
+  try {
+    const host = JSON.parse(result.stdout.trim())
+    return typeof host === 'string' && host.trim() ? host : null
+  } catch {
+    return null
+  }
+}
+
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
@@ -115,6 +127,12 @@ async function writeCodexAuth(home, accountId) {
 
 async function main() {
   await assertDockerReady()
+  const dockerHost = await currentDockerHost()
+  const agentDefaults = {
+    provider: 'dev-stub',
+    model: 'slice-drill-model',
+    effort: 'low',
+  }
 
   const root = path.join(repoRoot, 'target', 'live-slice-lifecycle-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
@@ -134,6 +152,7 @@ async function main() {
     ARROBA_CODEX_PORT: String(kernelPort + 2001),
     ARROBA_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
     ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
   }
 
   let daemon = null
@@ -194,7 +213,7 @@ async function main() {
     assert(firstAfterSecondImport.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'first slice should keep its original codex account summary')
     log('auth-independent', { first: created.id, second: secondSlice.id })
 
-    const session = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-session', undefined, created.id)), 'SessionCreated').session
+    const session = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-session', agentDefaults, created.id)), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `slice-lifecycle-drill-${process.pid}`))
     const spawned = variant(await client.send(spawnAgentRequest(
       session.id,
@@ -210,7 +229,7 @@ async function main() {
       created.id,
     )), 'AgentSpawned').agent
     assert(spawned.id, 'extra slice agent should be spawned')
-    const secondSession = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-second-session', undefined, created.id)), 'SessionCreated').session
+    const secondSession = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-second-session', agentDefaults, created.id)), 'SessionCreated').session
     const withAgent = variant(await client.send(getSliceRequest(created.id)), 'Slice').slice
     assert((withAgent.agent_ids?.length ?? 0) >= 3, 'slice should track the initial, extra, and second-session agents')
     assert((withAgent.session_ids?.length ?? 0) >= 2, 'slice should track reuse by multiple sessions')
