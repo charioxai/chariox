@@ -77,8 +77,25 @@ function formatSliceLabel(slice: SliceRecord): string {
 function formatSlice(slice: SliceRecord): string {
   const display = slice.display_endpoint?.url ? ` screen=${slice.display_endpoint.url}` : ""
   const providers = (slice.providers ?? []).join(",") || "-"
+  const auth = (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "-"
   const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
-  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} backend=${slice.backend} os=${slice.os} worker=${worker} providers=${providers}${slice.workspace_mount ? ` mount=${slice.workspace_mount}` : ""}${display}`
+  const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
+  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} providers=${providers} auth=${auth}${display}`
+}
+
+function formatSliceProviderAuth(auth: NonNullable<SliceRecord["provider_auth"]>[number]): string {
+  const identity = auth.alias
+    || auth.email
+    || auth.account_id
+    || auth.auth_type
+    || auth.state
+  const organization = auth.organization_name || auth.organization_id
+  const subscription = auth.subscription_type
+  return [
+    `${auth.provider}:${identity}`,
+    organization ? `org=${organization}` : "",
+    subscription ? `plan=${subscription}` : "",
+  ].filter(Boolean).join("/")
 }
 
 async function resolveFocusedSliceRef(deps: SliceCommandHandlerDeps): Promise<string> {
