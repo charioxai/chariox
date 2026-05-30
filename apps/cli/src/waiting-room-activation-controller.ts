@@ -7,8 +7,10 @@ import type { SessionListEntry } from "./sessions.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomControlActivationDecision,
+  deriveWaitingRoomCreateSessionDecision,
   type WaitingRoomActivationDecision,
   type WaitingRoomControlActivationDecision,
+  type WaitingRoomCreateSessionDecision,
   type WaitingRoomLaunchConfig,
 } from "./waiting-room-controller.js"
 import type {
@@ -55,6 +57,7 @@ export type WaitingRoomActivationControllerDeps = {
   formatError: (error: unknown) => string
   deriveControlDecision?: typeof deriveWaitingRoomControlActivationDecision
   deriveActivationDecision?: typeof deriveWaitingRoomActivationDecision
+  deriveCreateSessionDecision?: typeof deriveWaitingRoomCreateSessionDecision
 }
 
 export function createWaitingRoomActivationController(
@@ -62,6 +65,7 @@ export function createWaitingRoomActivationController(
 ) {
   const deriveControlDecision = deps.deriveControlDecision ?? deriveWaitingRoomControlActivationDecision
   const deriveActivationDecision = deps.deriveActivationDecision ?? deriveWaitingRoomActivationDecision
+  const deriveCreateSessionDecision = deps.deriveCreateSessionDecision ?? deriveWaitingRoomCreateSessionDecision
 
   const activate = async () => {
     try {
@@ -94,6 +98,29 @@ export function createWaitingRoomActivationController(
         error: deps.formatError(error),
       })
       deps.flashFooter(deps.formatError(error), "error")
+    }
+  }
+
+  const startSessionFromWaitingRoomDefaults = async () => {
+    try {
+      if (!deps.isKernelConnected()) {
+        await deps.connectKernel()
+      }
+
+      const decision = deriveCreateSessionDecision({
+        state: deps.getWaitingRoomState(),
+        catalog: deps.getProviderCatalog(),
+        currentProvider: deps.getCurrentProvider(),
+        currentModel: deps.getCurrentModel(),
+        remote: deps.getRemoteState(),
+      })
+      return await applyCreateSessionDecision(decision)
+    } catch (error) {
+      deps.warn("waiting room prompt bootstrap failed", {
+        error: deps.formatError(error),
+      })
+      deps.flashFooter(deps.formatError(error), "error")
+      throw error
     }
   }
 
@@ -130,21 +157,7 @@ export function createWaitingRoomActivationController(
     decision: WaitingRoomActivationDecision,
   ) => {
     if (decision.action === "create") {
-      const session = await deps.createSession(
-        deps.getWorkspaceTarget(),
-        deps.getWorktreeTarget(),
-        {
-          provider: decision.launch.provider,
-          model: decision.launch.model,
-          effort: decision.launch.effort,
-          account_profile: deps.getAccountProfile() ?? null,
-          execution_mode: "build",
-          permission_level: "yolo",
-          ...(decision.launch.sliceRef ? { sliceRef: decision.launch.sliceRef } : {}),
-        },
-      )
-      await deps.attachBinding(session, true, decision.launch)
-      deps.flashFooter(`created session ${session.alias ?? session.id}`, "info")
+      await createAndAttachSession(decision.launch)
       return
     }
     if (decision.action === "join") {
@@ -157,7 +170,37 @@ export function createWaitingRoomActivationController(
     }
   }
 
+  const applyCreateSessionDecision = async (
+    decision: WaitingRoomCreateSessionDecision,
+  ) => {
+    if (decision.action === "error") {
+      deps.flashFooter(decision.message, "error")
+      throw new Error(decision.message)
+    }
+    return await createAndAttachSession(decision.launch)
+  }
+
+  const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
+    const session = await deps.createSession(
+      deps.getWorkspaceTarget(),
+      deps.getWorktreeTarget(),
+      {
+        provider: launch.provider,
+        model: launch.model,
+        effort: launch.effort,
+        account_profile: deps.getAccountProfile() ?? null,
+        execution_mode: "build",
+        permission_level: "yolo",
+        ...(launch.sliceRef ? { sliceRef: launch.sliceRef } : {}),
+      },
+    )
+    await deps.attachBinding(session, true, launch)
+    deps.flashFooter(`created session ${session.alias ?? session.id}`, "info")
+    return session
+  }
+
   return {
     activate,
+    startSessionFromWaitingRoomDefaults,
   }
 }

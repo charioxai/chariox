@@ -11,6 +11,7 @@ import {
 import type {
   WaitingRoomActivationDecision,
   WaitingRoomControlActivationDecision,
+  WaitingRoomCreateSessionDecision,
   WaitingRoomLaunchConfig,
 } from "./waiting-room-controller.js"
 import type {
@@ -92,6 +93,35 @@ test("waiting room activation creates and attaches sessions with launch defaults
   ])
 })
 
+test("waiting room prompt bootstrap creates from launch defaults without using focused activation", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "medium",
+  }
+  const harness = createHarness({
+    kernelConnected: false,
+    controlDecision: { action: "cloud" },
+    activationDecision: { action: "none" },
+    createSessionDecision: { action: "create", launch },
+  })
+
+  const session = await harness.controller.startSessionFromWaitingRoomDefaults()
+
+  assert.equal(session.id, "created-session")
+  assert.deepEqual(harness.calls, [
+    "connectKernel",
+    "createSession",
+    "attachBinding",
+    "flash:info:created session Review",
+  ])
+  assert.deepEqual(harness.attachedSessions, [{
+    sessionId: "created-session",
+    createdSession: true,
+    launch,
+  }])
+})
+
 test("waiting room activation attaches selected sessions", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -151,6 +181,7 @@ function createHarness(options: {
   kernelConnected?: boolean
   controlDecision: WaitingRoomControlActivationDecision
   activationDecision?: WaitingRoomActivationDecision
+  createSessionDecision?: WaitingRoomCreateSessionDecision
   accountProfile?: string | null
   createError?: Error
 }) {
@@ -222,6 +253,7 @@ function createHarness(options: {
     formatError: (error) => error instanceof Error ? error.message : String(error),
     deriveControlDecision: () => options.controlDecision,
     deriveActivationDecision: () => options.activationDecision ?? { action: "none" },
+    deriveCreateSessionDecision: () => options.createSessionDecision ?? { action: "error", message: "not configured" },
   })
   return {
     get promptText() {

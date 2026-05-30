@@ -1,5 +1,6 @@
 import { SESSION_NEW_ERROR_HINT } from "./sessions.js"
 import { isWorkspaceShellCommand } from "./workspace-shell.js"
+import type { WaitingRoomPromptBootstrapResult } from "./waiting-room-prompt-bootstrap-controller.js"
 import { isWorkflowCommandInput } from "./workflow-prompt-state.js"
 
 export type PromptSubmitCoordinatorDeps = {
@@ -17,7 +18,9 @@ export type PromptSubmitCoordinatorDeps = {
       trimmedPrompt: string
     },
   ) => Promise<boolean>
+  submitDetachedSlashCommand?: (rawPrompt: string) => Promise<boolean>
   submitProviderNamespacePrompt: (rawPrompt: string) => Promise<boolean>
+  bootstrapDetachedPrompt?: (rawPrompt: string) => Promise<WaitingRoomPromptBootstrapResult>
   isAttached: () => boolean
   submitWorkflowPrompt: (rawPrompt: string) => Promise<void>
   submitNormalPrompt: (rawPrompt: string) => Promise<void>
@@ -64,6 +67,9 @@ export function createPromptSubmitCoordinator(
         return
       }
       const allowSlashCommandSubmission = !deps.workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
+      if (!deps.isAttached() && await deps.submitDetachedSlashCommand?.(rawPrompt)) {
+        return
+      }
       const handledCommand = await deps.submitSlashCommand(rawPrompt, {
         allowSlashCommandSubmission,
         trimmedPrompt: trimmed,
@@ -75,6 +81,22 @@ export function createPromptSubmitCoordinator(
         return
       }
       if (!deps.isAttached()) {
+        if (trimmed.startsWith("/")) {
+          deps.flashFooter("start or join a session first", "error")
+          return
+        }
+        if (deps.getPendingAttachmentCount() > 0) {
+          deps.flashFooter("attachments require an open session", "error")
+          return
+        }
+        const bootstrapResult = await deps.bootstrapDetachedPrompt?.(rawPrompt) ?? "unhandled"
+        if (bootstrapResult === "handled") {
+          return
+        }
+        if (bootstrapResult === "bootstrapped" && deps.isAttached()) {
+          await deps.submitNormalPrompt(rawPrompt)
+          return
+        }
         deps.flashFooter(SESSION_NEW_ERROR_HINT, "error")
         deps.clearPromptText()
         return

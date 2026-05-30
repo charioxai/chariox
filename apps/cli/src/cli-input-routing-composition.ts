@@ -21,6 +21,8 @@ import { getSessionState } from "./session-api.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
+import { createWaitingRoomPromptBootstrapController } from "./waiting-room-prompt-bootstrap-controller.js"
+import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
 
@@ -167,6 +169,7 @@ export type CliInputRoutingCompositionDeps = {
   setWaitingRoomState: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
   activateWaitingRoom: AnyFn
+  startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
   toggleWorkspaceScreen: AnyFn
   workflowScreenActive: AnyFn
@@ -345,6 +348,14 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     formatError: deps.formatError,
   })
 
+  const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
+    isAttached: deps.isAttached,
+    startSessionFromWaitingRoomDefaults: () => deps.startSessionFromWaitingRoomDefaults(),
+    flashFooter: deps.flashFooter,
+    formatError: deps.formatError,
+    warn: (message, fields) => deps.appLogger?.warn(message, fields),
+  })
+
   const promptSubmitCoordinator = createPromptSubmitCoordinator({
     getPromptText: deps.promptInputRefController.plainText,
     ensureBackgroundPollersStarted: () => deps.ensureBackgroundPollersStarted(),
@@ -355,9 +366,16 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       await submitWorkspaceShellCommand(rawPrompt)
     },
     workflowNodeInstructionsEditorOpen: () => Boolean(deps.workflowNodeInstructionsEditor()),
+    submitDetachedSlashCommand: (rawPrompt) =>
+      handleWaitingRoomSlashCommand(rawPrompt, {
+        clearCommandCenter: deps.clearCommandCenter,
+        clearPromptText: () => deps.promptTextController.clear(),
+        flashFooter: deps.flashFooter,
+      }),
     submitSlashCommand: async (rawPrompt, submitOptions) =>
       Boolean(await slashCommandSubmitController.submit(rawPrompt, submitOptions)),
     submitProviderNamespacePrompt: (rawPrompt) => providerNamespaceSubmitController.submit(rawPrompt),
+    bootstrapDetachedPrompt: () => waitingRoomPromptBootstrapController.bootstrap(),
     isAttached: deps.isAttached,
     submitWorkflowPrompt: (rawPrompt) => workflowPromptSubmitController.submit(rawPrompt),
     submitNormalPrompt: (rawPrompt) => normalPromptSubmitController.submit(rawPrompt),

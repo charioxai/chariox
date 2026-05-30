@@ -522,6 +522,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     reconcileWaitingRoom,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
+    startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
     client,
@@ -1376,6 +1377,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWaitingRoomState,
     applyWaitingRoomSessionLifecycleAction,
     activateWaitingRoom,
+    startSessionFromWaitingRoomDefaults,
     handleSessionBrowserKey,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,

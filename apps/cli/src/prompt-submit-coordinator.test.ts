@@ -97,6 +97,63 @@ test("prompt submit coordinator reports detached normal prompts", async () => {
   assert.equal(harness.clearCount(), 1)
 })
 
+test("prompt submit coordinator bootstraps detached waiting-room prompts once", async () => {
+  let attached = false
+  const harness = createHarness({
+    promptText: "hello",
+    attached: () => attached,
+    bootstrapDetachedPrompt: async () => {
+      attached = true
+      return "bootstrapped"
+    },
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello", "normal:hello"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator keeps detached prompt draft when bootstrap handles failure", async () => {
+  const harness = createHarness({
+    promptText: "hello",
+    attached: false,
+    bootstrapDetachedPrompt: async () => "handled",
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator blocks detached attachments without bootstrapping", async () => {
+  const harness = createHarness({
+    promptText: "hello",
+    attached: false,
+    pendingAttachmentCount: 1,
+    bootstrapDetachedPrompt: async () => "bootstrapped",
+  })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.footerMessages().at(-1)?.message, "attachments require an open session")
+  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator lets detached slash policy stop routing", async () => {
+  const harness = createHarness({
+    promptText: "/agent focus 1",
+    attached: false,
+    detachedSlashHandled: true,
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "detached-slash:/agent focus 1"])
+})
+
 test("prompt submit coordinator routes attached workflow and normal prompts", async () => {
   const workflowHarness = createHarness({ promptText: "run workflow", workflowScreen: true })
   await workflowHarness.coordinator.submit()
@@ -114,7 +171,9 @@ function createHarness(options: {
   instructionsEditorOpen?: boolean
   slashHandled?: boolean
   providerHandled?: boolean
-  attached?: boolean
+  attached?: boolean | (() => boolean)
+  detachedSlashHandled?: boolean
+  bootstrapDetachedPrompt?: PromptSubmitCoordinatorDeps["bootstrapDetachedPrompt"]
   submitWorkspaceShellCommand?: PromptSubmitCoordinatorDeps["submitWorkspaceShellCommand"]
 } = {}) {
   const calls: string[] = []
@@ -145,6 +204,13 @@ function createHarness(options: {
       }
     },
     workflowNodeInstructionsEditorOpen: () => options.instructionsEditorOpen ?? false,
+    submitDetachedSlashCommand: async (rawPrompt) => {
+      if (options.detachedSlashHandled === undefined) {
+        return false
+      }
+      calls.push(`detached-slash:${rawPrompt}`)
+      return options.detachedSlashHandled
+    },
     submitSlashCommand: async (rawPrompt, submitOptions) => {
       slashCalls.push({ rawPrompt, ...submitOptions })
       calls.push(`slash:${rawPrompt}`)
@@ -154,7 +220,11 @@ function createHarness(options: {
       calls.push(`provider:${rawPrompt}`)
       return options.providerHandled ?? false
     },
-    isAttached: () => options.attached ?? true,
+    bootstrapDetachedPrompt: async (rawPrompt) => {
+      calls.push(`bootstrap:${rawPrompt}`)
+      return await options.bootstrapDetachedPrompt?.(rawPrompt) ?? "unhandled"
+    },
+    isAttached: () => typeof options.attached === "function" ? options.attached() : options.attached ?? true,
     submitWorkflowPrompt: async (rawPrompt) => {
       calls.push(`workflow:${rawPrompt}`)
     },

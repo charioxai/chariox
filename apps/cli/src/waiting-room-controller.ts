@@ -46,6 +46,10 @@ export type WaitingRoomActivationDecision =
   | { action: "error"; message: string }
   | { action: "none" }
 
+export type WaitingRoomCreateSessionDecision =
+  | { action: "create"; launch: WaitingRoomLaunchConfig }
+  | { action: "error"; message: string }
+
 export type WaitingRoomControlActivationDecision =
   | { action: "cloud" }
   | { action: "stage-command"; command: string; message: string }
@@ -270,6 +274,29 @@ export function deriveWaitingRoomActivationDecision(options: {
     action: "join",
     session: choice.session,
     launch,
+  }
+}
+
+export function deriveWaitingRoomCreateSessionDecision(options: {
+  state: WaitingRoomState
+  catalog: ProviderCatalog
+  currentProvider: BackendProviderId
+  currentModel: string
+  remote?: WaitingRoomRemoteState
+}): WaitingRoomCreateSessionDecision {
+  const choice = waitingRoomChoice(options.state, [], options.catalog, options.remote)
+  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+  if (!worktreeSelection.ok) {
+    return { action: "error", message: worktreeSelection.message }
+  }
+  return {
+    action: "create",
+    launch: {
+      provider: choice.providerId ?? options.currentProvider,
+      model: choice.model?.id ?? options.currentModel,
+      effort: choice.effort,
+      ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
+    },
   }
 }
 

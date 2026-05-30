@@ -214,6 +214,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     formatError: deps.formatError,
   })
   const activateWaitingRoom = waitingRoomActivationController.activate
+  const startSessionFromWaitingRoomDefaults = waitingRoomActivationController.startSessionFromWaitingRoomDefaults
 
   const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
   const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
@@ -319,6 +320,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     reconcileWaitingRoom,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
+    startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   }
 }
