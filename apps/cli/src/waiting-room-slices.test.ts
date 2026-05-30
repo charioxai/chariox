@@ -25,6 +25,8 @@ test("waiting room slices sort by display label and project options", () => {
   assert.deepEqual(slices.map((entry) => formatWaitingRoomSliceLabel(entry)), ["beta", "slice-a", "zeta"])
   assert.deepEqual(waitingRoomSliceOptions(slices).map((option) => option.id), [
     "none",
+    "new:headless",
+    "new:headed",
     "slice-b",
     "slice-a",
     "slice-z",
@@ -51,8 +53,11 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
   assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "None")
-  assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "slice-1")
-  assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "none")
+  assert.equal(formatWaitingRoomSliceSelection("new:headed", slices), "New headed")
+  assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new:headless")
+  assert.equal(cycleWaitingRoomSliceSelectionId("new:headless", slices, 1), "new:headed")
+  assert.equal(cycleWaitingRoomSliceSelectionId("new:headed", slices, 1), "slice-1")
+  assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "new:headed")
 })
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

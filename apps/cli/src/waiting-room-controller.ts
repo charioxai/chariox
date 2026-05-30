@@ -30,6 +30,7 @@ export type WaitingRoomLaunchConfig = {
   model: string
   effort: string
   sliceRef?: string | null
+  sliceCreate?: { displayMode: "headless" | "headed" } | null
 }
 
 export type WaitingRoomStateUpdate = {
@@ -249,6 +250,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
+    ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
 
   if (options.state.focus === "join-sessions") {
@@ -296,6 +298,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
       model: choice.model?.id ?? options.currentModel,
       effort: choice.effort,
       ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
+      ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
     },
   }
 }

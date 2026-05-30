@@ -9,14 +9,16 @@ export function waitingRoomSlices(remote: { slices?: SliceRecord[] } = {}) {
 export function waitingRoomSliceOptions(slices: SliceRecord[]) {
   return [
     { id: "none", slice: null },
+    { id: "new:headless", slice: null },
+    { id: "new:headed", slice: null },
     ...slices.map((slice) => ({ id: slice.id, slice })),
   ]
 }
 
 export function normalizeWaitingRoomSliceSelectionId(selectionId: string | null | undefined, slices: SliceRecord[]) {
   const normalized = selectionId?.trim() || "none"
-  if (normalized === "none") {
-    return "none"
+  if (normalized === "none" || normalized === "new:headless" || normalized === "new:headed") {
+    return normalized
   }
   return waitingRoomSliceOptions(slices).some((option) => option.id === normalized)
     ? normalized
@@ -24,7 +26,7 @@ export function normalizeWaitingRoomSliceSelectionId(selectionId: string | null 
 }
 
 export function waitingRoomSelectedSlice(selectionId: string | null | undefined, slices: SliceRecord[]) {
-  if (selectionId === "none") {
+  if (selectionId === "none" || selectionId?.startsWith("new:")) {
     return null
   }
   return slices.find((slice) => slice.id === selectionId || slice.name === selectionId) ?? null
@@ -34,7 +36,19 @@ export function selectedWaitingRoomSliceRef(selectionId: string | null | undefin
   return waitingRoomSelectedSlice(selectionId, slices)?.id ?? null
 }
 
+export function selectedWaitingRoomSliceCreateMode(selectionId: string | null | undefined) {
+  return selectionId === "new:headless" || selectionId === "new:headed"
+    ? { displayMode: selectionId.slice("new:".length) as "headless" | "headed" }
+    : null
+}
+
 export function formatWaitingRoomSliceSelection(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  if (selectionId === "new:headless") {
+    return "New headless"
+  }
+  if (selectionId === "new:headed") {
+    return "New headed"
+  }
   const slice = waitingRoomSelectedSlice(selectionId, slices)
   return slice ? formatWaitingRoomSliceLabel(slice) : "None"
 }

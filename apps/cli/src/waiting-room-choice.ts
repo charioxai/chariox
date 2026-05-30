@@ -11,6 +11,7 @@ import {
 import { waitingRoomSessions } from "./waiting-room-session-rows.js"
 import {
   selectedWaitingRoomSliceRef,
+  selectedWaitingRoomSliceCreateMode,
   waitingRoomSelectedSlice,
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
@@ -47,6 +48,7 @@ export function waitingRoomChoice(
     terminal: terminals[state.terminalIndex] ?? null,
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),
+    sliceCreate: selectedWaitingRoomSliceCreateMode(state.sliceSelectionId),
     providerId: state.providerId,
     model,
     effort: state.effort,

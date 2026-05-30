@@ -19,6 +19,10 @@ import {
   createSession,
   deleteSessionByRef,
 } from "./session-api.js"
+import {
+  createSlice,
+  startSlice,
+} from "./slice-api.js"
 import { applyTheme } from "./theme.js"
 import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -208,6 +212,20 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
     }, launch.sliceRef),
+    createSlice: (options) => createSlice(deps.client, {
+      name: options.name,
+      displayMode: options.displayMode,
+      workspaceId: options.workspaceId,
+      worktreeId: options.worktreeId,
+      workspaceMount: options.workspaceMount,
+    }),
+    startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
+    updateSlices: (slice) => {
+      deps.setSlicesState((current: any[] = []) => [
+        slice,
+        ...current.filter((candidate) => candidate.id !== slice.id),
+      ])
+    },
     attachBinding: deps.attachBinding,
     flashFooter: (message, tone) => deps.flashFooter(message, tone),
     warn: (message, fields) => deps.appLogger?.warn(message, fields),

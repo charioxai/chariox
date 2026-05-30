@@ -38,10 +38,11 @@ export async function executeSliceCommand(
     }
     case "create": {
       if (!first) {
-        return { ok: false, message: "usage: slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>]" }
       }
       let workerKernelRef: string | undefined
       let displayUrl: string | undefined
+      let displayMode: "headless" | "headed" | undefined
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index]
         const value = rest[index + 1]
@@ -51,14 +52,19 @@ export async function executeSliceCommand(
         } else if (arg === "--display-url" && value && !value.startsWith("--")) {
           displayUrl = value
           index += 1
+        } else if (arg === "--headed" || arg === "--display") {
+          displayMode = "headed"
+        } else if (arg === "--headless" || arg === "--no-display") {
+          displayMode = "headless"
         } else if (arg?.startsWith("--")) {
           return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
         } else if (arg) {
-          return { ok: false, message: "usage: slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>]" }
         }
       }
       const response = await deps.client.send(createSliceRequest({
         name: first,
+        ...(displayMode ? { displayMode } : {}),
         workspaceMount: context.worktree,
         workerKernelRef: workerKernelRef ?? null,
         displayUrl: displayUrl ?? null,

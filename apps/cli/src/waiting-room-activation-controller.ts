@@ -1,4 +1,4 @@
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import type {
   BackendProviderId,
   ProviderCatalog,
@@ -47,6 +47,15 @@ export type WaitingRoomActivationControllerDeps = {
     worktreePath: string,
     launch: WaitingRoomCreateSessionLaunch,
   ) => Promise<Pick<RuntimeSession, "id"> & Partial<RuntimeSession>>
+  createSlice?: (options: {
+    name: string
+    displayMode: "headless" | "headed"
+    workspaceId: string
+    worktreeId: string
+    workspaceMount: string
+  }) => Promise<SliceRecord>
+  startSlice?: (sliceRef: string) => Promise<SliceRecord>
+  updateSlices?: (slice: SliceRecord) => void
   attachBinding: (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
@@ -181,6 +190,7 @@ export function createWaitingRoomActivationController(
   }
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
+    const sliceRef = await prepareSliceForLaunch(launch)
     const session = await deps.createSession(
       deps.getWorkspaceTarget(),
       deps.getWorktreeTarget(),
@@ -191,7 +201,7 @@ export function createWaitingRoomActivationController(
         account_profile: deps.getAccountProfile() ?? null,
         execution_mode: "build",
         permission_level: "yolo",
-        ...(launch.sliceRef ? { sliceRef: launch.sliceRef } : {}),
+        ...(sliceRef ? { sliceRef } : {}),
       },
     )
     await deps.attachBinding(session, true, launch)
@@ -199,8 +209,43 @@ export function createWaitingRoomActivationController(
     return session
   }
 
+  const prepareSliceForLaunch = async (launch: WaitingRoomLaunchConfig): Promise<string | null> => {
+    if (launch.sliceRef) {
+      if (deps.startSlice) {
+        const slice = await deps.startSlice(launch.sliceRef)
+        deps.updateSlices?.(slice)
+      }
+      return launch.sliceRef
+    }
+    if (!launch.sliceCreate) {
+      return null
+    }
+    if (!deps.createSlice || !deps.startSlice) {
+      throw new Error("slice creation is unavailable in this build")
+    }
+    const worktreePath = deps.getWorktreeTarget()
+    const workspacePath = deps.getWorkspaceTarget()
+    const slice = await deps.createSlice({
+      name: defaultSliceName(worktreePath),
+      displayMode: launch.sliceCreate.displayMode,
+      workspaceId: workspacePath,
+      worktreeId: worktreePath,
+      workspaceMount: worktreePath,
+    })
+    deps.updateSlices?.(slice)
+    const started = await deps.startSlice(slice.id)
+    deps.updateSlices?.(started)
+    return started.id
+  }
+
   return {
     activate,
     startSessionFromWaitingRoomDefaults,
   }
+}
+
+function defaultSliceName(worktreePath: string): string {
+  const leaf = worktreePath.split("/").filter(Boolean).pop() || "workspace"
+  const suffix = Date.now().toString(36).slice(-5)
+  return `${leaf}-slice-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, "-")
 }

@@ -86,8 +86,6 @@ export function normalizeWaitingRoomState(
         ? "relay"
         : terminals.length === 0 && state.focus === "terminal"
           ? "add-terminal"
-        : slices.length === 0 && state.focus === "slice"
-          ? "worktree"
         : state.focus
   return {
     ...state,

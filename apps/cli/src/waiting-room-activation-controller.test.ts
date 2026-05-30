@@ -86,7 +86,40 @@ test("waiting room activation creates and attaches sessions with launch defaults
     createdSession: true,
     launch,
   }])
-  assert.deepEqual(harness.calls.slice(-3), [
+  assert.deepEqual(harness.calls.slice(-4), [
+    "updateSlice:slice-1",
+    "createSession",
+    "attachBinding",
+    "flash:info:created session Review",
+  ])
+})
+
+test("waiting room activation creates and starts new headed slices before session creation", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "high",
+    sliceCreate: { displayMode: "headed" },
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch },
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.createdSlices, [{
+    displayMode: "headed",
+    workspaceId: "/workspace",
+    worktreeId: "/worktree",
+    workspaceMount: "/worktree",
+  }])
+  assert.equal(harness.createdLaunches[0]?.launch.sliceRef, "slice-created")
+  assert.deepEqual(harness.calls.slice(-7), [
+    "createSlice",
+    "updateSlice:slice-created",
+    "startSlice:slice-created",
+    "updateSlice:slice-created",
     "createSession",
     "attachBinding",
     "flash:info:created session Review",
@@ -196,6 +229,12 @@ function createHarness(options: {
     worktreePath: string
     launch: WaitingRoomCreateSessionLaunch
   }> = []
+  const createdSlices: Array<{
+    displayMode: "headless" | "headed"
+    workspaceId: string
+    worktreeId: string
+    workspaceMount: string
+  }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
   let promptText = ""
   const controller = createWaitingRoomActivationController({
@@ -239,6 +278,23 @@ function createHarness(options: {
       createdLaunches.push({ workspacePath, worktreePath, launch })
       return runtimeSession("created-session", "Review")
     },
+    createSlice: async (slice) => {
+      calls.push("createSlice")
+      createdSlices.push({
+        displayMode: slice.displayMode,
+        workspaceId: slice.workspaceId,
+        worktreeId: slice.worktreeId,
+        workspaceMount: slice.workspaceMount,
+      })
+      return sliceRecord("slice-created", slice.displayMode)
+    },
+    startSlice: async (sliceRef) => {
+      calls.push(`startSlice:${sliceRef}`)
+      return sliceRecord(sliceRef, "headed")
+    },
+    updateSlices: (slice) => {
+      calls.push(`updateSlice:${slice.id}`)
+    },
     attachBinding: async (session, createdSession, launch) => {
       calls.push("attachBinding")
       attachedSessions.push({ sessionId: session.id, createdSession, launch })
@@ -262,6 +318,7 @@ function createHarness(options: {
     calls,
     attachedSessions,
     createdLaunches,
+    createdSlices,
     warnings,
     controller,
   }
@@ -299,6 +356,30 @@ function runtimeSession(id: string, alias: string | null): RuntimeSession {
       values: {},
       updated_by_attachment_id: null,
     },
+  }
+}
+
+function sliceRecord(id: string, displayMode: "headless" | "headed") {
+  return {
+    id,
+    name: id,
+    owner_kernel_id: "kernel",
+    owner_machine_id: "machine",
+    backend: "local_docker" as const,
+    os: "linux",
+    display_mode: displayMode,
+    status: "running" as const,
+    workspace_mount: "/worktree",
+    workspace_id: "/workspace",
+    worktree_id: "/worktree",
+    worker_kernel_ref: `slice:${id}`,
+    worker_kernel_id: `kernel-${id}`,
+    worker_machine_id: `machine-${id}`,
+    providers: [],
+    provider_auth: [],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
   }
 }
 

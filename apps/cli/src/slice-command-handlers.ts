@@ -11,6 +11,7 @@ type SliceCreateOptions = {
   name: string
   backend?: "local_docker" | "ssh_docker"
   os?: string
+  displayMode?: "headless" | "headed"
   workspaceMount?: string | null
   workerKernelRef?: string | null
   displayUrl?: string | null
@@ -66,7 +67,7 @@ export async function handleSliceSlashCommand(
     await importSliceAuth(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -118,6 +119,7 @@ function parseSliceCreateOptions(
   workerKernelRef?: string | null
   displayUrl?: string | null
   workspaceMount?: string | null
+  displayMode?: "headless" | "headed"
   error?: string
 } {
   const name = args[0]
@@ -125,17 +127,26 @@ function parseSliceCreateOptions(
   let workerKernelRef: string | null | undefined
   let displayUrl: string | null | undefined
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
+  let displayMode: "headless" | "headed" | undefined
   let error: string | undefined
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index]
     const value = args[index + 1]
     if (arg === "--backend") {
       if (value !== "local_docker" && value !== "ssh_docker") {
-        error = "usage: /slice create <name> [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
+        error = "usage: /slice create <name> [--headed|--headless] [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
         break
       }
       backend = value
       index += 1
+      continue
+    }
+    if (arg === "--headed" || arg === "--display") {
+      displayMode = "headed"
+      continue
+    }
+    if (arg === "--headless" || arg === "--no-display") {
+      displayMode = "headless"
       continue
     }
     if (arg === "--kernel") {
@@ -174,6 +185,7 @@ function parseSliceCreateOptions(
     ...(workerKernelRef !== undefined ? { workerKernelRef } : {}),
     ...(displayUrl !== undefined ? { displayUrl } : {}),
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
+    ...(displayMode !== undefined ? { displayMode } : {}),
     ...(error !== undefined ? { error } : {}),
   }
 }
@@ -198,12 +210,13 @@ async function createSlice(
   }
   const parsed = parseSliceCreateOptions(deps, args)
   if (!parsed.name || parsed.error) {
-    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
+    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
     return
   }
   const createOptions = {
     name: parsed.name,
     ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
+    ...(parsed.displayMode !== undefined ? { displayMode: parsed.displayMode } : {}),
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),
     workerKernelRef: parsed.workerKernelRef ?? null,
     displayUrl: parsed.displayUrl ?? null,

@@ -23,6 +23,9 @@ export async function createSlice(
     name: string
     backend?: "local_docker" | "ssh_docker"
     os?: string
+    displayMode?: "headless" | "headed"
+    workspaceId?: string | null
+    worktreeId?: string | null
     workspaceMount?: string | null
     workerKernelRef?: string | null
     displayUrl?: string | null

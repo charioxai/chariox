@@ -68,7 +68,7 @@ test("waiting room focused value cycling updates local value selectors", () => {
     remote: { slices: [slice()] },
     normalizeState: (next) => next,
   })
-  assert.equal(sliceState.sliceSelectionId, "slice-1")
+  assert.equal(sliceState.sliceSelectionId, "new:headless")
 })
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

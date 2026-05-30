@@ -54,7 +54,6 @@ export function waitingRoomFocusTargets(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "provider" as const, sessionIndex: 0 },
@@ -63,7 +62,7 @@ export function waitingRoomFocusTargets(
     { focus: "workspace" as const, sessionIndex: 0 },
     { focus: "worktree" as const, sessionIndex: 0 },
     { focus: "collaborators" as const, sessionIndex: 0 },
-    ...(slices.length > 0 ? [{ focus: "slice" as const, sessionIndex: 0 }] : []),
+    { focus: "slice" as const, sessionIndex: 0 },
     ...(visibleSessions.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
     ...previewSessions.map((session) => ({
       focus: "session" as const,
