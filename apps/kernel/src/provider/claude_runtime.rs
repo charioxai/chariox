@@ -191,7 +191,10 @@ fn restart_claude_runtime(
         .or_else(|| run.resume_state().claude_session_id());
     let mut args = claude_launch_args_for_run(run, resume_session_id)?;
     if let Some(settings_file) = &state.settings_file {
-        args.extend(["--settings".to_string(), settings_file.display().to_string()]);
+        args.extend([
+            "--settings".to_string(),
+            settings_file.display().to_string(),
+        ]);
     }
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),

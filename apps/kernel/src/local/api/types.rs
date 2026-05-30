@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 71;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 72;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -145,6 +145,7 @@ pub enum LocalDaemonRequest {
     StopSlice(SliceRefRequest),
     DeleteSlice(SliceRefRequest),
     ImportSliceProviderAuth(ImportSliceProviderAuthRequest),
+    SetSliceProviderAuthAlias(SetSliceProviderAuthAliasRequest),
     GetSliceDisplayEndpoint(SliceRefRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
@@ -583,6 +584,11 @@ pub enum LocalDaemonResponse {
         slice: SliceRecord,
         provider: String,
         status: String,
+    },
+    SliceProviderAuthAliasSet {
+        slice: SliceRecord,
+        provider: String,
+        alias: Option<String>,
     },
     SliceDisplayEndpoint {
         endpoint: SliceDisplayEndpoint,

@@ -7,6 +7,7 @@ import {
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
+  setSliceProviderAuthAliasRequest,
   startSliceRequest,
   stopSliceRequest,
 } from "./ipc-requests.js"
@@ -62,6 +63,16 @@ export async function importSliceProviderAuth(
 ): Promise<{ slice: SliceRecord; provider: string; status: string }> {
   const response = await client.send<Record<string, unknown>>(importSliceProviderAuthRequest(sliceRef, provider))
   return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
+}
+
+export async function setSliceProviderAuthAlias(
+  client: LocalIpcClient,
+  sliceRef: string,
+  provider: string,
+  alias: string | null,
+): Promise<{ slice: SliceRecord; provider: string; alias: string | null }> {
+  const response = await client.send<Record<string, unknown>>(setSliceProviderAuthAliasRequest(sliceRef, provider, alias))
+  return expectVariant<{ slice: SliceRecord; provider: string; alias: string | null }>(response, "SliceProviderAuthAliasSet")
 }
 
 export async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {

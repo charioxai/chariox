@@ -27,8 +27,8 @@ mod tests {
     use crate::app::KernelPreparedPromptSubmission;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, LocalDaemonRequest, LocalDaemonResponse,
-        test_support::LocalRouterTestHarness,
+        test_support::LocalRouterTestHarness, AttachToSessionRequest, LocalDaemonRequest,
+        LocalDaemonResponse,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{

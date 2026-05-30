@@ -9,6 +9,7 @@ import {
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
+  setSliceProviderAuthAliasRequest,
   startSliceRequest,
   stopSliceRequest,
 } from "./ipc-requests.js"
@@ -107,20 +108,39 @@ export async function executeSliceCommand(
       return { ok: true, message: endpoint.url, data: { endpoint } }
     }
     case "auth": {
-      if (first !== "import") {
-        return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+      if (first === "import") {
+        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = rest.length > 1 ? rest[1] : rest[0]
+        if (!provider) {
+          return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+        }
+        const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider))
+        const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
+        return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
       }
-      const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
-      const provider = rest.length > 1 ? rest[1] : rest[0]
-      if (!provider) {
-        return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+      if (first === "alias") {
+        const hasExplicitSlice = rest.length >= 3
+        const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = hasExplicitSlice ? rest[1] : rest[0]
+        const aliasValue = hasExplicitSlice ? rest.slice(2).join(" ") : rest.slice(1).join(" ")
+        if (!provider || !aliasValue) {
+          return { ok: false, message: "usage: slice auth alias [slice-ref] <provider> <alias|clear>" }
+        }
+        const alias = aliasValue === "clear" ? null : aliasValue
+        const response = await deps.client.send(setSliceProviderAuthAliasRequest(sliceRef, provider, alias))
+        const payload = expectVariant<{ slice: SliceRecord; provider: string; alias: string | null }>(response, "SliceProviderAuthAliasSet")
+        return {
+          ok: true,
+          message: payload.alias
+            ? `slice ${formatSliceLabel(payload.slice)} auth alias ${payload.provider}: ${payload.alias}`
+            : `slice ${formatSliceLabel(payload.slice)} auth alias ${payload.provider}: cleared`,
+          data: payload,
+        }
       }
-      const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider))
-      const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
-      return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
+      return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|screen" }
+      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|auth alias|screen" }
   }
 }
 

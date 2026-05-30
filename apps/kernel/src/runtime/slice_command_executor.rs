@@ -3,7 +3,7 @@ use tokio::time::{sleep, Duration};
 use crate::error::DaemonError;
 use crate::local::{
     CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonRequest,
-    LocalDaemonResponse, SliceRefRequest,
+    LocalDaemonResponse, SetSliceProviderAuthAliasRequest, SliceRefRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -35,6 +35,9 @@ pub(crate) async fn execute_slice_request(
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
             execute_import_slice_provider_auth_request(runtime_state, config_projection, request)
                 .await
+        }
+        LocalDaemonRequest::SetSliceProviderAuthAlias(request) => {
+            execute_set_slice_provider_auth_alias_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
             execute_get_slice_display_endpoint_request(runtime_state, request).await
@@ -225,6 +228,22 @@ pub(crate) async fn execute_get_slice_display_endpoint_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
     Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+}
+
+pub(crate) async fn execute_set_slice_provider_auth_alias_request(
+    runtime_state: &KernelRuntimeState,
+    request: SetSliceProviderAuthAliasRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.set_slice_provider_auth_alias(
+        &request.slice_ref,
+        &request.provider,
+        request.alias.as_deref(),
+    )?;
+    Ok(LocalDaemonResponse::SliceProviderAuthAliasSet {
+        slice,
+        provider: request.provider,
+        alias: request.alias,
+    })
 }
 
 async fn discover_started_slice_worker(

@@ -730,7 +730,7 @@ pub fn generate_agent_ref() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentInstance, AgentSubstituteProfile, GridPosition, calculate_agent_layout};
+    use super::{calculate_agent_layout, AgentInstance, AgentSubstituteProfile, GridPosition};
 
     #[test]
     fn calculate_agent_layout_expands_past_six_agents() {

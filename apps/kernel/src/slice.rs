@@ -412,6 +412,49 @@ impl SliceStore {
         Ok(record.clone())
     }
 
+    pub fn set_provider_auth_alias(
+        &self,
+        slice_ref: &str,
+        provider: &str,
+        alias: Option<&str>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let provider = provider.trim();
+        if provider.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.provider_auth_alias",
+                message: "provider must not be empty".to_string(),
+            });
+        }
+        let alias = alias
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.provider_auth_alias",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        let Some(auth) = record
+            .provider_auth
+            .iter_mut()
+            .find(|auth| auth.provider == provider)
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.provider_auth_alias",
+                message: format!("slice `{}` has no `{provider}` auth summary", record.name),
+            });
+        };
+        auth.alias = alias;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
     pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
         let mut state = self.inner.lock().expect("slice store poisoned");
@@ -1044,6 +1087,41 @@ mod tests {
         assert_eq!(attached.session_ids, vec!["session-1", "session-2"]);
         assert_eq!(attached.agent_ids, vec!["agent-2"]);
         assert_eq!(store.list_by_session("session-2").len(), 1);
+    }
+
+    #[test]
+    fn slice_store_sets_and_clears_provider_auth_aliases() {
+        let store = SliceStore::default();
+        let mut input = create_input("dev");
+        input.provider_auth = vec![SliceProviderAuthSummary {
+            provider: "codex".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+            auth_type: Some("chatgpt".to_string()),
+            account_id: Some("acct-1".to_string()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: None,
+            source: "test".to_string(),
+        }];
+        let slice = store
+            .create("kernel-1", "machine-1", input)
+            .expect("slice should create");
+
+        let aliased = store
+            .set_provider_auth_alias(&slice.id, "codex", Some("Work"), 44)
+            .expect("alias should update");
+        assert_eq!(aliased.provider_auth[0].alias.as_deref(), Some("Work"));
+        assert_eq!(aliased.updated_at_ms, 44);
+
+        let cleared = store
+            .set_provider_auth_alias(&slice.id, "codex", Some("  "), 45)
+            .expect("empty alias should clear");
+        assert_eq!(cleared.provider_auth[0].alias, None);
+        assert!(store
+            .set_provider_auth_alias(&slice.id, "claude", Some("Personal"), 46)
+            .is_err());
     }
 
     #[test]

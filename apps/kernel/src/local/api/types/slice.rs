@@ -37,6 +37,14 @@ pub struct ImportSliceProviderAuthRequest {
     pub provider: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSliceProviderAuthAliasRequest {
+    pub slice_ref: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
 fn default_slice_os() -> String {
     "linux".to_string()
 }

@@ -240,6 +240,7 @@ function printUsage() {
     "  /slice create <n>     create a slice inventory entry (--headed|--headless)",
     "  /slice status [s]     show a slice, defaulting to focused agent slice",
     "  /slice screen [s]     open or print the slice screen URL",
+    "  /slice auth alias     set or clear a provider account alias",
     "  /config show          show the Arroba user config",
     "  /config keys          list settable config keys",
     "  /config schema        show config key metadata",

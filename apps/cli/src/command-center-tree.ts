@@ -310,6 +310,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "slice-delete", label: "delete", description: "Delete a slice", value: "/slice delete " },
       { id: "slice-screen", label: "screen", description: "Open or show the slice screen URL", value: "/slice screen " },
       { id: "slice-auth-import", label: "auth import", description: "Import host provider auth into a slice", value: "/slice auth import " },
+      { id: "slice-auth-alias", label: "auth alias", description: "Set or clear a provider account alias", value: "/slice auth alias " },
     ],
   },
   {

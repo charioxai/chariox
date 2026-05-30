@@ -163,10 +163,8 @@ impl KernelRuntimeOwnedState {
             );
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context = join_hidden_context(
-                started_next.hidden_system_context(),
-                &granted_skill_context,
-            );
+            let hidden_system_context =
+                join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
             if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.clone(),

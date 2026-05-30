@@ -498,13 +498,11 @@ mod tests {
         let state = test_runtime_state().await;
         let mut metadata = metadata("invoke-1");
         metadata.idempotency_key = Some("idem-1".to_string());
-        assert!(
-            state
-                .begin_home_extension_invocation(&metadata)
-                .await
-                .expect("first invocation should start")
-                .is_none()
-        );
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
         assert!(
             state
                 .complete_home_extension_invocation(
@@ -526,13 +524,11 @@ mod tests {
     async fn home_extension_invocation_rejects_completed_non_idempotent_duplicate() {
         let state = test_runtime_state().await;
         let metadata = metadata("invoke-2");
-        assert!(
-            state
-                .begin_home_extension_invocation(&metadata)
-                .await
-                .expect("first invocation should start")
-                .is_none()
-        );
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
         assert!(
             state
                 .complete_home_extension_invocation(&metadata, serde_json::json!({"ok": true}))
@@ -555,13 +551,11 @@ mod tests {
     async fn home_extension_invocation_rejects_in_flight_duplicate() {
         let state = test_runtime_state().await;
         let metadata = metadata("invoke-3");
-        assert!(
-            state
-                .begin_home_extension_invocation(&metadata)
-                .await
-                .expect("first invocation should start")
-                .is_none()
-        );
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
 
         let error = state
             .begin_home_extension_invocation(&metadata)
@@ -578,13 +572,11 @@ mod tests {
         let state = test_runtime_state().await;
         let mut metadata = metadata("invoke-4");
         metadata.idempotency_key = Some("idem-cancelled".to_string());
-        assert!(
-            state
-                .begin_home_extension_invocation(&metadata)
-                .await
-                .expect("first invocation should start")
-                .is_none()
-        );
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
 
         state
             .owned
@@ -602,13 +594,11 @@ mod tests {
             "late completion after cancellation must be suppressed"
         );
 
-        assert!(
-            state
-                .begin_home_extension_invocation(&metadata)
-                .await
-                .expect("cancelled invocation should not leave replay state behind")
-                .is_none()
-        );
+        assert!(state
+            .begin_home_extension_invocation(&metadata)
+            .await
+            .expect("cancelled invocation should not leave replay state behind")
+            .is_none());
     }
 
     #[test]

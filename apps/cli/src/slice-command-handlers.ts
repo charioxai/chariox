@@ -31,6 +31,7 @@ export type SliceCommandHandlerDeps = {
   stopSlice?: (sliceRef: string) => Promise<SliceRecord>
   deleteSlice?: (sliceRef: string) => Promise<SliceRecord>
   importSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
+  setSliceProviderAuthAlias?: (sliceRef: string, provider: string, alias: string | null) => Promise<{ slice: SliceRecord; provider: string; alias: string | null }>
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
 }
 
@@ -67,7 +68,11 @@ export async function handleSliceSlashCommand(
     await importSliceAuth(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider>", "error")
+  if (subcommand === "auth" && args[0] === "alias") {
+    await setSliceAuthAlias(deps, args)
+    return
+  }
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -315,4 +320,30 @@ async function importSliceAuth(
   }
   const result = await deps.importSliceProviderAuth(sliceRef, provider)
   deps.flashFooter(`slice auth import ${result.provider}: ${result.status}`, result.status === "imported" ? "info" : "error")
+}
+
+async function setSliceAuthAlias(
+  deps: SliceCommandHandlerDeps,
+  args: string[],
+): Promise<void> {
+  if (!deps.setSliceProviderAuthAlias) {
+    deps.flashFooter("slice auth alias is unavailable in this build", "error")
+    return
+  }
+  const hasExplicitSlice = args.length >= 4
+  const sliceRef = hasExplicitSlice ? args[1]! : await resolveFocusedSliceRef(deps)
+  const provider = hasExplicitSlice ? args[2] : args[1]
+  const aliasValue = hasExplicitSlice ? args.slice(3).join(" ") : args.slice(2).join(" ")
+  if (!provider || !aliasValue) {
+    deps.flashFooter("usage: /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+    return
+  }
+  const alias = aliasValue === "clear" ? null : aliasValue
+  const result = await deps.setSliceProviderAuthAlias(sliceRef, provider, alias)
+  deps.flashFooter(
+    result.alias
+      ? `slice auth alias ${result.provider}: ${result.alias}`
+      : `slice auth alias ${result.provider}: cleared`,
+    "info",
+  )
 }

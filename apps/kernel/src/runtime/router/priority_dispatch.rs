@@ -104,6 +104,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StopSlice(_)
             | LocalDaemonRequest::DeleteSlice(_)
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
                 execute_slice_request(&self.runtime_state, &self.config_projection, request).await
             }

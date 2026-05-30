@@ -55,6 +55,16 @@ export function importSliceProviderAuthRequest(sliceRef: string, provider: strin
   }
 }
 
+export function setSliceProviderAuthAliasRequest(sliceRef: string, provider: string, alias: string | null) {
+  return {
+    SetSliceProviderAuthAlias: {
+      slice_ref: sliceRef,
+      provider,
+      alias,
+    },
+  }
+}
+
 export function getSliceDisplayEndpointRequest(sliceRef: string) {
   return { GetSliceDisplayEndpoint: { slice_ref: sliceRef } }
 }

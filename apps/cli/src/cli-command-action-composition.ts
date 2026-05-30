@@ -129,6 +129,7 @@ import {
   getSliceDisplayEndpoint,
   importSliceProviderAuth,
   listSlices,
+  setSliceProviderAuthAlias,
   startSlice,
   stopSlice,
 } from "./slice-api.js"
@@ -439,6 +440,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return slice
     },
     importSliceProviderAuth: async (sliceRef, provider) => importSliceProviderAuth(client, sliceRef, provider),
+    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
+      const result = await setSliceProviderAuthAlias(client, sliceRef, provider, alias)
+      setSlicesState(await listSlices(client))
+      return result
+    },
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
     listProviderProcesses: (provider) => listProviderProcesses(client, provider),
     teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),

@@ -101,6 +101,20 @@ test("slice command auth import can target the focused agent slice", async () =>
   assert.equal(harness.footers.at(-1)?.message, "slice auth import codex: imported")
 })
 
+test("slice command auth alias sets and clears provider aliases", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "work", "account"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "clear"))
+
+  assert.deepEqual(harness.aliasedAuth, [
+    { sliceRef: "slice-1", provider: "codex", alias: "work account" },
+    { sliceRef: "slice-1", provider: "codex", alias: null },
+  ])
+  assert.equal(harness.footers.at(-2)?.message, "slice auth alias codex: work account")
+  assert.equal(harness.footers.at(-1)?.message, "slice auth alias codex: cleared")
+})
+
 function command(...args: string[]) {
   return { kind: "slice" as const, args, raw: `/slice ${args.join(" ")}` }
 }
@@ -116,6 +130,7 @@ function sliceHarness(options: {
   const displayEndpointRefs: string[] = []
   const openedUrls: string[] = []
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
+  const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -146,12 +161,16 @@ function sliceHarness(options: {
       importedAuth.push({ sliceRef, provider })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "imported" }
     },
+    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
+      aliasedAuth.push({ sliceRef, provider, alias })
+      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, alias }
+    },
     getSliceDisplayEndpoint: async (sliceRef) => {
       displayEndpointRefs.push(sliceRef)
       return endpoint
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, aliasedAuth }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
