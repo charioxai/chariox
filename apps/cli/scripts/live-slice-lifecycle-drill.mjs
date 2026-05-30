@@ -23,7 +23,9 @@ const {
   startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
+  setSliceProviderAuthAliasRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+const { handleSliceSlashCommand } = await import('../dist/slice-command-handlers.js')
 
 function log(message, details) {
   if (details === undefined) console.log(`[slice-lifecycle-drill] ${message}`)
@@ -167,6 +169,67 @@ function providerAuth(slice, provider, predicate) {
   return slice.provider_auth?.some((auth) => auth.provider === provider && (!predicate || predicate(auth)))
 }
 
+function sliceSlashCommand(...args) {
+  return { kind: 'slice', args, raw: `/slice ${args.join(' ')}` }
+}
+
+async function runSliceSlashCommandDrill(client, workspace) {
+  const notices = []
+  const footers = []
+  const openedUrls = []
+  const deps = {
+    currentWorktreeTarget: () => workspace,
+    focusedAgentId: () => null,
+    resolveSessionAgent: () => ({ agent: null, error: null }),
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: (message) => notices.push(message),
+    openExternalUrl: async (url) => {
+      openedUrls.push(url)
+      return true
+    },
+    listSlices: async () => variant(await client.send(listSlicesRequest()), 'SlicesListed').slices,
+    createSlice: async (options) => variant(await client.send(createSliceRequest({
+      name: options.name,
+      backend: options.backend,
+      displayMode: options.displayMode,
+      workspaceMount: options.workspaceMount,
+      workerKernelRef: options.workerKernelRef,
+      displayUrl: options.displayUrl,
+    })), 'SliceCreated').slice,
+    getSlice: async (sliceRef) => variant(await client.send(getSliceRequest(sliceRef)), 'Slice').slice,
+    startSlice: async (sliceRef) => variant(await client.send(startSliceRequest(sliceRef)), 'SliceStarted').slice,
+    stopSlice: async (sliceRef) => variant(await client.send(stopSliceRequest(sliceRef)), 'SliceStopped').slice,
+    deleteSlice: async (sliceRef) => variant(await client.send(deleteSliceRequest(sliceRef)), 'SliceDeleted').slice,
+    importSliceProviderAuth: async (sliceRef, provider) => {
+      const result = variant(await client.send(importSliceProviderAuthRequest(sliceRef, provider)), 'SliceProviderAuthImported')
+      return { slice: result.slice, provider: result.provider, status: result.status }
+    },
+    startSliceProviderLogin: async (sliceRef, provider) => variant(await client.send(startSliceProviderLoginRequest(sliceRef, provider)), 'SliceProviderLoginStarted'),
+    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => variant(await client.send(setSliceProviderAuthAliasRequest(sliceRef, provider, alias)), 'SliceProviderAuthAliasSet'),
+    getSliceDisplayEndpoint: async (sliceRef) => variant(await client.send(getSliceDisplayEndpointRequest(sliceRef)), 'SliceDisplayEndpoint').endpoint,
+  }
+
+  await handleSliceSlashCommand(deps, sliceSlashCommand('create', 'slice-cli-command', '--headed'))
+  const commandSlice = variant(await client.send(getSliceRequest('slice-cli-command')), 'Slice').slice
+  assert(commandSlice.display_mode === 'headed', '/slice create --headed should create a headed slice')
+  assert(commandSlice.workspace_mount === workspace, '/slice create should mount the current worktree')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('start', commandSlice.id))
+  const started = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
+  assert(started.status === 'running', '/slice start should start the slice')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'import', commandSlice.id, 'codex'))
+  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', commandSlice.id, 'codex', 'cli', 'account'))
+  const aliased = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
+  assert(providerAuth(aliased, 'codex', (auth) => auth.alias === 'cli account'), '/slice auth alias should persist an alias')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('screen', commandSlice.id))
+  assert(openedUrls.length === 1 && openedUrls[0].startsWith('http://127.0.0.1:'), '/slice screen should open the display URL')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('status', commandSlice.id))
+  assert(notices.some((notice) => notice.includes('slice-cli-command') && notice.includes('auth=codex:cli account')), '/slice status should show alias auth context')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('stop', commandSlice.id))
+  await handleSliceSlashCommand(deps, sliceSlashCommand('delete', commandSlice.id))
+  assert(footers.some((footer) => footer.message === 'deleted slice slice-cli-command'), '/slice delete should report deletion')
+  log('slash-command-pass', { slice: commandSlice.id, opened: openedUrls[0] })
+}
+
 async function main() {
   await assertDockerReady()
   const dockerHost = await currentDockerHost()
@@ -251,6 +314,8 @@ async function main() {
     assert(login.verification_url?.startsWith('https://'), 'slice provider login should return a verification URL')
     assert(login.user_code, 'slice provider login should return a device code for Codex')
     log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
+
+    await runSliceSlashCommandDrill(client, workspace)
 
     const secondSlice = variant(await client.send(createSliceRequest({
       name: 'slice-drill-second-account',
