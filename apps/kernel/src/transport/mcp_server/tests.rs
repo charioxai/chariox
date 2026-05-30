@@ -136,6 +136,8 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
 async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -249,6 +251,8 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
