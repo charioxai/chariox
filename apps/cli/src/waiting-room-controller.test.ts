@@ -310,6 +310,34 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     message: "term-1 is a Web terminal",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      slices: [{
+        id: "slice-1",
+        name: "linux-dev",
+        owner_kernel_id: "kernel-local",
+        owner_machine_id: "machine-local",
+        backend: "local_docker",
+        os: "linux",
+        status: "running",
+        workspace_mount: null,
+        worker_kernel_ref: "slice:slice-1",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        providers: ["codex"],
+        display_endpoint: null,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+      }],
+    },
+  }), {
+    action: "stage-command",
+    command: "/slice status slice-1",
+    message: "press Enter to show slice linux-dev",
+  })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
     state: waitingRoomState({ focus: "add-terminal" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",
@@ -569,7 +597,8 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     sessionIndex: 0,
     machineIndex: 0,
     remoteKernelIndex: 0,
-  terminalIndex: 0,
+    sliceIndex: 0,
+    terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",

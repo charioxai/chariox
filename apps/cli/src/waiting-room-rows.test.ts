@@ -16,7 +16,11 @@ test("waiting room rows compose start, session, remote, slice, terminal, and the
     created_at_ms: Date.UTC(2026, 0, 1, 9, 0),
     last_used_at_ms: Date.UTC(2026, 0, 1, 10, 0),
   }]
-  const state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
+  const state = {
+    ...createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high"),
+    focus: "slice-entry" as const,
+    sliceIndex: 0,
+  }
   const rows = waitingRoomRows(state, sessions, catalog, {
     relay: { configured: true, connected: true, relay_url: "wss://relay.example" },
     slices: [{
@@ -44,6 +48,7 @@ test("waiting room rows compose start, session, remote, slice, terminal, and the
   assert.equal(rows.some((row) => row.id === "relay-header"), true)
   assert.equal(rows.some((row) => row.id === "slices-header"), true)
   assert.equal(rows.some((row) => row.id === "slice:slice-1"), true)
+  assert.equal(rows.find((row) => row.id === "slice:slice-1")?.focused, true)
   assert.equal(rows.some((row) => row.id === "terminal:terminal-1"), true)
   assert.equal(rows.at(-1)?.id, "theme")
 })

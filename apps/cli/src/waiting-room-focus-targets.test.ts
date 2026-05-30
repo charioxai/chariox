@@ -28,6 +28,7 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "relay",
     "machine",
     "remote-kernel",
+    "slice-entry",
     "terminal",
     "add-terminal",
     "theme",
@@ -35,6 +36,10 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
   assert.deepEqual(
     targets.filter((target) => target.focus === "session").map((target) => target.sessionIndex),
     [0, 1],
+  )
+  assert.deepEqual(
+    targets.filter((target) => target.focus === "slice-entry").map((target) => target.sliceIndex),
+    [0],
   )
 })
 
@@ -56,6 +61,11 @@ test("waiting room focus movement tracks indexed targets", () => {
   state = moveWaitingRoomFocus(state, sessions, 1)
   assert.equal(state.focus, "relay")
   assert.equal(state.sessionIndex, 1)
+
+  state = waitingRoomState({ focus: "remote-kernel" })
+  state = moveWaitingRoomFocus(state, sessions, 1, remoteState())
+  assert.equal(state.focus, "slice-entry")
+  assert.equal(state.sliceIndex, 0)
 })
 
 function remoteState(): WaitingRoomRemoteState {

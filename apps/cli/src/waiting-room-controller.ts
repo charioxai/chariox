@@ -13,6 +13,7 @@ import {
   waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
+import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
@@ -366,6 +367,17 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         action: "stage-command",
         command: `/relay cloud client-token ${target}`,
         message: `press Enter to mint a relay token for ${target}`,
+      }
+    }
+    case "slice-entry": {
+      const slice = waitingRoomAllSlices(remote)[options.state.sliceIndex ?? 0]
+      if (!slice) {
+        return { action: "error", message: "no slice selected" }
+      }
+      return {
+        action: "stage-command",
+        command: `/slice status ${slice.id}`,
+        message: `press Enter to show slice ${slice.name || slice.id}`,
       }
     }
     case "terminal": {

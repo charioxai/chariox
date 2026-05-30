@@ -1,7 +1,7 @@
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomRemoteKernels, waitingRoomRemoteMachines } from "./waiting-room-remote-rows.js"
 import { waitingRoomPreviewSessions, waitingRoomSessions } from "./waiting-room-session-rows.js"
-import { waitingRoomSlices } from "./waiting-room-slices.js"
+import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
@@ -10,6 +10,7 @@ export type WaitingRoomFocusTarget = {
   sessionIndex: number
   machineIndex: number
   remoteKernelIndex: number
+  sliceIndex: number
   terminalIndex: number
 }
 
@@ -27,6 +28,7 @@ export function moveWaitingRoomFocus(
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
       && (target.focus !== "machine" || target.machineIndex === state.machineIndex)
       && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
+      && (target.focus !== "slice-entry" || target.sliceIndex === (state.sliceIndex ?? 0))
       && (target.focus !== "terminal" || target.terminalIndex === state.terminalIndex)
     )),
   )
@@ -35,7 +37,7 @@ export function moveWaitingRoomFocus(
     return state
   }
 
-  return {
+  const nextState: WaitingRoomState = {
     ...state,
     focus: next.focus,
     sessionIndex: next.focus === "session" ? next.sessionIndex : state.sessionIndex,
@@ -43,6 +45,9 @@ export function moveWaitingRoomFocus(
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
     terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
   }
+  return next.focus === "slice-entry"
+    ? { ...nextState, sliceIndex: next.sliceIndex }
+    : nextState
 }
 
 export function waitingRoomFocusTargets(
@@ -53,6 +58,7 @@ export function waitingRoomFocusTargets(
   const previewSessions = waitingRoomPreviewSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
+  const slices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
@@ -79,6 +85,11 @@ export function waitingRoomFocusTargets(
       sessionIndex: 0,
       remoteKernelIndex,
     })),
+    ...slices.map((_, sliceIndex) => ({
+      focus: "slice-entry" as const,
+      sessionIndex: 0,
+      sliceIndex,
+    })),
     ...terminals.map((_, terminalIndex) => ({
       focus: "terminal" as const,
       sessionIndex: 0,
@@ -89,6 +100,7 @@ export function waitingRoomFocusTargets(
   ].map((target) => ({
     machineIndex: 0,
     remoteKernelIndex: 0,
+    sliceIndex: 0,
     terminalIndex: 0,
     ...target,
   }))

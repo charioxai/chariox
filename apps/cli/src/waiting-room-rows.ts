@@ -60,7 +60,7 @@ export function waitingRoomRows(
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),
-    ...waitingRoomSliceRows(remote, titleWidth),
+    ...waitingRoomSliceRows(state, remote, titleWidth),
     ...waitingRoomTerminalRows(state, remote, titleWidth),
     {
       id: "theme",

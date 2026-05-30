@@ -9,6 +9,7 @@ import {
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
 import { waitingRoomSessions } from "./waiting-room-session-rows.js"
+import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import {
   selectedWaitingRoomSliceRef,
   selectedWaitingRoomSliceCreateMode,
@@ -41,11 +42,13 @@ export function waitingRoomChoice(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
   const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
+  const allSlices = waitingRoomAllSlices(remote)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
+    sliceInventory: allSlices[state.sliceIndex ?? 0] ?? null,
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),
     sliceCreate: selectedWaitingRoomSliceCreateMode(state.sliceSelectionId),

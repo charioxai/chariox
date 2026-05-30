@@ -1,8 +1,9 @@
 import type { SliceRecord } from "./cli-types.js"
 import { formatWaitingRoomSliceLabel } from "./waiting-room-slices.js"
-import type { WaitingRoomRemoteState, WaitingRoomRow } from "./waiting-room-types.js"
+import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 export function waitingRoomSliceRows(
+  state: Pick<WaitingRoomState, "focus" | "sliceIndex">,
   remote: Pick<WaitingRoomRemoteState, "inventoryStatus" | "loadingFrame" | "slices">,
   titleWidth: number,
 ): WaitingRoomRow[] {
@@ -35,15 +36,15 @@ export function waitingRoomSliceRows(
     return rows
   }
 
-  for (const slice of slices) {
+  for (const [index, slice] of slices.entries()) {
     rows.push({
       id: `slice:${slice.id}`,
       title: formatWaitingRoomSliceLabel(slice),
       value: formatSliceStatus(slice),
       titleWidth,
       indent: 1,
-      focused: false,
-      selectable: false,
+      focused: state.focus === "slice-entry" && (state.sliceIndex ?? 0) === index,
+      selectable: true,
       scrollbar: "",
     })
   }

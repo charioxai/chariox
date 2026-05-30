@@ -24,6 +24,7 @@ import {
   normalizeWaitingRoomSliceSelectionId,
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
+import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import { normalizeWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
@@ -44,6 +45,7 @@ export function createWaitingRoomState(
       sessionIndex: 0,
       machineIndex: 0,
       remoteKernelIndex: 0,
+      sliceIndex: 0,
       terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
       sliceSelectionId: "none",
@@ -71,6 +73,7 @@ export function normalizeWaitingRoomState(
   const previewSessions = waitingRoomPreviewSessions(sessions)
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
+  const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
   const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
   const providerId = normalizeBackendProvider(state.providerId)
@@ -82,8 +85,10 @@ export function normalizeWaitingRoomState(
       ? "join-sessions"
     : remoteMachines.length === 0 && state.focus === "machine"
       ? "relay"
-      : remoteKernels.length === 0 && state.focus === "remote-kernel"
-        ? "relay"
+        : remoteKernels.length === 0 && state.focus === "remote-kernel"
+          ? "relay"
+        : allSlices.length === 0 && state.focus === "slice-entry"
+          ? "slice"
         : terminals.length === 0 && state.focus === "terminal"
           ? "add-terminal"
         : state.focus
@@ -94,6 +99,7 @@ export function normalizeWaitingRoomState(
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
+    sliceIndex: allSlices.length === 0 ? 0 : modulo(state.sliceIndex ?? 0, allSlices.length),
     terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
     sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),

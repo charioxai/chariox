@@ -17,6 +17,7 @@ export type WaitingRoomFocus =
   | "relay"
   | "machine"
   | "remote-kernel"
+  | "slice-entry"
   | "terminal"
   | "add-terminal"
 
@@ -32,6 +33,7 @@ export type WaitingRoomState = {
   sessionIndex: number
   machineIndex: number
   remoteKernelIndex: number
+  sliceIndex?: number
   terminalIndex: number
   worktreeSelectionId: string
   sliceSelectionId?: string

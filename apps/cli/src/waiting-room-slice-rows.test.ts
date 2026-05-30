@@ -5,7 +5,7 @@ import type { SliceRecord } from "./cli-types.js"
 import { waitingRoomAllSlices, waitingRoomSliceRows } from "./waiting-room-slice-rows.js"
 
 test("waiting room slice rows list slices with lifecycle and auth context", () => {
-  const rows = waitingRoomSliceRows({
+  const rows = waitingRoomSliceRows({ focus: "slice-entry", sliceIndex: 0 }, {
     slices: [
       slice({ id: "slice-b", name: "beta" }),
       slice({
@@ -25,15 +25,17 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
   assert.deepEqual(rows.slice(1).map((row) => row.id), ["slice:slice-a", "slice:slice-b"])
   assert.equal(rows[1]?.title, "alpha")
   assert.equal(rows[1]?.value, "running headed 1 agent /repo auth work (acct-1)")
+  assert.equal(rows[1]?.focused, true)
+  assert.equal(rows[1]?.selectable, true)
 })
 
 test("waiting room slice rows show empty and loading states", () => {
   assert.deepEqual(
-    waitingRoomSliceRows({ slices: [] }, 16).map((row) => [row.id, row.value]),
+    waitingRoomSliceRows({ focus: "new", sliceIndex: 0 }, { slices: [] }, 16).map((row) => [row.id, row.value]),
     [["slices-header", "0 configured"], ["slices-none", "none"]],
   )
   assert.deepEqual(
-    waitingRoomSliceRows({ inventoryStatus: "loading", loadingFrame: 2, slices: [] }, 16).map((row) => [row.id, row.value]),
+    waitingRoomSliceRows({ focus: "new", sliceIndex: 0 }, { inventoryStatus: "loading", loadingFrame: 2, slices: [] }, 16).map((row) => [row.id, row.value]),
     [["slices-header", "loading.."], ["slices-none", "loading.."]],
   )
 })
