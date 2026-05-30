@@ -1086,6 +1086,22 @@ service = "arroba-test"
             .ends_with(".arroba/custom/state.db"));
     }
 
+    #[test]
+    fn event_counter_paths_expand_state_home_before_parent() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config.state.path = Some("~/.arroba/custom/state.db".to_string());
+
+        let kernel_counter = config.kernel_event_counter_path();
+        let relay_counter = config.kernel_relay_event_counter_path();
+
+        assert!(!kernel_counter.starts_with("~"));
+        assert!(!relay_counter.starts_with("~"));
+        assert!(kernel_counter.ends_with(".arroba/custom/kernel-events/daemon/event-counter.json"));
+        assert!(
+            relay_counter.ends_with(".arroba/custom/kernel-events/daemon/relay-event-counter.json")
+        );
+    }
+
     fn env_test_guard() -> &'static Mutex<()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
         GUARD.get_or_init(|| Mutex::new(()))

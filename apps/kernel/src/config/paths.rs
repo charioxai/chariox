@@ -83,7 +83,8 @@ impl DaemonConfig {
             .path
             .as_deref()
             .filter(|path| !path.trim().is_empty())
-            .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
+            .map(expand_user_path)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
             .map(|root| root.join("kernel-events"))
             .unwrap_or_else(|| default_state_dir().join("kernel-events"))
     }
