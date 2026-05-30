@@ -40,7 +40,7 @@ export function waitingRoomChoice(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote)
+  const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,

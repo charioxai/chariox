@@ -40,7 +40,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
-  assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev")
+  assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (0 agents)")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })

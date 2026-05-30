@@ -90,7 +90,7 @@ export function cycleWaitingRoomFocusedValue(
       ...state,
       sliceSelectionId: cycleWaitingRoomSliceSelectionId(
         state.sliceSelectionId,
-        waitingRoomSlices(remote),
+        waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId }),
         delta,
       ),
     }

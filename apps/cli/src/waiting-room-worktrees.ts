@@ -101,6 +101,17 @@ export function describeWaitingRoomWorktreeSelection(
   return "Set worktree path"
 }
 
+export function selectedWaitingRoomWorktreePath(
+  selectionId: string | null | undefined,
+  fallbackPath?: string | null,
+) {
+  const option = resolveWaitingRoomWorktreeOption(selectionId)
+  if (option?.kind === "existing") {
+    return option.path
+  }
+  return fallbackPath?.trim() || activeInventory?.currentWorktreePath || ""
+}
+
 export function stageWaitingRoomWorktreeSelection(
   selectionId: string | null | undefined,
   fallbackPath?: string | null,

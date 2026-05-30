@@ -31,7 +31,14 @@ export function waitingRoomStartRows(
     state.worktreeSelectionId,
     options.targets?.worktreePath,
   )
-  const selectedSliceLabel = formatWaitingRoomSliceSelection(state.sliceSelectionId, waitingRoomSlices(remote))
+  const selectedSliceLabel = formatWaitingRoomSliceSelection(
+    state.sliceSelectionId,
+    waitingRoomSlices(remote, {
+      workspacePath: options.targets?.workspacePath,
+      worktreeSelectionId: state.worktreeSelectionId,
+      worktreePath: options.targets?.worktreePath,
+    }),
+  )
   const collaborationBackend = remote.collaborationBackend ?? "local"
   return [
     {

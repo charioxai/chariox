@@ -165,7 +165,7 @@ test("waiting room cycles slices for new sessions", () => {
 
   state = cycleWaitingRoomValue(state, [], catalog, 1, undefined, { slices })
   assert.equal(waitingRoomChoice(state, [], catalog, { slices }).sliceRef, "slice-1")
-  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "linux-dev")
+  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "linux-dev (0 agents)")
 })
 
 test("waiting room renders indented sections and only previews the last two active sessions", () => {

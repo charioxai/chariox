@@ -12,6 +12,7 @@ import {
   waitingRoomSliceOptions,
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
+import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
 test("waiting room slices sort by display label and project options", () => {
   const slices = waitingRoomSlices({
@@ -51,13 +52,42 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
 
   assert.equal(waitingRoomSelectedSlice("linux-dev", slices)?.id, "slice-1")
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (0 agents)")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "None")
   assert.equal(formatWaitingRoomSliceSelection("new:headed", slices), "New headed")
   assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new:headless")
   assert.equal(cycleWaitingRoomSliceSelectionId("new:headless", slices, 1), "new:headed")
   assert.equal(cycleWaitingRoomSliceSelectionId("new:headed", slices, 1), "slice-1")
   assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "new:headed")
+})
+
+test("waiting room slices filter reusable slices by selected worktree", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      { id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true },
+      { id: "existing:/workspace-feature", kind: "existing", label: "feature", path: "/workspace-feature", branch: "feature", isCurrent: false },
+      { id: "create-worktree", kind: "create", label: "Create worktree" },
+    ],
+  })
+
+  try {
+    const slices = waitingRoomSlices({
+      slices: [
+        slice({ id: "main-slice", name: "main", worktree_id: "/workspace" }),
+        slice({ id: "feature-slice", name: "feature", worktree_id: "/workspace-feature", agent_ids: ["agent-1"] }),
+      ],
+    }, {
+      workspacePath: "/workspace",
+      worktreeSelectionId: "existing:/workspace-feature",
+    })
+
+    assert.deepEqual(slices.map((entry) => entry.id), ["feature-slice"])
+    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (1 agent)")
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
 })
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

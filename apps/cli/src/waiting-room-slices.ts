@@ -1,7 +1,19 @@
 import type { SliceRecord } from "./cli-types.js"
+import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 
-export function waitingRoomSlices(remote: { slices?: SliceRecord[] } = {}) {
+export type WaitingRoomSliceScope = {
+  workspacePath?: string | null | undefined
+  worktreeSelectionId?: string | null | undefined
+  worktreePath?: string | null | undefined
+}
+
+export function waitingRoomSlices(
+  remote: { slices?: SliceRecord[] } = {},
+  scope: WaitingRoomSliceScope = {},
+) {
+  const worktreePath = selectedWaitingRoomWorktreePath(scope.worktreeSelectionId, scope.worktreePath)
   return (remote.slices ?? [])
+    .filter((slice) => sliceCompatibleWithScope(slice, scope.workspacePath, worktreePath))
     .slice()
     .sort((left, right) => formatWaitingRoomSliceLabel(left).localeCompare(formatWaitingRoomSliceLabel(right)))
 }
@@ -50,11 +62,20 @@ export function formatWaitingRoomSliceSelection(selectionId: string | null | und
     return "New headed"
   }
   const slice = waitingRoomSelectedSlice(selectionId, slices)
-  return slice ? formatWaitingRoomSliceLabel(slice) : "None"
+  return slice ? formatWaitingRoomSliceOption(slice) : "None"
 }
 
 export function formatWaitingRoomSliceLabel(slice: SliceRecord) {
   return slice.name || slice.id
+}
+
+export function formatWaitingRoomSliceOption(slice: SliceRecord) {
+  const agents = slice.agent_ids?.length ?? 0
+  const auth = (slice.provider_auth ?? [])
+    .map((entry) => entry.alias || entry.email || entry.account_id || entry.auth_type || entry.state)
+    .filter(Boolean)
+    .join(",")
+  return `${formatWaitingRoomSliceLabel(slice)} (${agents} agent${agents === 1 ? "" : "s"}${auth ? `, ${auth}` : ""})`
 }
 
 export function cycleWaitingRoomSliceSelectionId(
@@ -65,6 +86,17 @@ export function cycleWaitingRoomSliceSelectionId(
   const options = waitingRoomSliceOptions(slices)
   const index = Math.max(0, options.findIndex((option) => option.id === selectionId))
   return options[modulo(index + delta, options.length)]?.id ?? "none"
+}
+
+function sliceCompatibleWithScope(slice: SliceRecord, workspacePath: string | null | undefined, worktreePath: string) {
+  if (slice.workspace_id && workspacePath && slice.workspace_id !== workspacePath) {
+    return false
+  }
+  const sliceWorktree = slice.worktree_id || slice.workspace_mount || ""
+  if (sliceWorktree && worktreePath && sliceWorktree !== worktreePath) {
+    return false
+  }
+  return true
 }
 
 function modulo(value: number, size: number) {

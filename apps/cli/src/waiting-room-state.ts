@@ -72,7 +72,7 @@ export function normalizeWaitingRoomState(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote)
+  const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)

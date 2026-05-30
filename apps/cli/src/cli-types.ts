@@ -527,11 +527,29 @@ export type SliceRecord = {
   os: string
   status: "stopped" | "starting" | "running" | "unhealthy"
   workspace_mount?: string | null
+  workspace_id?: string | null
+  worktree_id?: string | null
+  session_ids?: string[]
+  agent_ids?: string[]
+  display_mode?: "headless" | "headed"
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
   relay_endpoint?: SliceRelayEndpoint | null
   providers?: string[]
+  provider_auth?: Array<{
+    provider: string
+    state: "unknown" | "not_configured" | "configured" | "authenticated"
+    alias?: string | null
+    account_id?: string | null
+    email?: string | null
+    organization_id?: string | null
+    organization_name?: string | null
+    subscription_type?: string | null
+    auth_type?: string | null
+    source?: string | null
+    checked_at_ms?: number | null
+  }>
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
