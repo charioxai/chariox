@@ -89,15 +89,17 @@ function formatSlice(slice: SliceRecord): string {
 }
 
 function formatSliceProviderAuth(auth: NonNullable<SliceRecord["provider_auth"]>[number]): string {
-  const identity = auth.alias
-    || auth.email
+  const identity = auth.email
     || auth.account_id
     || auth.auth_type
     || auth.state
+  const label = auth.alias && auth.alias !== identity
+    ? `${auth.alias} (${identity})`
+    : identity
   const organization = auth.organization_name || auth.organization_id
   const subscription = auth.subscription_type
   return [
-    `${auth.provider}:${identity}`,
+    `${auth.provider}:${label}`,
     organization ? `org=${organization}` : "",
     subscription ? `plan=${subscription}` : "",
   ].filter(Boolean).join("/")

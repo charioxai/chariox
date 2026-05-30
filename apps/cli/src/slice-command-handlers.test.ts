@@ -28,7 +28,7 @@ test("slice command list renders lifecycle scope and provider auth details", asy
 
   assert.match(harness.notices.at(-1) ?? "", /linux-dev id=slice-1 status=running display=headed/)
   assert.match(harness.notices.at(-1) ?? "", /worktree=\/repo\/feature agents=1 sessions=2/)
-  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth=codex:work,claude:user@example.com\/org=Team\/plan=pro/)
+  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth=codex:work \(acct-1\),claude:user@example.com\/org=Team\/plan=pro/)
   assert.equal(harness.footers.at(-1)?.message, "listed 1 slice")
 })
 
