@@ -382,6 +382,57 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
+test("executeShellCommand creates and starts a headed slice for a new session", async () => {
+  const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("CreateSlice" in request) {
+      return { SliceCreated: { slice: { id: "slice-1" } } }
+    }
+    if ("StartSlice" in request) {
+      return { SliceStarted: { slice: { id: "slice-1" } } }
+    }
+    if ("CreateSession" in request) {
+      return { SessionCreated: { session } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new:headed as s"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "CreateSession"])
+  const createRequest = requests[0] as { CreateSlice: { name: string } }
+  assert.match(createRequest.CreateSlice.name, /^qa-slice-/)
+  assert.deepEqual({
+    ...requests[0],
+    CreateSlice: {
+      ...(requests[0] as { CreateSlice: Record<string, unknown> }).CreateSlice,
+      name: "<dynamic>",
+    },
+  }, {
+    CreateSlice: {
+      name: "<dynamic>",
+      backend: "local_docker",
+      os: "linux",
+      display_mode: "headed",
+      workspace_id: "/repo",
+      worktree_id: "/repo/qa",
+      workspace_mount: "/repo/qa",
+      worker_kernel_ref: null,
+      display_url: null,
+      provider_auth: [],
+    },
+  })
+  assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })
+  assert.deepEqual(requests[2], { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: "slice-1" } })
+  assert.deepEqual(result.bindings, { s: "session-2" })
+})
+
 test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {
   const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
   const requests: Record<string, unknown>[] = []

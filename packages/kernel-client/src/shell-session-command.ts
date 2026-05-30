@@ -25,6 +25,7 @@ import {
   resolveShellPlacement,
   type ShellPlacementDeps,
 } from "./shell-placement.js"
+import { resolveShellSliceRef } from "./shell-slice-placement.js"
 import {
   formatSessionInvite,
   formatSessionList,
@@ -63,16 +64,20 @@ export async function executeSessionCommand(
     }
     case "new":
     case "create": {
-      const placement = parsePlacementOptions(args, false)
+      const placement = parsePlacementOptions(args, true)
       if (placement.error) {
         return { ok: false, message: placement.error }
       }
+      if (placement.options.kernelRef) {
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|new:headed|new:headless|<slice-ref>]" }
+      }
       if (placement.options.positional.length > 1) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>]" }
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|new:headed|new:headless|<slice-ref>]" }
       }
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree
-      const response = await deps.client.send(createSessionRequest(context.workspace, worktree))
+      const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps)
+      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session
       const attachmentId = await attachShellSession(session.id, deps)

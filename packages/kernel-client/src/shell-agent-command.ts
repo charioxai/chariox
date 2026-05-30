@@ -30,6 +30,10 @@ import {
   resolveShellPlacement,
   type ShellPlacementDeps,
 } from "./shell-placement.js"
+import {
+  resolveShellSliceRef,
+  shellSliceCreatesPlacement,
+} from "./shell-slice-placement.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -64,15 +68,27 @@ export async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice <slice-ref>]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice off|new|new:headed|new:headless|<slice-ref>]" }
       }
       if (parsedSpawn.options.kernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "usage: agent spawn [alias] [model] --kernel <kernel-ref> uses the worker kernel default directory" }
       }
-      if (parsedSpawn.options.sliceRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] --slice <slice-ref> uses the slice worker default directory" }
+      if (
+        parsedSpawn.options.sliceRef
+        && !shellSliceCreatesPlacement(parsedSpawn.options.sliceRef)
+        && parsedSpawn.options.sliceRef !== "off"
+        && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)
+      ) {
+        return { ok: false, message: "usage: agent spawn [alias] [model] --slice <slice-ref> does not accept --dir or --worktree" }
       }
       const worktree = await resolveShellPlacement(parsedSpawn.options, context.worktree, "agent working directory", deps)
+      const effectiveWorktree = worktree ?? context.worktree
+      const sliceRef = await resolveShellSliceRef(
+        parsedSpawn.options.sliceRef,
+        context,
+        effectiveWorktree,
+        deps,
+      )
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
         context.provider,
@@ -84,12 +100,12 @@ export async function executeAgentCommand(
         undefined,
         parsedSpawn.options.kernelRef,
         undefined,
-        parsedSpawn.options.sliceRef,
+        sliceRef,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution
-        ? parsedSpawn.options.sliceRef
-          ? ` in slice ${parsedSpawn.options.sliceRef}`
+        ? sliceRef
+          ? ` in slice ${sliceRef}`
           : ` on ${parsedSpawn.options.kernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
