@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  SliceRecord,
 } from "./cli-types.js"
 import {
   parseAgentSpawnOptions,
@@ -18,6 +19,7 @@ type AgentSpawnPayload = {
 }
 
 export type AgentSpawnCommandHandlerDeps = {
+  currentWorkspaceTarget: () => string
   currentWorktreeTarget: () => string
   currentModelId: () => string
   currentVariantId: () => string
@@ -25,6 +27,14 @@ export type AgentSpawnCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
+  createSlice?: (options: {
+    name: string
+    displayMode: "headless" | "headed"
+    workspaceId: string
+    worktreeId: string
+    workspaceMount: string
+  }) => Promise<SliceRecord>
+  startSlice?: (sliceRef: string) => Promise<SliceRecord>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
   rebuildTranscript: () => void
@@ -100,6 +110,7 @@ export async function handleAgentSpawnCommand(
       baseDirectory: deps.currentWorktreeTarget(),
       prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
     })
+    const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, worktreeId)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
       alias,
@@ -108,10 +119,10 @@ export async function handleAgentSpawnCommand(
       worktreeId,
       machineRef: parsed.machineRef,
       worktreePlacement: remoteGitPlacement,
-      sliceRef: parsed.sliceRef,
+      sliceRef,
     })
-    const placement = parsed.sliceRef
-      ? ` in slice:${parsed.sliceRef}`
+    const placement = sliceRef
+      ? ` in slice:${sliceRef}`
       : parsed.machineRef
       ? ` on ${parsed.machineRef}${worktreeId ? ` in ${worktreeId}` : ""}`
       : worktreeId
@@ -121,6 +132,52 @@ export async function handleAgentSpawnCommand(
   } catch (error) {
     deps.flashFooter(deps.formatError(error), "error")
   }
+}
+
+async function prepareSliceForSpawn(
+  deps: AgentSpawnCommandHandlerDeps,
+  sliceSelection: string | undefined,
+  worktreeId: string | undefined,
+): Promise<string | undefined> {
+  if (!sliceSelection || sliceSelection === "off") {
+    return undefined
+  }
+  const createMode = sliceCreateMode(sliceSelection)
+  if (!createMode) {
+    if (deps.startSlice) {
+      await deps.startSlice(sliceSelection)
+    }
+    return sliceSelection
+  }
+  if (!deps.createSlice || !deps.startSlice) {
+    throw new Error("slice creation is unavailable in this build")
+  }
+  const resolvedWorktree = worktreeId || deps.currentWorktreeTarget()
+  const slice = await deps.createSlice({
+    name: defaultSliceName(resolvedWorktree),
+    displayMode: createMode.displayMode,
+    workspaceId: deps.currentWorkspaceTarget(),
+    worktreeId: resolvedWorktree,
+    workspaceMount: resolvedWorktree,
+  })
+  const started = await deps.startSlice(slice.id)
+  return started.id
+}
+
+function sliceCreateMode(value: string): { displayMode: "headless" | "headed" } | null {
+  if (value === "new" || value === "new:headless") {
+    return { displayMode: "headless" }
+  }
+  if (value === "new:headed") {
+    return { displayMode: "headed" }
+  }
+  return null
+}
+
+function defaultSliceName(worktreePath: string): string {
+  const leaf = worktreePath.split("/").filter(Boolean).pop() || "workspace"
+  const suffix = Date.now().toString(36).slice(-5)
+  return `${leaf}-slice-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, "-")
 }
 
 function parseSpawnCount(value: string | undefined): number | null {

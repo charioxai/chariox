@@ -93,7 +93,7 @@ type CommandActionDeps =
   & Omit<SliceCommandHandlerDeps, "currentWorktreeTarget">
   & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
   & Omit<SessionCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
-  & Omit<AgentCommandHandlerDeps, "currentWorktreeTarget">
+  & Omit<AgentCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
   & KernelCommandHandlerDeps
   & Omit<WorkflowCommandHandlerDeps, "currentWorkspaceTarget">
   & {
@@ -152,6 +152,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   })
   const agentCommandDeps = (): AgentCommandHandlerDeps => ({
     ...deps,
+    currentWorkspaceTarget,
     currentWorktreeTarget,
   })
   const workflowCommandDeps = (): WorkflowCommandHandlerDeps => ({

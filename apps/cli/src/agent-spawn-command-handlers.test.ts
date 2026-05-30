@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  SliceRecord,
 } from "./cli-types.js"
 import { handleAgentSpawnCommand } from "./agent-spawn-command-handlers.js"
 
@@ -15,6 +16,7 @@ test("agent spawn command count inherits session defaults and launches each agen
   let flashedMessage = ""
 
   await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
     currentWorktreeTarget: () => "/workspace",
     currentModelId: () => "codex/gpt-5.4",
     currentVariantId: () => "high",
@@ -45,6 +47,70 @@ test("agent spawn command count inherits session defaults and launches each agen
   assert.equal(flashedMessage, "spawned 2 agents from session defaults")
 })
 
+test("agent spawn command can create and start a new headed slice", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    prepareLocalGitWorktree: async (options) => {
+      calls.push(`prepare:${options.targetDirectory}:${options.branch}`)
+      return options.targetDirectory ?? "/workspace-feature"
+    },
+    createSlice: async (options) => {
+      calls.push(`create:${options.displayMode}:${options.worktreeId}`)
+      return slice({ id: "slice-created", display_mode: options.displayMode, worktree_id: options.worktreeId })
+    },
+    startSlice: async (sliceRef) => {
+      calls.push(`start:${sliceRef}`)
+      return slice({ id: sliceRef, display_mode: "headed" })
+    },
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => { calls.push("rebuild") },
+    launchAgentProviderRun: async () => {
+      throw new Error("remote slice spawn should not launch locally")
+    },
+    setProviderRunState: (run) => { calls.push(`run:${run ? run.id : "null"}`) },
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, _worktreePlacement, sliceRef) => {
+      calls.push(`spawn:${alias}:${worktreeId}:${sliceRef}`)
+      const nextAgent = agent({
+        id: "agent-slice",
+        agent_ref: "agent-slice",
+        alias: alias ?? null,
+        remote_execution: {
+          worker_kernel_id: "kernel-slice",
+          worker_machine_id: "machine-slice",
+          execution_lease_id: "lease-slice",
+          leased_agent_id: "worker-agent",
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
+  }, ["builder", "codex/gpt-5.4", "--slice", "new:headed", "--worktree", "/workspace-feature", "--branch", "feature/login"])
+
+  assert.deepEqual(calls, [
+    "prepare:/workspace-feature:feature/login",
+    "create:headed:/workspace-feature",
+    "start:slice-created",
+    "spawn:builder:/workspace-feature:slice-created",
+    "run:null",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "spawned agent agent-slice (builder) in slice:slice-created")
+})
+
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id: "agent-0",
@@ -63,6 +129,27 @@ function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
     grid_col_span: 1,
     created_at_ms: 0,
     last_activity_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id: "slice-1",
+    name: "slice-1",
+    owner_kernel_id: "kernel-local",
+    owner_machine_id: "machine-local",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    workspace_mount: null,
+    worker_kernel_ref: "slice:slice-1",
+    worker_kernel_id: "kernel-slice",
+    worker_machine_id: "machine-slice",
+    providers: ["codex"],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
     ...overrides,
   }
 }
