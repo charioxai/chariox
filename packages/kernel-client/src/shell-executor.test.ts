@@ -433,6 +433,59 @@ test("executeShellCommand creates and starts a headless slice for a new session"
   assert.deepEqual(result.bindings, { s: "session-2" })
 })
 
+test("executeShellCommand creates manually managed slices scoped to the current worktree", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("CreateSlice" in request) {
+      return {
+        SliceCreated: {
+          slice: {
+            id: "slice-manual",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "stopped",
+            display_mode: "headed",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: null,
+            worker_kernel_id: null,
+            worker_machine_id: null,
+            providers: [],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice create linux-a --headed as sl"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{
+    CreateSlice: {
+      name: "linux-a",
+      backend: "local_docker",
+      os: "linux",
+      display_mode: "headed",
+      workspace_id: "/repo",
+      worktree_id: "/repo/feature",
+      workspace_mount: "/repo/feature",
+      worker_kernel_ref: null,
+      display_url: null,
+      provider_auth: [],
+    },
+  }])
+  assert.deepEqual(result.bindings, { sl: "slice-manual" })
+})
+
 test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {
   const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
   const requests: Record<string, unknown>[] = []

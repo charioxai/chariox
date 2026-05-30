@@ -67,6 +67,8 @@ export async function executeSliceCommand(
       const response = await deps.client.send(createSliceRequest({
         name: first,
         ...(displayMode ? { displayMode } : {}),
+        workspaceId: context.workspace,
+        worktreeId: context.worktree,
         workspaceMount: context.worktree,
         workerKernelRef: workerKernelRef ?? null,
         displayUrl: displayUrl ?? null,
