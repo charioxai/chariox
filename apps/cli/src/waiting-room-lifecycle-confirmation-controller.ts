@@ -10,7 +10,7 @@ const DEFAULT_CONFIRMATION_WINDOW_MS = 4_000
 type WaitingRoomLifecycleDecision = WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision
 
 type WaitingRoomLifecycleTarget = {
-  kind: "session" | "sessions" | "machine" | "kernel"
+  kind: "session" | "sessions" | "machine" | "kernel" | "slice"
   id: string
   label: string
   verb: "archive" | "delete"
@@ -135,6 +135,14 @@ function waitingRoomLifecycleTarget(
       kind: "kernel",
       id: decision.kernelId,
       label: `kernel ${decision.label}`,
+      verb: "delete",
+    }
+  }
+  if (decision.action === "delete-slice") {
+    return {
+      kind: "slice",
+      id: decision.sliceId,
+      label: `slice ${decision.label}`,
       verb: "delete",
     }
   }

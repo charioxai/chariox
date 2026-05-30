@@ -21,6 +21,7 @@ import {
 } from "./session-api.js"
 import {
   createSlice,
+  deleteSlice,
   startSlice,
 } from "./slice-api.js"
 import { applyTheme } from "./theme.js"
@@ -248,6 +249,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
       terminals: deps.terminalsState(),
+      slices: deps.slicesState(),
     }),
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
@@ -261,6 +263,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRemoteMachines: deps.setRemoteMachinesState,
     getRemoteKernels: deps.remoteKernelsState,
     setRemoteKernels: deps.setRemoteKernelsState,
+    getSlices: deps.slicesState,
+    setSlices: deps.setSlicesState,
+    deleteSlice: (sliceRef) => deleteSlice(deps.client, sliceRef),
     hideRemoteKernel: deps.waitingRoomHiddenKernelController.hideKernel,
     invalidateInventory: waitingRoomInventoryRefreshController.invalidate,
     reconcileWaitingRoom,

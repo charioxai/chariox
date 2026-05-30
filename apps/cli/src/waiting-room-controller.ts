@@ -89,6 +89,7 @@ export type WaitingRoomDeleteDecision =
   | { action: "delete-all-sessions"; sessions: SessionListEntry[] }
   | { action: "delete-machine"; machineId: string; label: string }
   | { action: "delete-kernel"; kernelId: string; label: string }
+  | { action: "delete-slice"; sliceId: string; label: string }
   | { action: "error"; message: string }
 
 export type WaitingRoomModelSelectionDecision =
@@ -495,9 +496,25 @@ export function deriveWaitingRoomDeleteDecision(options: {
     }
   }
 
+  if (options.state.focus === "slice-entry" && choice.sliceInventory) {
+    const label = choice.sliceInventory.name || choice.sliceInventory.id
+    const activeAgents = choice.sliceInventory.agent_ids?.length ?? 0
+    if (activeAgents > 0) {
+      return {
+        action: "error",
+        message: `slice ${label} has ${activeAgents} active agent${activeAgents === 1 ? "" : "s"}`,
+      }
+    }
+    return {
+      action: "delete-slice",
+      sliceId: choice.sliceInventory.id,
+      label,
+    }
+  }
+
   return {
     action: "error",
-    message: "select a session, inactive machine, or inactive kernel to delete",
+    message: "select a session, inactive machine, inactive kernel, or idle slice to delete",
   }
 }
 

@@ -26,6 +26,8 @@ const {
   setSliceProviderAuthAliasRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
 const { handleSliceSlashCommand } = await import('../dist/slice-command-handlers.js')
+const { createWaitingRoomLifecycleActionController } = await import('../dist/waiting-room-lifecycle-action-controller.js')
+const { createWaitingRoomLifecycleConfirmationController } = await import('../dist/waiting-room-lifecycle-confirmation-controller.js')
 
 function log(message, details) {
   if (details === undefined) console.log(`[slice-lifecycle-drill] ${message}`)
@@ -230,6 +232,72 @@ async function runSliceSlashCommandDrill(client, workspace) {
   log('slash-command-pass', { slice: commandSlice.id, opened: openedUrls[0] })
 }
 
+async function runWaitingRoomSliceDeleteDrill(client, workspace) {
+  let slices = [
+    variant(await client.send(createSliceRequest({
+      name: 'slice-waiting-room-delete',
+      displayMode: 'headless',
+      workspaceId: workspace,
+      worktreeId: workspace,
+      workspaceMount: workspace,
+    })), 'SliceCreated').slice,
+  ]
+  const footers = []
+  let refreshCount = 0
+  let invalidateCount = 0
+  const controller = createWaitingRoomLifecycleActionController({
+    isKernelConnected: () => true,
+    connectDetachedKernel: async () => {},
+    getWaitingRoomState: () => ({
+      focus: 'slice-entry',
+      sessionIndex: 0,
+      machineIndex: 0,
+      remoteKernelIndex: 0,
+      sliceIndex: 0,
+      terminalIndex: 0,
+      worktreeSelectionId: `existing:${workspace}`,
+      providerId: 'opencode',
+      modelId: 'opencode/gpt-5.4',
+      effort: 'high',
+      themeId: 'opencode',
+      introStep: 0,
+      keyState: { up: false, down: false, left: false, right: false },
+    }),
+    getRemoteState: () => ({ slices }),
+    getAvailableSessions: () => [],
+    setAvailableSessions: () => {},
+    getProviderCatalog: () => ({ all: [], default: {}, connected: [] }),
+    getWorkspaceTarget: () => workspace,
+    confirmationController: createWaitingRoomLifecycleConfirmationController(),
+    archiveSessionById: async () => { throw new Error('unexpected archive') },
+    deleteSessionByRef: async () => { throw new Error('unexpected session delete') },
+    forgetRemoteMachine: async () => { throw new Error('unexpected machine delete') },
+    getRemoteMachines: () => [],
+    setRemoteMachines: () => {},
+    getRemoteKernels: () => [],
+    setRemoteKernels: () => {},
+    getSlices: () => slices,
+    setSlices: (nextSlices) => { slices = nextSlices },
+    deleteSlice: async (sliceRef) => variant(await client.send(deleteSliceRequest(sliceRef)), 'SliceDeleted').slice,
+    hideRemoteKernel: () => {},
+    invalidateInventory: () => { invalidateCount += 1 },
+    reconcileWaitingRoom: () => {},
+    refreshWaitingRoomData: async () => { refreshCount += 1 },
+    sessionBrowserOpen: () => false,
+    closeSessionBrowserDialog: () => {},
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+  })
+
+  await controller.applyAction('delete')
+  assert(footers.at(-1)?.message === 'press D again to delete slice slice-waiting-room-delete', 'waiting room delete should ask for slice confirmation')
+  await controller.applyAction('delete')
+  assert(footers.at(-1)?.message === 'deleted slice slice-waiting-room-delete', 'waiting room delete should delete an idle slice')
+  assert(slices.length === 0, 'waiting room delete should remove the deleted slice from local inventory')
+  assert(refreshCount === 1 && invalidateCount === 1, 'waiting room delete should refresh inventory after deletion')
+  log('waiting-room-delete-pass', { footer: footers.at(-1)?.message })
+}
+
 async function main() {
   await assertDockerReady()
   const dockerHost = await currentDockerHost()
@@ -316,6 +384,7 @@ async function main() {
     log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
 
     await runSliceSlashCommandDrill(client, workspace)
+    await runWaitingRoomSliceDeleteDrill(client, workspace)
 
     const secondSlice = variant(await client.send(createSliceRequest({
       name: 'slice-drill-second-account',

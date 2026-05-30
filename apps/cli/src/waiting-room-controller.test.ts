@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import type { SliceRecord } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
@@ -473,6 +474,35 @@ test("deriveWaitingRoomDeleteDecision selects inactive machines and kernels", ()
   })
 })
 
+test("deriveWaitingRoomDeleteDecision selects idle slices and blocks active slices", () => {
+  const idleDecision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    sessions: [],
+    catalog: catalog(),
+    remote: {
+      slices: [slice("slice-1", "linux-dev")],
+    },
+  })
+  const activeDecision = deriveWaitingRoomDeleteDecision({
+    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    sessions: [],
+    catalog: catalog(),
+    remote: {
+      slices: [slice("slice-2", "busy-dev", { agent_ids: ["agent-1", "agent-2"] })],
+    },
+  })
+
+  assert.deepEqual(idleDecision, {
+    action: "delete-slice",
+    sliceId: "slice-1",
+    label: "linux-dev",
+  })
+  assert.deepEqual(activeDecision, {
+    action: "error",
+    message: "slice busy-dev has 2 active agents",
+  })
+})
+
 test("deriveWaitingRoomModelSelectionDecision validates models and normalizes variants", () => {
   const success = deriveWaitingRoomModelSelectionDecision({
     modelId: "opencode/gpt-5.4",
@@ -619,6 +649,29 @@ function session(id: string): SessionListEntry {
     status: "Created",
     created_at_ms: 1,
     attachment_ids: [],
+  }
+}
+
+function slice(id: string, name: string, overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id,
+    name,
+    owner_kernel_id: "kernel-local",
+    owner_machine_id: "machine-local",
+    backend: "local_docker",
+    os: "linux",
+    status: "stopped",
+    workspace_mount: "/workspace",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    worker_kernel_ref: `slice:${id}`,
+    worker_kernel_id: `kernel-${id}`,
+    worker_machine_id: `machine-${id}`,
+    providers: ["codex"],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+    ...overrides,
   }
 }
 

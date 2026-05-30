@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import type { SliceRecord } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -92,11 +93,44 @@ test("waiting room lifecycle action hides inactive kernels", async () => {
   assert.equal(harness.footerMessages().at(-1)?.message, "deleted kernel kernel-1")
 })
 
+test("waiting room lifecycle action deletes idle slices", async () => {
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    slices: [
+      slice("slice-1", "linux-dev"),
+      slice("slice-2", "other-dev"),
+    ],
+  })
+
+  await harness.controller.applyAction("delete")
+
+  assert.deepEqual(harness.deletedSliceIds(), ["slice-1"])
+  assert.deepEqual(harness.slices().map((candidate) => candidate.id), ["slice-2"])
+  assert.equal(harness.invalidateCount(), 1)
+  assert.equal(harness.refreshCount(), 1)
+  assert.equal(harness.footerMessages().at(-1)?.message, "deleted slice linux-dev")
+})
+
+test("waiting room lifecycle action blocks active slice deletion before confirmation", async () => {
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "slice-entry", sliceIndex: 0 }),
+    slices: [
+      slice("slice-1", "busy-dev", { agent_ids: ["agent-1"] }),
+    ],
+  })
+
+  await harness.controller.applyAction("delete")
+
+  assert.deepEqual(harness.deletedSliceIds(), [])
+  assert.equal(harness.footerMessages().at(-1)?.message, "slice busy-dev has 1 active agent")
+})
+
 function createHarness(options: {
   state?: WaitingRoomState
   sessions?: SessionListEntry[]
   remoteMachines?: WaitingRoomLifecycleActionControllerDeps["getRemoteMachines"] extends () => infer T ? T : never
   remoteKernels?: WaitingRoomLifecycleActionControllerDeps["getRemoteKernels"] extends () => infer T ? T : never
+  slices?: SliceRecord[]
   confirmationController?: WaitingRoomLifecycleConfirmationController
   sessionBrowserOpen?: boolean
 } = {}) {
@@ -106,11 +140,13 @@ function createHarness(options: {
   ]
   let remoteMachines = options.remoteMachines ?? []
   let remoteKernels = options.remoteKernels ?? []
+  let slices = options.slices ?? []
   const state = options.state ?? waitingRoomState({ focus: "session" })
   const archivedSessionIds: string[] = []
   const deletedSessionIds: string[] = []
   const forgottenMachineIds: string[] = []
   const hiddenKernelIds: string[] = []
+  const deletedSliceIds: string[] = []
   const reconciledStates: WaitingRoomState[] = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   let invalidateCount = 0
@@ -124,6 +160,7 @@ function createHarness(options: {
     getRemoteState: () => ({
       machines: remoteMachines,
       kernels: remoteKernels,
+      slices,
     }),
     getAvailableSessions: () => availableSessions,
     setAvailableSessions: (sessions) => {
@@ -152,6 +189,14 @@ function createHarness(options: {
     setRemoteKernels: (kernels) => {
       remoteKernels = kernels
     },
+    getSlices: () => slices,
+    setSlices: (nextSlices) => {
+      slices = nextSlices
+    },
+    deleteSlice: async (sliceRef) => {
+      deletedSliceIds.push(sliceRef)
+      return slices.find((candidate) => candidate.id === sliceRef) ?? slice(sliceRef, sliceRef)
+    },
     hideRemoteKernel: (kernelId) => {
       hiddenKernelIds.push(kernelId)
     },
@@ -179,10 +224,12 @@ function createHarness(options: {
     availableSessions: () => availableSessions,
     remoteMachines: () => remoteMachines,
     remoteKernels: () => remoteKernels,
+    slices: () => slices,
     archivedSessionIds: () => archivedSessionIds,
     deletedSessionIds: () => deletedSessionIds,
     forgottenMachineIds: () => forgottenMachineIds,
     hiddenKernelIds: () => hiddenKernelIds,
+    deletedSliceIds: () => deletedSliceIds,
     reconciledStates: () => reconciledStates,
     footerMessages: () => footerMessages,
     invalidateCount: () => invalidateCount,
@@ -229,6 +276,29 @@ function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomStat
       left: false,
       right: false,
     },
+    ...overrides,
+  }
+}
+
+function slice(id: string, name: string, overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id,
+    name,
+    owner_kernel_id: "kernel-local",
+    owner_machine_id: "machine-local",
+    backend: "local_docker",
+    os: "linux",
+    status: "stopped",
+    workspace_mount: "/workspace",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    worker_kernel_ref: `slice:${id}`,
+    worker_kernel_id: `kernel-${id}`,
+    worker_machine_id: `machine-${id}`,
+    providers: ["codex"],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
     ...overrides,
   }
 }

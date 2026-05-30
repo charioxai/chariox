@@ -1,4 +1,5 @@
 import type {
+  SliceRecord,
   WaitingRoomRemoteKernelView,
   WaitingRoomRemoteMachineView,
 } from "./cli-types.js"
@@ -34,6 +35,9 @@ export type WaitingRoomLifecycleActionControllerDeps = {
   setRemoteMachines: (machines: WaitingRoomRemoteMachineView[]) => void
   getRemoteKernels: () => WaitingRoomRemoteKernelView[]
   setRemoteKernels: (kernels: WaitingRoomRemoteKernelView[]) => void
+  getSlices: () => SliceRecord[]
+  setSlices: (slices: SliceRecord[]) => void
+  deleteSlice: (sliceRef: string) => Promise<SliceRecord>
   hideRemoteKernel: (kernelId: string) => void
   invalidateInventory: () => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
@@ -159,6 +163,13 @@ export function createWaitingRoomLifecycleActionController(
           deps.setRemoteKernels(deps.getRemoteKernels().filter((kernel) => kernel.kernel_id !== decision.kernelId))
           deps.reconcileWaitingRoom(deps.getWaitingRoomState())
           deps.flashFooter(`deleted kernel ${decision.label}`, "error")
+          return
+        }
+        if (decision.action === "delete-slice") {
+          const deleted = await deps.deleteSlice(decision.sliceId)
+          deps.setSlices(deps.getSlices().filter((slice) => slice.id !== deleted.id))
+          await refreshAfterSessionMutation()
+          deps.flashFooter(`deleted slice ${decision.label}`, "error")
         }
       } catch (error) {
         deps.warn?.("waiting room session lifecycle action failed", {

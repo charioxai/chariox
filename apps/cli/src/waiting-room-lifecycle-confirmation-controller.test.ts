@@ -96,6 +96,28 @@ test("waiting room lifecycle confirmation formats bulk archive targets", () => {
   })
 })
 
+test("waiting room lifecycle confirmation formats slice delete targets", () => {
+  const controller = createWaitingRoomLifecycleConfirmationController()
+
+  const result = controller.confirm("delete", {
+    action: "delete-slice",
+    sliceId: "slice-1",
+    label: "linux-dev",
+  })
+
+  assert.deepEqual(result, {
+    action: "await-confirmation",
+    target: {
+      kind: "slice",
+      id: "slice-1",
+      label: "slice linux-dev",
+      verb: "delete",
+    },
+    message: "press D again to delete slice linux-dev",
+    tone: "error",
+  })
+})
+
 test("waiting room lifecycle confirmation can be cleared explicitly", () => {
   const controller = createWaitingRoomLifecycleConfirmationController()
 
