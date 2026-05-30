@@ -69,10 +69,10 @@ export async function executeSessionCommand(
         return { ok: false, message: placement.error }
       }
       if (placement.options.kernelRef) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|new:headed|new:headless|<slice-ref>]" }
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>]" }
       }
       if (placement.options.positional.length > 1) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|new:headed|new:headless|<slice-ref>]" }
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>]" }
       }
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree

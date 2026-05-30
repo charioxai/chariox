@@ -382,7 +382,7 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
-test("executeShellCommand creates and starts a headed slice for a new session", async () => {
+test("executeShellCommand creates and starts a headless slice for a new session", async () => {
   const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
   const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
@@ -399,7 +399,7 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
     throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
-  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new:headed as s"), context, {
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new as s"), context, {
     client: fake.client,
     resolveExistingDirectory: async () => "/repo/qa",
   })
@@ -419,7 +419,7 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
       name: "<dynamic>",
       backend: "local_docker",
       os: "linux",
-      display_mode: "headed",
+      display_mode: "headless",
       workspace_id: "/repo",
       worktree_id: "/repo/qa",
       workspace_mount: "/repo/qa",

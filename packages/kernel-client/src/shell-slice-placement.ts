@@ -16,7 +16,7 @@ export type ShellSlicePlacementDeps = {
 }
 
 export function shellSliceCreatesPlacement(sliceRef: string | undefined): boolean {
-  return sliceRef === "new" || sliceRef === "new:headless" || sliceRef === "new:headed"
+  return sliceRef === "new"
 }
 
 export async function resolveShellSliceRef(
@@ -32,10 +32,9 @@ export async function resolveShellSliceRef(
     await deps.client.send(startSliceRequest(sliceSelection))
     return sliceSelection
   }
-  const displayMode = sliceSelection === "new:headed" ? "headed" : "headless"
   const created = await deps.client.send(createSliceRequest({
     name: defaultShellSliceName(worktree),
-    displayMode,
+    displayMode: "headless",
     workspaceId: context.workspace,
     worktreeId: worktree,
     workspaceMount: worktree,

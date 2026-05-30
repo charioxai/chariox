@@ -410,7 +410,7 @@ test("executeShellCommand treats --slice off as local agent placement", async ()
   assert.deepEqual(result.contextUpdates, { agentId: "agent-local" })
 })
 
-test("executeShellCommand creates and starts a headed slice for agent spawn", async () => {
+test("executeShellCommand creates and starts a headless slice for agent spawn", async () => {
   const agent = makeAgent({
     id: "agent-slice",
     agent_ref: "agent-slice",
@@ -445,7 +445,7 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
     effort: "low",
   })
   const result = await executeShellCommand(
-    parseShellCommand("agent spawn qa --slice new:headed --worktree ../repo-feature --branch feature/login"),
+    parseShellCommand("agent spawn qa --slice new --worktree ../repo-feature --branch feature/login"),
     context,
     {
       client: fake.client,
@@ -468,7 +468,7 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
       name: "<dynamic>",
       backend: "local_docker",
       os: "linux",
-      display_mode: "headed",
+      display_mode: "headless",
       workspace_id: "/repo",
       worktree_id: "/repo-feature",
       workspace_mount: "/repo-feature",
