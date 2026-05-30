@@ -134,6 +134,38 @@ async function writeCodexAuth(home, accountId) {
   await writeFile(path.join(home, '.codex', 'auth.json'), JSON.stringify({ account_id: accountId, auth_mode: 'api-key' }), 'utf8')
 }
 
+async function writeOpenCodeAuth(home) {
+  const authDir = path.join(home, '.local', 'share', 'opencode')
+  await mkdir(authDir, { recursive: true })
+  await writeFile(path.join(authDir, 'auth.json'), JSON.stringify({
+    openai: { type: 'oauth', accountId: 'slice-drill-opencode-openai' },
+    opencode: { type: 'api', accountId: 'slice-drill-opencode-api' },
+  }), 'utf8')
+}
+
+async function writeClaudeAuth(home) {
+  await mkdir(path.join(home, '.claude'), { recursive: true })
+  await writeFile(path.join(home, '.claude.json'), JSON.stringify({
+    userID: 'slice-drill-claude-user',
+    oauthAccount: {
+      accountUuid: 'slice-drill-claude-account',
+      organizationUuid: 'slice-drill-claude-org',
+      organizationType: 'team',
+      billingType: 'pro',
+    },
+  }), 'utf8')
+}
+
+async function writeProviderAuthFixtures(home, codexAccountId) {
+  await writeCodexAuth(home, codexAccountId)
+  await writeOpenCodeAuth(home)
+  await writeClaudeAuth(home)
+}
+
+function providerAuth(slice, provider, predicate) {
+  return slice.provider_auth?.some((auth) => auth.provider === provider && (!predicate || predicate(auth)))
+}
+
 async function main() {
   await assertDockerReady()
   const dockerHost = await currentDockerHost()
@@ -172,7 +204,7 @@ async function main() {
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await mkdir(path.join(home, '.codex'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
-    await writeCodexAuth(home, 'slice-drill-account-1')
+    await writeProviderAuthFixtures(home, 'slice-drill-account-1')
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
@@ -205,8 +237,11 @@ async function main() {
 
     const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'codex')), 'SliceProviderAuthImported')
     assert(imported.status === 'imported', `provider auth import should succeed, got ${imported.status}`)
-    assert(imported.slice.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'codex account summary should be recorded on the slice')
-    log('auth-imported', { provider: imported.provider })
+    assert(providerAuth(imported.slice, 'codex', (auth) => auth.account_id === 'slice-drill-account-1'), 'codex account summary should be recorded on the slice')
+    assert(providerAuth(imported.slice, 'opencode:openai', (auth) => auth.account_id === 'slice-drill-opencode-openai' && auth.auth_type === 'oauth'), 'OpenCode OpenAI account summary should be recorded on the slice')
+    assert(providerAuth(imported.slice, 'opencode:opencode', (auth) => auth.account_id === 'slice-drill-opencode-api' && auth.auth_type === 'api'), 'OpenCode native account summary should be recorded on the slice')
+    assert(providerAuth(imported.slice, 'claude', (auth) => auth.account_id === 'slice-drill-claude-user' && auth.organization_id === 'slice-drill-claude-org' && auth.subscription_type === 'pro'), 'Claude account summary should be recorded on the slice')
+    log('auth-imported', { provider: imported.provider, summaries: imported.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
     const secondSlice = variant(await client.send(createSliceRequest({
       name: 'slice-drill-second-account',
