@@ -40,6 +40,7 @@ SLICE_CLAUDE_CREDENTIALS="${ARROBA_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.cred
 SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
+SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
 
 log() {
   printf '[slice-spike] %s\n' "$*" >&2
@@ -52,7 +53,7 @@ fail() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
@@ -252,6 +253,43 @@ print_provider_auth_status() {
   exec_slice bash -lc "echo '--- provider auth'; codex login status || true; opencode providers list || true; claude auth status --text || claude auth status || true"
 }
 
+provider_login_command() {
+  case "$SLICE_LOGIN_PROVIDER" in
+    codex)
+      printf '%s\n' "codex login --device-auth"
+      ;;
+    opencode|opencode:openai)
+      printf '%s\n' "opencode providers login -p openai -m '$SLICE_OPENCODE_LOGIN_METHOD'"
+      ;;
+    claude|claude:claudeai)
+      printf '%s\n' "claude auth login --claudeai"
+      ;;
+    *)
+      fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"
+      ;;
+  esac
+}
+
+start_provider_login() {
+  ensure_container
+  local safe_provider
+  safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
+  local session_name="arroba-slice-login-${safe_provider}"
+  local log_file="/opt/arroba-slice/logs/provider-login-${safe_provider}.log"
+  local command_text
+  command_text="$(provider_login_command)"
+  log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
+  docker exec -u slice "$SLICE_NAME" bash -lc "
+    set -euo pipefail
+    mkdir -p /opt/arroba-slice/logs
+    rm -f '$log_file'
+    screen -S '$session_name' -X quit >/dev/null 2>&1 || true
+    screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[arroba] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
+  "
+  sleep 3
+  docker exec -u slice "$SLICE_NAME" bash -lc "cat '$log_file' 2>/dev/null || true"
+}
+
 print_status() {
   log "container: $SLICE_NAME"
   exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; claude --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=sandboxed-headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
@@ -330,6 +368,10 @@ main() {
       require_docker
       import_provider_auth
       print_provider_auth_status
+      ;;
+    start-provider-login)
+      require_docker
+      start_provider_login
       ;;
     login-codex)
       require_docker

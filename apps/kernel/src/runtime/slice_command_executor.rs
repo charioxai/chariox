@@ -4,6 +4,7 @@ use crate::error::DaemonError;
 use crate::local::{
     CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonRequest,
     LocalDaemonResponse, SetSliceProviderAuthAliasRequest, SliceRefRequest,
+    StartSliceProviderLoginRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -34,6 +35,10 @@ pub(crate) async fn execute_slice_request(
         }
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
             execute_import_slice_provider_auth_request(runtime_state, config_projection, request)
+                .await
+        }
+        LocalDaemonRequest::StartSliceProviderLogin(request) => {
+            execute_start_slice_provider_login_request(runtime_state, config_projection, request)
                 .await
         }
         LocalDaemonRequest::SetSliceProviderAuthAlias(request) => {
@@ -228,6 +233,40 @@ pub(crate) async fn execute_get_slice_display_endpoint_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
     Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+}
+
+pub(crate) async fn execute_start_slice_provider_login_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: StartSliceProviderLoginRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    if slice.backend != crate::slice::SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.login",
+            message: format!(
+                "slice provider login is only implemented for local Docker slices, got `{:?}`",
+                slice.backend
+            ),
+        });
+    }
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let resolved_slice = slice.clone();
+    let provider = request.provider.clone();
+    let login = tokio::task::spawn_blocking(move || {
+        crate::slice::start_local_docker_slice_provider_login(
+            &resolved_slice,
+            &provider,
+            &docker_options,
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.auth.login",
+        message: format!("slice provider login task failed: {error}"),
+    })??;
+    Ok(LocalDaemonResponse::SliceProviderLoginStarted { slice, login })
 }
 
 pub(crate) async fn execute_set_slice_provider_auth_alias_request(

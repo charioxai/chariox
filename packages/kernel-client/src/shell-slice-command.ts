@@ -10,6 +10,7 @@ import {
   importSliceProviderAuthRequest,
   listSlicesRequest,
   setSliceProviderAuthAliasRequest,
+  startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
 } from "./ipc-requests.js"
@@ -118,6 +119,30 @@ export async function executeSliceCommand(
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
         return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
       }
+      if (first === "login") {
+        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = rest.length > 1 ? rest[1] : rest[0]
+        if (!provider) {
+          return { ok: false, message: "usage: slice auth login [slice-ref] <provider>" }
+        }
+        const response = await deps.client.send(startSliceProviderLoginRequest(sliceRef, provider))
+        const payload = expectVariant<{
+          slice: SliceRecord
+          login: {
+            provider: string
+            login_kind: string
+            verification_url?: string | null
+            user_code?: string | null
+            status: string
+            message: string
+          }
+        }>(response, "SliceProviderLoginStarted")
+        return {
+          ok: true,
+          message: formatSliceLoginMessage(payload.slice, payload.login),
+          data: payload,
+        }
+      }
       if (first === "alias") {
         const hasExplicitSlice = rest.length >= 3
         const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
@@ -137,11 +162,29 @@ export async function executeSliceCommand(
           data: payload,
         }
       }
-      return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
+      return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|auth login|auth alias|screen" }
   }
+}
+
+function formatSliceLoginMessage(
+  slice: SliceRecord,
+  login: {
+    provider: string
+    verification_url?: string | null
+    user_code?: string | null
+    status: string
+    message: string
+  },
+): string {
+  return [
+    `slice ${formatSliceLabel(slice)} auth login ${login.provider}: ${login.status}`,
+    login.verification_url ? `url=${login.verification_url}` : "",
+    login.user_code ? `code=${login.user_code}` : "",
+    login.message,
+  ].filter(Boolean).join("\n")
 }
 
 function resourceResult(

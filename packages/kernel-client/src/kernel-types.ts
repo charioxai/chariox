@@ -1078,7 +1078,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 72
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 73
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -1147,6 +1147,16 @@ export type ProviderLoginStart = {
   auth_url: string | null
   verification_url: string | null
   user_code: string | null
+}
+
+export type SliceProviderLoginStart = {
+  provider: string
+  login_kind: string
+  auth_url?: string | null
+  verification_url?: string | null
+  user_code?: string | null
+  status: string
+  message: string
 }
 
 export type ProviderLogoutResult = {

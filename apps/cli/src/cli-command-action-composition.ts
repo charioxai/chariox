@@ -130,6 +130,7 @@ import {
   importSliceProviderAuth,
   listSlices,
   setSliceProviderAuthAlias,
+  startSliceProviderLogin,
   startSlice,
   stopSlice,
 } from "./slice-api.js"
@@ -441,6 +442,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     importSliceProviderAuth: async (sliceRef, provider) => {
       const result = await importSliceProviderAuth(client, sliceRef, provider)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    startSliceProviderLogin: async (sliceRef, provider) => {
+      const result = await startSliceProviderLogin(client, sliceRef, provider)
       setSlicesState(await listSlices(client))
       return result
     },

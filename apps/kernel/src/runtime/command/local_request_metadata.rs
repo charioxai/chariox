@@ -326,6 +326,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StopSlice(_) => "slice.stop",
         LocalDaemonRequest::DeleteSlice(_) => "slice.delete",
         LocalDaemonRequest::ImportSliceProviderAuth(_) => "slice.auth.import",
+        LocalDaemonRequest::StartSliceProviderLogin(_) => "slice.auth.login",
         LocalDaemonRequest::SetSliceProviderAuthAlias(_) => "slice.auth.alias",
         LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",

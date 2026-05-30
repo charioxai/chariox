@@ -38,6 +38,12 @@ pub struct ImportSliceProviderAuthRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSliceProviderLoginRequest {
+    pub slice_ref: String,
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetSliceProviderAuthAliasRequest {
     pub slice_ref: String,
     pub provider: String,

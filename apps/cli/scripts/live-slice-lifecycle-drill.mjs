@@ -20,6 +20,7 @@ const {
   listSessionsRequest,
   listSlicesRequest,
   spawnAgentRequest,
+  startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
@@ -244,6 +245,12 @@ async function main() {
     assert(providerAuth(imported.slice, 'opencode:opencode', (auth) => auth.account_id === 'slice-drill-opencode-api' && auth.auth_type === 'api'), 'OpenCode native account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'claude', (auth) => auth.account_id === 'slice-drill-claude-user' && auth.organization_id === 'slice-drill-claude-org' && auth.subscription_type === 'pro'), 'Claude account summary should be recorded on the slice')
     log('auth-imported', { provider: imported.provider, summaries: imported.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
+
+    const login = variant(await client.send(startSliceProviderLoginRequest(created.id, 'codex')), 'SliceProviderLoginStarted').login
+    assert(login.status === 'started', `slice provider login should start, got ${login.status}`)
+    assert(login.verification_url?.startsWith('https://'), 'slice provider login should return a verification URL')
+    assert(login.user_code, 'slice provider login should return a device code for Codex')
+    log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
 
     const secondSlice = variant(await client.send(createSliceRequest({
       name: 'slice-drill-second-account',

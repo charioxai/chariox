@@ -101,6 +101,34 @@ test("slice command auth import can target the focused agent slice", async () =>
   assert.equal(harness.footers.at(-1)?.message, "slice auth import codex: imported")
 })
 
+test("slice command auth login starts provider login in focused agent slice", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("auth", "login", "codex"))
+
+  assert.deepEqual(harness.startedAuthLogins, [{ sliceRef: "linux-dev", provider: "codex" }])
+  assert.match(harness.notices.at(-1) ?? "", /url=https:\/\/auth.example/)
+  assert.match(harness.notices.at(-1) ?? "", /code=ABCD-EFGH/)
+  assert.equal(harness.footers.at(-1)?.message, "slice auth login codex: started")
+})
+
 test("slice command auth alias sets and clears provider aliases", async () => {
   const harness = sliceHarness()
 
@@ -130,6 +158,7 @@ function sliceHarness(options: {
   const displayEndpointRefs: string[] = []
   const openedUrls: string[] = []
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
+  const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
   const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
@@ -161,6 +190,20 @@ function sliceHarness(options: {
       importedAuth.push({ sliceRef, provider })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "imported" }
     },
+    startSliceProviderLogin: async (sliceRef, provider) => {
+      startedAuthLogins.push({ sliceRef, provider })
+      return {
+        slice: slice({ id: sliceRef, name: sliceRef }),
+        login: {
+          provider,
+          login_kind: "device",
+          verification_url: "https://auth.example",
+          user_code: "ABCD-EFGH",
+          status: "started",
+          message: "Open https://auth.example and enter ABCD-EFGH",
+        },
+      }
+    },
     setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
       aliasedAuth.push({ sliceRef, provider, alias })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, alias }
@@ -170,7 +213,7 @@ function sliceHarness(options: {
       return endpoint
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, aliasedAuth }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, startedAuthLogins, aliasedAuth }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

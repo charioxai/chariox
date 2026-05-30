@@ -55,6 +55,15 @@ export function importSliceProviderAuthRequest(sliceRef: string, provider: strin
   }
 }
 
+export function startSliceProviderLoginRequest(sliceRef: string, provider: string) {
+  return {
+    StartSliceProviderLogin: {
+      slice_ref: sliceRef,
+      provider,
+    },
+  }
+}
+
 export function setSliceProviderAuthAliasRequest(sliceRef: string, provider: string, alias: string | null) {
   return {
     SetSliceProviderAuthAlias: {

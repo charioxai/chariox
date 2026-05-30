@@ -46,6 +46,20 @@ impl Default for SliceDisplayMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceProviderLoginStart {
+    pub provider: String,
+    pub login_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRecord {
     pub id: String,
     pub name: String,
@@ -677,73 +691,14 @@ pub fn run_local_docker_slice_action(
         });
     }
     let script = linux_docker_slice_script()?;
-    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
     let mut command = Command::new(&script);
-    command
-        .arg(match action {
-            LocalDockerSliceAction::Provision => "provision",
-            LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
-            LocalDockerSliceAction::Stop => "stop",
-            LocalDockerSliceAction::Destroy => "destroy",
-        })
-        .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
-        .env("ARROBA_SLICE_DOCKER_IMAGE", &options.docker_image)
-        .env(
-            "ARROBA_SLICE_BUILD_IMAGE",
-            options.build_image.as_env_value(),
-        )
-        .env(
-            "ARROBA_SLICE_HOME_VOLUME",
-            format!("{}-home", local_docker_container_name(record)),
-        )
-        .env("ARROBA_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
-        .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
-        .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
-        .env("ARROBA_SLICE_CODEX_PORT_RANGE", ports.codex_range())
-        .env("ARROBA_SLICE_OPENCODE_PORT_RANGE", ports.opencode_range())
-        .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
-        .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
-        .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
-        .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
-        .env(
-            "ARROBA_SLICE_START_DESKTOP",
-            if record.display_mode == SliceDisplayMode::Headed {
-                "1"
-            } else {
-                "0"
-            },
-        )
-        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
-        .env("ARROBA_SLICE_START_RUNTIME", "1")
-        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
-        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "0.0.0.0")
-        .env(
-            "ARROBA_SLICE_DAEMON_ALIAS",
-            record.worker_kernel_ref.clone(),
-        )
-        .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
-        .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
-    if let Some(memory_mb) = options.memory_mb {
-        command.env("ARROBA_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
-    }
-    if let Some(cpus) = options.cpus.as_deref() {
-        command.env("ARROBA_SLICE_DOCKER_CPUS", cpus);
-    }
-    if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
-        command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
-    }
-    if let Some(relay) = relay {
-        command.env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
-        if let Some(container_relay_url) = relay.container_relay_url {
-            command.env(
-                "ARROBA_SLICE_RELAY_URL",
-                relay_url_for_container(&container_relay_url),
-            );
-        }
-    }
-    if let Some(workspace_mount) = record.workspace_mount.as_deref() {
-        command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
-    }
+    command.arg(match action {
+        LocalDockerSliceAction::Provision => "provision",
+        LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
+        LocalDockerSliceAction::Stop => "stop",
+        LocalDockerSliceAction::Destroy => "destroy",
+    });
+    configure_local_docker_slice_command(&mut command, record, relay, options);
 
     let log_path = local_docker_slice_action_log_path(&options.root, record, action);
     if let Some(parent) = log_path.parent() {
@@ -803,6 +758,196 @@ pub fn run_local_docker_slice_action(
             command_log_preview(&log_path)
         ),
     })
+}
+
+pub fn start_local_docker_slice_provider_login(
+    record: &SliceRecord,
+    provider: &str,
+    options: &LocalDockerSliceOptions,
+) -> Result<SliceProviderLoginStart, DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.login",
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    if record.os != "linux" {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.login",
+            message: format!(
+                "local Docker slices only support linux, got `{}`",
+                record.os
+            ),
+        });
+    }
+    let script = linux_docker_slice_script()?;
+    let mut command = Command::new(&script);
+    command
+        .arg("start-provider-login")
+        .env("ARROBA_SLICE_LOGIN_PROVIDER", provider);
+    configure_local_docker_slice_command(&mut command, record, None, options);
+    let output = command
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.auth.login",
+            message: format!(
+                "failed to start provider login in slice `{}`: {error}",
+                record.name
+            ),
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.login",
+            message: format!(
+                "provider login in slice `{}` failed with status {}: {}",
+                record.name,
+                output.status,
+                compact_login_message(&combined)
+            ),
+        });
+    }
+    let clean = compact_login_message(&combined);
+    let verification_url = first_url(&clean);
+    let user_code = first_device_code(&clean);
+    Ok(SliceProviderLoginStart {
+        provider: provider.to_string(),
+        login_kind: if user_code.is_some() {
+            "device".to_string()
+        } else {
+            "browser".to_string()
+        },
+        auth_url: verification_url.clone(),
+        verification_url,
+        user_code,
+        status: "started".to_string(),
+        message: clean,
+    })
+}
+
+fn configure_local_docker_slice_command(
+    command: &mut Command,
+    record: &SliceRecord,
+    relay: Option<LocalDockerSliceRelay>,
+    options: &LocalDockerSliceOptions,
+) {
+    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
+    command
+        .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
+        .env("ARROBA_SLICE_DOCKER_IMAGE", &options.docker_image)
+        .env(
+            "ARROBA_SLICE_BUILD_IMAGE",
+            options.build_image.as_env_value(),
+        )
+        .env(
+            "ARROBA_SLICE_HOME_VOLUME",
+            format!("{}-home", local_docker_container_name(record)),
+        )
+        .env("ARROBA_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
+        .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
+        .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
+        .env("ARROBA_SLICE_CODEX_PORT_RANGE", ports.codex_range())
+        .env("ARROBA_SLICE_OPENCODE_PORT_RANGE", ports.opencode_range())
+        .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
+        .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
+        .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
+        .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
+        .env(
+            "ARROBA_SLICE_START_DESKTOP",
+            if record.display_mode == SliceDisplayMode::Headed {
+                "1"
+            } else {
+                "0"
+            },
+        )
+        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
+        .env("ARROBA_SLICE_START_RUNTIME", "1")
+        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
+        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "0.0.0.0")
+        .env(
+            "ARROBA_SLICE_DAEMON_ALIAS",
+            record.worker_kernel_ref.clone(),
+        )
+        .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
+        .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
+    if let Some(memory_mb) = options.memory_mb {
+        command.env("ARROBA_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
+    }
+    if let Some(cpus) = options.cpus.as_deref() {
+        command.env("ARROBA_SLICE_DOCKER_CPUS", cpus);
+    }
+    if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
+        command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
+    }
+    if let Some(relay) = relay {
+        command.env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
+        if let Some(container_relay_url) = relay.container_relay_url {
+            command.env(
+                "ARROBA_SLICE_RELAY_URL",
+                relay_url_for_container(&container_relay_url),
+            );
+        }
+    }
+    if let Some(workspace_mount) = record.workspace_mount.as_deref() {
+        command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
+    }
+}
+
+fn compact_login_message(output: &str) -> String {
+    strip_ansi(output)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(24)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn first_url(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| part.starts_with("https://") || part.starts_with("http://"))
+        .map(|part| {
+            part.trim_matches(|ch: char| ch == ',' || ch == '.' || ch == ')' || ch == ']')
+                .to_string()
+        })
+}
+
+fn first_device_code(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| {
+            let trimmed = part.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+            trimmed.len() >= 8
+                && trimmed.contains('-')
+                && trimmed
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '-')
+        })
+        .map(|part| {
+            part.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+                .to_string()
+        })
 }
 
 pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay {
