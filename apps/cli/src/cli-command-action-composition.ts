@@ -439,7 +439,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return slice
     },
-    importSliceProviderAuth: async (sliceRef, provider) => importSliceProviderAuth(client, sliceRef, provider),
+    importSliceProviderAuth: async (sliceRef, provider) => {
+      const result = await importSliceProviderAuth(client, sliceRef, provider)
+      setSlicesState(await listSlices(client))
+      return result
+    },
     setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
       const result = await setSliceProviderAuthAlias(client, sliceRef, provider, alias)
       setSlicesState(await listSlices(client))
