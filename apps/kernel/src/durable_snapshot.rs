@@ -173,9 +173,13 @@ mod tests {
                     name: "linux-dev".to_string(),
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
+                    provider_auth: Vec::new(),
                     now_ms: 42,
                 },
             )

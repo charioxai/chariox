@@ -6,18 +6,26 @@ export function createSliceRequest(options: {
   name: string
   backend?: "local_docker" | "ssh_docker"
   os?: string
+  displayMode?: "headless" | "headed"
+  workspaceId?: string | null
+  worktreeId?: string | null
   workspaceMount?: string | null
   workerKernelRef?: string | null
   displayUrl?: string | null
+  providerAuth?: unknown[]
 }) {
   return {
     CreateSlice: {
       name: options.name,
       backend: options.backend ?? "local_docker",
       os: options.os ?? "linux",
+      display_mode: options.displayMode ?? "headless",
+      workspace_id: options.workspaceId ?? null,
+      worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,
       worker_kernel_ref: options.workerKernelRef ?? null,
       display_url: options.displayUrl ?? null,
+      provider_auth: options.providerAuth ?? [],
     },
   }
 }

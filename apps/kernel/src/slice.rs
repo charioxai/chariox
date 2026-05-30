@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy};
 use crate::error::DaemonError;
+use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +33,19 @@ pub enum SliceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceDisplayMode {
+    Headless,
+    Headed,
+}
+
+impl Default for SliceDisplayMode {
+    fn default() -> Self {
+        Self::Headless
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRecord {
     pub id: String,
     pub name: String,
@@ -39,9 +53,19 @@ pub struct SliceRecord {
     pub owner_machine_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_ids: Vec<String>,
     pub backend: SliceBackendKind,
     pub os: String,
+    #[serde(default)]
+    pub display_mode: SliceDisplayMode,
     pub status: SliceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,
     pub worker_kernel_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +76,8 @@ pub struct SliceRecord {
     pub relay_endpoint: Option<SliceRelayEndpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_auth: Vec<SliceProviderAuthSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_endpoint: Option<SliceDisplayEndpoint>,
     pub created_at_ms: u64,
@@ -98,9 +124,13 @@ pub struct CreateSliceInput {
     pub name: String,
     pub backend: SliceBackendKind,
     pub os: String,
+    pub display_mode: SliceDisplayMode,
+    pub workspace_id: Option<String>,
+    pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,
     pub worker_kernel_ref: Option<String>,
     pub display_url: Option<String>,
+    pub provider_auth: Vec<SliceProviderAuthSummary>,
     pub now_ms: u64,
 }
 
@@ -193,13 +223,17 @@ impl SliceStore {
             .worker_kernel_ref
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("slice:{}", input.name));
-        let display_url = input.display_url.or_else(|| {
-            let ports = LocalDockerSlicePorts::for_slice_id(&id);
-            Some(format!(
-                "http://127.0.0.1:{}/vnc.html?autoconnect=true",
-                ports.novnc
-            ))
-        });
+        let display_url = if input.display_mode == SliceDisplayMode::Headed {
+            input.display_url.or_else(|| {
+                let ports = LocalDockerSlicePorts::for_slice_id(&id);
+                Some(format!(
+                    "http://127.0.0.1:{}/vnc.html?autoconnect=true",
+                    ports.novnc
+                ))
+            })
+        } else {
+            None
+        };
         let display_endpoint = display_url.map(|url| SliceDisplayEndpoint {
             slice_id: id.clone(),
             kind: SliceDisplayEndpointKind::Novnc,
@@ -218,15 +252,21 @@ impl SliceStore {
             owner_kernel_id: owner_kernel_id.to_string(),
             owner_machine_id: owner_machine_id.to_string(),
             session_id: None,
+            session_ids: Vec::new(),
+            agent_ids: Vec::new(),
             backend: input.backend,
             os: input.os,
+            display_mode: input.display_mode,
             status: SliceStatus::Stopped,
+            workspace_id: input.workspace_id,
+            worktree_id: input.worktree_id,
             workspace_mount: input.workspace_mount,
             worker_kernel_ref,
             worker_kernel_id: None,
             worker_machine_id: None,
             relay_endpoint: None,
             providers: Vec::new(),
+            provider_auth: input.provider_auth,
             display_endpoint,
             created_at_ms: input.now_ms,
             updated_at_ms: input.now_ms,
@@ -351,9 +391,40 @@ impl SliceStore {
         Ok(record.clone())
     }
 
+    pub fn set_provider_auth(
+        &self,
+        slice_ref: &str,
+        provider_auth: Vec<SliceProviderAuthSummary>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.provider_auth",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.provider_auth = provider_auth;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
     pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
         let mut state = self.inner.lock().expect("slice store poisoned");
+        if !resolved.agent_ids.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.delete",
+                message: format!(
+                    "slice `{}` still has {} active agent(s)",
+                    resolved.name,
+                    resolved.agent_ids.len()
+                ),
+            });
+        }
         state
             .records
             .remove(&resolved.id)
@@ -379,20 +450,117 @@ impl SliceStore {
                     operation: "slice.attach_session",
                     message: format!("unknown slice `{slice_ref}`"),
                 })?;
-        if let Some(attached_session_id) = record.session_id.as_deref() {
-            if attached_session_id != session_id {
+        if !record.session_ids.iter().any(|value| value == session_id) {
+            record.session_ids.push(session_id.to_string());
+        }
+        record.session_id = Some(session_id.to_string());
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn detach_session(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.detach_session",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.session_ids.retain(|value| value != session_id);
+        if record.session_id.as_deref() == Some(session_id) {
+            record.session_id = record.session_ids.last().cloned();
+        }
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn attach_agent(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        agent_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.attach_agent",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if !record.session_ids.iter().any(|value| value == session_id) {
+            record.session_ids.push(session_id.to_string());
+        }
+        record.session_id = Some(session_id.to_string());
+        if !record.agent_ids.iter().any(|value| value == agent_id) {
+            record.agent_ids.push(agent_id.to_string());
+        }
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn detach_agent(
+        &self,
+        slice_ref: &str,
+        agent_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.detach_agent",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.agent_ids.retain(|value| value != agent_id);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn ensure_worktree_scope(
+        &self,
+        slice_ref: &str,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> Result<SliceRecord, DaemonError> {
+        let record = self.resolve(slice_ref)?;
+        if let (Some(expected), Some(actual)) = (workspace_id, record.workspace_id.as_deref()) {
+            if expected != actual {
                 return Err(DaemonError::LocalTransport {
-                    operation: "slice.attach_session",
+                    operation: "slice.scope",
                     message: format!(
-                        "slice `{}` is already attached to session `{attached_session_id}`",
+                        "slice `{}` belongs to workspace `{actual}`, not `{expected}`",
                         record.name
                     ),
                 });
             }
         }
-        record.session_id = Some(session_id.to_string());
-        record.updated_at_ms = now_ms;
-        Ok(record.clone())
+        if let (Some(expected), Some(actual)) = (worktree_id, record.worktree_id.as_deref()) {
+            if expected != actual {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.scope",
+                    message: format!(
+                        "slice `{}` belongs to worktree `{actual}`, not `{expected}`",
+                        record.name
+                    ),
+                });
+            }
+        }
+        Ok(record)
     }
 
     pub fn list_by_session(&self, session_id: &str) -> Vec<SliceRecord> {
@@ -400,7 +568,10 @@ impl SliceStore {
         state
             .records
             .values()
-            .filter(|record| record.session_id.as_deref() == Some(session_id))
+            .filter(|record| {
+                record.session_id.as_deref() == Some(session_id)
+                    || record.session_ids.iter().any(|value| value == session_id)
+            })
             .cloned()
             .collect()
     }
@@ -491,7 +662,14 @@ pub fn run_local_docker_slice_action(
         .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
         .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
         .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
-        .env("ARROBA_SLICE_START_DESKTOP", "1")
+        .env(
+            "ARROBA_SLICE_START_DESKTOP",
+            if record.display_mode == SliceDisplayMode::Headed {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
         .env("ARROBA_SLICE_START_RUNTIME", "1")
         .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
@@ -769,9 +947,13 @@ mod tests {
             name: name.to_string(),
             backend: SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
+            display_mode: SliceDisplayMode::Headed,
+            workspace_id: None,
+            worktree_id: None,
             workspace_mount: Some("/repo".to_string()),
             worker_kernel_ref: None,
             display_url: Some("http://127.0.0.1:6080".to_string()),
+            provider_auth: Vec::new(),
             now_ms: 42,
         }
     }
@@ -841,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_store_attaches_records_to_one_session() {
+    fn slice_store_attaches_records_to_multiple_sessions_and_agents() {
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
@@ -852,9 +1034,16 @@ mod tests {
             .expect("slice should attach");
 
         assert_eq!(attached.session_id.as_deref(), Some("session-1"));
+        assert_eq!(attached.session_ids, vec!["session-1"]);
         assert_eq!(attached.updated_at_ms, 44);
         assert_eq!(store.list_by_session("session-1").len(), 1);
-        assert!(store.attach_session(&slice.id, "session-2", 45).is_err());
+        let attached = store
+            .attach_agent(&slice.id, "session-2", "agent-2", 45)
+            .expect("slice should support another session in same worktree");
+        assert_eq!(attached.session_id.as_deref(), Some("session-2"));
+        assert_eq!(attached.session_ids, vec!["session-1", "session-2"]);
+        assert_eq!(attached.agent_ids, vec!["agent-2"]);
+        assert_eq!(store.list_by_session("session-2").len(), 1);
     }
 
     #[test]

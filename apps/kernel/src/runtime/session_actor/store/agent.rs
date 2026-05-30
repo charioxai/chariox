@@ -212,6 +212,7 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
+        let requested_worktree_for_scope = request.worktree_id.clone();
         let create_request = if let Some(worktree_id) = request.worktree_id {
             create_request.with_worktree(worktree_id)
         } else {
@@ -225,11 +226,36 @@ impl SessionRuntimeStore {
                 }))
                 .await;
         }
+        let slice_ref_for_agent = request.slice_ref.clone();
         let slice_kernel_ref = match request.slice_ref {
-            Some(slice_ref) => match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
-                Ok(kernel_ref) => Some(kernel_ref),
-                Err(error) => return self.with_session_projection_action_result(Err(error)).await,
-            },
+            Some(slice_ref) => {
+                let session = match self.state.session_snapshot(&request.session_id).await {
+                    Ok(session) => session,
+                    Err(error) => {
+                        return self.with_session_projection_action_result(Err(error)).await
+                    }
+                };
+                let requested_worktree_id = requested_worktree_for_scope
+                    .as_deref()
+                    .unwrap_or_else(|| session.worktree_id());
+                let scope_result = self
+                    .state
+                    .ensure_slice_worktree_scope(
+                        &slice_ref,
+                        session.workspace_id(),
+                        requested_worktree_id,
+                    )
+                    .await;
+                if let Err(error) = scope_result {
+                    return self.with_session_projection_action_result(Err(error)).await;
+                }
+                match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
+                    Ok(kernel_ref) => Some(kernel_ref),
+                    Err(error) => {
+                        return self.with_session_projection_action_result(Err(error)).await;
+                    }
+                }
+            }
             None => None,
         };
         let create_request = if let Some(kernel_ref) = request.kernel_ref {
@@ -247,6 +273,16 @@ impl SessionRuntimeStore {
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
+                if let Some(slice_ref) = slice_ref_for_agent {
+                    let agent_id = agent.id().to_string();
+                    if let Err(error) = self
+                        .state
+                        .attach_slice_agent(&slice_ref, &session_id, &agent_id)
+                        .await
+                    {
+                        return self.with_session_projection_action_result(Err(error)).await;
+                    }
+                }
                 self.state
                     .session_snapshot(&session_id)
                     .await

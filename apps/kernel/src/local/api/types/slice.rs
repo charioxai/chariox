@@ -10,12 +10,20 @@ pub struct CreateSliceRequest {
     pub backend: SliceBackendKind,
     #[serde(default = "default_slice_os")]
     pub os: String,
+    #[serde(default)]
+    pub display_mode: crate::slice::SliceDisplayMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_mount: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_kernel_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_auth: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

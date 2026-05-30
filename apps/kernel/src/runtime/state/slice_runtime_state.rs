@@ -17,9 +17,13 @@ impl KernelRuntimeState {
                 name: request.name,
                 backend: request.backend,
                 os: request.os,
+                display_mode: request.display_mode,
+                workspace_id: request.workspace_id,
+                worktree_id: request.worktree_id,
                 workspace_mount: request.workspace_mount,
                 worker_kernel_ref: request.worker_kernel_ref,
                 display_url: request.display_url,
+                provider_auth: request.provider_auth,
                 now_ms: crate::session::unix_epoch_ms(),
             },
         )?;
@@ -86,6 +90,20 @@ impl KernelRuntimeState {
                 crate::session::unix_epoch_ms(),
             )?;
         }
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
+    pub(crate) fn set_slice_provider_auth(
+        &self,
+        slice_ref: &str,
+        provider_auth: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.owned.slice_store.set_provider_auth(
+            slice_ref,
+            provider_auth,
+            crate::session::unix_epoch_ms(),
+        )?;
         self.append_slice_durable_event("slice.updated", &slice)?;
         Ok(slice)
     }

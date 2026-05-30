@@ -9,17 +9,14 @@ impl KernelRuntimeState {
         let response = if let Some(slice_ref) = slice_ref.as_deref() {
             {
                 let slice_ref = slice_ref.to_string();
+                let workspace_id = request.workspace_id.clone();
+                let worktree_id = request.worktree_id.clone();
                 self.with_app_side_effect(move |app| {
-                    let slice = app.slices().resolve(&slice_ref)?;
-                    if let Some(session_id) = slice.session_id.as_deref() {
-                        return Err(DaemonError::LocalTransport {
-                            operation: "slice.attach_session",
-                            message: format!(
-                                "slice `{}` is already attached to session `{session_id}`",
-                                slice.name
-                            ),
-                        });
-                    }
+                    app.slices().ensure_worktree_scope(
+                        &slice_ref,
+                        Some(&workspace_id),
+                        Some(&worktree_id),
+                    )?;
                     Ok(())
                 })
                 .await?;
@@ -33,11 +30,13 @@ impl KernelRuntimeState {
         if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
             if let Some(slice_ref) = slice_ref {
                 let session_id = session.id().to_string();
+                let agent_id = agent.id().to_string();
                 let slice = self
                     .with_app_side_effect(move |app| {
-                        app.slices().attach_session(
+                        app.slices().attach_agent(
                             &slice_ref,
                             &session_id,
+                            &agent_id,
                             crate::session::unix_epoch_ms(),
                         )
                     })
@@ -163,6 +162,49 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(crate) async fn ensure_slice_worktree_scope(
+        &self,
+        slice_ref: &str,
+        workspace_id: &str,
+        worktree_id: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice_ref = slice_ref.to_string();
+        let workspace_id = workspace_id.to_string();
+        let worktree_id = worktree_id.to_string();
+        self.with_app_side_effect(move |app| {
+            app.slices()
+                .ensure_worktree_scope(&slice_ref, Some(&workspace_id), Some(&worktree_id))
+        })
+        .await
+    }
+
+    pub(crate) async fn attach_slice_agent(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice_ref = slice_ref.to_string();
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        let slice = self
+            .with_app_side_effect(move |app| {
+                app.slices().attach_agent(
+                    &slice_ref,
+                    &session_id,
+                    &agent_id,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
+        self.owned.durable_state_store.append_event(
+            "slice.updated",
+            Some(slice.id.clone()),
+            serde_json::json!({ "slice": &slice }),
+        )?;
+        Ok(slice)
+    }
+
     pub(crate) async fn move_agent_to_remote(
         &self,
         session_id: &str,
@@ -184,15 +226,37 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let slice_ref = agent
+            .remote_execution()
+            .and_then(|remote| {
+                self.owned
+                    .slice_store
+                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
+            })
+            .map(|slice| slice.id);
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        if agent.remote_execution().is_none() {
-            return self.owned.destroy_agent(agent_id, caller_user_id);
+        let destroyed = if agent.remote_execution().is_none() {
+            self.owned.destroy_agent(agent_id, caller_user_id)?
+        } else {
+            self.with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
+            })
+            .await?
+        };
+        if let Some(slice_ref) = slice_ref {
+            let slice = self.owned.slice_store.detach_agent(
+                &slice_ref,
+                destroyed.id(),
+                crate::session::unix_epoch_ms(),
+            )?;
+            self.owned.durable_state_store.append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
         }
-        self.with_app_side_effect(|app| {
-            crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-        })
-        .await
+        Ok(destroyed)
     }
 
     pub(crate) async fn end_session(
@@ -241,30 +305,15 @@ impl KernelRuntimeState {
     async fn destroy_session_attached_slices(&self, session_id: &str) -> Result<(), DaemonError> {
         let attached_slices = self.owned.slice_store.list_by_session(session_id);
         for slice in attached_slices {
-            if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
-                let config = self.owned.config_projection.snapshot();
-                let docker_options = crate::slice::LocalDockerSliceOptions::from_config(&config);
-                let slice_for_task = slice.clone();
-                let supervisor_result = tokio::task::spawn_blocking(move || {
-                    crate::slice::run_local_docker_slice_action(
-                        &slice_for_task,
-                        crate::slice::LocalDockerSliceAction::Destroy,
-                        None,
-                        &docker_options,
-                    )
-                })
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "slice.destroy_session_attached",
-                    message: format!("slice supervisor task failed: {error}"),
-                })?;
-                supervisor_result?;
-            }
-            let deleted = self.owned.slice_store.delete(&slice.id)?;
+            let detached = self.owned.slice_store.detach_session(
+                &slice.id,
+                session_id,
+                crate::session::unix_epoch_ms(),
+            )?;
             self.owned.durable_state_store.append_event(
-                "slice.deleted",
-                Some(deleted.id.clone()),
-                serde_json::json!({ "slice": &deleted }),
+                "slice.updated",
+                Some(detached.id.clone()),
+                serde_json::json!({ "slice": &detached }),
             )?;
         }
         Ok(())

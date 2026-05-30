@@ -811,18 +811,37 @@ export type SliceRecord = {
   owner_kernel_id: string
   owner_machine_id: string
   session_id?: string | null
+  session_ids?: string[]
+  agent_ids?: string[]
   backend: "local_docker" | "ssh_docker"
   os: string
+  display_mode?: "headless" | "headed"
   status: "stopped" | "starting" | "running" | "unhealthy"
+  workspace_id?: string | null
+  worktree_id?: string | null
   workspace_mount?: string | null
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
   relay_endpoint?: SliceRelayEndpoint | null
   providers?: string[]
+  provider_auth?: SliceProviderAuthSummary[]
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type SliceProviderAuthSummary = {
+  provider: string
+  state: "unknown" | "not_configured" | "configured" | "authenticated"
+  auth_type?: string | null
+  account_id?: string | null
+  email?: string | null
+  organization_id?: string | null
+  organization_name?: string | null
+  subscription_type?: string | null
+  alias?: string | null
+  source: string
 }
 
 export type SliceRelayEndpoint = {
@@ -1059,7 +1078,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 70
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 71
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

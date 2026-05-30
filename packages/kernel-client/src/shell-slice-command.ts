@@ -144,7 +144,12 @@ function formatSlices(slices: SliceRecord[]): string {
 function formatSlice(slice: SliceRecord): string {
   const providers = (slice.providers ?? []).join(",") || "-"
   const display = slice.display_endpoint?.url ? ` display=${slice.display_endpoint.url}` : ""
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} providers=${providers}${display}`
+  const auth = (slice.provider_auth ?? [])
+    .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
+    .join(",") || "-"
+  const agents = slice.agent_ids?.length ?? 0
+  const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} agents=${agents}${scope} providers=${providers} auth=${auth}${display}`
 }
 
 function formatSliceLabel(slice: SliceRecord): string {

@@ -146,6 +146,16 @@ pub(crate) async fn execute_delete_slice_request(
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    if !resolved_slice.agent_ids.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.delete",
+            message: format!(
+                "slice `{}` still has {} active agent(s)",
+                resolved_slice.name,
+                resolved_slice.agent_ids.len()
+            ),
+        });
+    }
     if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
@@ -191,6 +201,11 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             operation: "slice.auth.import",
             message: format!("slice auth import task failed: {error}"),
         })??;
+        let provider_auth = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
+            .unwrap_or_default();
+        let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
         return Ok(LocalDaemonResponse::SliceProviderAuthImported {
             slice,
             provider: request.provider,
