@@ -118,7 +118,7 @@ export function parsePlacementOptions(
         error = "usage: /agent spawn [alias] [model] --slice off|new|new:headed|new:headless|<slice-ref>"
         break
       }
-      sliceRef = value
+      sliceRef = value === "off" ? undefined : value
       index += 1
       continue
     }

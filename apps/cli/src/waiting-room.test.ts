@@ -153,7 +153,7 @@ test("waiting room cycles slices for new sessions", () => {
 
   state = moveWaitingRoomFocus(state, [], 7, { slices })
   assert.equal(state.focus, "slice")
-  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "None")
+  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "off")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1, undefined, { slices })
   assert.deepEqual(waitingRoomChoice(state, [], catalog, { slices }).sliceCreate, { displayMode: "headless" })
@@ -194,7 +194,7 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[5]?.id, "worktree")
   assert.equal(firstWindow[6]?.id, "collaborators")
   assert.equal(firstWindow[7]?.id, "slice")
-  assert.equal(firstWindow[7]?.value, "None")
+  assert.equal(firstWindow[7]?.value, "off")
   assert.equal(firstWindow[8]?.id, "join-header")
   assert.equal(firstWindow[8]?.indent, 0)
   assert.equal(firstWindow[8]?.focused, true)
@@ -293,7 +293,7 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[5]?.id, "worktree")
   assert.equal(rows[6]?.id, "collaborators")
   assert.equal(rows[7]?.id, "slice")
-  assert.equal(rows[7]?.value, "None")
+  assert.equal(rows[7]?.value, "off")
   assert.equal(rows[8]?.id, "join-header")
   assert.equal(rows[8]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")

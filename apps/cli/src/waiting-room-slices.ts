@@ -62,7 +62,7 @@ export function formatWaitingRoomSliceSelection(selectionId: string | null | und
     return "New headed"
   }
   const slice = waitingRoomSelectedSlice(selectionId, slices)
-  return slice ? formatWaitingRoomSliceOption(slice) : "None"
+  return slice ? formatWaitingRoomSliceOption(slice) : "off"
 }
 
 export function formatWaitingRoomSliceLabel(slice: SliceRecord) {

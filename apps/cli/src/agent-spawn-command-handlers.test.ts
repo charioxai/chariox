@@ -111,6 +111,62 @@ test("agent spawn command can create and start a new headed slice", async () => 
   assert.equal(flashedMessage, "spawned agent agent-slice (builder) in slice:slice-created")
 })
 
+test("agent spawn command treats --slice off as normal local placement", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    prepareLocalGitWorktree: async (options) => {
+      calls.push(`prepare:${options.targetDirectory}:${options.branch}`)
+      return options.targetDirectory ?? "/workspace-feature"
+    },
+    createSlice: async () => {
+      throw new Error("slice off should not create a slice")
+    },
+    startSlice: async () => {
+      throw new Error("slice off should not start a slice")
+    },
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => { calls.push("rebuild") },
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => {
+      calls.push(`launch:${agentId}`)
+      return providerRun({ agent_instance_id: agentId })
+    },
+    setProviderRunState: (run) => { calls.push(`run:${run ? run.id : "null"}`) },
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, _worktreePlacement, sliceRef) => {
+      calls.push(`spawn:${alias}:${worktreeId}:${sliceRef ?? "none"}`)
+      const nextAgent = agent({
+        id: "agent-local",
+        agent_ref: "agent-local",
+        alias: alias ?? null,
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
+  }, ["builder", "codex/gpt-5.4", "--slice", "off", "--worktree", "/workspace-feature", "--branch", "feature/login"])
+
+  assert.deepEqual(calls, [
+    "prepare:/workspace-feature:feature/login",
+    "spawn:builder:/workspace-feature:none",
+    "launch:agent-local",
+    "run:run-1",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "spawned agent agent-local (builder) in /workspace-feature")
+})
+
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id: "agent-0",

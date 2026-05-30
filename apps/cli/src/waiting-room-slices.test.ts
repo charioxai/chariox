@@ -53,7 +53,7 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
   assert.equal(waitingRoomSelectedSlice("linux-dev", slices)?.id, "slice-1")
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
   assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (0 agents)")
-  assert.equal(formatWaitingRoomSliceSelection("none", slices), "None")
+  assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
   assert.equal(formatWaitingRoomSliceSelection("new:headed", slices), "New headed")
   assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new:headless")
   assert.equal(cycleWaitingRoomSliceSelectionId("new:headless", slices, 1), "new:headed")
