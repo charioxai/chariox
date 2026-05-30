@@ -177,6 +177,7 @@ async function main() {
 
   const root = path.join(repoRoot, 'target', 'live-slice-lifecycle-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
+  const otherWorktree = path.join(root, 'workspace-other')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
@@ -201,6 +202,7 @@ async function main() {
   let succeeded = false
   try {
     await mkdir(workspace, { recursive: true })
+    await mkdir(otherWorktree, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await mkdir(path.join(home, '.codex'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
@@ -258,8 +260,44 @@ async function main() {
     assert(firstAfterSecondImport.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'first slice should keep its original codex account summary')
     log('auth-independent', { first: created.id, second: secondSlice.id })
 
+    const incompatibleSlice = variant(await client.send(createSliceRequest({
+      name: 'slice-drill-other-worktree',
+      displayMode: 'headless',
+      workspaceId: workspace,
+      worktreeId: otherWorktree,
+      workspaceMount: otherWorktree,
+    })), 'SliceCreated').slice
+    let sessionScopeRejected = false
+    try {
+      await client.send(createSessionRequest(workspace, workspace, 'slice-drill-wrong-scope', agentDefaults, incompatibleSlice.id))
+    } catch {
+      sessionScopeRejected = true
+    }
+    assert(sessionScopeRejected, 'session creation should reject a slice from another worktree')
+    log('session-scope-rejected', { slice: incompatibleSlice.id, expectedWorktree: workspace, actualWorktree: otherWorktree })
+
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-session', agentDefaults, created.id)), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `slice-lifecycle-drill-${process.pid}`))
+    let agentScopeRejected = false
+    try {
+      await client.send(spawnAgentRequest(
+        session.id,
+        'dev-stub',
+        'slice-drill-wrong-scope-agent',
+        'slice-drill-model',
+        undefined,
+        'low',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        incompatibleSlice.id,
+      ))
+    } catch {
+      agentScopeRejected = true
+    }
+    assert(agentScopeRejected, 'agent spawn should reject a slice from another worktree')
+    log('agent-scope-rejected', { slice: incompatibleSlice.id, session: session.id })
     const spawned = variant(await client.send(spawnAgentRequest(
       session.id,
       'dev-stub',
@@ -295,6 +333,8 @@ async function main() {
     assert(deleted.id === created.id, 'deleted slice id should match')
     const secondDeleted = variant(await client.send(deleteSliceRequest(secondSlice.id)), 'SliceDeleted').slice
     assert(secondDeleted.id === secondSlice.id, 'second deleted slice id should match')
+    const incompatibleDeleted = variant(await client.send(deleteSliceRequest(incompatibleSlice.id)), 'SliceDeleted').slice
+    assert(incompatibleDeleted.id === incompatibleSlice.id, 'incompatible slice should be deletable after scope rejection')
     succeeded = true
     log('pass', { workspace })
   } finally {
