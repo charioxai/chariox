@@ -20,6 +20,7 @@ export type PlacementOptions = {
   fromRef?: string | undefined
   kernelRef?: string | undefined
   sliceRef?: string | undefined
+  sliceDisplayMode?: "headless" | "headed" | undefined
 }
 
 export type ShellPlacementDeps = {
@@ -50,6 +51,12 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
     } else if (arg === "--slice" && next && allowMachine) {
       options.sliceRef = next
       index += 1
+    } else if (arg === "--slice-display" && next && allowMachine) {
+      if (next !== "headless" && next !== "headed") {
+        return { options, error: "--slice-display must be headless or headed" }
+      }
+      options.sliceDisplayMode = next
+      index += 1
     } else if (arg?.startsWith("--")) {
       return { options, error: `unknown or incomplete option: ${arg}` }
     } else if (arg) {
@@ -64,6 +71,9 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
   }
   if (options.kernelRef && options.sliceRef) {
     return { options, error: "use either --kernel or --slice, not both" }
+  }
+  if (options.sliceDisplayMode && options.sliceRef !== "new") {
+    return { options, error: "--slice-display requires --slice new" }
   }
   return { options }
 }

@@ -68,7 +68,7 @@ export async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice off|new|<slice-ref>]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
       }
       if (parsedSpawn.options.kernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "usage: agent spawn [alias] [model] --kernel <kernel-ref> uses the worker kernel default directory" }
@@ -88,6 +88,7 @@ export async function executeAgentCommand(
         context,
         effectiveWorktree,
         deps,
+        parsedSpawn.options.sliceDisplayMode,
       )
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,

@@ -23,6 +23,7 @@ export type PlacementParseResult = {
   directory?: string | undefined
   machineRef?: string | undefined
   sliceRef?: string | undefined
+  sliceDisplayMode?: "headless" | "headed" | undefined
   gitWorktree?: string | undefined
   branch?: string | undefined
   fromRef?: string | undefined
@@ -52,6 +53,7 @@ export function parsePlacementOptions(
   let directory: string | undefined
   let machineRef: string | undefined
   let sliceRef: string | undefined
+  let sliceDisplayMode: "headless" | "headed" | undefined
   let gitWorktree: string | undefined
   let branch: string | undefined
   let fromRef: string | undefined
@@ -122,6 +124,16 @@ export function parsePlacementOptions(
       index += 1
       continue
     }
+    if (arg === "--slice-display" && allowMachine) {
+      const value = args[index + 1]
+      if (value !== "headless" && value !== "headed") {
+        error = "usage: /agent spawn [alias] [model] --slice-display headless|headed"
+        break
+      }
+      sliceDisplayMode = value
+      index += 1
+      continue
+    }
     if (arg.startsWith("--")) {
       error = `unknown ${commandName} option ${arg}`
       break
@@ -137,6 +149,9 @@ export function parsePlacementOptions(
     error = "usage: /agent spawn uses either --machine or --slice, not both"
   }
   const sliceCreatesPlacement = sliceRef === "new"
+  if (!error && sliceDisplayMode && !sliceCreatesPlacement) {
+    error = "usage: /agent spawn --slice-display requires --slice new"
+  }
   if (!error && sliceRef && !sliceCreatesPlacement && (directory || gitRequested)) {
     error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
   }
@@ -155,6 +170,7 @@ export function parsePlacementOptions(
     directory,
     machineRef,
     sliceRef,
+    sliceDisplayMode,
     gitWorktree,
     branch,
     fromRef,
@@ -166,7 +182,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(args, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed]"
   }
   return {
     ...parsed,

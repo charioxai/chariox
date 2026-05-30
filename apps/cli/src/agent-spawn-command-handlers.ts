@@ -72,7 +72,7 @@ export async function handleAgentSpawnCommand(
     const count = parseSpawnCount(parsed.positional[0])
     if (
       count !== null
-      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.sliceRef || parsed.gitWorktree || parsed.branch || parsed.fromRef)
+      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.sliceRef || parsed.sliceDisplayMode || parsed.gitWorktree || parsed.branch || parsed.fromRef)
     ) {
       deps.flashFooter("usage: /agent spawn <count>", "error")
       return
@@ -110,7 +110,7 @@ export async function handleAgentSpawnCommand(
       baseDirectory: deps.currentWorktreeTarget(),
       prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
     })
-    const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, worktreeId)
+    const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
       alias,
@@ -137,12 +137,13 @@ export async function handleAgentSpawnCommand(
 async function prepareSliceForSpawn(
   deps: AgentSpawnCommandHandlerDeps,
   sliceSelection: string | undefined,
+  sliceDisplayMode: "headless" | "headed" | undefined,
   worktreeId: string | undefined,
 ): Promise<string | undefined> {
   if (!sliceSelection || sliceSelection === "off") {
     return undefined
   }
-  const createMode = sliceCreateMode(sliceSelection)
+  const createMode = sliceCreateMode(sliceSelection, sliceDisplayMode)
   if (!createMode) {
     if (deps.startSlice) {
       await deps.startSlice(sliceSelection)
@@ -164,9 +165,9 @@ async function prepareSliceForSpawn(
   return started.id
 }
 
-function sliceCreateMode(value: string): { displayMode: "headless" | "headed" } | null {
+function sliceCreateMode(value: string, displayMode: "headless" | "headed" | undefined): { displayMode: "headless" | "headed" } | null {
   if (value === "new") {
-    return { displayMode: "headless" }
+    return { displayMode: displayMode ?? "headless" }
   }
   return null
 }

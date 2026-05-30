@@ -24,6 +24,7 @@ export async function resolveShellSliceRef(
   context: Pick<ShellContext, "workspace" | "worktree">,
   worktree: string,
   deps: ShellSlicePlacementDeps,
+  displayMode: "headless" | "headed" = "headless",
 ): Promise<string | undefined> {
   if (!sliceSelection || sliceSelection === "off") {
     return undefined
@@ -34,7 +35,7 @@ export async function resolveShellSliceRef(
   }
   const created = await deps.client.send(createSliceRequest({
     name: defaultShellSliceName(worktree),
-    displayMode: "headless",
+    displayMode,
     workspaceId: context.workspace,
     worktreeId: worktree,
     workspaceMount: worktree,

@@ -69,14 +69,14 @@ export async function executeSessionCommand(
         return { ok: false, message: placement.error }
       }
       if (placement.options.kernelRef) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>]" }
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
       }
       if (placement.options.positional.length > 1) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>]" }
+        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
       }
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree
-      const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps)
+      const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps, placement.options.sliceDisplayMode)
       const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session

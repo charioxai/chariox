@@ -433,6 +433,33 @@ test("executeShellCommand creates and starts a headless slice for a new session"
   assert.deepEqual(result.bindings, { s: "session-2" })
 })
 
+test("executeShellCommand creates and starts a headed slice for a new session", async () => {
+  const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("CreateSlice" in request) {
+      return { SliceCreated: { slice: { id: "slice-1" } } }
+    }
+    if ("StartSlice" in request) {
+      return { SliceStarted: { slice: { id: "slice-1" } } }
+    }
+    if ("CreateSession" in request) {
+      return { SessionCreated: { session } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new --slice-display headed as s"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal((requests[0] as { CreateSlice: { display_mode: string } }).CreateSlice.display_mode, "headed")
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "CreateSession"])
+})
+
 test("executeShellCommand creates manually managed slices scoped to the current worktree", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
