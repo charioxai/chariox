@@ -64,6 +64,15 @@ async function currentDockerHost() {
   }
 }
 
+async function assertScreenEndpointReady(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (!response.ok) {
+    throw new Error(`slice screen endpoint returned HTTP ${response.status}`)
+  }
+  const body = await response.text()
+  assert(body.includes('noVNC') || body.includes('vnc'), 'slice screen endpoint should serve the VNC viewer')
+}
+
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
@@ -191,6 +200,7 @@ async function main() {
 
     const endpoint = variant(await client.send(getSliceDisplayEndpointRequest(created.id)), 'SliceDisplayEndpoint').endpoint
     assert(endpoint.url, 'headed slice should expose a display endpoint URL')
+    await assertScreenEndpointReady(endpoint.url)
     log('screen', { url: endpoint.url, access: endpoint.access })
 
     const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'codex')), 'SliceProviderAuthImported')
