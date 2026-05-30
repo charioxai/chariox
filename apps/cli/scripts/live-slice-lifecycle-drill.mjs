@@ -19,6 +19,7 @@ const {
   importSliceProviderAuthRequest,
   listSessionsRequest,
   listSlicesRequest,
+  spawnAgentRequest,
   startSliceRequest,
   stopSliceRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
@@ -108,6 +109,10 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+async function writeCodexAuth(home, accountId) {
+  await writeFile(path.join(home, '.codex', 'auth.json'), JSON.stringify({ account_id: accountId, auth_mode: 'api-key' }), 'utf8')
+}
+
 async function main() {
   await assertDockerReady()
 
@@ -139,7 +144,7 @@ async function main() {
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await mkdir(path.join(home, '.codex'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
-    await writeFile(path.join(home, '.codex', 'auth.json'), JSON.stringify({ account_id: 'slice-drill-account', auth_mode: 'api-key' }), 'utf8')
+    await writeCodexAuth(home, 'slice-drill-account-1')
 
     const kernelBinary = await buildKernel()
     daemon = startDaemon(kernelBinary, env)
@@ -171,13 +176,44 @@ async function main() {
 
     const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'codex')), 'SliceProviderAuthImported')
     assert(imported.status === 'imported', `provider auth import should succeed, got ${imported.status}`)
-    assert(imported.slice.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account'), 'codex account summary should be recorded on the slice')
+    assert(imported.slice.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'codex account summary should be recorded on the slice')
     log('auth-imported', { provider: imported.provider })
+
+    const secondSlice = variant(await client.send(createSliceRequest({
+      name: 'slice-drill-second-account',
+      displayMode: 'headless',
+      workspaceId: workspace,
+      worktreeId: workspace,
+      workspaceMount: workspace,
+    })), 'SliceCreated').slice
+    await client.send(startSliceRequest(secondSlice.id))
+    await writeCodexAuth(home, 'slice-drill-account-2')
+    const secondImported = variant(await client.send(importSliceProviderAuthRequest(secondSlice.id, 'codex')), 'SliceProviderAuthImported')
+    assert(secondImported.slice.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-2'), 'second slice should record its own codex account summary')
+    const firstAfterSecondImport = variant(await client.send(getSliceRequest(created.id)), 'Slice').slice
+    assert(firstAfterSecondImport.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'first slice should keep its original codex account summary')
+    log('auth-independent', { first: created.id, second: secondSlice.id })
 
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-session', undefined, created.id)), 'SessionCreated').session
     await client.send(attachToSessionRequest(session.id, `slice-lifecycle-drill-${process.pid}`))
+    const spawned = variant(await client.send(spawnAgentRequest(
+      session.id,
+      'dev-stub',
+      'slice-drill-extra-agent',
+      'slice-drill-model',
+      workspace,
+      'low',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      created.id,
+    )), 'AgentSpawned').agent
+    assert(spawned.id, 'extra slice agent should be spawned')
+    const secondSession = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-second-session', undefined, created.id)), 'SessionCreated').session
     const withAgent = variant(await client.send(getSliceRequest(created.id)), 'Slice').slice
-    assert(withAgent.agent_ids?.length > 0, 'slice should track the session initial agent')
+    assert((withAgent.agent_ids?.length ?? 0) >= 3, 'slice should track the initial, extra, and second-session agents')
+    assert((withAgent.session_ids?.length ?? 0) >= 2, 'slice should track reuse by multiple sessions')
     let deleteBlocked = false
     try {
       await client.send(deleteSliceRequest(created.id))
@@ -188,9 +224,13 @@ async function main() {
     log('reuse-bound', { agents: withAgent.agent_ids?.length ?? 0, sessions: withAgent.session_ids?.length ?? 0 })
 
     await client.send(endSessionRequest(session.id))
+    await client.send(endSessionRequest(secondSession.id))
     await client.send(stopSliceRequest(created.id))
+    await client.send(stopSliceRequest(secondSlice.id))
     const deleted = variant(await client.send(deleteSliceRequest(created.id)), 'SliceDeleted').slice
     assert(deleted.id === created.id, 'deleted slice id should match')
+    const secondDeleted = variant(await client.send(deleteSliceRequest(secondSlice.id)), 'SliceDeleted').slice
+    assert(secondDeleted.id === secondSlice.id, 'second deleted slice id should match')
     succeeded = true
     log('pass', { workspace })
   } finally {

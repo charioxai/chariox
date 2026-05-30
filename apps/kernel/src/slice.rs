@@ -1125,6 +1125,78 @@ mod tests {
     }
 
     #[test]
+    fn slice_store_keeps_provider_auth_summaries_per_slice() {
+        let store = SliceStore::default();
+        let first = store
+            .create("kernel-1", "machine-1", create_input("first"))
+            .expect("first slice should create");
+        let second = store
+            .create("kernel-1", "machine-1", create_input("second"))
+            .expect("second slice should create");
+
+        let first = store
+            .set_provider_auth(
+                &first.id,
+                vec![SliceProviderAuthSummary {
+                    provider: "codex".to_string(),
+                    state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+                    auth_type: Some("api-key".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                    email: None,
+                    organization_id: None,
+                    organization_name: None,
+                    subscription_type: None,
+                    alias: Some("work".to_string()),
+                    source: "test".to_string(),
+                }],
+                44,
+            )
+            .expect("first auth should update");
+        let second = store
+            .set_provider_auth(
+                &second.id,
+                vec![SliceProviderAuthSummary {
+                    provider: "codex".to_string(),
+                    state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+                    auth_type: Some("api-key".to_string()),
+                    account_id: Some("acct-2".to_string()),
+                    email: None,
+                    organization_id: None,
+                    organization_name: None,
+                    subscription_type: None,
+                    alias: Some("personal".to_string()),
+                    source: "test".to_string(),
+                }],
+                45,
+            )
+            .expect("second auth should update");
+
+        assert_eq!(first.provider_auth[0].account_id.as_deref(), Some("acct-1"));
+        assert_eq!(
+            second.provider_auth[0].account_id.as_deref(),
+            Some("acct-2")
+        );
+        assert_eq!(
+            store
+                .resolve(&first.id)
+                .expect("first should resolve")
+                .provider_auth[0]
+                .alias
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(
+            store
+                .resolve(&second.id)
+                .expect("second should resolve")
+                .provider_auth[0]
+                .alias
+                .as_deref(),
+            Some("personal")
+        );
+    }
+
+    #[test]
     fn local_docker_private_relay_uses_host_endpoint_without_container_override() {
         let store = SliceStore::default();
         let slice = store
