@@ -532,6 +532,10 @@ export type SliceRecord = {
   session_ids?: string[]
   agent_ids?: string[]
   display_mode?: "headless" | "headed"
+  last_operation?: string | null
+  last_operation_status?: "accepted" | "in_progress" | "completed" | "failed" | "reconciled" | null
+  last_error?: string | null
+  last_operation_at_ms?: number | null
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null

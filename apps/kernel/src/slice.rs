@@ -17,7 +17,8 @@ use local_docker::{
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceDisplayEndpoint,
     SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts,
-    SliceLogEntry, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint, SliceStatus,
+    SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
+    SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
@@ -57,6 +58,13 @@ mod tests {
 
         assert_eq!(slice.id, "slice-1");
         assert_eq!(slice.worker_kernel_ref, "slice:dev");
+        assert_eq!(slice.last_operation.as_deref(), Some("create"));
+        assert_eq!(
+            slice.last_operation_status,
+            Some(SliceOperationStatus::Completed)
+        );
+        assert_eq!(slice.last_error, None);
+        assert_eq!(slice.last_operation_at_ms, Some(42));
         assert_eq!(
             store.resolve("dev").expect("slice should resolve").id,
             slice.id
@@ -163,6 +171,18 @@ mod tests {
 
         assert_eq!(reconciled.len(), 1);
         assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(
+            reconciled[0].last_operation.as_deref(),
+            Some("restart_reconcile")
+        );
+        assert_eq!(
+            reconciled[0].last_operation_status,
+            Some(SliceOperationStatus::Reconciled)
+        );
+        assert!(reconciled[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("needs restart")));
         assert_eq!(reconciled[0].updated_at_ms, 45);
     }
 

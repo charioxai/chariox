@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-05-31
 
+### Slice operation diagnostics
+
+- Added protocol-visible slice operation diagnostics: `last_operation`, `last_operation_status`, `last_error`, and `last_operation_at_ms`. Start/stop/delete and restart reconciliation now update these fields while keeping `status` as the lifecycle authority and `slice.audit`/logs as the detailed trail.
+- Bumped the local daemon protocol to 79 and updated Rust, kernel-client, CLI, and web slice record types. `/slice status`, `/slice doctor`, waiting-room slice rows, and the web Slices panel now surface failed/last operation context.
+- Focused validation passed: kernel formatting, `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`, client protocol conformance, kernel-client shell slice tests, CLI slice/waiting-room tests, and Cloud web slice panel/projection tests.
+
 ### Slice diagnostics hardening
 
 - Added a kernel-owned `GetSliceLogs` local daemon request/`SliceLogs` response and bumped the shared local daemon protocol to 75. Local Docker slices now expose tailed provisioner action logs plus recent container logs as structured diagnostic entries.

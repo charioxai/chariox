@@ -95,6 +95,12 @@ impl KernelRuntimeState {
         slice_ref: &str,
         relay_endpoint: crate::slice::SliceRelayEndpoint,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.update_slice_operation(
+            slice_ref,
+            "start",
+            crate::slice::SliceOperationStatus::InProgress,
+            None,
+        )?;
         self.owned.slice_store.set_relay_endpoint(
             slice_ref,
             Some(relay_endpoint),
@@ -113,6 +119,12 @@ impl KernelRuntimeState {
         &self,
         slice_ref: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.update_slice_operation(
+            slice_ref,
+            "stop",
+            crate::slice::SliceOperationStatus::InProgress,
+            None,
+        )?;
         let slice = self.owned.slice_store.set_status(
             slice_ref,
             crate::slice::SliceStatus::Stopping,
@@ -122,15 +134,39 @@ impl KernelRuntimeState {
         Ok(slice)
     }
 
-    pub(crate) fn set_slice_status(
+    pub(crate) fn mark_slice_operation_failed(
         &self,
         slice_ref: &str,
-        status: crate::slice::SliceStatus,
+        operation: &'static str,
+        error: &DaemonError,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let slice = self.owned.slice_store.set_status(
+        self.owned.slice_store.set_status(
             slice_ref,
-            status,
+            crate::slice::SliceStatus::Unhealthy,
             crate::session::unix_epoch_ms(),
+        )?;
+        let slice = self.owned.slice_store.set_operation_diagnostics(
+            slice_ref,
+            operation,
+            crate::slice::SliceOperationStatus::Failed,
+            Some(&error.to_string()),
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
+    pub(crate) fn mark_slice_operation_rejected(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        error: &DaemonError,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.update_slice_operation(
+            slice_ref,
+            operation,
+            crate::slice::SliceOperationStatus::Failed,
+            Some(&error.to_string()),
         )?;
         self.append_slice_durable_event("slice.updated", &slice)?;
         Ok(slice)
@@ -141,13 +177,13 @@ impl KernelRuntimeState {
         slice_ref: &str,
         worker: Option<arroba_relay::protocol::RelayKernelPresence>,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let mut slice = self.owned.slice_store.set_status(
+        self.owned.slice_store.set_status(
             slice_ref,
             crate::slice::SliceStatus::Running,
             crate::session::unix_epoch_ms(),
         )?;
         if let Some(worker) = worker {
-            slice = self.owned.slice_store.set_worker_presence(
+            self.owned.slice_store.set_worker_presence(
                 slice_ref,
                 Some(worker.kernel_id),
                 Some(worker.machine_id),
@@ -155,6 +191,62 @@ impl KernelRuntimeState {
                 crate::session::unix_epoch_ms(),
             )?;
         }
+        let slice = self.owned.slice_store.set_operation_diagnostics(
+            slice_ref,
+            "start",
+            crate::slice::SliceOperationStatus::Completed,
+            None,
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
+    pub(crate) fn mark_slice_stopped(
+        &self,
+        slice_ref: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.owned.slice_store.set_status(
+            slice_ref,
+            crate::slice::SliceStatus::Stopped,
+            crate::session::unix_epoch_ms(),
+        )?;
+        let slice = self.owned.slice_store.set_operation_diagnostics(
+            slice_ref,
+            "stop",
+            crate::slice::SliceOperationStatus::Completed,
+            None,
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
+    pub(crate) fn mark_slice_delete_in_progress(
+        &self,
+        slice_ref: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.update_slice_operation(
+            slice_ref,
+            "delete",
+            crate::slice::SliceOperationStatus::InProgress,
+            None,
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
+    pub(crate) fn mark_slice_delete_failed(
+        &self,
+        slice_ref: &str,
+        error: &DaemonError,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.update_slice_operation(
+            slice_ref,
+            "delete",
+            crate::slice::SliceOperationStatus::Failed,
+            Some(&error.to_string()),
+        )?;
         self.append_slice_durable_event("slice.updated", &slice)?;
         Ok(slice)
     }
@@ -196,6 +288,22 @@ impl KernelRuntimeState {
         let slice = self.owned.slice_store.delete(slice_ref)?;
         self.append_slice_durable_event("slice.deleted", &slice)?;
         Ok(slice)
+    }
+
+    fn update_slice_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        status: crate::slice::SliceOperationStatus,
+        error: Option<&str>,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.owned.slice_store.set_operation_diagnostics(
+            slice_ref,
+            operation,
+            status,
+            error,
+            crate::session::unix_epoch_ms(),
+        )
     }
 
     pub(crate) fn slice_display_endpoint(

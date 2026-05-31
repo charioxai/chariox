@@ -118,7 +118,8 @@ function formatSlice(slice: SliceRecord): string {
   const auth = (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "-"
   const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
   const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
-  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} providers=${providers} auth=${auth}${display}`
+  const diagnostics = formatSliceDiagnostics(slice)
+  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} providers=${providers} auth=${auth}${diagnostics}${display}`
 }
 
 function formatSliceProviderAuth(auth: NonNullable<SliceRecord["provider_auth"]>[number]): string {
@@ -392,9 +393,24 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
+    doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks].join("\n")
+}
+
+function formatSliceOperation(slice: SliceRecord): string {
+  if (!slice.last_operation && !slice.last_operation_status && !slice.last_error) {
+    return ""
+  }
+  const status = slice.last_operation_status ? `:${slice.last_operation_status}` : ""
+  const error = slice.last_error ? ` error=${slice.last_error}` : ""
+  return `${slice.last_operation ?? "operation"}${status}${error}`
+}
+
+function formatSliceDiagnostics(slice: SliceRecord): string {
+  const operation = formatSliceOperation(slice)
+  return operation ? ` last_operation=${operation}` : ""
 }
 
 function doctorCheck(name: string, ok: boolean, detail: string): string {

@@ -6,7 +6,8 @@ use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
     CreateSliceInput, SliceBackendKind, SliceDisplayEndpoint, SliceDisplayEndpointAccess,
-    SliceDisplayEndpointKind, SliceDisplayMode, SliceRecord, SliceRelayEndpoint, SliceStatus,
+    SliceDisplayEndpointKind, SliceDisplayMode, SliceOperationStatus, SliceRecord,
+    SliceRelayEndpoint, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
@@ -119,6 +120,10 @@ impl SliceStore {
             os: input.os,
             display_mode: input.display_mode,
             status: SliceStatus::Stopped,
+            last_operation: Some("create".to_string()),
+            last_operation_status: Some(SliceOperationStatus::Completed),
+            last_error: None,
+            last_operation_at_ms: Some(input.now_ms),
             workspace_id: input.workspace_id,
             worktree_id: input.worktree_id,
             workspace_mount: input.workspace_mount,
@@ -206,6 +211,16 @@ impl SliceStore {
                 }
             }
             if record_changed {
+                record.last_operation = Some("restart_reconcile".to_string());
+                record.last_operation_status = Some(SliceOperationStatus::Reconciled);
+                record.last_error = match record.status {
+                    SliceStatus::Unhealthy => Some(format!(
+                        "slice `{}` needs restart or inspection after kernel restart",
+                        record.name
+                    )),
+                    _ => None,
+                };
+                record.last_operation_at_ms = Some(now_ms);
                 record.updated_at_ms = now_ms;
                 changed.push(record.clone());
             }
@@ -315,6 +330,32 @@ impl SliceStore {
                     message: format!("unknown slice `{slice_ref}`"),
                 })?;
         record.status = status;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_operation_diagnostics(
+        &self,
+        slice_ref: &str,
+        operation_name: &str,
+        operation_status: SliceOperationStatus,
+        error: Option<&str>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.operation_diagnostics",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.last_operation = Some(operation_name.to_string());
+        record.last_operation_status = Some(operation_status);
+        record.last_error = error.map(redact_slice_operation_error);
+        record.last_operation_at_ms = Some(now_ms);
         record.updated_at_ms = now_ms;
         Ok(record.clone())
     }
@@ -675,4 +716,15 @@ fn validate_slice_name(name: &str) -> Result<(), DaemonError> {
         });
     }
     Ok(())
+}
+
+fn redact_slice_operation_error(error: &str) -> String {
+    error
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect()
 }

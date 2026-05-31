@@ -279,7 +279,8 @@ function formatSlice(slice: SliceRecord): string {
     .join(",") || "-"
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} agents=${agents}${scope} providers=${providers} auth=${auth}${display}`
+  const diagnostics = formatSliceDiagnostics(slice)
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}`
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
@@ -291,6 +292,7 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
+    doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider accounts", true, (slice.provider_auth ?? [])
       .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
       .join(",") || "none"),
@@ -319,6 +321,20 @@ function doctorCheck(name: string, ok: boolean, detail: string): string {
 
 function formatSliceLabel(slice: SliceRecord): string {
   return slice.name ? `${slice.name} id=${slice.id}` : slice.id
+}
+
+function formatSliceOperation(slice: SliceRecord): string {
+  if (!slice.last_operation && !slice.last_operation_status && !slice.last_error) {
+    return ""
+  }
+  const status = slice.last_operation_status ? `:${slice.last_operation_status}` : ""
+  const error = slice.last_error ? ` error=${slice.last_error}` : ""
+  return `${slice.last_operation ?? "operation"}${status}${error}`
+}
+
+function formatSliceDiagnostics(slice: SliceRecord): string {
+  const operation = formatSliceOperation(slice)
+  return operation ? ` last_operation=${operation}` : ""
 }
 
 async function focusedAgentSliceRef(context: ShellContext, deps: ShellSliceCommandDeps): Promise<string> {

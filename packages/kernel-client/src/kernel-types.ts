@@ -820,6 +820,10 @@ export type SliceRecord = {
   os: string
   display_mode?: "headless" | "headed"
   status: "stopped" | "starting" | "stopping" | "running" | "unhealthy"
+  last_operation?: string | null
+  last_operation_status?: "accepted" | "in_progress" | "completed" | "failed" | "reconciled" | null
+  last_error?: string | null
+  last_operation_at_ms?: number | null
   workspace_id?: string | null
   worktree_id?: string | null
   workspace_mount?: string | null
@@ -1100,7 +1104,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 78
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 79
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

@@ -78,6 +78,9 @@ function formatSliceStatus(slice: SliceRecord): string {
     `${agents} agent${agents === 1 ? "" : "s"}`,
     worktree,
     auth ? `auth ${auth}` : "",
+    slice.last_operation_status === "failed"
+      ? `last error ${slice.last_error ?? slice.last_operation ?? "failed"}`
+      : "",
   ].filter(Boolean).join(" ")
 }
 

@@ -27,6 +27,16 @@ pub enum SliceStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SliceOperationStatus {
+    Accepted,
+    InProgress,
+    Completed,
+    Failed,
+    Reconciled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SliceDisplayMode {
     Headless,
     Headed,
@@ -69,6 +79,14 @@ pub struct SliceRecord {
     #[serde(default)]
     pub display_mode: SliceDisplayMode,
     pub status: SliceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_operation_status: Option<SliceOperationStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_operation_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

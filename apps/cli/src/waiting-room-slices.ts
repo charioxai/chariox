@@ -74,7 +74,10 @@ export function formatWaitingRoomSliceOption(slice: SliceRecord) {
     .map(formatSliceAuthIdentity)
     .filter(Boolean)
     .join(",")
-  return `${formatWaitingRoomSliceLabel(slice)} (${agents} agent${agents === 1 ? "" : "s"}${auth ? `, ${auth}` : ""})`
+  const failed = slice.last_operation_status === "failed"
+    ? `, error ${slice.last_error ?? slice.last_operation ?? "failed"}`
+    : ""
+  return `${formatWaitingRoomSliceLabel(slice)} (${agents} agent${agents === 1 ? "" : "s"}${auth ? `, ${auth}` : ""}${failed})`
 }
 
 function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {
