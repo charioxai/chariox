@@ -1264,3 +1264,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added kernel-owned slice provider auth removal for local Docker slices. `RemoveSliceProviderAuth` purges provider credential files inside the slice, clears matching provider auth summaries from kernel state, records accepted/failed/completed audit events, and scopes provider families consistently with import (`opencode` removes `opencode:*`).
 - Bumped the local daemon protocol to 77 and extended the kernel-client, CLI, and web request surfaces. TUI/web terminals now expose provider auth removal alongside import, login, and alias controls.
+
+### Slice model refactor
+
+- Split the serialized slice model and input/action structs out of `slice.rs` into `slice/model.rs`, keeping protocol shapes stable while reducing the mixed-responsibility slice module. The store, local Docker runner, auth, display, and remaining diagnostics code are still candidates for follow-up extraction.
