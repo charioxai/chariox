@@ -181,7 +181,7 @@ async function main() {
       'config path',
       'config show',
       'config set providers.model shell-drill-model',
-      'config workspace-live-sync unrestricted',
+      'config workspace-live-sync off',
       'config unset providers.model',
       'workspace link create shell-live-sync as sync_link',
       'workspace link list',

@@ -381,7 +381,7 @@ async function waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace
 
 async function allowDevStubProvider(client, requests, label) {
   log("allow-dev-stub-provider", { label })
-  await client.send(requests.setUserConfigValueRequest("providers.workspace_live_sync", "unrestricted"))
+  await client.send(requests.setUserConfigValueRequest("providers.workspace_live_sync", "off"))
 }
 
 async function manualCloudDeviceLogin({ role, clientId, clientAlias, localClient, requests }) {

@@ -357,8 +357,8 @@ async function main() {
         kernelMaxMissedPongs: 10,
       })
       try {
-        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
-        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'unrestricted'))
+        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'off'))
+        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'off'))
       } finally {
         await workerClient.close().catch(() => {})
       }
