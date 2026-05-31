@@ -28,6 +28,7 @@ impl KernelRuntimeState {
             },
         )?;
         self.append_slice_durable_event("slice.created", &slice)?;
+        self.record_slice_audit_event(&slice, "create", "completed", None, None)?;
         Ok(slice)
     }
 
@@ -53,6 +54,7 @@ impl KernelRuntimeState {
         slice: &crate::slice::SliceRecord,
         action: &'static str,
         outcome: &'static str,
+        provider: Option<&str>,
         message: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
@@ -63,12 +65,22 @@ impl KernelRuntimeState {
                 "slice_name": slice.name,
                 "action": action,
                 "outcome": outcome,
+                "result": outcome,
+                "actor": "kernel",
+                "client_type": "local_daemon",
+                "provider": provider,
                 "message": message,
+                "redacted_error": if outcome == "failed" { message } else { None },
                 "status": slice.status,
                 "backend": slice.backend,
                 "display_mode": slice.display_mode,
+                "workspace_id": slice.workspace_id,
+                "worktree_id": slice.worktree_id,
+                "workspace_mount": slice.workspace_mount,
                 "session_ids": slice.session_ids,
                 "agent_ids": slice.agent_ids,
+                "owner_kernel_id": slice.owner_kernel_id,
+                "owner_machine_id": slice.owner_machine_id,
                 "worker_kernel_ref": slice.worker_kernel_ref,
                 "worker_kernel_id": slice.worker_kernel_id,
                 "worker_machine_id": slice.worker_machine_id,

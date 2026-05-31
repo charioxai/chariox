@@ -1289,3 +1289,8 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved the Lume slice provisioner and provider session smoke scripts from `experiments/slice-spike` into the production-owned kernel path `apps/kernel/slice-linux-lume`, removed spike naming from defaults/logging/docs, and updated validation script paths.
 - Versioned the default Linux Docker slice image as `arroba-slice-linux:0.1.0` across config defaults, local Docker fallback behavior, the Docker provisioner, and native-TUI slice drill setup; custom user image overrides still work.
 - Re-ran `bash -n` for both slice provisioners, `cargo test --manifest-path apps/kernel/Cargo.toml user_config -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`, and the CLI test command covering slice command handlers/launch helpers; all passed.
+
+### Slice audit hardening
+
+- Slice create now writes a durable `slice.audit` event, and all slice audit events include first-class result, actor, client type, provider, workspace/worktree/mount, owner, and redacted-error fields instead of forcing provider/error context into freeform messages.
+- Added coverage that slice creation still ignores forged client-supplied provider auth while writing the enriched create audit event. Re-ran the focused create-slice audit test and the full slice-focused Rust suite; both passed.

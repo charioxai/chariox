@@ -339,15 +339,38 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
         .await
         .expect("slice create should succeed");
 
-    match response {
+    let created_slice = match response {
         LocalDaemonResponse::SliceCreated { slice } => {
             assert!(
                 slice.provider_auth.is_empty(),
                 "provider auth summaries are kernel-owned and must not be accepted from clients"
             );
+            slice
         }
         _ => panic!("unexpected create slice response"),
-    }
+    };
+
+    let app_guard = app.lock().await;
+    let events = app_guard
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable events should load");
+    let audit = events
+        .iter()
+        .find(|event| {
+            event.kind == "slice.audit"
+                && event.subject_id.as_deref() == Some(created_slice.id.as_str())
+                && event.payload["action"] == "create"
+        })
+        .expect("slice create should write an audit event");
+    assert_eq!(audit.payload["result"], "completed");
+    assert_eq!(audit.payload["actor"], "kernel");
+    assert_eq!(audit.payload["client_type"], "local_daemon");
+    assert_eq!(audit.payload["workspace_id"], "workspace");
+    assert_eq!(audit.payload["worktree_id"], "worktree");
+    assert_eq!(audit.payload["workspace_mount"], "worktree");
+    assert_eq!(audit.payload["provider"], serde_json::Value::Null);
+    assert_eq!(audit.payload["redacted_error"], serde_json::Value::Null);
 }
 
 #[tokio::test]

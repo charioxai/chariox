@@ -120,7 +120,7 @@ pub(crate) async fn execute_start_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
-    runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None)?;
+    runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     let relay = local_docker_slice_relay(config_projection, &initial_record);
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
@@ -154,6 +154,7 @@ pub(crate) async fn execute_start_slice_request(
             &initial_record,
             "start",
             "failed",
+            None,
             Some(&error.to_string()),
         );
         return Err(error);
@@ -168,13 +169,14 @@ pub(crate) async fn execute_start_slice_request(
                     &initial_record,
                     "start",
                     "failed",
+                    None,
                     Some(&error.to_string()),
                 );
                 return Err(error);
             }
         };
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
-    runtime_state.record_slice_audit_event(&slice, "start", "completed", None)?;
+    runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
 }
 
@@ -185,7 +187,7 @@ pub(crate) async fn execute_stop_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.stop")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
-    runtime_state.record_slice_audit_event(&resolved_slice, "stop", "accepted", None)?;
+    runtime_state.record_slice_audit_event(&resolved_slice, "stop", "accepted", None, None)?;
     ensure_slice_has_no_active_agents(&resolved_slice, "slice.stop")?;
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
@@ -209,13 +211,14 @@ pub(crate) async fn execute_stop_slice_request(
             &resolved_slice,
             "stop",
             "failed",
+            None,
             Some(&error.to_string()),
         );
         return Err(error);
     }
     let slice =
         runtime_state.set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Stopped)?;
-    runtime_state.record_slice_audit_event(&slice, "stop", "completed", None)?;
+    runtime_state.record_slice_audit_event(&slice, "stop", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStopped { slice })
 }
 
@@ -226,7 +229,7 @@ pub(crate) async fn execute_delete_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.delete")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
-    runtime_state.record_slice_audit_event(&resolved_slice, "delete", "accepted", None)?;
+    runtime_state.record_slice_audit_event(&resolved_slice, "delete", "accepted", None, None)?;
     ensure_slice_has_no_active_agents(&resolved_slice, "slice.delete")?;
     if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
@@ -251,13 +254,14 @@ pub(crate) async fn execute_delete_slice_request(
                 &resolved_slice,
                 "delete",
                 "failed",
+                None,
                 Some(&error.to_string()),
             );
             return Err(error);
         }
     }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
-    runtime_state.record_slice_audit_event(&slice, "delete", "completed", None)?;
+    runtime_state.record_slice_audit_event(&slice, "delete", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceDeleted { slice })
 }
 
@@ -274,7 +278,8 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
         &slice,
         "auth.import",
         "accepted",
-        Some(&format!("provider={provider}")),
+        Some(&provider),
+        None,
     )?;
     if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
@@ -300,6 +305,7 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
                 &slice,
                 "auth.import",
                 "failed",
+                Some(&provider),
                 Some(&error.to_string()),
             );
             return Err(error);
@@ -316,7 +322,8 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             &slice,
             "auth.import",
             "completed",
-            Some(&format!("provider={provider}")),
+            Some(&provider),
+            None,
         )?;
         return Ok(LocalDaemonResponse::SliceProviderAuthImported {
             slice,
@@ -324,6 +331,13 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             status: "imported".to_string(),
         });
     }
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.import",
+        "not_implemented",
+        Some(&provider),
+        Some("slice auth import is not implemented for this backend"),
+    )?;
     Ok(LocalDaemonResponse::SliceProviderAuthImported {
         slice,
         provider,
@@ -352,7 +366,8 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
         &slice,
         "auth.remove",
         "accepted",
-        Some(&format!("provider={provider}")),
+        Some(&provider),
+        None,
     )?;
     if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
@@ -378,6 +393,7 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
                 &slice,
                 "auth.remove",
                 "failed",
+                Some(&provider),
                 Some(&error.to_string()),
             );
             return Err(error);
@@ -392,7 +408,8 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
             &slice,
             "auth.remove",
             "completed",
-            Some(&format!("provider={provider}")),
+            Some(&provider),
+            None,
         )?;
         return Ok(LocalDaemonResponse::SliceProviderAuthRemoved {
             slice,
@@ -400,6 +417,13 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
             status: "removed".to_string(),
         });
     }
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.remove",
+        "not_implemented",
+        Some(&provider),
+        Some("slice auth removal is not implemented for this backend"),
+    )?;
     Ok(LocalDaemonResponse::SliceProviderAuthRemoved {
         slice,
         provider,
@@ -435,15 +459,24 @@ pub(crate) async fn execute_start_slice_provider_login_request(
         &slice,
         "auth.login",
         "accepted",
-        Some(&format!("provider={}", request.provider)),
+        Some(&request.provider),
+        None,
     )?;
     if slice.backend != crate::slice::SliceBackendKind::LocalDocker {
+        let message = format!(
+            "slice provider login is only implemented for local Docker slices, got `{:?}`",
+            slice.backend
+        );
+        runtime_state.record_slice_audit_event(
+            &slice,
+            "auth.login",
+            "failed",
+            Some(&request.provider),
+            Some(&message),
+        )?;
         return Err(DaemonError::LocalTransport {
             operation: "slice.auth.login",
-            message: format!(
-                "slice provider login is only implemented for local Docker slices, got `{:?}`",
-                slice.backend
-            ),
+            message,
         });
     }
     let docker_options =
@@ -469,6 +502,7 @@ pub(crate) async fn execute_start_slice_provider_login_request(
                 &slice,
                 "auth.login",
                 "failed",
+                Some(&request.provider),
                 Some(&error.to_string()),
             );
             return Err(error);
@@ -478,7 +512,8 @@ pub(crate) async fn execute_start_slice_provider_login_request(
         &slice,
         "auth.login",
         "completed",
-        Some(&format!("provider={}", request.provider)),
+        Some(&request.provider),
+        None,
     )?;
     Ok(LocalDaemonResponse::SliceProviderLoginStarted { slice, login })
 }
@@ -496,7 +531,8 @@ pub(crate) async fn execute_set_slice_provider_auth_alias_request(
         &slice,
         "auth.alias",
         "completed",
-        Some(&format!("provider={}", request.provider)),
+        Some(&request.provider),
+        None,
     )?;
     Ok(LocalDaemonResponse::SliceProviderAuthAliasSet {
         slice,
