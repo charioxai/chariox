@@ -37,6 +37,7 @@ pub mod slice_provider_auth;
 pub mod terminal;
 pub mod transport;
 pub(crate) mod workspace_live_sync_ignore;
+pub(crate) mod workspace_live_sync_journal;
 
 pub use app::DaemonApp;
 pub use config::DaemonConfig;
