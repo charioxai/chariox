@@ -1273,3 +1273,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Split slice record persistence, operation guards, lookup, worktree scoping, lifecycle attachment, provider-auth summary mutation, and restart reconciliation out of `slice.rs` into `slice/store.rs`. The top-level slice module now keeps the local Docker runner and public re-exports, reducing mixed responsibilities without changing the slice API.
 - Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice local Docker refactor
+
+- Split the local Docker slice runner, provider-login parser, relay URL mapping, log collection, port checks, and provisioner command wiring out of `slice.rs` into `slice/local_docker.rs`. The public `crate::slice::*` exports remain stable, while the slice façade dropped from 1015 lines to 420 lines.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
