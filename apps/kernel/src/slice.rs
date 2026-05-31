@@ -4,10 +4,10 @@ mod ports;
 mod store;
 
 pub use local_docker::{
-    collect_local_docker_slice_logs, local_docker_private_relay,
-    local_docker_private_relay_endpoint, local_docker_private_relay_token,
-    run_local_docker_slice_action, start_local_docker_slice_provider_login,
-    LocalDockerSliceOptions, LocalDockerSliceRelay,
+    collect_local_docker_slice_logs, inspect_local_docker_slice_host_runtime,
+    local_docker_private_relay, local_docker_private_relay_endpoint,
+    local_docker_private_relay_token, run_local_docker_slice_action,
+    start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -21,7 +21,7 @@ pub use model::{
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
-pub use store::{SliceOperationGuard, SliceStore};
+pub use store::{SliceHostRuntimeState, SliceOperationGuard, SliceStore};
 
 #[cfg(test)]
 mod tests {
@@ -164,6 +164,61 @@ mod tests {
         assert_eq!(reconciled.len(), 1);
         assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
         assert_eq!(reconciled[0].updated_at_ms, 45);
+    }
+
+    #[test]
+    fn slice_store_reconciles_running_slice_missing_on_host_to_stopped() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        store
+            .set_relay_endpoint(
+                &slice.id,
+                Some(local_docker_private_relay_endpoint(&slice)),
+                43,
+            )
+            .expect("relay endpoint should update");
+        store
+            .set_worker_presence(
+                &slice.id,
+                Some("worker-1".to_string()),
+                Some("machine-2".to_string()),
+                vec!["codex".to_string()],
+                44,
+            )
+            .expect("worker presence should update");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 45)
+            .expect("slice should be running");
+
+        let reconciled = store
+            .reconcile_after_kernel_restart_with_host_state(46, |_| SliceHostRuntimeState::Missing);
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Stopped);
+        assert_eq!(reconciled[0].worker_kernel_id, None);
+        assert_eq!(reconciled[0].worker_machine_id, None);
+        assert_eq!(reconciled[0].relay_endpoint, None);
+        assert!(reconciled[0].providers.is_empty());
+        assert_eq!(reconciled[0].updated_at_ms, 46);
+    }
+
+    #[test]
+    fn slice_store_reconciles_stopped_record_with_running_host_to_unhealthy() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+
+        let reconciled = store.reconcile_after_kernel_restart_with_host_state(46, |record| {
+            assert_eq!(record.id, slice.id);
+            SliceHostRuntimeState::Running
+        });
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(reconciled[0].updated_at_ms, 46);
     }
 
     #[test]

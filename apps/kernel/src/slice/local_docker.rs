@@ -267,6 +267,39 @@ pub fn collect_local_docker_slice_logs(
     Ok(entries)
 }
 
+pub fn inspect_local_docker_slice_host_runtime(
+    record: &SliceRecord,
+) -> super::SliceHostRuntimeState {
+    if record.backend != SliceBackendKind::LocalDocker || record.os != "linux" {
+        return super::SliceHostRuntimeState::Unknown;
+    }
+    let container = local_docker_container_name(record);
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Running}} {{.State.Status}}",
+            &container,
+        ])
+        .output();
+    let Ok(output) = output else {
+        return super::SliceHostRuntimeState::Unknown;
+    };
+    if !output.status.success() {
+        return super::SliceHostRuntimeState::Missing;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.split_whitespace();
+    match (fields.next(), fields.next()) {
+        (Some("true"), _) => super::SliceHostRuntimeState::Running,
+        (Some("false"), Some("exited" | "created" | "dead" | "paused")) => {
+            super::SliceHostRuntimeState::Stopped
+        }
+        (Some("false"), _) => super::SliceHostRuntimeState::Stopped,
+        _ => super::SliceHostRuntimeState::Unknown,
+    }
+}
+
 fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> SliceLogEntry {
     match std::fs::read_to_string(path) {
         Ok(text) => {

@@ -1300,3 +1300,8 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added an explicit protocol-visible `stopping` slice status and bumped the local daemon protocol to 78. Stop requests now publish the transitional state before invoking the local Docker stop action, while start/stop/delete operation guards still serialize lifecycle mutations.
 - Restart reconciliation now marks interrupted `starting`, `stopping`, and `running` slices `unhealthy` so clients do not show stale runtime-only states after a kernel restart.
 - Updated Rust, kernel-client, CLI, and web slice record types. Web slice controls now disable start/stop actions while a slice is in transitional states.
+
+### Slice restart reconciliation hardening
+
+- Added local Docker host-state inspection during durable restore. Reconciliation now checks whether the slice container is running, stopped, missing, or unverifiable before deciding whether restored slice state should become `stopped` or `unhealthy`.
+- Preserved conservative semantics for still-running or unknown containers: stale worker presence, relay endpoint, and provider listings are cleared and the slice is marked `unhealthy` until the user restarts or diagnoses it. Missing/stopped containers for previously running or unhealthy slices become `stopped`.

@@ -136,9 +136,10 @@ impl DaemonApp {
                 }),
             );
         }
-        let reconciled_slices = self
-            .slices
-            .reconcile_after_kernel_restart(crate::session::unix_epoch_ms());
+        let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(
+            crate::session::unix_epoch_ms(),
+            crate::slice::inspect_local_docker_slice_host_runtime,
+        );
         for slice in reconciled_slices {
             self.durable_state.append_event(
                 "slice.updated",

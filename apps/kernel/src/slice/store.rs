@@ -10,6 +10,14 @@ use super::model::{
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceHostRuntimeState {
+    Running,
+    Stopped,
+    Missing,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SliceStore {
     inner: Arc<Mutex<SliceStoreState>>,
@@ -151,9 +159,20 @@ impl SliceStore {
     }
 
     pub fn reconcile_after_kernel_restart(&self, now_ms: u64) -> Vec<SliceRecord> {
+        self.reconcile_after_kernel_restart_with_host_state(now_ms, |_| {
+            SliceHostRuntimeState::Unknown
+        })
+    }
+
+    pub fn reconcile_after_kernel_restart_with_host_state(
+        &self,
+        now_ms: u64,
+        inspect_host_runtime: impl Fn(&SliceRecord) -> SliceHostRuntimeState,
+    ) -> Vec<SliceRecord> {
         let mut state = self.inner.lock().expect("slice store poisoned");
         let mut changed = Vec::new();
         for record in state.records.values_mut() {
+            let host_runtime = inspect_host_runtime(record);
             let was_runtime_status = matches!(
                 record.status,
                 SliceStatus::Starting
@@ -162,14 +181,16 @@ impl SliceStore {
                     | SliceStatus::Unhealthy
             );
             let mut record_changed = false;
-            if matches!(
-                record.status,
-                SliceStatus::Starting | SliceStatus::Stopping | SliceStatus::Running
-            ) {
-                record.status = SliceStatus::Unhealthy;
+            let reconciled_status =
+                reconcile_slice_status_after_kernel_restart(record.status.clone(), host_runtime);
+            if record.status != reconciled_status {
+                record.status = reconciled_status;
                 record_changed = true;
             }
-            if was_runtime_status {
+            let runtime_fields_are_stale = was_runtime_status
+                || matches!(record.status, SliceStatus::Stopped)
+                || matches!(host_runtime, SliceHostRuntimeState::Running);
+            if runtime_fields_are_stale {
                 if record.worker_kernel_id.take().is_some() {
                     record_changed = true;
                 }
@@ -605,6 +626,33 @@ impl SliceStore {
                 operation: "slice.display_endpoint",
                 message: format!("slice `{}` has no display endpoint", record.name),
             })
+    }
+}
+
+fn reconcile_slice_status_after_kernel_restart(
+    status: SliceStatus,
+    host_runtime: SliceHostRuntimeState,
+) -> SliceStatus {
+    match status {
+        SliceStatus::Starting | SliceStatus::Stopping => SliceStatus::Unhealthy,
+        SliceStatus::Running => match host_runtime {
+            SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
+            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
+                SliceStatus::Unhealthy
+            }
+        },
+        SliceStatus::Stopped => match host_runtime {
+            SliceHostRuntimeState::Running => SliceStatus::Unhealthy,
+            SliceHostRuntimeState::Stopped
+            | SliceHostRuntimeState::Missing
+            | SliceHostRuntimeState::Unknown => SliceStatus::Stopped,
+        },
+        SliceStatus::Unhealthy => match host_runtime {
+            SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
+            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
+                SliceStatus::Unhealthy
+            }
+        },
     }
 }
 
