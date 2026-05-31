@@ -34,7 +34,10 @@ import {
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
-const IPC_TIMEOUT_MS = 120_000
+// Slice start can cold-build the managed Linux image before returning the
+// worker kernel endpoint. Keep the control request open long enough for first
+// run provisioning while lifecycle progress remains request/response based.
+const IPC_TIMEOUT_MS = 600_000
 const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
