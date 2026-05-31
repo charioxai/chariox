@@ -1283,3 +1283,9 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Split slice provider-auth normalization, provider-family matching, scoped filtering, and alias-preserving merge policy out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/provider_auth.rs`. The command executor now delegates auth policy instead of owning it inline.
 - Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice production path cleanup
+
+- Moved the Lume slice provisioner and provider session smoke scripts from `experiments/slice-spike` into the production-owned kernel path `apps/kernel/slice-linux-lume`, removed spike naming from defaults/logging/docs, and updated validation script paths.
+- Versioned the default Linux Docker slice image as `arroba-slice-linux:0.1.0` across config defaults, local Docker fallback behavior, the Docker provisioner, and native-TUI slice drill setup; custom user image overrides still work.
+- Re-ran `bash -n` for both slice provisioners, `cargo test --manifest-path apps/kernel/Cargo.toml user_config -- --nocapture`, `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`, and the CLI test command covering slice command handlers/launch helpers; all passed.

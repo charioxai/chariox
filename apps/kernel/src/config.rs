@@ -37,7 +37,9 @@ pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
-pub use slices::{SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig};
+pub use slices::{
+    SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
+};
 pub use storage::{
     ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend, StateBackend,
     UserArchiveArtifactsConfig, UserArchiveHistoryConfig, UserArtifactsConfig, UserHistoryConfig,
@@ -804,6 +806,17 @@ screen_height = 900
         assert_eq!(config.slices.linux.cpus.as_deref(), Some("2.5"));
         assert_eq!(config.slices.linux.screen_width, Some(1440));
         assert_eq!(config.slices.linux.screen_height, Some(900));
+    }
+
+    #[test]
+    fn user_config_defaults_to_versioned_slice_image() {
+        let config = ArrobaUserConfig::default();
+
+        assert_eq!(
+            config.slices.linux.docker_image.as_deref(),
+            Some(DEFAULT_LINUX_SLICE_DOCKER_IMAGE)
+        );
+        assert_ne!(DEFAULT_LINUX_SLICE_DOCKER_IMAGE, "arroba-slice-linux:local");
     }
 
     #[test]

@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux-spike}"
+SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux-lume}"
 SLICE_IMAGE="${ARROBA_SLICE_IMAGE:-ubuntu-noble-vanilla:latest}"
 SLICE_USER="${ARROBA_SLICE_USER:-lume}"
 SLICE_PASSWORD="${ARROBA_SLICE_PASSWORD:-lume}"
@@ -22,11 +22,11 @@ SLICE_RELAY_PORT="${ARROBA_SLICE_RELAY_PORT:-43130}"
 export PATH="$HOME/.local/bin:$PATH"
 
 log() {
-  printf '[slice-spike] %s\n' "$*" >&2
+  printf '[slice-linux-lume] %s\n' "$*" >&2
 }
 
 fail() {
-  printf '[slice-spike] error: %s\n' "$*" >&2
+  printf '[slice-linux-lume] error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -47,8 +47,8 @@ EOF
 }
 
 require_host() {
-  [[ "$(uname -s)" == "Darwin" ]] || fail "this spike currently targets macOS hosts"
-  [[ "$(uname -m)" == "arm64" ]] || fail "Lume requires Apple Silicon for this spike"
+  [[ "$(uname -s)" == "Darwin" ]] || fail "this Lume slice provisioner currently targets macOS hosts"
+  [[ "$(uname -m)" == "arm64" ]] || fail "Lume slices require Apple Silicon"
   command -v curl >/dev/null || fail "curl is required"
   command -v jq >/dev/null || fail "jq is required"
   command -v expect >/dev/null || fail "expect is required"

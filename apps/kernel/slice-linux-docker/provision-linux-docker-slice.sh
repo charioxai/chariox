@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux}"
-SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux:local}"
+SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux:0.1.0}"
+SLICE_BASE_IMAGE="${ARROBA_SLICE_BASE_IMAGE:-arroba-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${ARROBA_SLICE_BUILD_IMAGE:-auto}"
 SLICE_EXTENSION_DOCKERFILE="${ARROBA_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${ARROBA_SLICE_DOCKER_MEMORY:-}"
@@ -92,7 +93,7 @@ build_image() {
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
     docker build \
-      --build-arg "ARROBA_SLICE_BASE_IMAGE=arroba-slice-linux:local" \
+      --build-arg "ARROBA_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
       "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"

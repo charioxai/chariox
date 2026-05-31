@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::config::{DaemonConfig, SliceImageBuildPolicy};
+use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
 
 use super::model::{
@@ -39,7 +39,7 @@ impl LocalDockerSliceOptions {
             docker_image: linux
                 .docker_image
                 .clone()
-                .unwrap_or_else(|| "arroba-slice-linux:local".to_string()),
+                .unwrap_or_else(|| DEFAULT_LINUX_SLICE_DOCKER_IMAGE.to_string()),
             build_image: linux.build_image.unwrap_or(SliceImageBuildPolicy::Auto),
             extension_dockerfile: linux
                 .extension_dockerfile

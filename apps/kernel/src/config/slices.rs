@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::{validate_non_empty, validate_optional_nonzero};
 use crate::error::DaemonError;
 
+pub const DEFAULT_LINUX_SLICE_DOCKER_IMAGE: &str = "arroba-slice-linux:0.1.0";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserSlicesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,7 +56,7 @@ pub struct UserLinuxSliceConfig {
 impl Default for UserLinuxSliceConfig {
     fn default() -> Self {
         Self {
-            docker_image: Some("arroba-slice-linux:local".to_string()),
+            docker_image: Some(DEFAULT_LINUX_SLICE_DOCKER_IMAGE.to_string()),
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             allow_unconfined_seccomp: Some(false),

@@ -62,6 +62,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
 const execFileAsync = promisify(execFile)
@@ -1141,7 +1142,7 @@ async function prebuildLocalDockerSliceImageIfNeeded(policy) {
     "-f",
     path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "-t",
-    "arroba-slice-linux:local",
+    defaultLocalDockerSliceImage,
     repoRoot,
   ])
 }
@@ -1211,7 +1212,7 @@ async function main() {
         `root = ${JSON.stringify(path.join(root, "slices"))}`,
         "",
         "[slices.linux]",
-        "docker_image = \"arroba-slice-linux:local\"",
+        `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
         `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
         "",
       ].join("\n"))
