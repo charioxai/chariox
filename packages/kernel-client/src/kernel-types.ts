@@ -834,6 +834,13 @@ export type SliceRecord = {
   updated_at_ms: number
 }
 
+export type SliceLogEntry = {
+  source: string
+  path?: string | null
+  text: string
+  truncated?: boolean
+}
+
 export type SliceProviderAuthSummary = {
   provider: string
   state: "unknown" | "not_configured" | "configured" | "authenticated"
@@ -1081,7 +1088,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 74
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 75
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

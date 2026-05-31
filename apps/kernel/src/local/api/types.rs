@@ -4,7 +4,9 @@ use crate::session::{
     RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice,
     RuntimeInteractionLevel,
 };
-use crate::slice::{SliceBackendKind, SliceDisplayEndpoint, SliceProviderLoginStart, SliceRecord};
+use crate::slice::{
+    SliceBackendKind, SliceDisplayEndpoint, SliceLogEntry, SliceProviderLoginStart, SliceRecord,
+};
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use arroba_relay::protocol::RelayKernelPresence;
 
@@ -40,7 +42,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 74;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 75;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -148,6 +150,7 @@ pub enum LocalDaemonRequest {
     StartSliceProviderLogin(StartSliceProviderLoginRequest),
     SetSliceProviderAuthAlias(SetSliceProviderAuthAliasRequest),
     GetSliceDisplayEndpoint(SliceRefRequest),
+    GetSliceLogs(GetSliceLogsRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
@@ -598,6 +601,10 @@ pub enum LocalDaemonResponse {
     },
     SliceDisplayEndpoint {
         endpoint: SliceDisplayEndpoint,
+    },
+    SliceLogs {
+        slice: SliceRecord,
+        entries: Vec<SliceLogEntry>,
     },
     RemoteMachinesListed {
         machines: Vec<RemoteMachineRecord>,

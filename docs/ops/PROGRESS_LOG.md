@@ -2,6 +2,14 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-05-31
+
+### Slice diagnostics hardening
+
+- Added a kernel-owned `GetSliceLogs` local daemon request/`SliceLogs` response and bumped the shared local daemon protocol to 75. Local Docker slices now expose tailed provisioner action logs plus recent container logs as structured diagnostic entries.
+- Added `/slice logs [slice-ref] [--tail <lines>]` to the OpenTUI slash command path and `slice logs [slice-ref] [--tail <lines>]` to the shell/web CLI command path. Cloud web slice controls now include a logs action and bounded inline log viewer.
+- Focused validation passed: `cargo test --manifest-path apps/kernel/Cargo.toml slice_logs -- --nocapture`, `pnpm --filter @arroba/cli test -- slice-command-handlers.test.ts shell-executor.test.ts`, and `/Users/miguel/arroba-cloud pnpm --filter @arroba-cloud/web test -- kernel-requests.test.ts SlicesSidebarPanelMount.test.tsx slices-panel-controller.test.ts`.
+
 ## 2026-05-29
 
 ### Workspace live sync local validation

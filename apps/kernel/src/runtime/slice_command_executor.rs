@@ -2,8 +2,8 @@ use tokio::time::{sleep, Duration};
 
 use crate::error::DaemonError;
 use crate::local::{
-    CreateSliceRequest, ImportSliceProviderAuthRequest, ListSlicesRequest, LocalDaemonRequest,
-    LocalDaemonResponse, SetSliceProviderAuthAliasRequest, SliceRefRequest,
+    CreateSliceRequest, GetSliceLogsRequest, ImportSliceProviderAuthRequest, ListSlicesRequest,
+    LocalDaemonRequest, LocalDaemonResponse, SetSliceProviderAuthAliasRequest, SliceRefRequest,
     StartSliceProviderLoginRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
@@ -47,6 +47,9 @@ pub(crate) async fn execute_slice_request(
         LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
             execute_get_slice_display_endpoint_request(runtime_state, request).await
         }
+        LocalDaemonRequest::GetSliceLogs(request) => {
+            execute_get_slice_logs_request(runtime_state, config_projection, request).await
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "slice request",
             message: "unsupported slice request".to_string(),
@@ -76,6 +79,27 @@ pub(crate) async fn execute_get_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     Ok(LocalDaemonResponse::Slice { slice })
+}
+
+pub(crate) async fn execute_get_slice_logs_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: GetSliceLogsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let tail_lines = request.tail_lines;
+    let entries = tokio::task::spawn_blocking(move || {
+        crate::slice::collect_local_docker_slice_logs(&task_slice, &docker_options, tail_lines)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.logs",
+        message: format!("slice log collection task failed: {error}"),
+    })??;
+    Ok(LocalDaemonResponse::SliceLogs { slice, entries })
 }
 
 pub(crate) async fn execute_start_slice_request(

@@ -136,6 +136,16 @@ pub struct SliceDisplayEndpoint {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceLogEntry {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateSliceInput {
     pub name: String,
@@ -951,6 +961,112 @@ pub fn start_local_docker_slice_provider_login(
     })
 }
 
+pub fn collect_local_docker_slice_logs(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    tail_lines: Option<u32>,
+) -> Result<Vec<SliceLogEntry>, DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.logs",
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    if record.os != "linux" {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.logs",
+            message: format!(
+                "local Docker slices only support linux, got `{}`",
+                record.os
+            ),
+        });
+    }
+
+    let tail_lines = tail_lines.unwrap_or(200).clamp(1, 2_000);
+    let mut entries = Vec::new();
+    for action in [
+        LocalDockerSliceAction::Provision,
+        LocalDockerSliceAction::ImportProviderAuth,
+        LocalDockerSliceAction::Stop,
+        LocalDockerSliceAction::Destroy,
+    ] {
+        let path = local_docker_slice_action_log_path(&options.root, record, action);
+        if path.is_file() {
+            entries.push(read_slice_log_file_entry(
+                action.as_str(),
+                &path,
+                tail_lines as usize,
+            ));
+        }
+    }
+    entries.push(local_docker_container_log_entry(record, tail_lines));
+    Ok(entries)
+}
+
+fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> SliceLogEntry {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let (text, truncated) = tail_text_lines(&text, tail_lines);
+            SliceLogEntry {
+                source: source.to_string(),
+                path: Some(path.display().to_string()),
+                text,
+                truncated,
+            }
+        }
+        Err(error) => SliceLogEntry {
+            source: source.to_string(),
+            path: Some(path.display().to_string()),
+            text: format!("failed to read log: {error}"),
+            truncated: false,
+        },
+    }
+}
+
+fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
+    let container = local_docker_container_name(record);
+    let tail_lines_arg = tail_lines.to_string();
+    let output = Command::new("docker")
+        .args(["logs", "--tail", &tail_lines_arg, &container])
+        .output();
+    match output {
+        Ok(output) => {
+            let mut text = String::new();
+            text.push_str(&String::from_utf8_lossy(&output.stdout));
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() && text.trim().is_empty() {
+                text = format!("docker logs failed with status {}", output.status);
+            }
+            SliceLogEntry {
+                source: "container".to_string(),
+                path: None,
+                text: text.trim().to_string(),
+                truncated: false,
+            }
+        }
+        Err(error) => SliceLogEntry {
+            source: "container".to_string(),
+            path: None,
+            text: format!("docker logs unavailable: {error}"),
+            truncated: false,
+        },
+    }
+}
+
+fn tail_text_lines(text: &str, tail_lines: usize) -> (String, bool) {
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.len() <= tail_lines {
+        return (text.trim().to_string(), false);
+    }
+    (
+        lines[lines.len().saturating_sub(tail_lines)..]
+            .join("\n")
+            .trim()
+            .to_string(),
+        true,
+    )
+}
+
 fn configure_local_docker_slice_command(
     command: &mut Command,
     record: &SliceRecord,
@@ -1248,6 +1364,7 @@ fn validate_slice_name(name: &str) -> Result<(), DaemonError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::net::TcpListener;
 
     use super::*;
@@ -1406,6 +1523,45 @@ mod tests {
             error.to_string().contains(&ports.relay.to_string()),
             "error should name the busy port: {error}"
         );
+    }
+
+    #[test]
+    fn local_docker_slice_logs_include_tailed_action_logs() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let root =
+            std::env::temp_dir().join(format!("arroba-slice-logs-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let options = LocalDockerSliceOptions {
+            root: root.clone(),
+            docker_image: "arroba-slice-linux:test".to_string(),
+            build_image: SliceImageBuildPolicy::Never,
+            extension_dockerfile: None,
+            memory_mb: None,
+            cpus: None,
+            screen_width: 1280,
+            screen_height: 800,
+        };
+        let log_path =
+            local_docker_slice_action_log_path(&root, &slice, LocalDockerSliceAction::Provision);
+        fs::create_dir_all(log_path.parent().expect("log should have parent"))
+            .expect("log dir should create");
+        fs::write(&log_path, "line-1\nline-2\nline-3\n").expect("log should write");
+
+        let entries = collect_local_docker_slice_logs(&slice, &options, Some(2))
+            .expect("logs should collect");
+
+        let provision = entries
+            .iter()
+            .find(|entry| entry.source == "provision")
+            .expect("provision log should be present");
+        assert_eq!(provision.text, "line-2\nline-3");
+        assert!(provision.truncated);
+        assert!(entries.iter().any(|entry| entry.source == "container"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

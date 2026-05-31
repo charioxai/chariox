@@ -75,7 +75,8 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::StartSliceProviderLogin(_)
             | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
-            | LocalDaemonRequest::GetSliceDisplayEndpoint(_)) => {
+            | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
+            | LocalDaemonRequest::GetSliceLogs(_)) => {
                 execute_slice_request(&self.runtime_state, &self.config_projection, request).await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {

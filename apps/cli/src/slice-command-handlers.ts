@@ -1,5 +1,6 @@
 import type {
   SliceDisplayEndpoint,
+  SliceLogEntry,
   SliceRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -37,6 +38,7 @@ export type SliceCommandHandlerDeps = {
   startSliceProviderLogin?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; login: SliceProviderLogin }>
   setSliceProviderAuthAlias?: (sliceRef: string, provider: string, alias: string | null) => Promise<{ slice: SliceRecord; provider: string; alias: string | null }>
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
+  getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
 }
 
 type SliceProviderLogin = {
@@ -70,6 +72,10 @@ export async function handleSliceSlashCommand(
     await doctorSlice(deps, args[0])
     return
   }
+  if (subcommand === "logs" || subcommand === "log") {
+    await showSliceLogs(deps, args)
+    return
+  }
   if (subcommand === "start" || subcommand === "stop") {
     await setSliceRunning(deps, subcommand, args[0])
     return
@@ -94,7 +100,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -127,6 +133,49 @@ function formatSliceProviderAuth(auth: NonNullable<SliceRecord["provider_auth"]>
   ].filter(Boolean).join("/")
 }
 
+function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
+  if (!entries.length) {
+    return `slice logs ${formatSliceLabel(slice)} (${slice.id})\nno logs found`
+  }
+  return [
+    `slice logs ${formatSliceLabel(slice)} (${slice.id})`,
+    ...entries.map((entry) => {
+      const path = entry.path ? ` path=${entry.path}` : ""
+      const truncated = entry.truncated ? " truncated" : ""
+      const text = entry.text.trim() || "<empty>"
+      return `== ${entry.source}${path}${truncated} ==\n${text}`
+    }),
+  ].join("\n")
+}
+
+function parseSliceLogsArgs(args: string[]): {
+  sliceRef?: string
+  tailLines?: number
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let tailLines: number | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if ((arg === "--tail" || arg === "-n") && value && !value.startsWith("--")) {
+      const parsed = Number.parseInt(value, 10)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return { error: "usage: /slice logs [slice-ref] [--tail <lines>]" }
+      }
+      tailLines = parsed
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: /slice logs [slice-ref] [--tail <lines>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(tailLines ? { tailLines } : {}) }
+}
+
 async function resolveFocusedSliceRef(deps: SliceCommandHandlerDeps): Promise<string> {
   const focusedId = deps.focusedAgentId()
   const resolved = deps.resolveSessionAgent(focusedId)
@@ -154,6 +203,26 @@ async function explicitOrFocusedSliceRef(
   value: string | undefined,
 ): Promise<string> {
   return value ?? resolveFocusedSliceRef(deps)
+}
+
+async function showSliceLogs(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.getSliceLogs) {
+    deps.flashFooter("slice logs are unavailable in this build", "error")
+    return
+  }
+  const parsed = parseSliceLogsArgs(args)
+  if (parsed.error) {
+    deps.flashFooter(parsed.error, "error")
+    return
+  }
+  try {
+    const sliceRef = await explicitOrFocusedSliceRef(deps, parsed.sliceRef)
+    const payload = await deps.getSliceLogs(sliceRef, parsed.tailLines ?? null)
+    deps.appendNotice(formatSliceLogs(payload.slice, payload.entries))
+    deps.flashFooter(`slice logs ${formatSliceLabel(payload.slice)}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice logs failed", "error")
+  }
 }
 
 function parseSliceCreateOptions(

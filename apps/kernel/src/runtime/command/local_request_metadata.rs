@@ -334,6 +334,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartSliceProviderLogin(_) => "slice.auth.login",
         LocalDaemonRequest::SetSliceProviderAuthAlias(_) => "slice.auth.alias",
         LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
+        LocalDaemonRequest::GetSliceLogs(_) => "slice.logs.get",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",

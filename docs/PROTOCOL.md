@@ -411,6 +411,13 @@ Current local runtime note:
 - `arroba-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
 - the Unix-socket local transport remains useful for daemon smoke coverage and compatibility shims, but it is no longer the primary local user path
 
+Current slice-management surface:
+
+- `slice.list`, `slice.create`, `slice.get`, `slice.start`, `slice.stop`, `slice.delete`, `slice.display_endpoint.get`, and `slice.logs.get` are daemon-owned local requests.
+- Slice start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
+- `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
+- Slice provider auth import/login/alias requests are scoped by provider and the kernel owns displayed provider auth summaries.
+
 Current session-lifecycle note:
 
 - the local implementation still exposes `session.end` as an internal/runtime operation, but the intended user-facing local client contract is persistent detached sessions plus explicit `session.delete`

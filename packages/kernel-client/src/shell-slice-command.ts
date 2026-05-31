@@ -1,11 +1,13 @@
 import type {
   SliceDisplayEndpoint,
+  SliceLogEntry,
   SliceRecord,
 } from "./kernel-types.js"
 import {
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
+  getSliceLogsRequest,
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
@@ -88,6 +90,17 @@ export async function executeSliceCommand(
       const response = await deps.client.send(getSliceRequest(sliceRef))
       const slice = expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
       return { ok: slice.status !== "unhealthy", message: formatSliceDoctor(slice), data: { slice } }
+    }
+    case "logs":
+    case "log": {
+      const { sliceRef, tailLines, error } = parseSliceLogsArgs(first, rest)
+      if (error) {
+        return { ok: false, message: error }
+      }
+      const resolvedSliceRef = sliceRef ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(getSliceLogsRequest(resolvedSliceRef, tailLines))
+      const payload = expectVariant<{ slice: SliceRecord; entries: SliceLogEntry[] }>(response, "SliceLogs")
+      return { ok: true, message: formatSliceLogs(payload.slice, payload.entries), data: payload }
     }
     case "start": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
@@ -173,8 +186,37 @@ export async function executeSliceCommand(
       return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|doctor|start|stop|delete|auth import|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|logs|start|stop|delete|auth import|auth login|auth alias|screen" }
   }
+}
+
+function parseSliceLogsArgs(first: string | undefined, rest: string[]): {
+  sliceRef?: string
+  tailLines?: number
+  error?: string
+} {
+  const args = [first, ...rest].filter((arg): arg is string => Boolean(arg))
+  let sliceRef: string | undefined
+  let tailLines: number | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if ((arg === "--tail" || arg === "-n") && value && !value.startsWith("--")) {
+      const parsed = Number.parseInt(value, 10)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return { error: "usage: slice logs [slice-ref] [--tail <lines>]" }
+      }
+      tailLines = parsed
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: slice logs [slice-ref] [--tail <lines>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(tailLines ? { tailLines } : {}) }
 }
 
 function formatSliceLoginMessage(
@@ -243,6 +285,21 @@ function formatSliceDoctor(slice: SliceRecord): string {
       .join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks].join("\n")
+}
+
+function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
+  if (!entries.length) {
+    return `slice logs ${formatSliceLabel(slice)}\nno logs found`
+  }
+  return [
+    `slice logs ${formatSliceLabel(slice)}`,
+    ...entries.map((entry) => {
+      const location = entry.path ? ` path=${entry.path}` : ""
+      const truncated = entry.truncated ? " truncated" : ""
+      const body = entry.text.trim() || "<empty>"
+      return `== ${entry.source}${location}${truncated} ==\n${body}`
+    }),
+  ].join("\n")
 }
 
 function doctorCheck(name: string, ok: boolean, detail: string): string {

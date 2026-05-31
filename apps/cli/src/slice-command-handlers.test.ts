@@ -102,6 +102,35 @@ test("slice command doctor renders health checks", async () => {
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
+test("slice command logs renders focused slice diagnostics", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("logs", "--tail", "25"))
+
+  assert.deepEqual(harness.logRequests, [{ sliceRef: "linux-dev", tailLines: 25 }])
+  assert.match(harness.notices.at(-1) ?? "", /slice logs linux-dev \(slice-1\)/)
+  assert.match(harness.notices.at(-1) ?? "", /== provision path=\/tmp\/slice.log truncated ==/)
+  assert.match(harness.notices.at(-1) ?? "", /slice booted/)
+  assert.equal(harness.footers.at(-1)?.message, "slice logs linux-dev")
+})
+
 test("slice command auth import can target the focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -187,6 +216,7 @@ function sliceHarness(options: {
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
   const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
   const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
+  const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -240,8 +270,20 @@ function sliceHarness(options: {
       displayEndpointRefs.push(sliceRef)
       return endpoint
     },
+    getSliceLogs: async (sliceRef, tailLines) => {
+      logRequests.push({ sliceRef, tailLines })
+      return {
+        slice: slice({ id: "slice-1", name: sliceRef }),
+        entries: [{
+          source: "provision",
+          path: "/tmp/slice.log",
+          text: "slice booted",
+          truncated: true,
+        }],
+      }
+    },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, startedAuthLogins, aliasedAuth }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, startedAuthLogins, aliasedAuth, logRequests }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

@@ -555,6 +555,13 @@ export type SliceRecord = {
   updated_at_ms: number
 }
 
+export type SliceLogEntry = {
+  source: string
+  path?: string | null
+  text: string
+  truncated?: boolean
+}
+
 export type AgentInstance = {
   id: string
   agent_ref: string

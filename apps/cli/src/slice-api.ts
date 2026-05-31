@@ -1,9 +1,10 @@
 import type { LocalIpcClient } from "./ipc.js"
-import type { SliceDisplayEndpoint, SliceRecord } from "./cli-types.js"
+import type { SliceDisplayEndpoint, SliceLogEntry, SliceRecord } from "./cli-types.js"
 import {
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
+  getSliceLogsRequest,
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
@@ -88,4 +89,13 @@ export async function setSliceProviderAuthAlias(
 export async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {
   const response = await client.send<Record<string, unknown>>(getSliceDisplayEndpointRequest(sliceRef))
   return expectVariant<{ endpoint: SliceDisplayEndpoint }>(response, "SliceDisplayEndpoint").endpoint
+}
+
+export async function getSliceLogs(
+  client: LocalIpcClient,
+  sliceRef: string,
+  tailLines?: number | null,
+): Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }> {
+  const response = await client.send<Record<string, unknown>>(getSliceLogsRequest(sliceRef, tailLines))
+  return expectVariant<{ slice: SliceRecord; entries: SliceLogEntry[] }>(response, "SliceLogs")
 }

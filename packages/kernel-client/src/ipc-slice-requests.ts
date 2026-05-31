@@ -77,3 +77,12 @@ export function setSliceProviderAuthAliasRequest(sliceRef: string, provider: str
 export function getSliceDisplayEndpointRequest(sliceRef: string) {
   return { GetSliceDisplayEndpoint: { slice_ref: sliceRef } }
 }
+
+export function getSliceLogsRequest(sliceRef: string, tailLines?: number | null) {
+  return {
+    GetSliceLogs: {
+      slice_ref: sliceRef,
+      tail_lines: tailLines ?? null,
+    },
+  }
+}

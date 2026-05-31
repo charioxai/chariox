@@ -127,6 +127,7 @@ import {
   deleteSlice,
   getSlice,
   getSliceDisplayEndpoint,
+  getSliceLogs,
   importSliceProviderAuth,
   listSlices,
   setSliceProviderAuthAlias,
@@ -456,6 +457,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return result
     },
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
+    getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listProviderProcesses: (provider) => listProviderProcesses(client, provider),
     teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),
     listMcpServers: () => listMcpServers(client, pendingWorkspaceTarget()),

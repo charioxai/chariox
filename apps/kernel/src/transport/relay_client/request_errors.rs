@@ -64,6 +64,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartSliceProviderLogin(_) => "slice.auth.login",
         LocalDaemonRequest::SetSliceProviderAuthAlias(_) => "slice.auth.alias",
         LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
+        LocalDaemonRequest::GetSliceLogs(_) => "slice.logs.get",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
