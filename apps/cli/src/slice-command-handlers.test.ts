@@ -77,6 +77,31 @@ test("slice command screen resolves focused agent slice and opens endpoint", asy
   assert.equal(harness.footers.at(-1)?.message, "opened http://127.0.0.1:6080")
 })
 
+test("slice command doctor renders health checks", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        status: "unhealthy",
+        display_mode: "headed",
+        worker_kernel_id: null,
+        worktree_id: "/repo/wt",
+        session_ids: ["session-1"],
+        agent_ids: ["agent-1"],
+      }),
+    ],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
+
+  assert.match(harness.notices.at(-1) ?? "", /slice doctor linux-dev \(slice-1\)/)
+  assert.match(harness.notices.at(-1) ?? "", /fail lifecycle: unhealthy/)
+  assert.match(harness.notices.at(-1) ?? "", /fail display: headed/)
+  assert.match(harness.notices.at(-1) ?? "", /ok agents: 1 attached/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
 test("slice command auth import can target the focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [

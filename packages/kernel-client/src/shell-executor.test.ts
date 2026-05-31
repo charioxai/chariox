@@ -513,6 +513,47 @@ test("executeShellCommand creates manually managed slices scoped to the current 
   assert.deepEqual(result.bindings, { sl: "slice-manual" })
 })
 
+test("executeShellCommand renders slice doctor diagnostics", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return {
+        Slice: {
+          slice: {
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "unhealthy",
+            display_mode: "headed",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: null,
+            worker_machine_id: null,
+            providers: [],
+            session_ids: ["session-1"],
+            agent_ids: ["agent-1"],
+            provider_auth: [],
+            display_endpoint: null,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice doctor linux-a"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /slice doctor linux-a id=slice-1/)
+  assert.match(result.message ?? "", /fail lifecycle: unhealthy/)
+  assert.match(result.message ?? "", /fail display: headed/)
+  assert.match(result.message ?? "", /ok agents: 1 attached/)
+})
+
 test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {
   const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
   const requests: Record<string, unknown>[] = []

@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+mod ports;
+
 use crate::config::{DaemonConfig, SliceImageBuildPolicy};
 use crate::error::DaemonError;
 use crate::slice_provider_auth::SliceProviderAuthSummary;
+use ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1115,64 +1117,6 @@ impl LocalDockerSliceAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LocalDockerSlicePorts {
-    codex: u16,
-    opencode: u16,
-    kernel: u16,
-    mcp: u16,
-    relay: u16,
-    novnc: u16,
-}
-
-impl LocalDockerSlicePorts {
-    fn for_slice_id(slice_id: &str) -> Self {
-        let ordinal = slice_id
-            .strip_prefix("slice-")
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(1)
-            .saturating_sub(1);
-        Self {
-            codex: 43252_u16.saturating_add(ordinal),
-            opencode: 43140_u16.saturating_add(ordinal),
-            kernel: 53119_u16.saturating_add(ordinal),
-            mcp: 53120_u16.saturating_add(ordinal),
-            relay: 53130_u16.saturating_add(ordinal),
-            novnc: 16080_u16.saturating_add(ordinal),
-        }
-    }
-
-    fn codex_range(self) -> String {
-        let start = 43362_u16.saturating_add(self.ordinal_offset());
-        format!("{start}-{}", start.saturating_add(19))
-    }
-
-    fn opencode_range(self) -> String {
-        let start = 43150_u16.saturating_add(self.ordinal_offset());
-        format!("{start}-{}", start.saturating_add(19))
-    }
-
-    fn ordinal_offset(self) -> u16 {
-        self.kernel.saturating_sub(53119).saturating_mul(20)
-    }
-
-    fn published_ports(self) -> Vec<u16> {
-        let offset = self.ordinal_offset();
-        let mut ports = vec![
-            self.codex,
-            self.opencode,
-            self.kernel,
-            self.relay,
-            self.novnc,
-        ];
-        ports.extend(43362_u16.saturating_add(offset)..=43381_u16.saturating_add(offset));
-        ports.extend(43150_u16.saturating_add(offset)..=43169_u16.saturating_add(offset));
-        ports.sort_unstable();
-        ports.dedup();
-        ports
-    }
-}
-
 fn local_docker_container_name(record: &SliceRecord) -> String {
     format!("arroba-slice-{}", record.name)
 }
@@ -1181,11 +1125,7 @@ fn ensure_local_docker_slice_ports_available(record: &SliceRecord) -> Result<(),
     if local_docker_container_is_running(record) {
         return Ok(());
     }
-    let busy_ports = LocalDockerSlicePorts::for_slice_id(&record.id)
-        .published_ports()
-        .into_iter()
-        .filter(|port| TcpListener::bind(("127.0.0.1", *port)).is_err())
-        .collect::<Vec<_>>();
+    let busy_ports = busy_published_ports_for_slice(record);
     if busy_ports.is_empty() {
         return Ok(());
     }
@@ -1308,6 +1248,8 @@ fn validate_slice_name(name: &str) -> Result<(), DaemonError> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
     use super::*;
 
     fn create_input(name: &str) -> CreateSliceInput {

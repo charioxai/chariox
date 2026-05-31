@@ -83,6 +83,12 @@ export async function executeSliceCommand(
       const slice = expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
       return { ok: true, message: formatSlice(slice), data: { slice } }
     }
+    case "doctor": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(getSliceRequest(sliceRef))
+      const slice = expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
+      return { ok: slice.status !== "unhealthy", message: formatSliceDoctor(slice), data: { slice } }
+    }
     case "start": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
       const response = await deps.client.send(startSliceRequest(sliceRef))
@@ -167,7 +173,7 @@ export async function executeSliceCommand(
       return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|start|stop|delete|auth import|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|start|stop|delete|auth import|auth login|auth alias|screen" }
   }
 }
 
@@ -221,6 +227,26 @@ function formatSlice(slice: SliceRecord): string {
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
   return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} agents=${agents}${scope} providers=${providers} auth=${auth}${display}`
+}
+
+function formatSliceDoctor(slice: SliceRecord): string {
+  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
+  const checks = [
+    doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
+    doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
+    doctorCheck("scope", scope !== "missing", scope),
+    doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
+    doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
+    doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
+    doctorCheck("provider accounts", true, (slice.provider_auth ?? [])
+      .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
+      .join(",") || "none"),
+  ]
+  return [`slice doctor ${formatSliceLabel(slice)}`, ...checks].join("\n")
+}
+
+function doctorCheck(name: string, ok: boolean, detail: string): string {
+  return `${ok ? "ok" : "fail"} ${name}: ${detail}`
 }
 
 function formatSliceLabel(slice: SliceRecord): string {

@@ -66,6 +66,10 @@ export async function handleSliceSlashCommand(
     await showSlice(deps, args[0])
     return
   }
+  if (subcommand === "doctor") {
+    await doctorSlice(deps, args[0])
+    return
+  }
   if (subcommand === "start" || subcommand === "stop") {
     await setSliceRunning(deps, subcommand, args[0])
     return
@@ -90,7 +94,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -287,6 +291,40 @@ async function showSlice(
   const slice = await deps.getSlice(await explicitOrFocusedSliceRef(deps, sliceRef))
   deps.appendNotice(formatSlice(slice))
   deps.flashFooter(`showing slice ${formatSliceLabel(slice)}`, "info")
+}
+
+async function doctorSlice(
+  deps: SliceCommandHandlerDeps,
+  sliceRef: string | undefined,
+): Promise<void> {
+  if (!deps.getSlice) {
+    deps.flashFooter("slice doctor is unavailable in this build", "error")
+    return
+  }
+  const slice = await deps.getSlice(await explicitOrFocusedSliceRef(deps, sliceRef))
+  deps.appendNotice(formatSliceDoctor(slice))
+  deps.flashFooter(
+    `slice doctor ${formatSliceLabel(slice)}: ${slice.status}`,
+    slice.status === "unhealthy" ? "error" : "info",
+  )
+}
+
+function formatSliceDoctor(slice: SliceRecord): string {
+  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
+  const checks = [
+    doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
+    doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
+    doctorCheck("scope", scope !== "missing", scope),
+    doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
+    doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
+    doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
+    doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "none"),
+  ]
+  return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks].join("\n")
+}
+
+function doctorCheck(name: string, ok: boolean, detail: string): string {
+  return `${ok ? "ok" : "fail"} ${name}: ${detail}`
 }
 
 async function setSliceRunning(
