@@ -81,7 +81,7 @@ function parseArgs(argv) {
     else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
     else if (arg === '--mode') {
       options.mode = argv[++i]
-      if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
+      if (!['off', 'managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be off, managed, or tracked')
     }
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--hetzner-worker') options.hetznerWorker = true
@@ -333,7 +333,7 @@ async function runWorkspaceLiveSyncChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync] [--hetzner-worker]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full] [--mode off|managed|tracked] [--managed-target-count COUNT] [--target-branch BRANCH] [--tracked-target-count COUNT] [--tracked-bidirectional] [--restart-relay-before-sync] [--hetzner-worker]')
     console.log('Example: node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --full')
     return
   }
