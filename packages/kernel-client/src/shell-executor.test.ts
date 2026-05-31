@@ -40,6 +40,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync required\|unrestricted/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|enable managed\|tracked\|disable\|mode managed\|tracked\|unrestricted\|link/)
+  assert.match(result.message ?? "", /slice list\|create\|status\|start\|stop\|delete\|auth import\|auth remove\|screen/)
 })
 
 test("executeShellCommand renders shell-local context and pwd", async () => {

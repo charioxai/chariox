@@ -56,7 +56,7 @@ fail() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
 This Docker path is a provider/runtime validation fallback for Mac hosts when
@@ -261,12 +261,45 @@ import_provider_auth() {
   esac
 }
 
+remove_provider_auth() {
+  ensure_container
+  case "$SLICE_AUTH_PROVIDER" in
+    all)
+      remove_codex_auth
+      remove_opencode_auth
+      remove_claude_auth
+      ;;
+    codex)
+      remove_codex_auth
+      ;;
+    opencode|opencode:*)
+      remove_opencode_auth
+      ;;
+    claude)
+      remove_claude_auth
+      ;;
+    *)
+      fail "unsupported provider auth removal: $SLICE_AUTH_PROVIDER"
+      ;;
+  esac
+}
+
 import_codex_auth() {
   copy_provider_auth_file "$SLICE_CODEX_AUTH" "/home/slice/.codex/auth.json" "Codex"
 }
 
+remove_codex_auth() {
+  exec_slice bash -lc "rm -f /home/slice/.codex/auth.json"
+  log "removed Codex auth from slice"
+}
+
 import_opencode_auth() {
   copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "/home/slice/.local/share/opencode/auth.json" "OpenCode"
+}
+
+remove_opencode_auth() {
+  exec_slice bash -lc "rm -f /home/slice/.local/share/opencode/auth.json"
+  log "removed OpenCode auth from slice"
 }
 
 import_claude_auth() {
@@ -288,6 +321,11 @@ import_claude_auth() {
     log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
   fi
   trust_claude_slice_workspace
+}
+
+remove_claude_auth() {
+  exec_slice bash -lc "rm -f /home/slice/.claude.json /home/slice/.claude/settings.json /home/slice/.claude/stats-cache.json /home/slice/.claude/.credentials.json"
+  log "removed Claude auth from slice"
 }
 
 print_provider_auth_status() {
@@ -408,6 +446,11 @@ main() {
     import-provider-auth)
       require_docker
       import_provider_auth
+      print_provider_auth_status
+      ;;
+    remove-provider-auth)
+      require_docker
+      remove_provider_auth
       print_provider_auth_status
       ;;
     start-provider-login)

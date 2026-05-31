@@ -418,7 +418,7 @@ Current slice-management surface:
 - Local Docker slices keep Docker's default seccomp profile unless the home user explicitly sets `slices.linux.allow_unconfined_seccomp = true`; clients must present this as an advanced security compatibility option.
 - Slice start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
-- Slice provider auth import/login/alias requests are scoped by provider and the kernel owns displayed provider auth summaries.
+- Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
 
 Current session-lifecycle note:
 

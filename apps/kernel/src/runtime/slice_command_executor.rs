@@ -3,8 +3,8 @@ use tokio::time::{sleep, Duration};
 use crate::error::DaemonError;
 use crate::local::{
     CreateSliceRequest, GetSliceLogsRequest, ImportSliceProviderAuthRequest, ListSlicesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SetSliceProviderAuthAliasRequest, SliceRefRequest,
-    StartSliceProviderLoginRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RemoveSliceProviderAuthRequest,
+    SetSliceProviderAuthAliasRequest, SliceRefRequest, StartSliceProviderLoginRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -35,6 +35,10 @@ pub(crate) async fn execute_slice_request(
         }
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
             execute_import_slice_provider_auth_request(runtime_state, config_projection, request)
+                .await
+        }
+        LocalDaemonRequest::RemoveSliceProviderAuth(request) => {
+            execute_remove_slice_provider_auth_request(runtime_state, config_projection, request)
                 .await
         }
         LocalDaemonRequest::StartSliceProviderLogin(request) => {
@@ -326,6 +330,74 @@ pub(crate) async fn execute_get_slice_display_endpoint_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
     Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+}
+
+pub(crate) async fn execute_remove_slice_provider_auth_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: RemoveSliceProviderAuthRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation =
+        runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.remove")?;
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let provider = normalized_slice_provider(&request.provider)?;
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.remove",
+        "accepted",
+        Some(&format!("provider={provider}")),
+    )?;
+    if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
+        let docker_options =
+            crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+        let resolved_slice = slice.clone();
+        let provider_for_action = provider.clone();
+        let remove_result = tokio::task::spawn_blocking(move || {
+            crate::slice::run_local_docker_slice_action(
+                &resolved_slice,
+                crate::slice::LocalDockerSliceAction::RemoveProviderAuth,
+                None,
+                Some(&provider_for_action),
+                &docker_options,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.auth.remove",
+            message: format!("slice auth remove task failed: {error}"),
+        })?;
+        if let Err(error) = remove_result {
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "auth.remove",
+                "failed",
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+        let provider_auth = slice
+            .provider_auth
+            .into_iter()
+            .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, &provider))
+            .collect::<Vec<_>>();
+        let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
+        runtime_state.record_slice_audit_event(
+            &slice,
+            "auth.remove",
+            "completed",
+            Some(&format!("provider={provider}")),
+        )?;
+        return Ok(LocalDaemonResponse::SliceProviderAuthRemoved {
+            slice,
+            provider,
+            status: "removed".to_string(),
+        });
+    }
+    Ok(LocalDaemonResponse::SliceProviderAuthRemoved {
+        slice,
+        provider,
+        status: "not_implemented".to_string(),
+    })
 }
 
 fn ensure_slice_has_no_active_agents(
@@ -636,6 +708,24 @@ mod tests {
         assert_eq!(codex.account_id.as_deref(), Some("new-codex"));
         assert_eq!(codex.alias.as_deref(), Some("Work"));
         assert_eq!(claude.account_id.as_deref(), Some("claude-1"));
+    }
+
+    #[test]
+    fn scoped_provider_auth_remove_matches_provider_families() {
+        let existing = vec![
+            auth("codex", "codex-1", None),
+            auth("opencode:openai", "openai-1", None),
+            auth("opencode:opencode", "opencode-1", None),
+            auth("claude", "claude-1", None),
+        ];
+
+        let remaining = existing
+            .into_iter()
+            .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, "opencode"))
+            .map(|summary| summary.provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(remaining, vec!["codex", "claude"]);
     }
 
     #[test]

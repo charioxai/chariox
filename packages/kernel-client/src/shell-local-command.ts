@@ -13,7 +13,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "agent list|spawn|focus|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
-          "slice list|create|status|start|stop|delete|auth import|screen",
+          "slice list|create|status|start|stop|delete|auth import|auth remove|screen",
           "relay status",
           "config show|path|keys|schema|set|unset|workspace-live-sync required|unrestricted",
           "credential list|show|register|upsert-json|set|delete",

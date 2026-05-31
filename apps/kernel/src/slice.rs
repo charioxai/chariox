@@ -179,6 +179,7 @@ pub struct CreateSliceInput {
 pub enum LocalDockerSliceAction {
     Provision,
     ImportProviderAuth,
+    RemoveProviderAuth,
     Stop,
     Destroy,
 }
@@ -852,6 +853,7 @@ pub fn run_local_docker_slice_action(
     command.arg(match action {
         LocalDockerSliceAction::Provision => "provision",
         LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
+        LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
         LocalDockerSliceAction::Stop => "stop",
         LocalDockerSliceAction::Destroy => "destroy",
     });
@@ -1013,6 +1015,7 @@ pub fn collect_local_docker_slice_logs(
     for action in [
         LocalDockerSliceAction::Provision,
         LocalDockerSliceAction::ImportProviderAuth,
+        LocalDockerSliceAction::RemoveProviderAuth,
         LocalDockerSliceAction::Stop,
         LocalDockerSliceAction::Destroy,
     ] {
@@ -1261,6 +1264,7 @@ impl LocalDockerSliceAction {
         match self {
             Self::Provision => "provision",
             Self::ImportProviderAuth => "import-provider-auth",
+            Self::RemoveProviderAuth => "remove-provider-auth",
             Self::Stop => "stop",
             Self::Destroy => "destroy",
         }

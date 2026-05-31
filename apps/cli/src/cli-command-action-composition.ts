@@ -130,6 +130,7 @@ import {
   getSliceLogs,
   importSliceProviderAuth,
   listSlices,
+  removeSliceProviderAuth,
   setSliceProviderAuthAlias,
   startSliceProviderLogin,
   startSlice,
@@ -443,6 +444,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     importSliceProviderAuth: async (sliceRef, provider) => {
       const result = await importSliceProviderAuth(client, sliceRef, provider)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    removeSliceProviderAuth: async (sliceRef, provider) => {
+      const result = await removeSliceProviderAuth(client, sliceRef, provider)
       setSlicesState(await listSlices(client))
       return result
     },

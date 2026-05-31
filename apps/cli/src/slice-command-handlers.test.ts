@@ -157,6 +157,32 @@ test("slice command auth import can target the focused agent slice", async () =>
   assert.equal(harness.footers.at(-1)?.message, "slice auth import codex: imported")
 })
 
+test("slice command auth remove can target the focused agent slice", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "opencode"))
+
+  assert.deepEqual(harness.removedAuth, [{ sliceRef: "linux-dev", provider: "opencode" }])
+  assert.equal(harness.footers.at(-1)?.message, "slice auth remove opencode: removed")
+})
+
 test("slice command auth login starts provider login in focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -214,6 +240,7 @@ function sliceHarness(options: {
   const displayEndpointRefs: string[] = []
   const openedUrls: string[] = []
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
+  const removedAuth: Array<{ sliceRef: string; provider: string }> = []
   const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
   const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
@@ -247,6 +274,10 @@ function sliceHarness(options: {
     importSliceProviderAuth: async (sliceRef, provider) => {
       importedAuth.push({ sliceRef, provider })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "imported" }
+    },
+    removeSliceProviderAuth: async (sliceRef, provider) => {
+      removedAuth.push({ sliceRef, provider })
+      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "removed" }
     },
     startSliceProviderLogin: async (sliceRef, provider) => {
       startedAuthLogins.push({ sliceRef, provider })
@@ -283,7 +314,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, startedAuthLogins, aliasedAuth, logRequests }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, logRequests }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

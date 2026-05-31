@@ -73,6 +73,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StopSlice(_)
             | LocalDaemonRequest::DeleteSlice(_)
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::RemoveSliceProviderAuth(_)
             | LocalDaemonRequest::StartSliceProviderLogin(_)
             | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)

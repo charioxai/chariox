@@ -8,6 +8,7 @@ import {
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
+  removeSliceProviderAuthRequest,
   setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -65,6 +66,15 @@ export async function importSliceProviderAuth(
 ): Promise<{ slice: SliceRecord; provider: string; status: string }> {
   const response = await client.send<Record<string, unknown>>(importSliceProviderAuthRequest(sliceRef, provider))
   return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
+}
+
+export async function removeSliceProviderAuth(
+  client: LocalIpcClient,
+  sliceRef: string,
+  provider: string,
+): Promise<{ slice: SliceRecord; provider: string; status: string }> {
+  const response = await client.send<Record<string, unknown>>(removeSliceProviderAuthRequest(sliceRef, provider))
+  return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
 }
 
 export async function startSliceProviderLogin(

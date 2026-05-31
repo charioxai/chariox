@@ -35,6 +35,7 @@ export type SliceCommandHandlerDeps = {
   stopSlice?: (sliceRef: string) => Promise<SliceRecord>
   deleteSlice?: (sliceRef: string) => Promise<SliceRecord>
   importSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
+  removeSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   startSliceProviderLogin?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; login: SliceProviderLogin }>
   setSliceProviderAuthAlias?: (sliceRef: string, provider: string, alias: string | null) => Promise<{ slice: SliceRecord; provider: string; alias: string | null }>
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
@@ -92,6 +93,10 @@ export async function handleSliceSlashCommand(
     await importSliceAuth(deps, args)
     return
   }
+  if (subcommand === "auth" && args[0] === "remove") {
+    await removeSliceAuth(deps, args)
+    return
+  }
   if (subcommand === "auth" && args[0] === "login") {
     await startSliceAuthLogin(deps, args)
     return
@@ -100,7 +105,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -456,6 +461,24 @@ async function importSliceAuth(
   }
   const result = await deps.importSliceProviderAuth(sliceRef, provider)
   deps.flashFooter(`slice auth import ${result.provider}: ${result.status}`, result.status === "imported" ? "info" : "error")
+}
+
+async function removeSliceAuth(
+  deps: SliceCommandHandlerDeps,
+  args: string[],
+): Promise<void> {
+  if (!deps.removeSliceProviderAuth) {
+    deps.flashFooter("slice auth remove is unavailable in this build", "error")
+    return
+  }
+  const provider = args.length >= 3 ? args[2] : args[1]
+  const sliceRef = args.length >= 3 ? args[1]! : await resolveFocusedSliceRef(deps)
+  if (!provider) {
+    deps.flashFooter("usage: /slice auth remove [slice-ref] <provider>", "error")
+    return
+  }
+  const result = await deps.removeSliceProviderAuth(sliceRef, provider)
+  deps.flashFooter(`slice auth remove ${result.provider}: ${result.status}`, result.status === "removed" ? "info" : "error")
 }
 
 async function startSliceAuthLogin(

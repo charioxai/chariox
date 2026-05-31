@@ -11,6 +11,7 @@ import {
   getSliceRequest,
   importSliceProviderAuthRequest,
   listSlicesRequest,
+  removeSliceProviderAuthRequest,
   setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -140,6 +141,16 @@ export async function executeSliceCommand(
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
         return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
       }
+      if (first === "remove") {
+        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = rest.length > 1 ? rest[1] : rest[0]
+        if (!provider) {
+          return { ok: false, message: "usage: slice auth remove [slice-ref] <provider>" }
+        }
+        const response = await deps.client.send(removeSliceProviderAuthRequest(sliceRef, provider))
+        const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
+        return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth remove ${payload.provider}: ${payload.status}`, data: payload }
+      }
       if (first === "login") {
         const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
         const provider = rest.length > 1 ? rest[1] : rest[0]
@@ -183,10 +194,10 @@ export async function executeSliceCommand(
           data: payload,
         }
       }
-      return { ok: false, message: "usage: slice auth import [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
+      return { ok: false, message: "usage: slice auth import|remove [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|doctor|logs|start|stop|delete|auth import|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|logs|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
   }
 }
 

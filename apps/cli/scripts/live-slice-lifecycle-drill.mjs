@@ -19,6 +19,7 @@ const {
   importSliceProviderAuthRequest,
   listSessionsRequest,
   listSlicesRequest,
+  removeSliceProviderAuthRequest,
   spawnAgentRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -209,6 +210,10 @@ async function runSliceSlashCommandDrill(client, workspace) {
       const result = variant(await client.send(importSliceProviderAuthRequest(sliceRef, provider)), 'SliceProviderAuthImported')
       return { slice: result.slice, provider: result.provider, status: result.status }
     },
+    removeSliceProviderAuth: async (sliceRef, provider) => {
+      const result = variant(await client.send(removeSliceProviderAuthRequest(sliceRef, provider)), 'SliceProviderAuthRemoved')
+      return { slice: result.slice, provider: result.provider, status: result.status }
+    },
     startSliceProviderLogin: async (sliceRef, provider) => variant(await client.send(startSliceProviderLoginRequest(sliceRef, provider)), 'SliceProviderLoginStarted'),
     setSliceProviderAuthAlias: async (sliceRef, provider, alias) => variant(await client.send(setSliceProviderAuthAliasRequest(sliceRef, provider, alias)), 'SliceProviderAuthAliasSet'),
     getSliceDisplayEndpoint: async (sliceRef) => variant(await client.send(getSliceDisplayEndpointRequest(sliceRef)), 'SliceDisplayEndpoint').endpoint,
@@ -231,6 +236,9 @@ async function runSliceSlashCommandDrill(client, workspace) {
   assert(openedUrls.length === 1 && openedUrls[0].startsWith('http://127.0.0.1:'), '/slice screen should open the display URL')
   await handleSliceSlashCommand(deps, sliceSlashCommand('status', commandSlice.id))
   assert(notices.some((notice) => notice.includes('slice-cli-command') && notice.includes('auth=codex:cli account')), '/slice status should show alias auth context')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'remove', commandSlice.id, 'codex'))
+  const removed = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
+  assert(!providerAuth(removed, 'codex'), '/slice auth remove should clear provider auth context')
   await handleSliceSlashCommand(deps, sliceSlashCommand('stop', commandSlice.id))
   await handleSliceSlashCommand(deps, sliceSlashCommand('delete', commandSlice.id))
   assert(footers.some((footer) => footer.message === 'deleted slice slice-cli-command'), '/slice delete should report deletion')
@@ -387,6 +395,13 @@ async function main() {
     assert(login.verification_url?.startsWith('https://'), 'slice provider login should return a verification URL')
     assert(login.user_code, 'slice provider login should return a device code for Codex')
     log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
+
+    const removedOpenCode = variant(await client.send(removeSliceProviderAuthRequest(created.id, 'opencode')), 'SliceProviderAuthRemoved')
+    assert(removedOpenCode.status === 'removed', `provider auth removal should succeed, got ${removedOpenCode.status}`)
+    assert(!removedOpenCode.slice.provider_auth?.some((auth) => auth.provider.startsWith('opencode')), 'OpenCode provider family should be removed from the slice')
+    assert(providerAuth(removedOpenCode.slice, 'codex'), 'provider auth removal should preserve other providers')
+    assert(providerAuth(removedOpenCode.slice, 'claude'), 'provider auth removal should preserve Claude auth')
+    log('auth-removed', { provider: removedOpenCode.provider, remaining: removedOpenCode.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
     await runSliceSlashCommandDrill(client, workspace)
     await runWaitingRoomSliceDeleteDrill(client, workspace)
