@@ -19,6 +19,21 @@ mkdir -p "$LOGS"
 mkdir -p "$CAPABILITY_ISOLATION_ROOT"
 mkdir -p "$HOME/.arroba" /tmp/arroba-slice-state
 
+wait_for_screen_session() {
+  local session="$1"
+  local label="$2"
+  local attempt
+  for attempt in $(seq 1 20); do
+    if screen -ls | grep -E "[.]${session}[[:space:]]" >/dev/null; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf '[slice-runtime] %s failed to stay running in screen session %s\n' "$label" "$session" >&2
+  screen -ls >&2 || true
+  return 1
+}
+
 if [[ ! -f "$HOME/.arroba/config.toml" ]]; then
   cat >"$HOME/.arroba/config.toml" <<'EOF'
 [state]
@@ -32,6 +47,7 @@ screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
 if [[ -z "${ARROBA_SLICE_RELAY_URL:-}" ]]; then
   screen -dmS arroba-slice-relay env ARROBA_RELAY_HOST=0.0.0.0 ARROBA_RELAY_PORT="$RELAY_PORT" ARROBA_RELAY_TOKEN="$RELAY_TOKEN" "$ROOT/bin/arroba-relay"
   sleep 1
+  wait_for_screen_session arroba-slice-relay relay
 fi
 
 screen -dmS arroba-slice-kernel env \
@@ -51,4 +67,6 @@ screen -dmS arroba-slice-kernel env \
   ARROBA_ACCEPT_REMOTE_LEASES=1 \
   "$ROOT/bin/arroba-kernel"
 
+sleep 1
+wait_for_screen_session arroba-slice-kernel kernel
 screen -ls | sed -n '/arroba-slice-/p'

@@ -41,6 +41,18 @@ wait_for_display() {
   return 1
 }
 
+require_process() {
+  local pattern="$1"
+  local label="$2"
+  local log_path="$3"
+  if pgrep -af "$pattern" | grep -v defunct >/dev/null; then
+    return 0
+  fi
+  log "$label did not stay running"
+  tail -n 40 "$log_path" >&2 || true
+  return 1
+}
+
 start_desktop() {
   pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
   pkill -f "openbox.*$DISPLAY_ID" >/dev/null 2>&1 || true
@@ -69,6 +81,10 @@ start_desktop() {
     "$CHROME_URL" >"$LOGS/chromium-gui.log" 2>&1 &
 
   sleep 2
+  require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
+  require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
+  require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
+  require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
 
