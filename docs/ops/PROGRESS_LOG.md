@@ -1309,3 +1309,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Slice detached-start validation
 
 - Hardened the Docker slice child scripts so detached relay/kernel screen sessions and headed screen processes must stay running after launch. Runtime or display startup failures now make provisioning fail instead of being hidden behind a successful detached process spawn.
+
+### Slice lifecycle command refactor
+
+- Split slice lifecycle/read/log/display command handling, start/stop/delete policy, active-agent guards, and worker discovery out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/lifecycle.rs`. The root executor now stays focused on request routing and provider-auth command handling.
