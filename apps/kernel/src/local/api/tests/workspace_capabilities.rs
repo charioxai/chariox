@@ -218,9 +218,7 @@ fn local_request_api_manages_session_workspace_links() {
     assert!(enrollment_notice
         .message
         .contains("Recommended mode: managed"));
-    assert!(enrollment_notice
-        .message
-        .contains("workspace sync managed"));
+    assert!(enrollment_notice.message.contains("workspace sync managed"));
 
     let status = match harness
         .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
