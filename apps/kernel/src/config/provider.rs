@@ -107,7 +107,7 @@ pub enum WorkspaceLiveSyncMode {
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse_config_policy(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "managed" | "required" => Ok(Self::Managed),
+            "managed" => Ok(Self::Managed),
             "tracked" => Ok(Self::Tracked),
             "off" | "unrestricted" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {

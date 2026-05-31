@@ -477,7 +477,7 @@ If `XDG_CONFIG_HOME` is unset, the fallback path is:
 ~/.arroba/config.toml
 ```
 
-The default policy is equivalent to:
+The default policy is Off:
 
 ```toml
 version = 1
@@ -486,28 +486,28 @@ version = 1
 default = "opencode"
 model = "default"
 account_profile = "default"
-workspace_live_sync = "required"
+workspace_live_sync = "off"
 ```
 
-The `required` policy launches supported providers in managed Workspace Live Sync mode by default. Session commands can switch the current session to tracked mode or unrestricted mode:
+Use `managed` to enforce Arroba runtime/MCP writes for protected roots, or `tracked` to allow provider-native writes and sync them at turn end. Session commands can switch the current session:
 
 ```text
-/workspace sync enable managed
-/workspace sync enable tracked
-/workspace sync mode managed
-/workspace sync mode tracked
-/workspace sync disable
+/workspace sync off
+/workspace sync managed
+/workspace sync tracked
+/workspace sync status
 ```
 
-Workspace Live Sync uses `.arrobaignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Arroba state are always excluded.
+Workspace Live Sync protects and syncs only the selected worktree Git root plus explicitly attached workspace-link roots. Sibling and unrelated repositories outside those roots stay writable and unsynced. Workspace Live Sync uses `.arrobaignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Arroba state are always excluded.
 
 You can inspect or modify the Workspace Live Sync policy through the CLI:
 
 ```text
 /config show
 /config path
-/config workspace-live-sync unrestricted
-/config workspace-live-sync required
+/config workspace-live-sync off
+/config workspace-live-sync managed
+/config workspace-live-sync tracked
 /config unset providers.workspace_live_sync
 ```
 
@@ -515,7 +515,7 @@ To disable the policy for all managed providers:
 
 ```toml
 [providers]
-workspace_live_sync = "unrestricted"
+workspace_live_sync = "off"
 ```
 
 Remote leased agents use the same workspace live sync policy as local agents.

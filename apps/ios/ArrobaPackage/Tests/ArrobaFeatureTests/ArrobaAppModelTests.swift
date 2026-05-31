@@ -727,13 +727,13 @@ import Testing
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = managed")
 
-    model.promptDraft = "/workspace sync enable tracked"
+    model.promptDraft = "/workspace sync tracked"
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
     #expect(model.transcriptEntries.last?.text == "Workspace live sync mode = tracked")
 
-    model.promptDraft = "/workspace sync disable"
+    model.promptDraft = "/workspace sync off"
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
@@ -761,25 +761,25 @@ import Testing
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to required")
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to off")
 
-    model.promptDraft = "/config workspace-live-sync unrestricted"
+    model.promptDraft = "/config workspace-live-sync managed"
     await model.submitPrompt()
 
     #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to unrestricted")
-
-    model.promptDraft = "/config workspace-live-sync required"
-    await model.submitPrompt()
-
-    #expect(model.promptDraft.isEmpty)
-    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to required")
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to managed")
 
     model.promptDraft = "/config workspace-live-sync tracked"
     await model.submitPrompt()
 
-    #expect(model.promptDraft == "/config workspace-live-sync tracked")
-    #expect(model.statusMessage == "usage: /config workspace-live-sync required|unrestricted")
+    #expect(model.promptDraft.isEmpty)
+    #expect(model.transcriptEntries.last?.text == "Workspace live sync set to tracked")
+
+    model.promptDraft = "/config workspace-live-sync required"
+    await model.submitPrompt()
+
+    #expect(model.promptDraft == "/config workspace-live-sync required")
+    #expect(model.statusMessage == "usage: /config workspace-live-sync off|managed|tracked")
 }
 
 @MainActor
@@ -847,9 +847,9 @@ private extension ProviderCatalog {
     #expect(CommandCenterCatalog.items(matching: "/workspace", session: session).map(\.id).contains("workspace-set"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-status"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-targets"))
-    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-enable-managed"))
-    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-enable-tracked"))
-    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-disable"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-managed"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-tracked"))
+    #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-off"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-mode"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-link"))
     #expect(CommandCenterCatalog.items(matching: "/workspace sync", session: session).map(\.id).contains("workspace-sync-conflicts"))
@@ -857,12 +857,12 @@ private extension ProviderCatalog {
     let syncModeIds = CommandCenterCatalog.items(matching: "/workspace sync mode ", session: session).map(\.id)
     #expect(syncModeIds.contains("workspace-sync-mode-managed"))
     #expect(syncModeIds.contains("workspace-sync-mode-tracked"))
-    #expect(syncModeIds.contains("workspace-sync-mode-unrestricted"))
+    #expect(syncModeIds.contains("workspace-sync-mode-off"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("config"))
     let configIds = CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id)
-    #expect(configIds.contains("config-workspace-live-sync-required"))
-    #expect(!configIds.contains("config-workspace-live-sync-tracked"))
-    #expect(CommandCenterCatalog.items(matching: "/config workspace-live-sync", session: session).map(\.id).contains("config-workspace-live-sync-unrestricted"))
+    #expect(configIds.contains("config-workspace-live-sync-off"))
+    #expect(configIds.contains("config-workspace-live-sync-managed"))
+    #expect(configIds.contains("config-workspace-live-sync-tracked"))
     #expect(CommandCenterCatalog.items(matching: "/", session: session).map(\.id).contains("model"))
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
     #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))

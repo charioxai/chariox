@@ -154,17 +154,24 @@ public enum CommandCenterCatalog {
 
     private static let configItems: [CommandCenterItem] = [
         CommandCenterItem(
-            id: "config-workspace-live-sync-required",
-            label: "workspace-live-sync required",
-            detail: "Enable managed workspace live sync for supported provider runs",
-            value: "/config workspace-live-sync required",
+            id: "config-workspace-live-sync-off",
+            label: "workspace-live-sync off",
+            detail: "Disable workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync off",
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "config-workspace-live-sync-unrestricted",
-            label: "workspace-live-sync unrestricted",
-            detail: "Disable workspace live sync for supported provider runs",
-            value: "/config workspace-live-sync unrestricted",
+            id: "config-workspace-live-sync-managed",
+            label: "workspace-live-sync managed",
+            detail: "Enable managed workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync managed",
+            submitsImmediately: true
+        ),
+        CommandCenterItem(
+            id: "config-workspace-live-sync-tracked",
+            label: "workspace-live-sync tracked",
+            detail: "Enable tracked workspace live sync for supported provider runs",
+            value: "/config workspace-live-sync tracked",
             submitsImmediately: true
         ),
     ]
@@ -454,24 +461,24 @@ public enum CommandCenterCatalog {
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "workspace-sync-enable-managed",
-            label: "sync enable managed",
+            id: "workspace-sync-managed",
+            label: "sync managed",
             detail: "Enable managed workspace live sync",
-            value: "/workspace sync enable managed",
+            value: "/workspace sync managed",
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "workspace-sync-enable-tracked",
-            label: "sync enable tracked",
+            id: "workspace-sync-tracked",
+            label: "sync tracked",
             detail: "Enable tracked workspace live sync",
-            value: "/workspace sync enable tracked",
+            value: "/workspace sync tracked",
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "workspace-sync-disable",
-            label: "sync disable",
+            id: "workspace-sync-off",
+            label: "sync off",
             detail: "Disable workspace live sync",
-            value: "/workspace sync disable",
+            value: "/workspace sync off",
             submitsImmediately: true
         ),
         CommandCenterItem(
@@ -496,10 +503,10 @@ public enum CommandCenterCatalog {
             submitsImmediately: true
         ),
         CommandCenterItem(
-            id: "workspace-sync-mode-unrestricted",
-            label: "sync mode unrestricted",
+            id: "workspace-sync-mode-off",
+            label: "sync mode off",
             detail: "Disable workspace live sync for this session",
-            value: "/workspace sync mode unrestricted",
+            value: "/workspace sync mode off",
             submitsImmediately: true
         ),
         CommandCenterItem(

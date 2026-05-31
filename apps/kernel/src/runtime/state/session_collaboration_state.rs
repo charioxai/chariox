@@ -186,17 +186,17 @@ impl KernelRuntimeState {
         let mode_label = match mode {
             crate::config::WorkspaceLiveSyncMode::Managed => "managed",
             crate::config::WorkspaceLiveSyncMode::Tracked => "tracked",
-            crate::config::WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
+            crate::config::WorkspaceLiveSyncMode::Unrestricted => "off",
         };
         let next_action = match mode {
             crate::config::WorkspaceLiveSyncMode::Managed => {
                 "managed mode is already active for this session"
             }
             crate::config::WorkspaceLiveSyncMode::Tracked => {
-                "tracked mode is active; switch with `workspace sync enable managed` when provider write enforcement is supported"
+                "tracked mode is active; switch with `workspace sync managed` when provider write enforcement is supported"
             }
             crate::config::WorkspaceLiveSyncMode::Unrestricted => {
-                "enroll with `workspace sync enable managed` (recommended) or `workspace sync enable tracked`"
+                "enable with `workspace sync managed` (recommended) or `workspace sync tracked`"
             }
         };
         self.owned.record_notice(

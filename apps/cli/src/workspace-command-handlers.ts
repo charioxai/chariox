@@ -356,7 +356,7 @@ async function attachWorkspaceLink(
   if (payload.session) deps.applySessionState(payload.session)
   deps.flashFooter(
     messages?.success?.(repoRoot, payload.link)
-      ?? `attached ${repoRoot} to workspace link ${payload.link.name}; enroll with /workspace sync enable managed (recommended)`,
+      ?? `attached ${repoRoot} to workspace link ${payload.link.name}; enable with /workspace sync managed (recommended)`,
     "info",
   )
 }

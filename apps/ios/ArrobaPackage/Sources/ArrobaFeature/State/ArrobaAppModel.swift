@@ -720,12 +720,12 @@ public final class ArrobaAppModel {
         let action = args.first ?? ""
         switch action {
         case "workspace-live-sync":
-            let policy = args.dropFirst().first ?? "required"
+            let policy = args.dropFirst().first ?? "off"
             guard args.dropFirst(2).isEmpty,
-                  policy == "required" || policy == "unrestricted"
+                  ["off", "managed", "tracked"].contains(policy)
             else {
                 connectionState = .failed
-                statusMessage = "usage: /config workspace-live-sync required|unrestricted"
+                statusMessage = "usage: /config workspace-live-sync off|managed|tracked"
                 return
             }
             await setWorkspaceLiveSyncPolicy(
@@ -735,7 +735,7 @@ public final class ArrobaAppModel {
             )
         default:
             connectionState = .failed
-            statusMessage = "usage: /config workspace-live-sync required|unrestricted"
+            statusMessage = "usage: /config workspace-live-sync off|managed|tracked"
         }
     }
 
@@ -792,6 +792,10 @@ public final class ArrobaAppModel {
         switch action {
         case "status", "targets", "conflicts", "ignore":
             await showWorkspaceLiveSyncStatus(filter: action)
+        case "off":
+            await setWorkspaceLiveSyncMode("unrestricted")
+        case "managed", "tracked":
+            await setWorkspaceLiveSyncMode(action)
         case "enable":
             let mode = args.dropFirst().first ?? "managed"
             guard mode == "managed" || mode == "tracked" else {
@@ -804,13 +808,13 @@ public final class ArrobaAppModel {
             await setWorkspaceLiveSyncMode("unrestricted")
         case "mode":
             guard let mode = args.dropFirst().first,
-                  ["managed", "tracked", "unrestricted"].contains(mode)
+                  ["off", "managed", "tracked"].contains(mode)
             else {
                 connectionState = .failed
-                statusMessage = "usage: /workspace sync mode managed|tracked|unrestricted"
+                statusMessage = "usage: /workspace sync mode off|managed|tracked"
                 return
             }
-            await setWorkspaceLiveSyncMode(mode)
+            await setWorkspaceLiveSyncMode(mode == "off" ? "unrestricted" : mode)
         case "link":
             guard let linkRef = args.dropFirst().first?.nilIfBlank else {
                 connectionState = .failed
@@ -821,7 +825,7 @@ public final class ArrobaAppModel {
             await attachWorkspaceLiveSyncLink(linkRef: linkRef, repoRoot: repoRoot)
         default:
             connectionState = .failed
-            statusMessage = "usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode|link"
+            statusMessage = "usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link"
         }
     }
 

@@ -33,17 +33,17 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
 }
 
 #[test]
-fn local_request_api_accepts_required_workspace_live_sync_config_policy() {
+fn local_request_api_accepts_managed_workspace_live_sync_config_policy() {
     let harness = LocalRouterTestHarness::new();
 
     let updated = match harness
         .dispatch(LocalDaemonRequest::SetUserConfigValue(
             SetUserConfigValueRequest {
                 path: "providers.workspace_live_sync".to_string(),
-                value: "required".to_string(),
+                value: "managed".to_string(),
             },
         ))
-        .expect("required workspace live sync policy should update config")
+        .expect("managed workspace live sync policy should update config")
     {
         LocalDaemonResponse::UserConfigUpdated { config, .. } => config,
         _ => panic!("unexpected local response"),
@@ -220,7 +220,7 @@ fn local_request_api_manages_session_workspace_links() {
         .contains("Recommended mode: managed"));
     assert!(enrollment_notice
         .message
-        .contains("workspace sync enable managed"));
+        .contains("workspace sync managed"));
 
     let status = match harness
         .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(

@@ -611,14 +611,14 @@ Screenshot capture MUST write only into daemon-chosen session artifact locations
 
 ## 5.0.1 Workspace Live Sync Coordination
 
-The kernel owns Workspace Live Sync for Arroba-launched provider sessions. The global `providers.workspace_live_sync` config is a launch policy with values `required` or `unrestricted`: `required` means new provider launches must enter a Workspace Live Sync mode, while `unrestricted` leaves new launches unmanaged unless the session asks otherwise. The concrete sync mode is session-scoped and is changed with `SetWorkspaceLiveSyncMode { session_id, mode }`; successful changes return `WorkspaceLiveSyncModeUpdated { session }` and update the session projection.
+The kernel owns Workspace Live Sync for Arroba-launched provider sessions. The global `providers.workspace_live_sync` config is a launch policy with values `off`, `managed`, or `tracked`. `off` is the default and leaves new launches unmanaged unless the session asks otherwise. The concrete sync mode is session-scoped and is changed with `SetWorkspaceLiveSyncMode { session_id, mode }`; successful changes return `WorkspaceLiveSyncModeUpdated { session }` and update the session projection. The wire enum may still carry internal `unrestricted` for Off.
 
 Workspace Live Sync has two coordinated modes:
 
 - **managed**: supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
 - **tracked**: provider-native file writes are allowed, but the kernel snapshots allowed workspace files during an Arroba-managed turn, computes changed-file diffs at turn end, and fans those changes out to attached Workspace Live Sync targets.
 
-macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under the canonical worktree path while still allowing provider state/cache/temp writes outside the worktree. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
+macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under selected protected roots only: the canonical selected worktree Git root plus explicitly attached local workspace-link roots. Provider state/cache/temp writes and writes to unrelated sibling repositories outside those roots remain allowed. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
 
 External provider endpoints are not a managed-runtime mode. A provider process must be launched by Arroba before Arroba can apply the workspace write fence or claim workspace live sync enforcement. Native TUI agents that bind an externally launched provider app-server are therefore not workspace live sync runs unless that process was launched behind the Arroba runtime boundary.
 
