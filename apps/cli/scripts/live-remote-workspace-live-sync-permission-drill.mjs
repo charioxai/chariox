@@ -521,8 +521,8 @@ async function main() {
             kernelMaxMissedPongs: 10,
           })
       try {
-        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'required'))
-        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'required'))
+        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'managed'))
+        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'managed'))
       } finally {
         await workerClient.close().catch(() => {})
       }
