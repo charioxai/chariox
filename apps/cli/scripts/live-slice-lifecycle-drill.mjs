@@ -374,7 +374,7 @@ async function main() {
     await assertScreenEndpointReady(endpoint.url)
     log('screen', { url: endpoint.url, access: endpoint.access })
 
-    const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'codex')), 'SliceProviderAuthImported')
+    const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'all')), 'SliceProviderAuthImported')
     assert(imported.status === 'imported', `provider auth import should succeed, got ${imported.status}`)
     assert(providerAuth(imported.slice, 'codex', (auth) => auth.account_id === 'slice-drill-account-1'), 'codex account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'opencode:openai', (auth) => auth.account_id === 'slice-drill-opencode-openai' && auth.auth_type === 'oauth'), 'OpenCode OpenAI account summary should be recorded on the slice')

@@ -9,7 +9,7 @@ inside the slice, and launch provider servers without manual setup.
 Run:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-lume-slice.sh
+bash experiments/slice-linux-docker/scripts/provision-linux-lume-slice.sh
 ```
 
 The script:
@@ -27,9 +27,9 @@ The script:
 Useful overrides:
 
 ```bash
-ARROBA_SLICE_NAME=arroba-slice-linux-spike \
+ARROBA_SLICE_NAME=arroba-slice-linux \
 ARROBA_SLICE_START_PROVIDER_SERVERS=0 \
-bash experiments/slice-spike/scripts/provision-linux-lume-slice.sh
+bash experiments/slice-linux-docker/scripts/provision-linux-lume-slice.sh
 ```
 
 Credentials are deliberately not imported by default. The next validation step is to compare
@@ -42,13 +42,13 @@ provider login/import paths once someone is available to authorize them:
 ## Linux Provider Fallback via Docker Desktop
 
 Lume remains the preferred Mac-local VM direction for this spike. On May 12, 2026, Lume `0.3.9`
-installed successfully but `lume pull ubuntu-noble-vanilla:latest arroba-slice-linux-spike`
+installed successfully but `lume pull ubuntu-noble-vanilla:latest arroba-slice-linux`
 failed before creating the VM because the image layers were skipped as unsupported. Until that
 is resolved, use the Docker Desktop fallback to validate the Linux provider/kernel assumptions
 without adding product code:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh
 ```
 
 This builds a local Debian image, installs Chromium/Codex/OpenCode, builds Arroba kernel/relay, starts a
@@ -58,7 +58,7 @@ It is a validation fallback, not the intended long-term isolation substrate.
 Validate the GUI/browser-control layer without provider credentials:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh validate-screen
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh validate-screen
 ```
 
 This starts an Xvfb/Openbox desktop, launches headful Chromium, captures the screen, runs OCR with
@@ -68,7 +68,7 @@ get/set, and prints the noVNC viewer URL.
 Import provider-native login state from the host into the persistent slice home volume:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh import-provider-auth
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh import-provider-auth
 ```
 
 By default this copies:
@@ -85,8 +85,8 @@ Alternatively, log in directly inside the slice so the host provider account doe
 change:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh login-codex
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh login-opencode
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh login-codex
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh login-opencode
 ```
 
 Both ChatGPT account flows use OpenAI device authorization. The command prints a URL and one-time
@@ -99,26 +99,26 @@ For OpenCode Zen, use the OpenCode provider namespace and API-key login method:
 ```bash
 ARROBA_SLICE_OPENCODE_PROVIDER=opencode \
 ARROBA_SLICE_OPENCODE_LOGIN_METHOD="API Key" \
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh login-opencode
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh login-opencode
 ```
 
 The matching logout helpers are:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh logout-codex
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh logout-opencode
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh logout-codex
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh logout-opencode
 ```
 
 Start the slice kernel/relay and run provider-backed shell drills from inside the slice:
 
 ```bash
-bash experiments/slice-spike/scripts/provision-linux-docker-slice.sh start-runtime
-docker exec -u slice arroba-slice-linux-spike \
-  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-spike/scripts/validate-kernel-session.arroba --workspace /workspace --worktree /workspace'
-docker exec -u slice arroba-slice-linux-spike \
-  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-spike/scripts/validate-kernel-session-opencode.arroba --workspace /workspace --worktree /workspace'
-docker exec -u slice arroba-slice-linux-spike \
-  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-spike/scripts/validate-kernel-session-opencode-zen.arroba --workspace /workspace --worktree /workspace'
+bash apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh start-runtime
+docker exec -u slice arroba-slice-linux \
+  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-linux-docker/scripts/validate-kernel-session.arroba --workspace /workspace --worktree /workspace'
+docker exec -u slice arroba-slice-linux \
+  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-linux-docker/scripts/validate-kernel-session-opencode.arroba --workspace /workspace --worktree /workspace'
+docker exec -u slice arroba-slice-linux \
+  bash -lc 'ARROBA_KERNEL_PORT=43119 node /workspace/apps/shell/dist/shell.js run /workspace/experiments/slice-linux-docker/scripts/validate-kernel-session-opencode-zen.arroba --workspace /workspace --worktree /workspace'
 ```
 
 Current Docker fallback limitations:
@@ -130,7 +130,7 @@ Current Docker fallback limitations:
 - The container is created with Docker's seccomp profile disabled so Chromium can create its own
   sandbox namespaces. With Docker's default seccomp profile, Chromium aborts unless run with
   `--no-sandbox`.
-- Credential files are kept in the `arroba-slice-linux-spike-home` Docker volume. Importing host
+- Credential files are kept in the `arroba-slice-linux-home` Docker volume. Importing host
   provider auth is explicit and copies provider-owned session files rather than ChatGPT passwords.
 - X11 screen capture/viewing and browser control are separate in this spike. `xdotool` can move the
   virtual pointer, but Chromium input is currently driven through CDP because it was more reliable

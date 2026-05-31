@@ -52,7 +52,7 @@ pub struct UserLinuxSliceConfig {
 impl Default for UserLinuxSliceConfig {
     fn default() -> Self {
         Self {
-            docker_image: Some("arroba-slice-linux-spike:local".to_string()),
+            docker_image: Some("arroba-slice-linux:local".to_string()),
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             memory_mb: None,

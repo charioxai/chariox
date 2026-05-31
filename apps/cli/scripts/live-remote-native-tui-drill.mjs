@@ -1139,9 +1139,9 @@ async function prebuildLocalDockerSliceImageIfNeeded(policy) {
   await runLogged("docker", [
     "build",
     "-f",
-    path.join(repoRoot, "experiments/slice-spike/docker/Dockerfile"),
+    path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "-t",
-    "arroba-slice-linux-spike:local",
+    "arroba-slice-linux:local",
     repoRoot,
   ])
 }
@@ -1211,7 +1211,7 @@ async function main() {
         `root = ${JSON.stringify(path.join(root, "slices"))}`,
         "",
         "[slices.linux]",
-        "docker_image = \"arroba-slice-linux-spike:local\"",
+        "docker_image = \"arroba-slice-linux:local\"",
         `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
         "",
       ].join("\n"))

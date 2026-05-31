@@ -83,7 +83,9 @@ pub(crate) async fn execute_start_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None)?;
     let relay = local_docker_slice_relay(config_projection, &initial_record);
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
@@ -101,6 +103,7 @@ pub(crate) async fn execute_start_slice_request(
             &supervisor_slice,
             crate::slice::LocalDockerSliceAction::Provision,
             supervisor_relay,
+            None,
             &docker_options,
         )
     })
@@ -112,12 +115,31 @@ pub(crate) async fn execute_start_slice_request(
     if let Err(error) = supervisor_result {
         let _ = runtime_state
             .set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Unhealthy);
+        let _ = runtime_state.record_slice_audit_event(
+            &initial_record,
+            "start",
+            "failed",
+            Some(&error.to_string()),
+        );
         return Err(error);
     }
-    let discovered = discover_started_slice_worker(config_projection, &initial_slice, &relay)
-        .await
-        .ok();
+    let discovered =
+        match discover_started_slice_worker(config_projection, &initial_slice, &relay).await {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                let _ = runtime_state
+                    .set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Unhealthy);
+                let _ = runtime_state.record_slice_audit_event(
+                    &initial_record,
+                    "start",
+                    "failed",
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        };
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
+    runtime_state.record_slice_audit_event(&slice, "start", "completed", None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
 }
 
@@ -126,13 +148,18 @@ pub(crate) async fn execute_stop_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.stop")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&resolved_slice, "stop", "accepted", None)?;
+    ensure_slice_has_no_active_agents(&resolved_slice, "slice.stop")?;
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = resolved_slice.clone();
     let supervisor_result = tokio::task::spawn_blocking(move || {
         crate::slice::run_local_docker_slice_action(
-            &resolved_slice,
+            &task_slice,
             crate::slice::LocalDockerSliceAction::Stop,
+            None,
             None,
             &docker_options,
         )
@@ -142,9 +169,18 @@ pub(crate) async fn execute_stop_slice_request(
         operation: "slice.stop",
         message: format!("slice supervisor task failed: {error}"),
     })?;
-    supervisor_result?;
+    if let Err(error) = supervisor_result {
+        let _ = runtime_state.record_slice_audit_event(
+            &resolved_slice,
+            "stop",
+            "failed",
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
     let slice =
         runtime_state.set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Stopped)?;
+    runtime_state.record_slice_audit_event(&slice, "stop", "completed", None)?;
     Ok(LocalDaemonResponse::SliceStopped { slice })
 }
 
@@ -153,24 +189,19 @@ pub(crate) async fn execute_delete_slice_request(
     config_projection: &DaemonConfigProjectionStore,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.delete")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
-    if !resolved_slice.agent_ids.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "slice.delete",
-            message: format!(
-                "slice `{}` still has {} active agent(s)",
-                resolved_slice.name,
-                resolved_slice.agent_ids.len()
-            ),
-        });
-    }
+    runtime_state.record_slice_audit_event(&resolved_slice, "delete", "accepted", None)?;
+    ensure_slice_has_no_active_agents(&resolved_slice, "slice.delete")?;
     if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+        let task_slice = resolved_slice.clone();
         let supervisor_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
-                &resolved_slice,
+                &task_slice,
                 crate::slice::LocalDockerSliceAction::Destroy,
+                None,
                 None,
                 &docker_options,
             )
@@ -180,9 +211,18 @@ pub(crate) async fn execute_delete_slice_request(
             operation: "slice.delete",
             message: format!("slice supervisor task failed: {error}"),
         })?;
-        supervisor_result?;
+        if let Err(error) = supervisor_result {
+            let _ = runtime_state.record_slice_audit_event(
+                &resolved_slice,
+                "delete",
+                "failed",
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
     }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&slice, "delete", "completed", None)?;
     Ok(LocalDaemonResponse::SliceDeleted { slice })
 }
 
@@ -191,16 +231,27 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
     config_projection: &DaemonConfigProjectionStore,
     request: ImportSliceProviderAuthRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation =
+        runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.import")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let provider = normalized_slice_provider(&request.provider)?;
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.import",
+        "accepted",
+        Some(&format!("provider={provider}")),
+    )?;
     if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
         let resolved_slice = slice.clone();
-        tokio::task::spawn_blocking(move || {
+        let provider_for_action = provider.clone();
+        let import_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
                 crate::slice::LocalDockerSliceAction::ImportProviderAuth,
                 None,
+                Some(&provider_for_action),
                 &docker_options,
             )
         })
@@ -208,21 +259,39 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.import",
             message: format!("slice auth import task failed: {error}"),
-        })??;
-        let provider_auth = std::env::var_os("HOME")
+        })?;
+        if let Err(error) = import_result {
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "auth.import",
+                "failed",
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+        let imported_provider_auth = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
+            .map(|summaries| scoped_provider_auth_summaries(&provider, summaries))
             .unwrap_or_default();
+        let provider_auth =
+            merge_scoped_provider_auth(slice.provider_auth, &provider, imported_provider_auth);
         let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
+        runtime_state.record_slice_audit_event(
+            &slice,
+            "auth.import",
+            "completed",
+            Some(&format!("provider={provider}")),
+        )?;
         return Ok(LocalDaemonResponse::SliceProviderAuthImported {
             slice,
-            provider: request.provider,
+            provider,
             status: "imported".to_string(),
         });
     }
     Ok(LocalDaemonResponse::SliceProviderAuthImported {
         slice,
-        provider: request.provider,
+        provider,
         status: "not_implemented".to_string(),
     })
 }
@@ -235,12 +304,104 @@ pub(crate) async fn execute_get_slice_display_endpoint_request(
     Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
 }
 
+fn ensure_slice_has_no_active_agents(
+    slice: &crate::slice::SliceRecord,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if slice.agent_ids.is_empty() {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "slice `{}` still has {} active agent(s)",
+            slice.name,
+            slice.agent_ids.len()
+        ),
+    })
+}
+
+fn normalized_slice_provider(provider: &str) -> Result<String, DaemonError> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.provider",
+            message: "provider must not be empty".to_string(),
+        });
+    }
+    match provider {
+        "all" | "codex" | "opencode" | "claude" => Ok(provider.to_string()),
+        value if value.starts_with("opencode:") && value.len() > "opencode:".len() => {
+            Ok(value.to_string())
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "slice.auth.provider",
+            message: format!("unsupported slice provider `{provider}`"),
+        }),
+    }
+}
+
+fn scoped_provider_auth_summaries(
+    provider: &str,
+    summaries: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
+) -> Vec<crate::slice_provider_auth::SliceProviderAuthSummary> {
+    summaries
+        .into_iter()
+        .filter(|summary| slice_auth_summary_matches_provider(&summary.provider, provider))
+        .collect()
+}
+
+fn merge_scoped_provider_auth(
+    existing: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
+    provider: &str,
+    imported: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
+) -> Vec<crate::slice_provider_auth::SliceProviderAuthSummary> {
+    let aliases = existing
+        .iter()
+        .filter(|summary| slice_auth_summary_matches_provider(&summary.provider, provider))
+        .filter_map(|summary| {
+            summary
+                .alias
+                .as_ref()
+                .map(|alias| (summary.provider.clone(), alias.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut merged = existing
+        .into_iter()
+        .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, provider))
+        .collect::<Vec<_>>();
+    merged.extend(imported.into_iter().map(|mut summary| {
+        if summary.alias.is_none() {
+            summary.alias = aliases.get(&summary.provider).cloned();
+        }
+        summary
+    }));
+    merged
+}
+
+fn slice_auth_summary_matches_provider(summary_provider: &str, requested_provider: &str) -> bool {
+    if requested_provider == "all" {
+        return true;
+    }
+    if requested_provider == "opencode" {
+        return summary_provider == "opencode" || summary_provider.starts_with("opencode:");
+    }
+    summary_provider == requested_provider
+}
+
 pub(crate) async fn execute_start_slice_provider_login_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: StartSliceProviderLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.login")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.login",
+        "accepted",
+        Some(&format!("provider={}", request.provider)),
+    )?;
     if slice.backend != crate::slice::SliceBackendKind::LocalDocker {
         return Err(DaemonError::LocalTransport {
             operation: "slice.auth.login",
@@ -254,7 +415,7 @@ pub(crate) async fn execute_start_slice_provider_login_request(
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let resolved_slice = slice.clone();
     let provider = request.provider.clone();
-    let login = tokio::task::spawn_blocking(move || {
+    let login_result = tokio::task::spawn_blocking(move || {
         crate::slice::start_local_docker_slice_provider_login(
             &resolved_slice,
             &provider,
@@ -265,7 +426,25 @@ pub(crate) async fn execute_start_slice_provider_login_request(
     .map_err(|error| DaemonError::LocalTransport {
         operation: "slice.auth.login",
         message: format!("slice provider login task failed: {error}"),
-    })??;
+    })?;
+    let login = match login_result {
+        Ok(login) => login,
+        Err(error) => {
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "auth.login",
+                "failed",
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.login",
+        "completed",
+        Some(&format!("provider={}", request.provider)),
+    )?;
     Ok(LocalDaemonResponse::SliceProviderLoginStarted { slice, login })
 }
 
@@ -277,6 +456,12 @@ pub(crate) async fn execute_set_slice_provider_auth_alias_request(
         &request.slice_ref,
         &request.provider,
         request.alias.as_deref(),
+    )?;
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.alias",
+        "completed",
+        Some(&format!("provider={}", request.provider)),
     )?;
     Ok(LocalDaemonResponse::SliceProviderAuthAliasSet {
         slice,
@@ -316,4 +501,125 @@ fn local_docker_slice_relay(
     slice: &crate::slice::SliceRecord,
 ) -> crate::slice::LocalDockerSliceRelay {
     crate::slice::local_docker_private_relay(slice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth(
+        provider: &str,
+        account: &str,
+        alias: Option<&str>,
+    ) -> crate::slice_provider_auth::SliceProviderAuthSummary {
+        crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: provider.to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+            auth_type: Some("test".to_string()),
+            account_id: Some(account.to_string()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: alias.map(str::to_string),
+            source: "test".to_string(),
+        }
+    }
+
+    fn slice(agent_ids: Vec<String>) -> crate::slice::SliceRecord {
+        crate::slice::SliceRecord {
+            id: "slice-1".to_string(),
+            name: "dev".to_string(),
+            owner_kernel_id: "kernel-1".to_string(),
+            owner_machine_id: "machine-1".to_string(),
+            session_id: None,
+            session_ids: Vec::new(),
+            agent_ids,
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headless,
+            status: crate::slice::SliceStatus::Running,
+            workspace_id: Some("workspace".to_string()),
+            worktree_id: Some("worktree".to_string()),
+            workspace_mount: Some("worktree".to_string()),
+            worker_kernel_ref: "slice:dev".to_string(),
+            worker_kernel_id: Some("worker-1".to_string()),
+            worker_machine_id: Some("machine-slice-1".to_string()),
+            relay_endpoint: None,
+            providers: Vec::new(),
+            provider_auth: Vec::new(),
+            display_endpoint: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn scoped_provider_auth_import_filters_requested_provider() {
+        let summaries = vec![
+            auth("codex", "codex-1", None),
+            auth("opencode:openai", "openai-1", None),
+            auth("opencode:opencode", "opencode-1", None),
+            auth("claude", "claude-1", None),
+        ];
+
+        let codex = scoped_provider_auth_summaries("codex", summaries.clone());
+        assert_eq!(
+            codex
+                .iter()
+                .map(|auth| auth.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+
+        let opencode = scoped_provider_auth_summaries("opencode", summaries);
+        assert_eq!(
+            opencode
+                .iter()
+                .map(|auth| auth.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode:openai", "opencode:opencode"]
+        );
+
+        let all = scoped_provider_auth_summaries(
+            "all",
+            vec![
+                auth("codex", "codex-1", None),
+                auth("opencode:openai", "openai-1", None),
+                auth("claude", "claude-1", None),
+            ],
+        );
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn scoped_provider_auth_merge_preserves_other_providers_and_aliases() {
+        let existing = vec![
+            auth("codex", "old-codex", Some("Work")),
+            auth("claude", "claude-1", Some("Claude")),
+        ];
+        let imported = vec![auth("codex", "new-codex", None)];
+
+        let merged = merge_scoped_provider_auth(existing, "codex", imported);
+
+        assert_eq!(merged.len(), 2);
+        let codex = merged.iter().find(|auth| auth.provider == "codex").unwrap();
+        let claude = merged
+            .iter()
+            .find(|auth| auth.provider == "claude")
+            .unwrap();
+        assert_eq!(codex.account_id.as_deref(), Some("new-codex"));
+        assert_eq!(codex.alias.as_deref(), Some("Work"));
+        assert_eq!(claude.account_id.as_deref(), Some("claude-1"));
+    }
+
+    #[test]
+    fn stop_and_delete_guard_rejects_active_agents() {
+        let error =
+            ensure_slice_has_no_active_agents(&slice(vec!["agent-1".to_string()]), "slice.stop")
+                .expect_err("active slice should reject stop/delete");
+        assert!(error.to_string().contains("active agent"));
+        ensure_slice_has_no_active_agents(&slice(Vec::new()), "slice.stop")
+            .expect("idle slice should pass guard");
+    }
 }

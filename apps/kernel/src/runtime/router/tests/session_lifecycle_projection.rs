@@ -303,6 +303,54 @@ async fn end_session_detaches_reusable_slice_agents() {
 }
 
 #[tokio::test]
+async fn create_slice_ignores_client_supplied_provider_auth() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        name: "forged-auth".to_string(),
+        backend: crate::slice::SliceBackendKind::LocalDocker,
+        os: "linux".to_string(),
+        display_mode: crate::slice::SliceDisplayMode::Headless,
+        workspace_id: Some("workspace".to_string()),
+        worktree_id: Some("worktree".to_string()),
+        workspace_mount: Some("worktree".to_string()),
+        worker_kernel_ref: None,
+        display_url: None,
+        provider_auth: vec![crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: "codex".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::Authenticated,
+            auth_type: Some("forged".to_string()),
+            account_id: Some("forged-account".to_string()),
+            email: Some("forged@example.com".to_string()),
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: Some("forged".to_string()),
+            source: "client".to_string(),
+        }],
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-create-slice-forged-auth", None, None, &request);
+
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("slice create should succeed");
+
+    match response {
+        LocalDaemonResponse::SliceCreated { slice } => {
+            assert!(
+                slice.provider_auth.is_empty(),
+                "provider auth summaries are kernel-owned and must not be accepted from clients"
+            );
+        }
+        _ => panic!("unexpected create slice response"),
+    }
+}
+
+#[tokio::test]
 async fn delete_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

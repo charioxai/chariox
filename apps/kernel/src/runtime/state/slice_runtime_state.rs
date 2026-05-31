@@ -23,7 +23,7 @@ impl KernelRuntimeState {
                 workspace_mount: request.workspace_mount,
                 worker_kernel_ref: request.worker_kernel_ref,
                 display_url: request.display_url,
-                provider_auth: request.provider_auth,
+                provider_auth: Vec::new(),
                 now_ms: crate::session::unix_epoch_ms(),
             },
         )?;
@@ -36,6 +36,46 @@ impl KernelRuntimeState {
         slice_ref: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         self.owned.slice_store.resolve(slice_ref)
+    }
+
+    pub(crate) fn begin_slice_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+    ) -> Result<crate::slice::SliceOperationGuard, DaemonError> {
+        self.owned
+            .slice_store
+            .try_begin_operation(slice_ref, operation)
+    }
+
+    pub(crate) fn record_slice_audit_event(
+        &self,
+        slice: &crate::slice::SliceRecord,
+        action: &'static str,
+        outcome: &'static str,
+        message: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.owned.durable_state_store.append_event(
+            "slice.audit",
+            Some(slice.id.clone()),
+            serde_json::json!({
+                "slice_id": slice.id,
+                "slice_name": slice.name,
+                "action": action,
+                "outcome": outcome,
+                "message": message,
+                "status": slice.status,
+                "backend": slice.backend,
+                "display_mode": slice.display_mode,
+                "session_ids": slice.session_ids,
+                "agent_ids": slice.agent_ids,
+                "worker_kernel_ref": slice.worker_kernel_ref,
+                "worker_kernel_id": slice.worker_kernel_id,
+                "worker_machine_id": slice.worker_machine_id,
+                "at_ms": crate::session::unix_epoch_ms(),
+            }),
+        )?;
+        Ok(())
     }
 
     pub(crate) fn mark_slice_starting(

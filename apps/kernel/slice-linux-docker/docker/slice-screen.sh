@@ -59,6 +59,7 @@ start_desktop() {
 
   nohup chromium \
     --user-data-dir="$CHROME_PROFILE" \
+    --no-sandbox \
     --no-first-run \
     --no-default-browser-check \
     --disable-dev-shm-usage \
@@ -236,7 +237,7 @@ PY
 }
 
 open_url() {
-  chromium --user-data-dir="$CHROME_PROFILE" --new-window "$1" >/dev/null 2>&1 &
+  chromium --user-data-dir="$CHROME_PROFILE" --no-sandbox --new-window "$1" >/dev/null 2>&1 &
   sleep 1
   focus_chromium
 }

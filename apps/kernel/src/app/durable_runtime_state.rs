@@ -136,6 +136,25 @@ impl DaemonApp {
                 }),
             );
         }
+        let reconciled_slices = self
+            .slices
+            .reconcile_after_kernel_restart(crate::session::unix_epoch_ms());
+        for slice in reconciled_slices {
+            self.durable_state.append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "reconciled slice runtime state after kernel restart",
+                serde_json::json!({
+                    "slice_id": slice.id,
+                    "slice_name": slice.name,
+                    "status": slice.status,
+                }),
+            );
+        }
         Ok(())
     }
 

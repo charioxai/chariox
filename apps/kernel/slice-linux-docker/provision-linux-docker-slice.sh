@@ -4,14 +4,16 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux-spike}"
-SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux-spike:local}"
+SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux}"
+SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux:local}"
 SLICE_BUILD_IMAGE="${ARROBA_SLICE_BUILD_IMAGE:-auto}"
 SLICE_EXTENSION_DOCKERFILE="${ARROBA_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${ARROBA_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${ARROBA_SLICE_DOCKER_CPUS:-}"
 SLICE_HOME_VOLUME="${ARROBA_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_WORKSPACE="${ARROBA_SLICE_WORKSPACE:-$REPO_ROOT}"
+SLICE_WORKSPACE_MOUNT_MODE="${ARROBA_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
+SLICE_ALLOW_UNCONFINED_SECCOMP="${ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
 SLICE_RECREATE="${ARROBA_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${ARROBA_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${ARROBA_SLICE_START_PROVIDER_SERVERS:-1}"
@@ -41,13 +43,14 @@ SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Co
 SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
+SLICE_AUTH_PROVIDER="${ARROBA_SLICE_AUTH_PROVIDER:-all}"
 
 log() {
-  printf '[slice-spike] %s\n' "$*" >&2
+  printf '[slice-linux] %s\n' "$*" >&2
 }
 
 fail() {
-  printf '[slice-spike] error: %s\n' "$*" >&2
+  printf '[slice-linux] error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -89,14 +92,14 @@ build_image() {
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
     docker build \
-      --build-arg "ARROBA_SLICE_BASE_IMAGE=arroba-slice-linux-spike:local" \
+      --build-arg "ARROBA_SLICE_BASE_IMAGE=arroba-slice-linux:local" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
       "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
     return 0
   fi
   docker build \
-    -f "$REPO_ROOT/experiments/slice-spike/docker/Dockerfile" \
+    -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$SLICE_IMAGE" \
     "$REPO_ROOT"
 }
@@ -106,6 +109,14 @@ ensure_container() {
     log "recreating container $SLICE_NAME"
     docker rm -f "$SLICE_NAME" >/dev/null
   fi
+  case "$SLICE_WORKSPACE_MOUNT_MODE" in
+    rw|ro) ;;
+    *) fail "ARROBA_SLICE_WORKSPACE_MOUNT_MODE must be rw or ro" ;;
+  esac
+  case "$SLICE_ALLOW_UNCONFINED_SECCOMP" in
+    0|1) ;;
+    *) fail "ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
+  esac
 
   if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
     log "container $SLICE_NAME already exists"
@@ -114,7 +125,6 @@ ensure_container() {
     docker volume create "$SLICE_HOME_VOLUME" >/dev/null
     local docker_create_args=(
       --name "$SLICE_NAME"
-      --security-opt seccomp=unconfined
       -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT"
       -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT"
       -p "127.0.0.1:$SLICE_CODEX_PORT_RANGE:$SLICE_CODEX_PORT_RANGE"
@@ -123,10 +133,13 @@ ensure_container() {
       -p "127.0.0.1:$SLICE_RELAY_PORT:$SLICE_RELAY_PORT"
       -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT"
       -v "$SLICE_HOME_VOLUME:/home/slice"
-      -v "$SLICE_WORKSPACE:/workspace"
+      -v "$SLICE_WORKSPACE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
     )
+    if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
+      docker_create_args+=(--security-opt seccomp=unconfined)
+    fi
     if [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
-      docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE")
+      docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
     fi
     if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then
       docker_create_args+=(--memory "$SLICE_DOCKER_MEMORY")
@@ -143,7 +156,7 @@ ensure_container() {
   fi
 
   docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice"
-  docker cp "$REPO_ROOT/experiments/slice-spike/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
+  docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
   docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh
 }
 
@@ -227,8 +240,36 @@ NODE"
 
 import_provider_auth() {
   ensure_container
+  case "$SLICE_AUTH_PROVIDER" in
+    all)
+      import_codex_auth
+      import_opencode_auth
+      import_claude_auth
+      ;;
+    codex)
+      import_codex_auth
+      ;;
+    opencode|opencode:*)
+      import_opencode_auth
+      ;;
+    claude)
+      import_claude_auth
+      ;;
+    *)
+      fail "unsupported provider auth import: $SLICE_AUTH_PROVIDER"
+      ;;
+  esac
+}
+
+import_codex_auth() {
   copy_provider_auth_file "$SLICE_CODEX_AUTH" "/home/slice/.codex/auth.json" "Codex"
+}
+
+import_opencode_auth() {
   copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "/home/slice/.local/share/opencode/auth.json" "OpenCode"
+}
+
+import_claude_auth() {
   copy_provider_auth_file "$SLICE_CLAUDE_JSON" "/home/slice/.claude.json" "Claude metadata"
   copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "/home/slice/.claude/settings.json" "Claude settings"
   copy_provider_auth_file "$SLICE_CLAUDE_STATS" "/home/slice/.claude/stats-cache.json" "Claude stats"
@@ -292,7 +333,7 @@ start_provider_login() {
 
 print_status() {
   log "container: $SLICE_NAME"
-  exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; claude --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=sandboxed-headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
+  exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; claude --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
   print_provider_auth_status
 }
 
@@ -342,13 +383,13 @@ main() {
         import_provider_auth
       fi
       if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
-        exec_slice /opt/arroba-slice/slice-screen.sh start || true
+        exec_slice /opt/arroba-slice/slice-screen.sh start
       fi
       if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
-        exec_slice /opt/arroba-slice/start-runtime.sh || true
+        exec_slice /opt/arroba-slice/start-runtime.sh
       fi
       if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
-        exec_slice /opt/arroba-slice/start-providers.sh || true
+        exec_slice /opt/arroba-slice/start-providers.sh
       fi
       print_status
       ;;

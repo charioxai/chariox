@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -183,7 +184,7 @@ impl LocalDockerSliceOptions {
             docker_image: linux
                 .docker_image
                 .clone()
-                .unwrap_or_else(|| "arroba-slice-linux-spike:local".to_string()),
+                .unwrap_or_else(|| "arroba-slice-linux:local".to_string()),
             build_image: linux.build_image.unwrap_or(SliceImageBuildPolicy::Auto),
             extension_dockerfile: linux
                 .extension_dockerfile
@@ -206,10 +207,31 @@ pub struct SliceStore {
     inner: Arc<Mutex<SliceStoreState>>,
 }
 
+#[derive(Debug)]
+pub struct SliceOperationGuard {
+    store: SliceStore,
+    slice_id: String,
+    operation: String,
+}
+
+impl Drop for SliceOperationGuard {
+    fn drop(&mut self) {
+        let mut state = self.store.inner.lock().expect("slice store poisoned");
+        if state
+            .active_operations
+            .get(&self.slice_id)
+            .is_some_and(|operation| operation == &self.operation)
+        {
+            state.active_operations.remove(&self.slice_id);
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SliceStoreState {
     next_slice_number: u64,
     records: BTreeMap<String, SliceRecord>,
+    active_operations: BTreeMap<String, String>,
 }
 
 impl SliceStore {
@@ -308,6 +330,99 @@ impl SliceStore {
             }
             state.records.insert(record.id.clone(), record);
         }
+    }
+
+    pub fn reconcile_after_kernel_restart(&self, now_ms: u64) -> Vec<SliceRecord> {
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut changed = Vec::new();
+        for record in state.records.values_mut() {
+            let was_runtime_status = matches!(
+                record.status,
+                SliceStatus::Starting | SliceStatus::Running | SliceStatus::Unhealthy
+            );
+            let mut record_changed = false;
+            if matches!(record.status, SliceStatus::Starting | SliceStatus::Running) {
+                record.status = SliceStatus::Unhealthy;
+                record_changed = true;
+            }
+            if was_runtime_status {
+                if record.worker_kernel_id.take().is_some() {
+                    record_changed = true;
+                }
+                if record.worker_machine_id.take().is_some() {
+                    record_changed = true;
+                }
+                if record.relay_endpoint.take().is_some() {
+                    record_changed = true;
+                }
+                if !record.providers.is_empty() {
+                    record.providers.clear();
+                    record_changed = true;
+                }
+            }
+            if record_changed {
+                record.updated_at_ms = now_ms;
+                changed.push(record.clone());
+            }
+        }
+        changed
+    }
+
+    pub fn try_begin_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        let slice_ref = slice_ref.trim();
+        if slice_ref.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.operation",
+                message: "slice reference must not be empty".to_string(),
+            });
+        }
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let mut matches = state
+            .records
+            .values()
+            .filter(|record| record.id == slice_ref || record.name == slice_ref)
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let slice_id = match matches.len() {
+            0 => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    message: format!("unknown slice `{slice_ref}`"),
+                });
+            }
+            1 => matches.remove(0),
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    message: format!("slice reference `{slice_ref}` is ambiguous"),
+                });
+            }
+        };
+        if let Some(existing) = state.active_operations.get(&slice_id) {
+            let record_name = state
+                .records
+                .get(&slice_id)
+                .map(|record| record.name.as_str())
+                .unwrap_or(slice_ref);
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.operation",
+                message: format!(
+                    "slice `{record_name}` already has an active `{existing}` operation"
+                ),
+            });
+        }
+        state
+            .active_operations
+            .insert(slice_id.clone(), operation.to_string());
+        Ok(SliceOperationGuard {
+            store: self.clone(),
+            slice_id,
+            operation: operation.to_string(),
+        })
     }
 
     pub fn resolve(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
@@ -673,6 +788,7 @@ pub fn run_local_docker_slice_action(
     record: &SliceRecord,
     action: LocalDockerSliceAction,
     relay: Option<LocalDockerSliceRelay>,
+    provider: Option<&str>,
     options: &LocalDockerSliceOptions,
 ) -> Result<(), DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
@@ -690,6 +806,9 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
+    if action == LocalDockerSliceAction::Provision {
+        ensure_local_docker_slice_ports_available(record)?;
+    }
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
     command.arg(match action {
@@ -699,6 +818,9 @@ pub fn run_local_docker_slice_action(
         LocalDockerSliceAction::Destroy => "destroy",
     });
     configure_local_docker_slice_command(&mut command, record, relay, options);
+    if let Some(provider) = provider {
+        command.env("ARROBA_SLICE_AUTH_PROVIDER", provider);
+    }
 
     let log_path = local_docker_slice_action_log_path(&options.root, record, action);
     if let Some(parent) = log_path.parent() {
@@ -1033,10 +1155,68 @@ impl LocalDockerSlicePorts {
     fn ordinal_offset(self) -> u16 {
         self.kernel.saturating_sub(53119).saturating_mul(20)
     }
+
+    fn published_ports(self) -> Vec<u16> {
+        let offset = self.ordinal_offset();
+        let mut ports = vec![
+            self.codex,
+            self.opencode,
+            self.kernel,
+            self.relay,
+            self.novnc,
+        ];
+        ports.extend(43362_u16.saturating_add(offset)..=43381_u16.saturating_add(offset));
+        ports.extend(43150_u16.saturating_add(offset)..=43169_u16.saturating_add(offset));
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
 }
 
 fn local_docker_container_name(record: &SliceRecord) -> String {
     format!("arroba-slice-{}", record.name)
+}
+
+fn ensure_local_docker_slice_ports_available(record: &SliceRecord) -> Result<(), DaemonError> {
+    if local_docker_container_is_running(record) {
+        return Ok(());
+    }
+    let busy_ports = LocalDockerSlicePorts::for_slice_id(&record.id)
+        .published_ports()
+        .into_iter()
+        .filter(|port| TcpListener::bind(("127.0.0.1", *port)).is_err())
+        .collect::<Vec<_>>();
+    if busy_ports.is_empty() {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "slice.local_docker.ports",
+        message: format!(
+            "slice `{}` cannot start because host port(s) {} are already in use",
+            record.name,
+            busy_ports
+                .into_iter()
+                .map(|port| port.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
+}
+
+fn local_docker_container_is_running(record: &SliceRecord) -> bool {
+    let output = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let container_name = local_docker_container_name(record);
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == container_name)
 }
 
 fn local_docker_slice_action_log_path(
@@ -1076,9 +1256,9 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
             message: "failed to resolve repository root for slice scripts".to_string(),
         })?;
     let script = repo_root
-        .join("experiments")
-        .join("slice-spike")
-        .join("scripts")
+        .join("apps")
+        .join("kernel")
+        .join("slice-linux-docker")
         .join("provision-linux-docker-slice.sh");
     if script.is_file() {
         Ok(script)
@@ -1208,6 +1388,82 @@ mod tests {
             .create("kernel-1", "machine-1", create_input("next"))
             .expect("new slice should create after restore");
         assert_eq!(next.id, "slice-2");
+    }
+
+    #[test]
+    fn slice_store_reconciles_runtime_state_after_kernel_restart() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let slice = store
+            .set_relay_endpoint(
+                &slice.id,
+                Some(local_docker_private_relay_endpoint(&slice)),
+                43,
+            )
+            .expect("relay endpoint should update");
+        store
+            .set_worker_presence(
+                &slice.id,
+                Some("worker-1".to_string()),
+                Some("machine-2".to_string()),
+                vec!["codex".to_string()],
+                44,
+            )
+            .expect("worker presence should update");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 45)
+            .expect("slice should be running");
+
+        let reconciled = store.reconcile_after_kernel_restart(46);
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(reconciled[0].worker_kernel_id, None);
+        assert_eq!(reconciled[0].worker_machine_id, None);
+        assert_eq!(reconciled[0].relay_endpoint, None);
+        assert!(reconciled[0].providers.is_empty());
+        assert_eq!(reconciled[0].updated_at_ms, 46);
+    }
+
+    #[test]
+    fn slice_store_rejects_overlapping_operations_until_guard_drops() {
+        let store = SliceStore::default();
+        store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+
+        let guard = store
+            .try_begin_operation("dev", "slice.start")
+            .expect("first operation should start");
+        let error = store
+            .try_begin_operation("dev", "slice.stop")
+            .expect_err("second operation should be rejected");
+        assert!(error.to_string().contains("slice.start"));
+
+        drop(guard);
+        store
+            .try_begin_operation("dev", "slice.stop")
+            .expect("operation should start after first guard drops");
+    }
+
+    #[test]
+    fn local_docker_slice_port_check_reports_busy_ports() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let ports = LocalDockerSlicePorts::for_slice_id(&slice.id);
+        let _listener = TcpListener::bind(("127.0.0.1", ports.relay)).ok();
+
+        let error = ensure_local_docker_slice_ports_available(&slice)
+            .expect_err("busy port should be reported before provisioning");
+
+        assert!(
+            error.to_string().contains(&ports.relay.to_string()),
+            "error should name the busy port: {error}"
+        );
     }
 
     #[test]
