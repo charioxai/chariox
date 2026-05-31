@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
 
 use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
