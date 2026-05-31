@@ -189,9 +189,10 @@ pub(crate) async fn execute_stop_slice_request(
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&resolved_slice, "stop", "accepted", None, None)?;
     ensure_slice_has_no_active_agents(&resolved_slice, "slice.stop")?;
+    let stopping_slice = runtime_state.mark_slice_stopping(&request.slice_ref)?;
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
-    let task_slice = resolved_slice.clone();
+    let task_slice = stopping_slice.clone();
     let supervisor_result = tokio::task::spawn_blocking(move || {
         crate::slice::run_local_docker_slice_action(
             &task_slice,
@@ -207,8 +208,10 @@ pub(crate) async fn execute_stop_slice_request(
         message: format!("slice supervisor task failed: {error}"),
     })?;
     if let Err(error) = supervisor_result {
+        let _ = runtime_state
+            .set_slice_status(&request.slice_ref, crate::slice::SliceStatus::Unhealthy);
         let _ = runtime_state.record_slice_audit_event(
-            &resolved_slice,
+            &stopping_slice,
             "stop",
             "failed",
             None,

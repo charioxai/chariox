@@ -150,6 +150,23 @@ mod tests {
     }
 
     #[test]
+    fn slice_store_reconciles_interrupted_stop_after_kernel_restart() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        store
+            .set_status(&slice.id, SliceStatus::Stopping, 44)
+            .expect("slice should be stopping");
+
+        let reconciled = store.reconcile_after_kernel_restart(45);
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(reconciled[0].updated_at_ms, 45);
+    }
+
+    #[test]
     fn slice_store_rejects_overlapping_operations_until_guard_drops() {
         let store = SliceStore::default();
         store

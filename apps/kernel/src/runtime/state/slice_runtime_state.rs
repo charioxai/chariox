@@ -109,6 +109,19 @@ impl KernelRuntimeState {
         Ok(slice)
     }
 
+    pub(crate) fn mark_slice_stopping(
+        &self,
+        slice_ref: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let slice = self.owned.slice_store.set_status(
+            slice_ref,
+            crate::slice::SliceStatus::Stopping,
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &slice)?;
+        Ok(slice)
+    }
+
     pub(crate) fn set_slice_status(
         &self,
         slice_ref: &str,

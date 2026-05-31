@@ -525,7 +525,7 @@ export type SliceRecord = {
   owner_machine_id: string
   backend: "local_docker" | "ssh_docker"
   os: string
-  status: "stopped" | "starting" | "running" | "unhealthy"
+  status: "stopped" | "starting" | "stopping" | "running" | "unhealthy"
   workspace_mount?: string | null
   workspace_id?: string | null
   worktree_id?: string | null

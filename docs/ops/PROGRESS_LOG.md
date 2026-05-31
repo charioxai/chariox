@@ -1294,3 +1294,9 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Slice create now writes a durable `slice.audit` event, and all slice audit events include first-class result, actor, client type, provider, workspace/worktree/mount, owner, and redacted-error fields instead of forcing provider/error context into freeform messages.
 - Added coverage that slice creation still ignores forged client-supplied provider auth while writing the enriched create audit event. Re-ran the focused create-slice audit test and the full slice-focused Rust suite; both passed.
+
+### Slice stopping lifecycle state
+
+- Added an explicit protocol-visible `stopping` slice status and bumped the local daemon protocol to 78. Stop requests now publish the transitional state before invoking the local Docker stop action, while start/stop/delete operation guards still serialize lifecycle mutations.
+- Restart reconciliation now marks interrupted `starting`, `stopping`, and `running` slices `unhealthy` so clients do not show stale runtime-only states after a kernel restart.
+- Updated Rust, kernel-client, CLI, and web slice record types. Web slice controls now disable start/stop actions while a slice is in transitional states.

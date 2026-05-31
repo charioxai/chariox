@@ -20,6 +20,7 @@ impl Default for SliceBackendKind {
 pub enum SliceStatus {
     Stopped,
     Starting,
+    Stopping,
     Running,
     Unhealthy,
 }

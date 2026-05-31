@@ -156,10 +156,16 @@ impl SliceStore {
         for record in state.records.values_mut() {
             let was_runtime_status = matches!(
                 record.status,
-                SliceStatus::Starting | SliceStatus::Running | SliceStatus::Unhealthy
+                SliceStatus::Starting
+                    | SliceStatus::Stopping
+                    | SliceStatus::Running
+                    | SliceStatus::Unhealthy
             );
             let mut record_changed = false;
-            if matches!(record.status, SliceStatus::Starting | SliceStatus::Running) {
+            if matches!(
+                record.status,
+                SliceStatus::Starting | SliceStatus::Stopping | SliceStatus::Running
+            ) {
                 record.status = SliceStatus::Unhealthy;
                 record_changed = true;
             }
