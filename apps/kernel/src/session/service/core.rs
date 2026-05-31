@@ -50,6 +50,9 @@ impl SessionService {
         if let Some(agent_defaults) = request.agent_defaults {
             session.set_agent_defaults(agent_defaults);
         }
+        if let Some(mode) = request.workspace_live_sync_mode {
+            session.set_workspace_live_sync_mode(Some(mode));
+        }
 
         Ok(self.store.insert(session))
     }

@@ -38,8 +38,8 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync required\|unrestricted/)
-  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|enable managed\|tracked\|disable\|mode managed\|tracked\|unrestricted\|link/)
+  assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
+  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|enable managed\|tracked\|disable\|mode off\|managed\|tracked\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|start\|stop\|delete\|auth import\|auth remove\|screen/)
 })
 
@@ -795,6 +795,8 @@ test("executeShellCommand manages workspace links", async () => {
   const modeResult = await executeShellCommand(parseShellCommand("workspace sync mode tracked"), context, { client: fake.client })
   const enableResult = await executeShellCommand(parseShellCommand("workspace sync enable managed"), context, { client: fake.client })
   const enableTrackedResult = await executeShellCommand(parseShellCommand("workspace sync enable tracked"), context, { client: fake.client })
+  const directOffResult = await executeShellCommand(parseShellCommand("workspace sync off"), context, { client: fake.client })
+  const directManagedResult = await executeShellCommand(parseShellCommand("workspace sync managed"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
   const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
   const legacyModeOnResult = await executeShellCommand(parseShellCommand("workspace sync mode on"), context, { client: fake.client })
@@ -820,10 +822,12 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(modeResult.message ?? "", /mode set to tracked/)
   assert.match(enableResult.message ?? "", /enabled: managed/)
   assert.match(enableTrackedResult.message ?? "", /enabled: tracked/)
+  assert.match(directOffResult.message ?? "", /disabled/)
+  assert.match(directManagedResult.message ?? "", /mode set to managed/)
   assert.match(disableResult.message ?? "", /disabled/)
   assert.match(syncLinkResult.message ?? "", /recommended mode: managed/)
-  assert.match(legacyModeOnResult.message ?? "", /usage: workspace sync mode managed\|tracked\|unrestricted/)
-  assert.match(legacyModeOffResult.message ?? "", /usage: workspace sync mode managed\|tracked\|unrestricted/)
+  assert.match(legacyModeOnResult.message ?? "", /usage: workspace sync mode off\|managed\|tracked/)
+  assert.match(legacyModeOffResult.message ?? "", /disabled/)
   assert.match(legacyEnableOnResult.message ?? "", /usage: workspace sync enable \[managed\|tracked\]/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.match(invalidResourceResult.message ?? "", /workspace sync .*link/)
@@ -840,7 +844,10 @@ test("executeShellCommand manages workspace links", async () => {
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "tracked" } },
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
+    { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "managed" } },
+    { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
+    { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
   ])
 })

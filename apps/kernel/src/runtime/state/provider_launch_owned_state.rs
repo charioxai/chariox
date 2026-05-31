@@ -145,6 +145,16 @@ impl KernelRuntimeOwnedState {
                 agent_worktree.unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id())),
             );
         }
+        if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
+            let config = self.config_projection.snapshot();
+            let workspace_live_sync_roots = workspace_live_sync_protected_roots(
+                &session,
+                request.working_directory.as_deref(),
+                &config.host_machine_id,
+                &config.daemon_id,
+            );
+            request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -185,5 +195,114 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         Ok(request)
+    }
+}
+
+fn workspace_live_sync_protected_roots(
+    session: &crate::session::RuntimeSession,
+    working_directory: Option<&std::path::Path>,
+    host_machine_id: &str,
+    host_daemon_id: &str,
+) -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = working_directory
+        .and_then(resolve_git_root)
+        .or_else(|| working_directory.map(std::path::PathBuf::from))
+    {
+        push_unique_root(&mut roots, root);
+    }
+    for link in session.workspace_links() {
+        for attachment in link.attachments() {
+            if attachment.machine_id() == host_machine_id
+                && attachment.kernel_id() == host_daemon_id
+            {
+                push_unique_root(&mut roots, std::path::PathBuf::from(attachment.repo_root()));
+            }
+        }
+    }
+    roots
+}
+
+fn resolve_git_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    (!root.is_empty()).then(|| std::path::PathBuf::from(root))
+}
+
+fn push_unique_root(roots: &mut Vec<std::path::PathBuf>, root: std::path::PathBuf) {
+    if !roots.iter().any(|existing| existing == &root) {
+        roots.push(root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_protected_roots_include_working_directory_and_local_links() {
+        let mut session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "/repo/main",
+            "machine-1",
+            "daemon-1",
+        );
+        session.create_workspace_link(crate::session::WorkspaceLinkDefinition::new(
+            "link-1",
+            "session-1",
+            "shared",
+            "local",
+        ));
+        session
+            .workspace_link_mut("link-1")
+            .expect("link should exist")
+            .attach(crate::session::WorkspaceLinkAttachment::new(
+                "link-1",
+                "local",
+                "machine-1",
+                "daemon-1",
+                "/repo/attached",
+                None,
+                None,
+            ));
+        session
+            .workspace_link_mut("link-1")
+            .expect("link should exist")
+            .attach(crate::session::WorkspaceLinkAttachment::new(
+                "link-1",
+                "peer",
+                "remote-machine",
+                "remote-daemon",
+                "/remote/repo",
+                None,
+                None,
+            ));
+
+        let roots = workspace_live_sync_protected_roots(
+            &session,
+            Some(std::path::Path::new("/repo/main")),
+            "machine-1",
+            "daemon-1",
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                std::path::PathBuf::from("/repo/main"),
+                std::path::PathBuf::from("/repo/attached"),
+            ]
+        );
     }
 }

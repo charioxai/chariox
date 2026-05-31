@@ -116,7 +116,7 @@ test("config command renders kernel mutation effects", async () => {
         {
           path: "providers.workspace_live_sync",
           value_type: "enum",
-          allowed_values: ["required", "unrestricted"],
+          allowed_values: ["off", "managed", "tracked"],
           settable: true,
           unsettable: true,
           effect: "provider_reload",
@@ -129,7 +129,7 @@ test("config command renders kernel mutation effects", async () => {
       updates.push({ path, value })
       return {
         path: "/home/.arroba/config.toml",
-        config: { version: 1, providers: { workspace_live_sync: value as "required" | "unrestricted" } },
+        config: { version: 1, providers: { workspace_live_sync: value as "off" | "managed" | "tracked" } },
         effects: [
           {
             kind: "provider_reload",
@@ -149,13 +149,13 @@ test("config command renders kernel mutation effects", async () => {
   })
   await handlers.handleConfigCommand({
     kind: "config",
-    raw: "/config workspace-live-sync unrestricted",
-    args: ["workspace-live-sync", "unrestricted"],
+    raw: "/config workspace-live-sync off",
+    args: ["workspace-live-sync", "off"],
   })
   await handlers.handleConfigCommand({
     kind: "config",
-    raw: "/config workspace-live-sync required",
-    args: ["workspace-live-sync", "required"],
+    raw: "/config workspace-live-sync tracked",
+    args: ["workspace-live-sync", "tracked"],
   })
   await handlers.handleConfigCommand({
     kind: "config",
@@ -167,24 +167,32 @@ test("config command renders kernel mutation effects", async () => {
     raw: "/config workspace-live-sync managed",
     args: ["workspace-live-sync", "managed"],
   })
+  await handlers.handleConfigCommand({
+    kind: "config",
+    raw: "/config workspace-live-sync required",
+    args: ["workspace-live-sync", "required"],
+  })
 
   assert.deepEqual(updates, [
-    { path: "providers.workspace_live_sync", value: "unrestricted" },
-    { path: "providers.workspace_live_sync", value: "required" },
-    { path: "providers.workspace_live_sync", value: "required" },
+    { path: "providers.workspace_live_sync", value: "off" },
+    { path: "providers.workspace_live_sync", value: "tracked" },
+    { path: "providers.workspace_live_sync", value: "off" },
+    { path: "providers.workspace_live_sync", value: "managed" },
   ])
   assert.deepEqual(notices, [
-    "providers.workspace_live_sync (enum; live; provider_reload unset values=required|unrestricted)",
+    "providers.workspace_live_sync (enum; live; provider_reload unset values=off|managed|tracked)",
+    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
   ])
   assert.deepEqual(flashes, [
     "listed 1 config key",
-    "workspace live sync set to unrestricted",
-    "workspace live sync set to required",
-    "workspace live sync set to required",
-    "usage: /config workspace-live-sync required|unrestricted",
+    "workspace live sync set to off",
+    "workspace live sync set to tracked",
+    "workspace live sync set to off",
+    "workspace live sync set to managed",
+    "usage: /config workspace-live-sync off|managed|tracked",
   ])
 })
 

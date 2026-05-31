@@ -89,7 +89,7 @@ export async function executeSessionCommand(
         worktree: session.worktree_id,
       }
       return resourceResult(
-        `created session ${session.alias ?? session.id} in ${session.worktree_id}`,
+        `created session ${session.alias ?? session.id} in ${session.worktree_id}\nworkspace live sync: off; use \`workspace sync managed\` or \`workspace sync tracked\` to enable`,
         parsed.assignment,
         session.id,
         contextUpdates,

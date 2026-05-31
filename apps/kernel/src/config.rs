@@ -862,12 +862,12 @@ service = "arroba-test"
     }
 
     #[test]
-    fn workspace_live_sync_policy_defaults_to_managed() {
+    fn workspace_live_sync_policy_serializes_default_as_off() {
         let config = DaemonConfig::new("daemon", "machine", "tester");
 
-        assert!(config.provider_requires_workspace_live_sync("codex"));
-        assert!(config.provider_requires_workspace_live_sync("opencode"));
-        assert!(config.provider_requires_workspace_live_sync("default"));
+        assert!(!config.provider_requires_workspace_live_sync("codex"));
+        assert!(!config.provider_requires_workspace_live_sync("opencode"));
+        assert!(!config.provider_requires_workspace_live_sync("default"));
         assert!(!config.provider_tracks_workspace_live_sync("codex"));
     }
 
@@ -890,7 +890,7 @@ service = "arroba-test"
         config.user_config_path = path.clone();
 
         config
-            .set_user_config_value("providers.workspace_live_sync", "unrestricted")
+            .set_user_config_value("providers.workspace_live_sync", "off")
             .expect("workspace live sync policy should update");
 
         assert!(!config.provider_requires_workspace_live_sync("opencode"));
@@ -902,49 +902,43 @@ service = "arroba-test"
             WorkspaceLiveSyncMode::Unrestricted
         );
 
-        let error = config
+        config
             .set_user_config_value("providers.workspace_live_sync", "tracked")
-            .expect_err("tracked workspace live sync is session-scoped, not a global policy");
-        assert!(matches!(
-            error,
-            DaemonError::InvalidConfig {
-                field: "providers.workspace_live_sync",
-                ..
-            }
-        ));
+            .expect("tracked workspace live sync policy should update");
+        assert_eq!(
+            config.user_config.providers.workspace_live_sync.mode,
+            WorkspaceLiveSyncMode::Tracked
+        );
 
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn workspace_live_sync_policy_serializes_managed_as_required() {
+    fn workspace_live_sync_policy_defaults_to_off() {
         let encoded =
             toml::to_string(&UserProviderConfig::default()).expect("provider config should encode");
 
-        assert!(encoded.contains("workspace_live_sync = \"required\""));
+        assert!(encoded.contains("workspace_live_sync = \"off\""));
         assert!(!encoded.contains("workspace_live_sync = \"managed\""));
     }
 
     #[test]
-    fn workspace_live_sync_policy_rejects_old_managed_config_spelling() {
+    fn workspace_live_sync_policy_accepts_managed_config_spelling() {
         let mut config = DaemonConfig::new("daemon", "machine", "tester");
 
-        let error = config
+        config
             .set_user_config_value("providers.workspace_live_sync", "managed")
-            .expect_err("old managed workspace live sync config spelling should be rejected");
+            .expect("managed workspace live sync config spelling should be accepted");
 
-        assert!(matches!(
-            error,
-            DaemonError::InvalidConfig {
-                field: "providers.workspace_live_sync",
-                ..
-            }
-        ));
+        assert_eq!(
+            config.user_config.providers.workspace_live_sync.mode,
+            WorkspaceLiveSyncMode::Managed
+        );
     }
 
     #[test]
     fn workspace_live_sync_policy_rejects_legacy_boolean_aliases() {
-        for alias in ["on", "true", "1", "off", "false", "0"] {
+        for alias in ["on", "true", "1", "false", "0"] {
             let mut config = DaemonConfig::new("daemon", "machine", "tester");
 
             let error = config
@@ -977,7 +971,7 @@ service = "arroba-test"
         assert_eq!(workspace_live_sync.effect, "provider_reload");
         assert_eq!(
             workspace_live_sync.allowed_values,
-            vec!["required", "unrestricted"]
+            vec!["off", "managed", "tracked"]
         );
         assert!(schema
             .iter()
@@ -1009,7 +1003,7 @@ service = "arroba-test"
                 ..
             }
         ));
-        assert!(config.provider_requires_workspace_live_sync("codex"));
+        assert!(!config.provider_requires_workspace_live_sync("codex"));
     }
 
     #[test]

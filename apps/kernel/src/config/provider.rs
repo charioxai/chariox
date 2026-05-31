@@ -36,7 +36,7 @@ pub struct WorkspaceLiveSyncConfig {
 impl Default for WorkspaceLiveSyncConfig {
     fn default() -> Self {
         Self {
-            mode: WorkspaceLiveSyncMode::Managed,
+            mode: WorkspaceLiveSyncMode::Unrestricted,
         }
     }
 }
@@ -77,9 +77,9 @@ impl Serialize for WorkspaceLiveSyncConfig {
         S: Serializer,
     {
         serializer.serialize_str(match self.mode {
-            WorkspaceLiveSyncMode::Managed => "required",
+            WorkspaceLiveSyncMode::Managed => "managed",
             WorkspaceLiveSyncMode::Tracked => "tracked",
-            WorkspaceLiveSyncMode::Unrestricted => "unrestricted",
+            WorkspaceLiveSyncMode::Unrestricted => "off",
         })
     }
 }
@@ -107,11 +107,12 @@ pub enum WorkspaceLiveSyncMode {
 impl WorkspaceLiveSyncMode {
     pub(super) fn parse_config_policy(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "required" => Ok(Self::Managed),
-            "unrestricted" => Ok(Self::Unrestricted),
+            "managed" | "required" => Ok(Self::Managed),
+            "tracked" => Ok(Self::Tracked),
+            "off" | "unrestricted" => Ok(Self::Unrestricted),
             _ => Err(DaemonError::InvalidConfig {
                 field: "providers.workspace_live_sync",
-                message: "value must be `required` or `unrestricted`",
+                message: "value must be `off`, `managed`, or `tracked`",
             }),
         }
     }

@@ -123,12 +123,21 @@ async function handleWorkspaceSyncCommand(
   }
   if (action === "enable") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
-    if (!mode || mode === "unrestricted" || args.length > 1 || !deps.setWorkspaceLiveSyncMode) {
+    if (!mode || mode === "off" || args.length > 1 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
     deps.flashFooter(`workspace live sync enabled: ${mode}`, "info")
+    return
+  }
+  if (action === "off" || action === "managed" || action === "tracked") {
+    if (args.length > 0 || !deps.setWorkspaceLiveSyncMode) {
+      deps.flashFooter("usage: /workspace sync off|managed|tracked", "error")
+      return
+    }
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, action === "off" ? "unrestricted" : action)
+    deps.flashFooter(action === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${action}`, "info")
     return
   }
   if (action === "disable") {
@@ -143,11 +152,11 @@ async function handleWorkspaceSyncCommand(
   if (action === "mode") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
     if (!mode || args.length !== 1 || !deps.setWorkspaceLiveSyncMode) {
-      deps.flashFooter("usage: /workspace sync mode managed|tracked|unrestricted", "error")
+      deps.flashFooter("usage: /workspace sync mode off|managed|tracked", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
-    deps.flashFooter(`workspace live sync mode set to ${mode}`, "info")
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode === "off" ? "unrestricted" : mode)
+    deps.flashFooter(mode === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${mode}`, "info")
     return
   }
   if (action === "link") {
@@ -157,11 +166,11 @@ async function handleWorkspaceSyncCommand(
     })
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|enable|disable|mode|link", "error")
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link", "error")
 }
 
-function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
-  if (value === "managed" || value === "tracked" || value === "unrestricted") return value
+function normalizeWorkspaceLiveSyncMode(value: string): "off" | "managed" | "tracked" | null {
+  if (value === "off" || value === "managed" || value === "tracked") return value
   return null
 }
 

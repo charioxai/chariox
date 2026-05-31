@@ -63,6 +63,23 @@ fn create_session_stores_agent_defaults() {
 }
 
 #[test]
+fn create_session_stores_workspace_live_sync_mode_override() {
+    let mut service = SessionService::new(&test_config());
+
+    let created = service
+        .create_session(
+            CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        )
+        .expect("session should be created");
+
+    assert_eq!(
+        created.workspace_live_sync_mode(),
+        Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+    );
+}
+
+#[test]
 fn manages_session_membership_invites() {
     let mut service = SessionService::new(&test_config());
     let session = service

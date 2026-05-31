@@ -1,11 +1,14 @@
 import type { SessionAgentDefaults } from "./kernel-types.js"
 
+export type WorkspaceLiveSyncModeInput = "off" | "managed" | "tracked" | "unrestricted"
+
 export function createSessionRequest(
   workspaceId: string,
   worktreeId: string,
   alias?: string,
   agentDefaults?: SessionAgentDefaults,
   sliceRef?: string | null,
+  workspaceLiveSyncMode?: WorkspaceLiveSyncModeInput | null,
 ) {
   return {
     CreateSession: {
@@ -14,6 +17,7 @@ export function createSessionRequest(
       alias: alias ?? null,
       ...(agentDefaults ? { agent_defaults: agentDefaults } : {}),
       slice_ref: sliceRef ?? null,
+      ...(workspaceLiveSyncMode ? { workspace_live_sync_mode: normalizeWorkspaceLiveSyncMode(workspaceLiveSyncMode) } : {}),
     },
   }
 }
@@ -153,13 +157,17 @@ export function getWorkspaceLiveSyncStatusRequest(sessionId: string) {
   }
 }
 
-export function setWorkspaceLiveSyncModeRequest(sessionId: string, mode: "managed" | "tracked" | "unrestricted") {
+export function setWorkspaceLiveSyncModeRequest(sessionId: string, mode: WorkspaceLiveSyncModeInput) {
   return {
     SetWorkspaceLiveSyncMode: {
       session_id: sessionId,
-      mode,
+      mode: normalizeWorkspaceLiveSyncMode(mode),
     },
   }
+}
+
+function normalizeWorkspaceLiveSyncMode(mode: WorkspaceLiveSyncModeInput): "managed" | "tracked" | "unrestricted" {
+  return mode === "off" ? "unrestricted" : mode
 }
 
 export function endSessionRequest(sessionId: string) {

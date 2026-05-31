@@ -554,7 +554,7 @@ export type ArrobaUserConfig = {
     model?: string
     account_profile?: string
     effort?: string
-    workspace_live_sync?: "required" | "unrestricted"
+    workspace_live_sync?: "off" | "managed" | "tracked" | "required" | "unrestricted"
   }
   history?: {
     operational?: {
@@ -1104,7 +1104,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 79
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 80
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

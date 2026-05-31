@@ -118,7 +118,7 @@ test("executeShellCommand mutates user config", async () => {
                 {
                   path: "providers.workspace_live_sync",
                   value_type: "enum",
-                  allowed_values: ["required", "unrestricted"],
+                  allowed_values: ["off", "managed", "tracked"],
                   settable: true,
                   unsettable: true,
                   effect: "provider_reload",
@@ -135,7 +135,7 @@ test("executeShellCommand mutates user config", async () => {
         return {
           UserConfigUpdated: {
             path: "/home/.arroba/config.json",
-            config: { version: 1, providers: { workspace_live_sync: "required" } },
+            config: { version: 1, providers: { workspace_live_sync: "off" } },
             effects: setConfig?.path === "providers.workspace_live_sync"
               ? [
                   {
@@ -157,7 +157,7 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const requiredWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync required"), context, { client: fake.client })
+  const offWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync off"), context, { client: fake.client })
   const managedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
   const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
@@ -171,20 +171,21 @@ test("executeShellCommand mutates user config", async () => {
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
-  assert.equal(requiredWorkspaceLiveSyncResult.ok, true)
-  assert.match(requiredWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
-  assert.equal(managedWorkspaceLiveSyncResult.ok, false)
-  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /required\|unrestricted/)
+  assert.equal(offWorkspaceLiveSyncResult.ok, true)
+  assert.match(offWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to off/)
+  assert.equal(managedWorkspaceLiveSyncResult.ok, true)
+  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
   assert.equal(defaultWorkspaceLiveSyncResult.ok, true)
-  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to required/)
+  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to off/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "required" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
   ])
 })
 

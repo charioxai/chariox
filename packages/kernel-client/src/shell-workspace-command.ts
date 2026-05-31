@@ -38,7 +38,7 @@ export async function executeWorkspaceCommand(
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|mode|enable|disable|link or workspace link create|list|show|attach|detach" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|mode|enable|disable|link or workspace link create|list|show|attach|detach" }
   }
   const sessionId = context.sessionId
   if (!sessionId) {
@@ -167,11 +167,22 @@ async function executeWorkspaceSyncCommand(
     if (!mode || args.length > 1) {
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
-    if (mode === "unrestricted") {
+    if (mode === "off") {
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
     return { ok: true, message: `workspace live sync enabled: ${mode}`, data: response }
+  }
+  if (action === "off" || action === "managed" || action === "tracked") {
+    if (args.length > 0) {
+      return { ok: false, message: "usage: workspace sync off|managed|tracked" }
+    }
+    const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, action))
+    return {
+      ok: true,
+      message: action === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${action}`,
+      data: response,
+    }
   }
   if (action === "disable") {
     if (args.length > 0) {
@@ -183,10 +194,14 @@ async function executeWorkspaceSyncCommand(
   if (action === "mode") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
     if (!mode || args.length !== 1) {
-      return { ok: false, message: "usage: workspace sync mode managed|tracked|unrestricted" }
+      return { ok: false, message: "usage: workspace sync mode off|managed|tracked" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
-    return { ok: true, message: `workspace live sync mode set to ${mode}`, data: response }
+    return {
+      ok: true,
+      message: mode === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${mode}`,
+      data: response,
+    }
   }
   if (action === "link") {
     const linkRef = args[0]
@@ -204,9 +219,9 @@ async function executeWorkspaceSyncCommand(
     }
   }
   if (args.length > 0) {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|enable|disable|mode|link" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link" }
   }
-  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|enable|disable|mode|link" }
+  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
@@ -216,7 +231,8 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
   return response[variant] as T
 }
 
-function normalizeWorkspaceLiveSyncMode(value: string): "managed" | "tracked" | "unrestricted" | null {
-  if (value === "managed" || value === "tracked" || value === "unrestricted") return value
+function normalizeWorkspaceLiveSyncMode(value: string): "off" | "managed" | "tracked" | null {
+  if (value === "off") return value
+  if (value === "managed" || value === "tracked") return value
   return null
 }

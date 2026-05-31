@@ -109,6 +109,8 @@ pub struct LaunchProviderRequest {
     pub model: String,
     pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_live_sync_roots: Vec<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<ArrobaMcpServerConfig>,
@@ -259,6 +261,7 @@ impl LaunchProviderRequest {
             model: model.into(),
             variant: None,
             working_directory: None,
+            workspace_live_sync_roots: Vec::new(),
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
@@ -292,6 +295,11 @@ impl LaunchProviderRequest {
 
     pub fn with_working_directory(mut self, working_directory: PathBuf) -> Self {
         self.working_directory = Some(working_directory);
+        self
+    }
+
+    pub fn with_workspace_live_sync_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.workspace_live_sync_roots = roots;
         self
     }
 

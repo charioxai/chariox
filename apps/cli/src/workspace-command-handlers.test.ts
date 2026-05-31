@@ -108,7 +108,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.equal(statusUpdates.length, 5)
 })
 
-test("workspace sync slash commands reject legacy mode aliases", async () => {
+test("workspace sync slash commands use off managed tracked mode names", async () => {
   const footers: string[] = []
   const modeUpdates: string[] = []
   const deps = workspaceDeps({
@@ -122,10 +122,10 @@ test("workspace sync slash commands reject legacy mode aliases", async () => {
   await runWorkspace(deps, "/workspace sync mode off")
   await runWorkspace(deps, "/workspace sync enable on")
 
-  assert.deepEqual(modeUpdates, [])
+  assert.deepEqual(modeUpdates, ["session-1:unrestricted"])
   assert.deepEqual(footers, [
-    "error:usage: /workspace sync mode managed|tracked|unrestricted",
-    "error:usage: /workspace sync mode managed|tracked|unrestricted",
+    "error:usage: /workspace sync mode off|managed|tracked",
+    "info:workspace live sync disabled",
     "error:usage: /workspace sync enable [managed|tracked]",
   ])
 })

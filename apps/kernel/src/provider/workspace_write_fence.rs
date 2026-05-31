@@ -1,13 +1,10 @@
+use crate::error::DaemonError;
 use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::Path;
-#[cfg(target_os = "macos")]
-use std::path::PathBuf;
-
-use crate::error::DaemonError;
+use std::path::{Path, PathBuf};
 
 use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
@@ -23,10 +20,22 @@ pub(crate) fn apply_workspace_write_fence(
         return Ok(launch);
     }
 
-    let Some(workspace_root) = launch.working_directory.clone() else {
+    let protected_roots = if request.workspace_live_sync_roots.is_empty() {
+        let Some(workspace_root) = launch.working_directory.clone() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "workspace_write_fence",
+                message: "workspace live sync provider runs require a workspace working directory"
+                    .to_string(),
+            });
+        };
+        vec![workspace_root]
+    } else {
+        request.workspace_live_sync_roots.clone()
+    };
+    if protected_roots.is_empty() {
         return Err(DaemonError::LocalTransport {
             operation: "workspace_write_fence",
-            message: "workspace live sync provider runs require a workspace working directory"
+            message: "workspace live sync provider runs require at least one protected root"
                 .to_string(),
         });
     };
@@ -38,7 +47,7 @@ pub(crate) fn apply_workspace_write_fence(
         });
     };
 
-    apply_platform_workspace_write_fence(&mut launch, request, &workspace_root, program)?;
+    apply_platform_workspace_write_fence(&mut launch, request, &protected_roots, program)?;
     Ok(launch)
 }
 
@@ -55,7 +64,7 @@ pub(crate) fn workspace_write_fence_active_env(env: &BTreeMap<String, String>) -
 fn apply_platform_workspace_write_fence(
     launch: &mut ProviderLaunchResult,
     request: &LaunchProviderRequest,
-    workspace_root: &Path,
+    protected_roots: &[PathBuf],
     program: String,
 ) -> Result<(), DaemonError> {
     let sandbox_exec = Path::new("/usr/bin/sandbox-exec");
@@ -66,17 +75,8 @@ fn apply_platform_workspace_write_fence(
         });
     }
 
-    let canonical_workspace =
-        workspace_root
-            .canonicalize()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "workspace_write_fence",
-                message: format!(
-                    "failed to canonicalize workspace `{}`: {error}",
-                    workspace_root.display()
-                ),
-            })?;
-    let profile_path = write_macos_seatbelt_profile(request, &canonical_workspace)?;
+    let canonical_roots = canonical_workspace_live_sync_roots(protected_roots)?;
+    let profile_path = write_macos_seatbelt_profile(request, &canonical_roots)?;
 
     let mut wrapped_args = vec![
         "-f".to_string(),
@@ -95,11 +95,31 @@ fn apply_platform_workspace_write_fence(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn canonical_workspace_live_sync_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>, DaemonError> {
+    let mut canonical_roots = Vec::new();
+    for root in roots {
+        let canonical = root
+            .canonicalize()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "workspace_write_fence",
+                message: format!(
+                    "failed to canonicalize workspace `{}`: {error}",
+                    root.display()
+                ),
+            })?;
+        if !canonical_roots.contains(&canonical) {
+            canonical_roots.push(canonical);
+        }
+    }
+    Ok(canonical_roots)
+}
+
 #[cfg(not(target_os = "macos"))]
 fn apply_platform_workspace_write_fence(
     launch: &mut ProviderLaunchResult,
     _request: &LaunchProviderRequest,
-    _workspace_root: &Path,
+    _protected_roots: &[PathBuf],
     _program: String,
 ) -> Result<(), DaemonError> {
     let _ = launch;
@@ -109,7 +129,7 @@ fn apply_platform_workspace_write_fence(
 #[cfg(target_os = "macos")]
 fn write_macos_seatbelt_profile(
     request: &LaunchProviderRequest,
-    canonical_workspace: &Path,
+    canonical_roots: &[PathBuf],
 ) -> Result<PathBuf, DaemonError> {
     let profile_dir = std::env::temp_dir().join("arroba-workspace-write-fences");
     fs::create_dir_all(&profile_dir).map_err(|error| DaemonError::LocalTransport {
@@ -121,9 +141,9 @@ fn write_macos_seatbelt_profile(
     })?;
     let profile_path = profile_dir.join(format!(
         "workspace-{:x}.sb",
-        workspace_fence_hash(request, canonical_workspace)
+        workspace_fence_hash(request, canonical_roots)
     ));
-    let profile = macos_seatbelt_profile(canonical_workspace);
+    let profile = macos_seatbelt_profile(canonical_roots);
     fs::write(&profile_path, profile).map_err(|error| DaemonError::LocalTransport {
         operation: "workspace_write_fence",
         message: format!(
@@ -135,9 +155,9 @@ fn write_macos_seatbelt_profile(
 }
 
 #[cfg(target_os = "macos")]
-fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_workspace: &Path) -> u64 {
+fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_roots: &[PathBuf]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    canonical_workspace.hash(&mut hasher);
+    canonical_roots.hash(&mut hasher);
     request.session_id.hash(&mut hasher);
     request.agent_id.hash(&mut hasher);
     request.provider.hash(&mut hasher);
@@ -146,11 +166,16 @@ fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_workspace: &P
 }
 
 #[cfg(target_os = "macos")]
-fn macos_seatbelt_profile(canonical_workspace: &Path) -> String {
-    format!(
-        "(version 1)\n(deny file-write* (subpath \"{}\"))\n(allow default)\n",
-        seatbelt_string(canonical_workspace)
-    )
+fn macos_seatbelt_profile(canonical_roots: &[PathBuf]) -> String {
+    let mut profile = "(version 1)\n".to_string();
+    for root in canonical_roots {
+        profile.push_str(&format!(
+            "(deny file-write* (subpath \"{}\"))\n",
+            seatbelt_string(root)
+        ));
+    }
+    profile.push_str("(allow default)\n");
+    profile
 }
 
 #[cfg(target_os = "macos")]
@@ -169,6 +194,8 @@ fn seatbelt_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    #[cfg(target_os = "macos")]
+    use std::path::PathBuf;
 
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
@@ -255,5 +282,18 @@ mod tests {
             Some(MACOS_SEATBELT_BACKEND)
         );
         assert!(wrapped.process_label.ends_with(":fenced"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_denies_each_protected_root_only() {
+        let profile = super::macos_seatbelt_profile(&[
+            PathBuf::from("/repo/selected"),
+            PathBuf::from("/repo/attached"),
+        ]);
+
+        assert!(profile.contains("(deny file-write* (subpath \"/repo/selected\"))"));
+        assert!(profile.contains("(deny file-write* (subpath \"/repo/attached\"))"));
+        assert!(!profile.contains("(subpath \"/repo\")"));
     }
 }

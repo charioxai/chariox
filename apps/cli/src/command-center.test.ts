@@ -45,8 +45,9 @@ test("buildCommandCenterItems includes config subcommands", () => {
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
-  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync required"), true)
-  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync tracked"), false)
+  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync off"), true)
+  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync managed"), true)
+  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync tracked"), true)
 })
 
 test("buildCommandCenterItems includes workspace live sync subcommands", () => {
@@ -64,6 +65,9 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync targets"), true)
   assert.equal(values.has("/workspace sync conflicts"), true)
   assert.equal(values.has("/workspace sync ignore"), true)
+  assert.equal(values.has("/workspace sync off"), true)
+  assert.equal(values.has("/workspace sync managed"), true)
+  assert.equal(values.has("/workspace sync tracked"), true)
   assert.equal(values.has("/workspace sync enable managed"), true)
   assert.equal(values.has("/workspace sync enable tracked"), true)
   assert.equal(values.has("/workspace sync disable"), true)
@@ -81,7 +85,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   const modeValues = new Set(modeItems.map((item) => item.value))
   assert.equal(modeValues.has("/workspace sync mode managed"), true)
   assert.equal(modeValues.has("/workspace sync mode tracked"), true)
-  assert.equal(modeValues.has("/workspace sync mode unrestricted"), true)
+  assert.equal(modeValues.has("/workspace sync mode off"), true)
 })
 
 test("buildCommandCenterItems filters model options", () => {

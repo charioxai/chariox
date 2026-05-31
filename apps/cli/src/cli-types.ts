@@ -440,7 +440,7 @@ export type ArrobaUserConfig = {
     model?: string
     account_profile?: string
     effort?: string
-    workspace_live_sync?: "required" | "unrestricted"
+    workspace_live_sync?: "off" | "managed" | "tracked" | "required" | "unrestricted"
   }
   history?: {
     operational?: {
