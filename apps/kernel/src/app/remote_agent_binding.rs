@@ -500,10 +500,14 @@ mod tests {
         let relay_config = app
             .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
             .expect("slice worker ref should have relay config");
+        let ports = slice
+            .local_docker_ports
+            .expect("local Docker slice should have assigned ports");
 
+        let expected_relay_url = format!("ws://127.0.0.1:{}", ports.relay);
         assert_eq!(
             relay_config.relay_url.as_deref(),
-            Some("ws://127.0.0.1:53130")
+            Some(expected_relay_url.as_str())
         );
         assert_eq!(
             relay_config.relay_token.as_deref(),

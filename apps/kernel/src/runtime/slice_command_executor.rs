@@ -570,6 +570,7 @@ mod tests {
             worker_kernel_id: Some("worker-1".to_string()),
             worker_machine_id: Some("machine-slice-1".to_string()),
             relay_endpoint: None,
+            local_docker_ports: None,
             providers: Vec::new(),
             provider_auth: Vec::new(),
             display_endpoint: None,

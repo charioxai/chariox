@@ -536,6 +536,7 @@ export type SliceRecord = {
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
   relay_endpoint?: SliceRelayEndpoint | null
+  local_docker_ports?: SliceLocalDockerPorts | null
   providers?: string[]
   provider_auth?: Array<{
     provider: string
@@ -553,6 +554,17 @@ export type SliceRecord = {
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type SliceLocalDockerPorts = {
+  codex: number
+  opencode: number
+  kernel: number
+  mcp: number
+  relay: number
+  novnc: number
+  codex_range_start: number
+  opencode_range_start: number
 }
 
 export type SliceLogEntry = {

@@ -91,6 +91,8 @@ pub struct SliceRecord {
     pub worker_machine_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_endpoint: Option<SliceRelayEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_docker_ports: Option<SliceLocalDockerPorts>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,6 +108,18 @@ pub struct SliceRelayEndpoint {
     pub url: String,
     #[serde(default)]
     pub private: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceLocalDockerPorts {
+    pub codex: u16,
+    pub opencode: u16,
+    pub kernel: u16,
+    pub mcp: u16,
+    pub relay: u16,
+    pub novnc: u16,
+    pub codex_range_start: u16,
+    pub opencode_range_start: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,9 +285,18 @@ impl SliceStore {
             .worker_kernel_ref
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("slice:{}", input.name));
+        let local_docker_ports = if input.backend == SliceBackendKind::LocalDocker {
+            Some(ports::allocate_local_docker_ports_for_slice(
+                &state.records,
+            )?)
+        } else {
+            None
+        };
         let display_url = if input.display_mode == SliceDisplayMode::Headed {
             input.display_url.or_else(|| {
-                let ports = LocalDockerSlicePorts::for_slice_id(&id);
+                let ports = local_docker_ports
+                    .map(LocalDockerSlicePorts::from_assignment)
+                    .unwrap_or_else(|| LocalDockerSlicePorts::for_slice_id(&id));
                 Some(format!(
                     "http://127.0.0.1:{}/vnc.html?autoconnect=true",
                     ports.novnc
@@ -313,6 +336,7 @@ impl SliceStore {
             worker_kernel_id: None,
             worker_machine_id: None,
             relay_endpoint: None,
+            local_docker_ports,
             providers: Vec::new(),
             provider_auth: input.provider_auth,
             display_endpoint,
@@ -1073,7 +1097,7 @@ fn configure_local_docker_slice_command(
     relay: Option<LocalDockerSliceRelay>,
     options: &LocalDockerSliceOptions,
 ) {
-    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
+    let ports = LocalDockerSlicePorts::for_record(record);
     command
         .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
         .env("ARROBA_SLICE_DOCKER_IMAGE", &options.docker_image)
@@ -1191,7 +1215,7 @@ fn first_device_code(output: &str) -> Option<String> {
 }
 
 pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay {
-    let ports = LocalDockerSlicePorts::for_slice_id(&record.id);
+    let ports = LocalDockerSlicePorts::for_record(record);
     LocalDockerSliceRelay {
         relay_url: format!("ws://127.0.0.1:{}", ports.relay),
         container_relay_url: None,
@@ -1513,7 +1537,7 @@ mod tests {
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
-        let ports = LocalDockerSlicePorts::for_slice_id(&slice.id);
+        let ports = LocalDockerSlicePorts::for_record(&slice);
         let _listener = TcpListener::bind(("127.0.0.1", ports.relay)).ok();
 
         let error = ensure_local_docker_slice_ports_available(&slice)
@@ -1523,6 +1547,34 @@ mod tests {
             error.to_string().contains(&ports.relay.to_string()),
             "error should name the busy port: {error}"
         );
+    }
+
+    #[test]
+    fn slice_store_assigns_distinct_local_docker_ports_per_slice() {
+        let store = SliceStore::default();
+        let mut first_input = create_input("one");
+        first_input.display_url = None;
+        let first = store
+            .create("kernel-1", "machine-1", first_input)
+            .expect("first slice should create");
+        let second = store
+            .create("kernel-1", "machine-1", create_input("two"))
+            .expect("second slice should create");
+
+        let first_ports = first
+            .local_docker_ports
+            .expect("local Docker slices should persist assigned ports");
+        let second_ports = second
+            .local_docker_ports
+            .expect("local Docker slices should persist assigned ports");
+        assert_ne!(first_ports, second_ports);
+        assert_ne!(first_ports.relay, second_ports.relay);
+        assert!(first
+            .display_endpoint
+            .as_ref()
+            .expect("headed slice should expose display")
+            .url
+            .contains(&first_ports.novnc.to_string()));
     }
 
     #[test]
@@ -1703,8 +1755,9 @@ mod tests {
             .expect("slice should create");
 
         let relay = local_docker_private_relay(&slice);
+        let ports = LocalDockerSlicePorts::for_record(&slice);
 
-        assert_eq!(relay.relay_url, "ws://127.0.0.1:53130");
+        assert_eq!(relay.relay_url, format!("ws://127.0.0.1:{}", ports.relay));
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
     }

@@ -1248,3 +1248,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Tightened the local Workspace Live Sync command/documentation surface after the validation pass: command center now suggests `managed`, `tracked`, and `unrestricted` for `/workspace sync mode`, shell help names the legal session-mode values, and `docs/RUNNING_LOCAL.md` describes managed vs tracked semantics, `.arrobaignore`, outside-turn exclusion, and the required-policy default. Re-ran the focused CLI/kernel-client UI tests plus the full local direct/relay Workspace Live Sync drill set above; all passed, including the same-host relay restart tracked drill.
 - Added TypeScript kernel-client types for `GetDaemonHealth` and the Workspace Live Sync health fields, including reservation counts, workspace identity monitor health, external-change monitor health, and workspace coordination claims. Re-ran `pnpm --filter @arroba/kernel-client test`; 77 tests passed.
 - Brought the iOS command center into parity for explicit Workspace Live Sync mode selection by suggesting `/workspace sync mode managed`, `/workspace sync mode tracked`, and `/workspace sync mode unrestricted`. Re-ran `swift test --package-path apps/ios/ArrobaPackage`; 65 tests passed.
+
+### Slice local Docker port assignment hardening
+
+- Local Docker slices now persist a per-slice host port assignment in the slice record instead of relying on fixed `slice-N` derived ports. Creation skips reserved and currently busy host ports, and provisioning, display URLs, relay config, and log/diagnostic paths use the stored assignment.
+- Bumped the local daemon protocol to 76 and extended Rust, kernel-client, CLI, and web SliceRecord types with `local_docker_ports`.
+- Added focused coverage for distinct persisted local Docker port assignments, busy-port reporting against the assigned port set, private relay config, and the versioned slice record protocol shape.
