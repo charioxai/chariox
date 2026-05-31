@@ -1278,3 +1278,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Split the local Docker slice runner, provider-login parser, relay URL mapping, log collection, port checks, and provisioner command wiring out of `slice.rs` into `slice/local_docker.rs`. The public `crate::slice::*` exports remain stable, while the slice façade dropped from 1015 lines to 420 lines.
 - Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
+
+### Slice command provider-auth refactor
+
+- Split slice provider-auth normalization, provider-family matching, scoped filtering, and alias-preserving merge policy out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/provider_auth.rs`. The command executor now delegates auth policy instead of owning it inline.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.

@@ -1,3 +1,5 @@
+mod provider_auth;
+
 use tokio::time::{sleep, Duration};
 
 use crate::error::DaemonError;
@@ -8,6 +10,11 @@ use crate::local::{
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+
+use provider_auth::{
+    merge_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
+    slice_auth_summary_matches_provider,
+};
 
 pub(crate) async fn execute_slice_request(
     runtime_state: &KernelRuntimeState,
@@ -415,74 +422,6 @@ fn ensure_slice_has_no_active_agents(
             slice.agent_ids.len()
         ),
     })
-}
-
-fn normalized_slice_provider(provider: &str) -> Result<String, DaemonError> {
-    let provider = provider.trim();
-    if provider.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "slice.auth.provider",
-            message: "provider must not be empty".to_string(),
-        });
-    }
-    match provider {
-        "all" | "codex" | "opencode" | "claude" => Ok(provider.to_string()),
-        value if value.starts_with("opencode:") && value.len() > "opencode:".len() => {
-            Ok(value.to_string())
-        }
-        _ => Err(DaemonError::LocalTransport {
-            operation: "slice.auth.provider",
-            message: format!("unsupported slice provider `{provider}`"),
-        }),
-    }
-}
-
-fn scoped_provider_auth_summaries(
-    provider: &str,
-    summaries: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
-) -> Vec<crate::slice_provider_auth::SliceProviderAuthSummary> {
-    summaries
-        .into_iter()
-        .filter(|summary| slice_auth_summary_matches_provider(&summary.provider, provider))
-        .collect()
-}
-
-fn merge_scoped_provider_auth(
-    existing: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
-    provider: &str,
-    imported: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
-) -> Vec<crate::slice_provider_auth::SliceProviderAuthSummary> {
-    let aliases = existing
-        .iter()
-        .filter(|summary| slice_auth_summary_matches_provider(&summary.provider, provider))
-        .filter_map(|summary| {
-            summary
-                .alias
-                .as_ref()
-                .map(|alias| (summary.provider.clone(), alias.clone()))
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let mut merged = existing
-        .into_iter()
-        .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, provider))
-        .collect::<Vec<_>>();
-    merged.extend(imported.into_iter().map(|mut summary| {
-        if summary.alias.is_none() {
-            summary.alias = aliases.get(&summary.provider).cloned();
-        }
-        summary
-    }));
-    merged
-}
-
-fn slice_auth_summary_matches_provider(summary_provider: &str, requested_provider: &str) -> bool {
-    if requested_provider == "all" {
-        return true;
-    }
-    if requested_provider == "opencode" {
-        return summary_provider == "opencode" || summary_provider.starts_with("opencode:");
-    }
-    summary_provider == requested_provider
 }
 
 pub(crate) async fn execute_start_slice_provider_login_request(
