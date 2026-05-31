@@ -207,6 +207,12 @@ impl ArrobaUserConfig {
                     value,
                 )?)
             }
+            "slices.linux.allow_unconfined_seccomp" => {
+                self.slices.linux.allow_unconfined_seccomp = Some(parse_config_bool(
+                    "slices.linux.allow_unconfined_seccomp",
+                    &value,
+                )?)
+            }
             "slices.linux.memory_mb" => {
                 self.slices.linux.memory_mb =
                     Some(parse_config_u32("slices.linux.memory_mb", &value, true)?)
@@ -356,6 +362,9 @@ impl ArrobaUserConfig {
             "slices.linux.docker_image" => self.slices.linux.docker_image = None,
             "slices.linux.build_image" => self.slices.linux.build_image = None,
             "slices.linux.extension_dockerfile" => self.slices.linux.extension_dockerfile = None,
+            "slices.linux.allow_unconfined_seccomp" => {
+                self.slices.linux.allow_unconfined_seccomp = None
+            }
             "slices.linux.memory_mb" => self.slices.linux.memory_mb = None,
             "slices.linux.cpus" => self.slices.linux.cpus = None,
             "slices.linux.idle_timeout_minutes" => self.slices.linux.idle_timeout_minutes = None,

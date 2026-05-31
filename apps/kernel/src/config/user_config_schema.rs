@@ -89,6 +89,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("slices.linux.docker_image", "string", &[], true, true, "none", "live", "Docker image tag used for new Linux slices."),
         entry("slices.linux.build_image", "enum", &["auto", "always", "never"], true, true, "none", "live", "Linux slice image build policy."),
         entry("slices.linux.extension_dockerfile", "string", &[], true, true, "none", "live", "Optional user Dockerfile layered on top of the Linux slice image."),
+        entry("slices.linux.allow_unconfined_seccomp", "bool", &["true", "false"], true, true, "none", "live", "Allow local Docker slices to disable Docker's seccomp profile for Chromium sandbox compatibility."),
         entry("slices.linux.memory_mb", "u32", &[], true, true, "none", "live", "Optional Docker memory limit for new Linux slice containers."),
         entry("slices.linux.cpus", "string", &[], true, true, "none", "live", "Optional Docker CPU limit for new Linux slice containers."),
         entry("slices.linux.idle_timeout_minutes", "u32", &[], true, true, "no_runtime_effect", "unwired", "Future idle-stop timeout for Linux slices."),

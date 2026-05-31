@@ -1254,3 +1254,8 @@ Chronological notes to preserve execution context between contributors/agents.
 - Local Docker slices now persist a per-slice host port assignment in the slice record instead of relying on fixed `slice-N` derived ports. Creation skips reserved and currently busy host ports, and provisioning, display URLs, relay config, and log/diagnostic paths use the stored assignment.
 - Bumped the local daemon protocol to 76 and extended Rust, kernel-client, CLI, and web SliceRecord types with `local_docker_ports`.
 - Added focused coverage for distinct persisted local Docker port assignments, busy-port reporting against the assigned port set, private relay config, and the versioned slice record protocol shape.
+
+### Slice Docker seccomp default hardening
+
+- Added `slices.linux.allow_unconfined_seccomp` as an explicit advanced config flag. Local Docker slices keep Docker's default seccomp profile unless the home user opts in, and the kernel now passes `ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP=0|1` to the provisioner from typed config.
+- Updated config parsing/schema coverage and protocol notes so clients can present the flag as a security compatibility setting rather than an implicit slice default.

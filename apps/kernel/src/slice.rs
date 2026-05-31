@@ -196,6 +196,7 @@ pub struct LocalDockerSliceOptions {
     pub docker_image: String,
     pub build_image: SliceImageBuildPolicy,
     pub extension_dockerfile: Option<PathBuf>,
+    pub allow_unconfined_seccomp: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
     pub screen_width: u32,
@@ -216,6 +217,7 @@ impl LocalDockerSliceOptions {
                 .extension_dockerfile
                 .as_deref()
                 .map(expand_user_path_for_slice),
+            allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
             memory_mb: linux.memory_mb,
             cpus: linux.cpus.clone(),
             screen_width: linux.screen_width.unwrap_or(1280),
@@ -1129,6 +1131,14 @@ fn configure_local_docker_slice_command(
         .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
         .env("ARROBA_SLICE_START_RUNTIME", "1")
         .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
+        .env(
+            "ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP",
+            if options.allow_unconfined_seccomp {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "0.0.0.0")
         .env(
             "ARROBA_SLICE_DAEMON_ALIAS",
@@ -1591,6 +1601,7 @@ mod tests {
             docker_image: "arroba-slice-linux:test".to_string(),
             build_image: SliceImageBuildPolicy::Never,
             extension_dockerfile: None,
+            allow_unconfined_seccomp: false,
             memory_mb: None,
             cpus: None,
             screen_width: 1280,

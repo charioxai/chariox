@@ -776,9 +776,10 @@ root = "~/.arroba/slices-dev"
 
 [slices.linux]
 docker_image = "arroba-slice-linux-custom:local"
-build_image = "never"
-extension_dockerfile = "~/.arroba/slices/extensions/Dockerfile"
-memory_mb = 4096
+	build_image = "never"
+	extension_dockerfile = "~/.arroba/slices/extensions/Dockerfile"
+	allow_unconfined_seccomp = true
+	memory_mb = 4096
 cpus = "2.5"
 idle_timeout_minutes = 45
 screen_width = 1440
@@ -798,6 +799,7 @@ screen_height = 900
             config.slices.linux.build_image,
             Some(SliceImageBuildPolicy::Never)
         );
+        assert_eq!(config.slices.linux.allow_unconfined_seccomp, Some(true));
         assert_eq!(config.slices.linux.memory_mb, Some(4096));
         assert_eq!(config.slices.linux.cpus.as_deref(), Some("2.5"));
         assert_eq!(config.slices.linux.screen_width, Some(1440));
