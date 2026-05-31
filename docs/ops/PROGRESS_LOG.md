@@ -1268,3 +1268,8 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Slice model refactor
 
 - Split the serialized slice model and input/action structs out of `slice.rs` into `slice/model.rs`, keeping protocol shapes stable while reducing the mixed-responsibility slice module. The store, local Docker runner, auth, display, and remaining diagnostics code are still candidates for follow-up extraction.
+
+### Slice store refactor
+
+- Split slice record persistence, operation guards, lookup, worktree scoping, lifecycle attachment, provider-auth summary mutation, and restart reconciliation out of `slice.rs` into `slice/store.rs`. The top-level slice module now keeps the local Docker runner and public re-exports, reducing mixed responsibilities without changing the slice API.
+- Re-ran `cargo fmt --manifest-path apps/kernel/Cargo.toml --check` and `cargo test --manifest-path apps/kernel/Cargo.toml slice -- --nocapture`; the focused slice suite passed with 43 tests.
