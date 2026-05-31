@@ -78,7 +78,7 @@ function parseArgs(argv) {
     else if (arg === '--positive-only') options.positiveOnly = true
     else if (arg === '--mode') {
       options.mode = argv[++i]
-      if (!['managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be managed or tracked')
+      if (!['off', 'managed', 'tracked'].includes(options.mode)) throw new Error('--mode must be off, managed, or tracked')
     }
     else if (arg === '--managed-target-count') options.managedTargetCount = Number(argv[++i])
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
@@ -103,6 +103,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workspace-live-sync-drill.mjs [options]',
     '',
     'Runs a live workspace live sync provider drill with isolated daemon/session/workspace lifecycle:',
+    '- off: agents write directly in the selected repo and a sibling repo; both writes must land',
     '- positive: agents read seed.txt and exercise Arroba write/edit/patch/move/delete tools',
     '- negative: agents are asked to write directly without Arroba; direct output files must not appear',
     '- collision: two agents attempt the same text edit area; exactly one write may land',
@@ -121,7 +122,7 @@ function printHelp() {
     '  --history-dir PATH (session history dir when using --no-spawn-daemon)',
     '  --keep-artifacts-on-failure',
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
-    '  --mode managed|tracked',
+    '  --mode off|managed|tracked',
     '  --managed-target-count COUNT (managed mode only; attach and validate target workspaces)',
     '  --target-branch BRANCH (tracked mode target branch; use a non-main value to drill explicit cross-branch links)',
     '  --tracked-target-count COUNT (tracked mode only; attach and validate multiple target workspaces)',
@@ -1934,8 +1935,9 @@ async function main() {
   // allow TMPDIR writes, which would make the negative direct-write probe invalid.
   const rootDir = options.rootDir ?? path.join(cliRoot, 'target', 'live-workspace-live-sync-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
+  const siblingWorkspace = path.join(rootDir, 'sibling-repo')
   const targetWorkspace = path.join(rootDir, 'target-workspace')
-  const targetCount = options.mode === 'tracked' ? options.trackedTargetCount : options.managedTargetCount
+  const targetCount = options.mode === 'off' ? 0 : (options.mode === 'tracked' ? options.trackedTargetCount : options.managedTargetCount)
   const targetWorkspaces = [
     targetWorkspace,
     ...Array.from(
@@ -1959,6 +1961,9 @@ async function main() {
     }
   } else {
     await initGitWorktree(workspace)
+    await mkdir(siblingWorkspace, { recursive: true })
+    await writeFile(path.join(siblingWorkspace, 'README.md'), 'sibling repo\n', 'utf8')
+    await initGitWorktree(siblingWorkspace)
     for (const target of targetWorkspaces) {
       await initManagedTargetWorkspace(target, options.providers)
     }
@@ -1967,6 +1972,7 @@ async function main() {
     await runAfterFixtureCommand(options.afterFixtureCommand, {
       rootDir,
       workspace,
+      siblingWorkspace,
       targetWorkspace,
       targetWorkspaces,
       mode: options.mode,
@@ -2028,7 +2034,7 @@ async function main() {
   try {
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
-    if (setWorkspaceLiveSyncModeRequest) {
+    if (setWorkspaceLiveSyncModeRequest && options.mode !== 'off') {
       await client.send(setWorkspaceLiveSyncModeRequest(session.id, options.mode))
     }
     const attachment = unwrap(
@@ -2069,6 +2075,84 @@ async function main() {
           aliasSuffix: 'target-origin',
         })
       : []
+
+    if (options.mode === 'off') {
+      const completionSinceMs = Date.now()
+      const requiredFiles = []
+      const directFiles = []
+      for (const { provider, agent } of agents) {
+        const directFile = path.join(outputsDir, `${provider}-direct.txt`)
+        const siblingFile = path.join(siblingWorkspace, `${provider}-sibling.txt`)
+        requiredFiles.push(directFile, siblingFile)
+        directFiles.push({ provider, directFile, siblingFile })
+        await client.send(submitPromptRequest(
+          session.id,
+          attachment.id,
+          agent.id,
+          [
+            'This is a Workspace Live Sync off-mode drill.',
+            'Use only direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+            `Create outputs/${provider}-direct.txt in the current repository with exactly "${provider}-off-selected-root\\n".`,
+            `Create ../sibling-repo/${provider}-sibling.txt with exactly "${provider}-off-sibling-root\\n".`,
+            `After both direct writes complete, reply exactly ${provider.toUpperCase()}_OFF_DIRECT_WRITES_DONE and nothing else.`,
+          ].join(' '),
+          [],
+        ))
+      }
+      await waitForCompletionsAndFiles({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: agents.length,
+        completionSinceMs,
+        requiredFiles,
+        forbiddenFiles: [],
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        historyDir,
+      })
+      const status = unwrapVariant(await client.send(getWorkspaceLiveSyncStatusRequest(session.id)), 'WorkspaceLiveSyncStatus').status
+      const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+      const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+      console.log(JSON.stringify({
+        status: 'ok',
+        mode: 'off-workspace-live-sync-live-drill',
+        kernelUrl,
+        machineRef: options.machineRef,
+        workspace,
+        siblingWorkspace,
+        providers: options.providers,
+        model: options.model,
+        providerModels: Object.fromEntries(options.providers.map((provider) => [
+          provider,
+          modelForProvider(provider, options),
+        ])),
+        durationMs: Date.now() - startedAt,
+        agents: agents.map(({ provider, agent }) => ({
+          id: agent.id,
+          alias: agent.alias,
+          provider,
+        })),
+        files: await Promise.all(directFiles.map(async ({ provider, directFile, siblingFile }) => ({
+          provider,
+          directContent: await readFile(directFile, 'utf8'),
+          siblingContent: await readFile(siblingFile, 'utf8'),
+        }))),
+        workspaceLiveSyncStatus: status,
+        completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
+        terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
+        providerProcesses: processes.map((process) => ({
+          processId: process.process_id,
+          provider: process.provider,
+          pid: process.pid ?? null,
+          ownerRunIds: process.owner_provider_run_ids || [],
+        })),
+        focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
+      }, null, 2))
+      succeeded = true
+      return
+    }
 
     if (options.mode === 'tracked') {
       await runTrackedWorkspaceLiveSyncDrill({
