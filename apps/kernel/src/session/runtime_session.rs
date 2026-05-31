@@ -42,6 +42,13 @@ pub struct SessionCollaborationAgentCounts {
     pub collaborator_count: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOutputReadState {
+    latest_output_sequence: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    seen_sequences_by_user: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
@@ -75,6 +82,8 @@ pub struct RuntimeSession {
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
@@ -132,6 +141,7 @@ impl RuntimeSession {
             attachment_ids: BTreeSet::new(),
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
                 format!("worktree-assignment-{}-1", id),
@@ -327,6 +337,44 @@ impl RuntimeSession {
 
     pub fn redacted_for_user(self, user_id: &str) -> Self {
         projection::redacted_for_user(self, user_id)
+    }
+
+    pub fn note_agent_output_sequence(&mut self, agent_id: &str, sequence: u64) -> bool {
+        if sequence == 0 {
+            return false;
+        }
+        let state = self
+            .agent_output_read_state
+            .entry(agent_id.to_string())
+            .or_default();
+        if sequence <= state.latest_output_sequence {
+            return false;
+        }
+        state.latest_output_sequence = sequence;
+        true
+    }
+
+    pub fn acknowledge_agent_output_seen(&mut self, user_id: &str, agent_id: &str) -> bool {
+        let Some(state) = self.agent_output_read_state.get_mut(agent_id) else {
+            return false;
+        };
+        let previous = state
+            .seen_sequences_by_user
+            .insert(user_id.to_string(), state.latest_output_sequence)
+            .unwrap_or(0);
+        previous != state.latest_output_sequence
+    }
+
+    pub fn agent_has_unread_output(&self, user_id: &str, agent_id: &str) -> bool {
+        let Some(state) = self.agent_output_read_state.get(agent_id) else {
+            return false;
+        };
+        state.latest_output_sequence
+            > state
+                .seen_sequences_by_user
+                .get(user_id)
+                .copied()
+                .unwrap_or(0)
     }
 
     pub fn attachment_ids(&self) -> &BTreeSet<String> {

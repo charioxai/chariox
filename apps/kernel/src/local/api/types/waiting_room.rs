@@ -67,6 +67,8 @@ pub struct WaitingRoomSessionActivitySummary {
     pub active_prompt_count: usize,
     pub queued_prompt_count: usize,
     pub error_agent_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub unread_idle_agent_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +77,8 @@ pub struct WaitingRoomPublicItemActivitySummary {
     pub active_prompt_count: usize,
     pub queued_prompt_count: usize,
     pub error: bool,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub unread_idle_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

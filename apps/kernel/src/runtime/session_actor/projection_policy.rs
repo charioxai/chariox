@@ -180,6 +180,7 @@ pub(super) fn projected_session_absence_response(
     let session_id = match request {
         LocalDaemonRequest::AttachToSession(request) => &request.session_id,
         LocalDaemonRequest::FocusAgent(request) => &request.session_id,
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => &request.session_id,
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
         LocalDaemonRequest::AliasSession(request) => &request.session_id,
         LocalDaemonRequest::AliasAgent(request) => &request.session_id,
@@ -195,15 +196,20 @@ pub(super) fn projected_session_absence_response(
         }
         return None;
     };
-    if let LocalDaemonRequest::FocusAgent(request) = request {
-        if !session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == request.agent_id)
-        {
+    let agent_presence_check = match request {
+        LocalDaemonRequest::FocusAgent(request) => {
+            Some((request.session_id.as_str(), request.agent_id.as_str()))
+        }
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
+            Some((request.session_id.as_str(), request.agent_id.as_str()))
+        }
+        _ => None,
+    };
+    if let Some((session_id, agent_id)) = agent_presence_check {
+        if !session.agents().iter().any(|agent| agent.id() == agent_id) {
             return Some(Err(DaemonError::AgentNotInSession {
-                session_id: request.session_id.clone(),
-                agent_id: request.agent_id.clone(),
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
             }));
         }
     }
@@ -219,6 +225,9 @@ pub(super) fn session_id_for_projection_refresh(
             Some(attachment.session_id().to_string())
         }
         Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
+        Ok(LocalDaemonResponse::AgentOutputSeenAcknowledged { session_id, .. }) => {
+            Some(session_id.clone())
+        }
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentSpawned { agent })
         | Ok(LocalDaemonResponse::AgentAliased { agent, .. })

@@ -90,5 +90,6 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .workflow_publications
         .retain(|publication| publication.created_by_user_id() == user_id);
+    session.agent_output_read_state.clear();
     session
 }

@@ -124,6 +124,17 @@ impl KernelRuntimeState {
         self.owned.focus_agent(session_id, agent_id, caller_user_id)
     }
 
+    pub(crate) async fn acknowledge_agent_output_seen(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.owned
+            .session_store
+            .acknowledge_agent_output_seen(session_id, agent_id, caller_user_id)
+    }
+
     pub(crate) async fn cycle_agent_focus(
         &self,
         session_id: &str,

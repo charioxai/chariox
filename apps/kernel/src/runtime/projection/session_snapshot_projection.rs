@@ -49,6 +49,8 @@ pub struct AgentRuntimeActivity {
     pub status: AgentRuntimeStatus,
     pub prompt_status: AgentPromptRuntimeStatus,
     pub busy: bool,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub unread_idle_output: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<AgentActiveTurnProjection>,
 }
@@ -85,6 +87,7 @@ impl SessionSnapshotProjection {
             |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
             &prompt_activity,
             &active_turns,
+            None,
         );
         Ok(Self {
             metadata: ProjectionMetadata::new(3, last_event_id),
@@ -100,6 +103,7 @@ pub(crate) fn agent_activity_for_session_projection(
     provider_run_for_agent: impl Fn(&str) -> Option<RuntimeProviderRun>,
     prompt_activity: &BTreeMap<String, ActivePromptState>,
     active_turns: &BTreeMap<String, ActiveTurnState>,
+    unread_for_user_id: Option<&str>,
 ) -> BTreeMap<String, AgentRuntimeActivity> {
     let mut activity = BTreeMap::new();
 
@@ -183,6 +187,10 @@ pub(crate) fn agent_activity_for_session_projection(
             agent.id().to_string(),
             AgentRuntimeActivity {
                 busy: status == AgentRuntimeStatus::Working,
+                unread_idle_output: status == AgentRuntimeStatus::Idle
+                    && unread_for_user_id.is_some_and(|user_id| {
+                        session.agent_has_unread_output(user_id, agent.id())
+                    }),
                 status,
                 prompt_status,
                 active_turn,

@@ -138,6 +138,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::FocusAgent(request) => {
                 self.store.focus_agent(request, caller_user_id).await
             }
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
+                self.store
+                    .acknowledge_agent_output_seen(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CycleAgentFocus(request) => {
                 self.store.cycle_agent_focus(request, caller_user_id).await
             }

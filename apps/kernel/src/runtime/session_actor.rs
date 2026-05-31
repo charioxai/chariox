@@ -23,6 +23,7 @@ impl SessionActor {
                 | LocalDaemonRequest::AttachToSession(_)
                 | LocalDaemonRequest::DetachFromSession(_)
                 | LocalDaemonRequest::FocusAgent(_)
+                | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
                 | LocalDaemonRequest::SendTerminalInput(_)

@@ -1,5 +1,5 @@
 use crate::app::DaemonApp;
-use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
+use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::prompt_transcript::render_prompt_transcript;
 use crate::session::PromptAttachment;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
@@ -146,6 +146,15 @@ impl DaemonApp {
         let context = self.history_event_context(entry);
         match self.operational_history.append_transcript(entry, context) {
             Ok(event) => {
+                if is_unread_output_history_entry(entry) {
+                    if let Some(agent_id) = entry.agent_id.as_deref() {
+                        let _ = self.sessions.note_agent_output_sequence(
+                            entry.session_id.as_str(),
+                            agent_id,
+                            event.sequence,
+                        );
+                    }
+                }
                 if self.history_archive_enabled() {
                     self.enqueue_history_archive_event(&event);
                 }
@@ -289,6 +298,17 @@ impl DaemonApp {
             &bytes,
         );
     }
+}
+
+fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
+    matches!(
+        entry.kind,
+        SessionHistoryEntryKind::ProviderOutput
+            | SessionHistoryEntryKind::ProviderReasoning
+            | SessionHistoryEntryKind::ProviderTool
+            | SessionHistoryEntryKind::ProviderError
+            | SessionHistoryEntryKind::Notice
+    )
 }
 
 #[cfg(test)]

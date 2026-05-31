@@ -32,15 +32,25 @@ pub(crate) fn projected_session_state_response(
                 user_id: caller_user_id.to_string(),
             }));
         }
-        let session = session.redacted_for_user(caller_user_id);
+        let agent_activity = projected_agent_activity(
+            &session,
+            provider_run_projection,
+            prompt_activity,
+            active_turns,
+            Some(caller_user_id),
+        );
+        let redacted_session = session.clone().redacted_for_user(caller_user_id);
+        let visible_agent_ids = redacted_session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
         return Some(Ok(LocalDaemonResponse::SessionState {
-            agent_activity: projected_agent_activity(
-                &session,
-                provider_run_projection,
-                prompt_activity,
-                active_turns,
-            ),
-            session,
+            agent_activity: agent_activity
+                .into_iter()
+                .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
+                .collect(),
+            session: redacted_session,
         }));
     }
     if session_projection.has_warmed_list() {
@@ -159,6 +169,7 @@ pub(crate) fn projected_agent_activity(
     provider_run_projection: &ProviderRunProjectionStore,
     prompt_activity: &PromptActivityStore,
     active_turns: &ActiveTurnStore,
+    unread_for_user_id: Option<&str>,
 ) -> BTreeMap<String, AgentRuntimeActivity> {
     let prompt_activity = prompt_activity.read();
     let active_turns = active_turns.snapshot();
@@ -167,6 +178,7 @@ pub(crate) fn projected_agent_activity(
         |agent_id| provider_run_projection.get_for_agent(session.id(), agent_id),
         &prompt_activity,
         &active_turns,
+        unread_for_user_id,
     )
 }
 

@@ -103,6 +103,9 @@ impl SessionProjectionRefresh {
                 | LocalDaemonResponse::AgentFocused { agent } => {
                     vec![agent.session_id().to_string()]
                 }
+                LocalDaemonResponse::AgentOutputSeenAcknowledged { session_id, .. } => {
+                    vec![session_id.clone()]
+                }
                 LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
                     vec![agent.session_id().to_string()]
                 }
@@ -117,6 +120,7 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
         | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::SpawnAgent(_)
         | LocalDaemonRequest::AliasAgent(_)

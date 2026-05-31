@@ -138,18 +138,31 @@ impl KernelRuntimeOwnedState {
             }),
             ..crate::history::HistoryEventTurnContext::default()
         };
-        if let Err(error) = self
+        match self
             .operational_history_store
             .append_transcript(entry, context)
         {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append operational history",
-                serde_json::json!({
-                    "session_id": entry.session_id.as_str(),
-                    "error": error.to_string(),
-                }),
-            );
+            Ok(event) => {
+                if is_unread_output_history_entry(entry) {
+                    if let Some(agent_id) = entry.agent_id.as_deref() {
+                        let _ = self.session_store.note_agent_output_sequence(
+                            entry.session_id.as_str(),
+                            agent_id,
+                            event.sequence,
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history",
+                    serde_json::json!({
+                        "session_id": entry.session_id.as_str(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -228,4 +241,15 @@ impl KernelRuntimeOwnedState {
         self.attachment_store
             .filter_attachment_ids_for_user(recipient_attachment_ids, agent.owner_user_id())
     }
+}
+
+fn is_unread_output_history_entry(entry: &crate::history::SessionHistoryEntry) -> bool {
+    matches!(
+        entry.kind,
+        crate::history::SessionHistoryEntryKind::ProviderOutput
+            | crate::history::SessionHistoryEntryKind::ProviderReasoning
+            | crate::history::SessionHistoryEntryKind::ProviderTool
+            | crate::history::SessionHistoryEntryKind::ProviderError
+            | crate::history::SessionHistoryEntryKind::Notice
+    )
 }

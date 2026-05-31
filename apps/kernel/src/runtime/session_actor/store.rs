@@ -1,8 +1,9 @@
 use crate::error::DaemonError;
 use crate::local::{
-    AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
-    DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonResponse,
-    RespondToInteractionRequest, UpdateSessionConfigRequest,
+    AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, AttachToSessionRequest,
+    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
+    FocusAgentRequest, LocalDaemonResponse, RespondToInteractionRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -131,6 +132,26 @@ impl SessionRuntimeStore {
             .focus_agent(&request.session_id, &request.agent_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocused { agent });
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn acknowledge_agent_output_seen(
+        &self,
+        request: AcknowledgeAgentOutputSeenRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let agent_id = request.agent_id.clone();
+        let result = self
+            .state
+            .acknowledge_agent_output_seen(&request.session_id, &request.agent_id, &caller_user_id)
+            .await
+            .map(|session| LocalDaemonResponse::AgentOutputSeenAcknowledged {
+                session_id: session.id().to_string(),
+                agent_id,
+            });
         self.with_session_projection_action_result(result).await
     }
 

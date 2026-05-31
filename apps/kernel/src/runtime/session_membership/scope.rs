@@ -165,6 +165,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::FocusAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

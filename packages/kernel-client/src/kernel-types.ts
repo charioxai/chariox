@@ -169,6 +169,7 @@ export type WaitingRoomSessionActivitySummary = {
   active_prompt_count: number
   queued_prompt_count: number
   error_agent_count: number
+  unread_idle_agent_count?: number
 }
 
 export type WaitingRoomPublicItemActivitySummary = {
@@ -176,6 +177,7 @@ export type WaitingRoomPublicItemActivitySummary = {
   active_prompt_count: number
   queued_prompt_count: number
   error: boolean
+  unread_idle_output?: boolean
 }
 
 export type WaitingRoomPublicAgentSummary = {
@@ -479,6 +481,7 @@ export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
+  unread_idle_output?: boolean
   active_turn?: AgentActiveTurn | null
 }
 
@@ -1078,7 +1081,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 73
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 74
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

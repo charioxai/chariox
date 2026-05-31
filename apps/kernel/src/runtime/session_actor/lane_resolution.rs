@@ -18,6 +18,9 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::FocusAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CycleAgentFocus(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

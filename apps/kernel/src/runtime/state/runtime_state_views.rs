@@ -44,6 +44,7 @@ impl KernelRuntimeState {
             },
             &prompt_activity,
             &active_turns,
+            None,
         )
     }
 

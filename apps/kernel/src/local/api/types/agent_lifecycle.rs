@@ -48,6 +48,12 @@ pub struct FocusAgentRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcknowledgeAgentOutputSeenRequest {
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CycleAgentFocusRequest {
     pub session_id: String,
 }

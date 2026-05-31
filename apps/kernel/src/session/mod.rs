@@ -62,3 +62,7 @@ pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 pub(crate) fn is_false(value: &bool) -> bool {
     !*value
 }
+
+pub(crate) fn is_zero(value: &usize) -> bool {
+    *value == 0
+}

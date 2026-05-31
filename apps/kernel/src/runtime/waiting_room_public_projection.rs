@@ -25,8 +25,9 @@ pub(crate) fn build_waiting_room_public_snapshot(
     relay_status: RelayStatus,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
+    caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-    let sessions = waiting_room_session_summaries(runtime_sessions);
+    let sessions = waiting_room_session_summaries(runtime_sessions, caller_user_id);
     let launch_target = infer_waiting_room_launch_target();
     let inventory_version = waiting_room_inventory_version(
         &sessions,
@@ -104,11 +105,13 @@ fn waiting_room_inventory_version(
 
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
+    caller_user_id: &str,
 ) -> Vec<WaitingRoomPublicSessionSummary> {
     let mut workspace_labels: HashMap<String, Option<String>> = HashMap::new();
     let mut worktree_labels: HashMap<(String, String), Option<String>> = HashMap::new();
     sessions
         .into_iter()
+        .filter(|session| session.has_member(caller_user_id))
         .map(|session| {
             let workspace_id = session.workspace_id().to_string();
             let worktree_id = session.worktree_id().to_string();
@@ -135,11 +138,12 @@ fn waiting_room_session_summaries(
                 last_used_at_ms: session.last_used_at_ms(),
                 status: session.status(),
                 connected_cli_count: session.attachment_ids().len(),
-                activity: waiting_room_session_activity_summary(&session),
+                activity: waiting_room_session_activity_summary(&session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
                     &session,
                     workspace_label.clone(),
                     &mut worktree_labels,
+                    caller_user_id,
                 ),
                 workflows: waiting_room_public_workflow_summaries(&session),
             }
@@ -151,6 +155,7 @@ fn waiting_room_public_agent_summaries(
     session: &RuntimeSession,
     workspace_label: Option<String>,
     worktree_labels: &mut HashMap<(String, String), Option<String>>,
+    caller_user_id: &str,
 ) -> Vec<WaitingRoomPublicAgentSummary> {
     let mut agents = session
         .agents()
@@ -189,7 +194,7 @@ fn waiting_room_public_agent_summaries(
                 directory: Some(workspace_id.clone()),
                 worktree_label,
                 extension_grants: agent.extension_grants().to_vec(),
-                activity: waiting_room_agent_activity_summary(session, agent),
+                activity: waiting_room_agent_activity_summary(session, agent, caller_user_id),
             }
         })
         .collect::<Vec<_>>();
@@ -271,7 +276,8 @@ mod tests {
         );
         session.add_attachment("cli-1".to_string());
 
-        let summaries = waiting_room_session_summaries(vec![session]);
+        let summaries =
+            waiting_room_session_summaries(vec![session], crate::session::DEFAULT_LOCAL_USER_ID);
 
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
@@ -312,6 +318,7 @@ mod tests {
                 revoked: false,
             }],
             42,
+            crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .expect("snapshot builds");
 

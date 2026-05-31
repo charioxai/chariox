@@ -159,6 +159,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
+            LocalRequestMetadata::new("agent.output.seen", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::CycleAgentFocus(request) => {
             LocalRequestMetadata::new("agent.cycle_focus", Interactive).session(&request.session_id)
         }
@@ -473,6 +478,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ResizeTerminal(_)
         | LocalDaemonRequest::SendTerminalInput(_)
         | LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
         | LocalDaemonRequest::CycleAgentFocus(_)
         | LocalDaemonRequest::EndSession(_)
         | LocalDaemonRequest::DeleteSession(_)

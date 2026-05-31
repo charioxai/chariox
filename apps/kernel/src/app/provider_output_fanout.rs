@@ -2,7 +2,8 @@ use crate::agent::AgentServiceStore;
 use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
 use crate::history::{
-    HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore,
+    HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryStore,
 };
 use crate::provider::ProviderProcessServiceStore;
 use crate::runtime::projection::SessionHistoryProjectionStore;
@@ -201,6 +202,15 @@ impl ProviderOutputFanout {
                 .append_transcript(&entry, context)
             {
                 Ok(event) => {
+                    if is_unread_output_history_entry(&entry) {
+                        if let Some(agent_id) = entry.agent_id.as_deref() {
+                            let _ = self.session_store.note_agent_output_sequence(
+                                session_id,
+                                agent_id,
+                                event.sequence,
+                            );
+                        }
+                    }
                     if self.archive_enabled {
                         if let Err(error) = self
                             .operational_history_store
@@ -231,4 +241,15 @@ impl ProviderOutputFanout {
             self.history_projection.append(entry);
         }
     }
+}
+
+fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
+    matches!(
+        entry.kind,
+        SessionHistoryEntryKind::ProviderOutput
+            | SessionHistoryEntryKind::ProviderReasoning
+            | SessionHistoryEntryKind::ProviderTool
+            | SessionHistoryEntryKind::ProviderError
+            | SessionHistoryEntryKind::Notice
+    )
 }

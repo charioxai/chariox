@@ -341,6 +341,7 @@ fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
         LocalDaemonResponse::AgentSpawned { .. } => "AgentSpawned",
         LocalDaemonResponse::AgentDestroyed { .. } => "AgentDestroyed",
         LocalDaemonResponse::AgentFocused { .. } => "AgentFocused",
+        LocalDaemonResponse::AgentOutputSeenAcknowledged { .. } => "AgentOutputSeenAcknowledged",
         LocalDaemonResponse::AgentFocusCycled { .. } => "AgentFocusCycled",
         LocalDaemonResponse::AgentAliased { .. } => "AgentAliased",
         LocalDaemonResponse::AgentConfigUpdated { .. } => "AgentConfigUpdated",

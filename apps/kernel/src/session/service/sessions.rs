@@ -211,6 +211,52 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn note_agent_output_sequence(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        sequence: u64,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "note agent output")?;
+        session.note_agent_output_sequence(agent_id, sequence);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn acknowledge_agent_output_seen(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        user_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "acknowledge agent output")?;
+        let Some(agent_owner_user_id) = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.owner_user_id().to_string())
+        else {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        };
+        let collaboration_level = session
+            .collaboration_level_for_user(user_id)
+            .unwrap_or(crate::session::CollaborationLevel::Private);
+        if agent_owner_user_id != user_id && !collaboration_level.can_view_agent_trace() {
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: user_id.to_string(),
+                owner_user_id: agent_owner_user_id,
+                resource: agent_id.to_string(),
+                operation: "acknowledge agent output",
+            });
+        }
+        session.acknowledge_agent_output_seen(user_id, agent_id);
+        session.touch();
+        Ok(session.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn submit_prompt(
         &mut self,

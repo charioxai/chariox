@@ -40,7 +40,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 73;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 74;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -220,6 +220,7 @@ pub enum LocalDaemonRequest {
     ListHomeExtensionAudit(ListHomeExtensionAuditRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
+    AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
     GrantAgentExtension(GrantAgentExtensionRequest),
     RevokeAgentExtension(RevokeAgentExtensionRequest),
@@ -826,6 +827,10 @@ pub enum LocalDaemonResponse {
     },
     AgentFocused {
         agent: AgentInstance,
+    },
+    AgentOutputSeenAcknowledged {
+        session_id: String,
+        agent_id: String,
     },
     AgentFocusCycled {
         agent: Option<AgentInstance>,

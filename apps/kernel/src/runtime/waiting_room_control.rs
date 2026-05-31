@@ -17,12 +17,14 @@ pub(crate) async fn execute_waiting_room_inventory_request(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::WaitingRoomInventory {
         snapshot: projected_waiting_room_public_snapshot(
             runtime_state,
             relay_state,
             config_projection,
+            caller_user_id,
         )
         .await?
         .into(),
@@ -34,17 +36,24 @@ pub(crate) async fn execute_waiting_room_request(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     request: LocalDaemonRequest,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetWaitingRoomInventory(_) => {
-            execute_waiting_room_inventory_request(runtime_state, relay_state, config_projection)
-                .await
+            execute_waiting_room_inventory_request(
+                runtime_state,
+                relay_state,
+                config_projection,
+                caller_user_id,
+            )
+            .await
         }
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
             execute_waiting_room_public_snapshot_request(
                 runtime_state,
                 relay_state,
                 config_projection,
+                caller_user_id,
             )
             .await
         }
@@ -59,12 +68,14 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot {
         snapshot: projected_waiting_room_public_snapshot(
             runtime_state,
             relay_state,
             config_projection,
+            caller_user_id,
         )
         .await?,
     })
@@ -74,9 +85,15 @@ pub(crate) async fn waiting_room_inventory_version(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    caller_user_id: &str,
 ) -> Result<String, DaemonError> {
-    match execute_waiting_room_inventory_request(runtime_state, relay_state, config_projection)
-        .await?
+    match execute_waiting_room_inventory_request(
+        runtime_state,
+        relay_state,
+        config_projection,
+        caller_user_id,
+    )
+    .await?
     {
         LocalDaemonResponse::WaitingRoomInventory { snapshot } => Ok(snapshot.inventory_version),
         _response => Err(DaemonError::LocalTransport {
@@ -90,6 +107,7 @@ async fn projected_waiting_room_public_snapshot(
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let runtime_sessions =
         match execute_list_sessions_request(runtime_state, crate::local::ListSessionsRequest)
@@ -105,5 +123,11 @@ async fn projected_waiting_room_public_snapshot(
         };
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let terminals = paired_terminal_records();
-    build_waiting_room_public_snapshot(runtime_sessions, relay_status, terminals, unix_epoch_ms())
+    build_waiting_room_public_snapshot(
+        runtime_sessions,
+        relay_status,
+        terminals,
+        unix_epoch_ms(),
+        caller_user_id,
+    )
 }

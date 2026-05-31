@@ -7,6 +7,7 @@ use crate::session::{RuntimeSession, WorkflowRunStatus};
 pub(crate) fn waiting_room_agent_activity_summary(
     session: &RuntimeSession,
     agent: &AgentInstance,
+    caller_user_id: &str,
 ) -> WaitingRoomPublicItemActivitySummary {
     let active_prompt_count = usize::from(session.active_prompt_for_agent(agent.id()).is_some());
     let queued_prompt_count = session
@@ -21,6 +22,10 @@ pub(crate) fn waiting_room_agent_activity_summary(
         active_prompt_count,
         queued_prompt_count,
         error,
+        unread_idle_output: active_prompt_count == 0
+            && !agent.is_processing()
+            && agent.state() != AgentState::Working
+            && session.agent_has_unread_output(caller_user_id, agent.id()),
     }
 }
 
@@ -46,11 +51,13 @@ pub(crate) fn waiting_room_workflow_activity_summary(
         active_prompt_count: 0,
         queued_prompt_count: 0,
         error,
+        unread_idle_output: false,
     }
 }
 
 pub(crate) fn waiting_room_session_activity_summary(
     session: &RuntimeSession,
+    caller_user_id: &str,
 ) -> WaitingRoomSessionActivitySummary {
     let active_prompt_agent_ids: HashSet<&str> = session
         .prompt_states()
@@ -93,6 +100,16 @@ pub(crate) fn waiting_room_session_activity_summary(
             .agents()
             .iter()
             .filter(|agent| agent.state() == AgentState::Error)
+            .count(),
+        unread_idle_agent_count: session
+            .agents()
+            .iter()
+            .filter(|agent| {
+                !active_prompt_agent_ids.contains(agent.id())
+                    && agent.state() != AgentState::Working
+                    && !agent.is_processing()
+                    && session.agent_has_unread_output(caller_user_id, agent.id())
+            })
             .count(),
     }
 }
@@ -143,10 +160,38 @@ mod tests {
             error.clone(),
         ]);
 
-        assert!(!waiting_room_agent_activity_summary(&session, &idle).working);
-        assert!(waiting_room_agent_activity_summary(&session, &working).working);
-        assert!(waiting_room_agent_activity_summary(&session, &processing).working);
-        assert!(waiting_room_agent_activity_summary(&session, &error).error);
+        assert!(
+            !waiting_room_agent_activity_summary(
+                &session,
+                &idle,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .working
+        );
+        assert!(
+            waiting_room_agent_activity_summary(
+                &session,
+                &working,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .working
+        );
+        assert!(
+            waiting_room_agent_activity_summary(
+                &session,
+                &processing,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .working
+        );
+        assert!(
+            waiting_room_agent_activity_summary(
+                &session,
+                &error,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .error
+        );
     }
 
     #[test]
@@ -188,11 +233,52 @@ mod tests {
             agent("error", AgentState::Error, false),
         ]);
 
-        let summary = waiting_room_session_activity_summary(&session);
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.agent_count, 3);
         assert_eq!(summary.working_agent_count, 2);
         assert_eq!(summary.error_agent_count, 1);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
+    }
+
+    #[test]
+    fn idle_provider_output_projects_unread_until_acknowledged() {
+        let mut session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
+        assert!(session.note_agent_output_sequence("agent-1", 41));
+
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+        let summary = waiting_room_agent_activity_summary(
+            &session,
+            agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert!(summary.unread_idle_output);
+        assert_eq!(
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unread_idle_agent_count,
+            1
+        );
+
+        assert!(
+            session.acknowledge_agent_output_seen(crate::session::DEFAULT_LOCAL_USER_ID, "agent-1")
+        );
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+        assert!(
+            !waiting_room_agent_activity_summary(
+                &session,
+                agent,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .unread_idle_output
+        );
     }
 }

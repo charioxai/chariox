@@ -7,6 +7,7 @@ use crate::runtime::daemon_health_projection::{
 };
 use crate::runtime::projection::DaemonHealthProjection;
 use crate::runtime::waiting_room_control::waiting_room_inventory_version;
+use crate::session::DEFAULT_LOCAL_USER_ID;
 
 impl CommandRouter {
     pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
@@ -14,6 +15,7 @@ impl CommandRouter {
             &self.runtime_state,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
+            DEFAULT_LOCAL_USER_ID,
         )
         .await
     }
