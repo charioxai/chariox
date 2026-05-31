@@ -1,3 +1,4 @@
+use super::provider_output_runtime::provider_run_ids_for_owned_output_pump;
 use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -130,6 +131,117 @@ async fn provider_switch_does_not_park_runs_with_active_prompts() {
             .active_provider_run_id(),
         Some(second_run.id()),
         "ambiguous multi-agent prompt work should keep the active provider pointer stable",
+    );
+}
+
+#[tokio::test]
+async fn provider_output_pump_includes_unfocused_active_prompt_runs() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-output-pump",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("second"),
+        )
+        .expect("second agent should spawn");
+    let idle_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("idle"),
+        )
+        .expect("idle agent should spawn");
+
+    let first_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("first provider should launch");
+    app.update_provider_run_projection(first_run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(first_agent.id()),
+        "first prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+
+    let second_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(second_agent.id()),
+        )
+        .expect("second provider should launch");
+    app.update_provider_run_projection(second_run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(second_agent.id()),
+        "second prompt\n",
+        Vec::new(),
+    )
+    .expect("second prompt should start");
+
+    let stale_idle_run = app
+        .providers
+        .start_run_provider_only(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(idle_agent.id()),
+        )
+        .expect("stale idle provider should start without becoming active")
+        .into_run();
+    app.update_provider_run_projection(stale_idle_run.clone());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let provider_run_ids = provider_run_ids_for_owned_output_pump(&runtime.owned, &session_state);
+
+    assert!(
+        provider_run_ids.contains(first_run.id()),
+        "output pump must keep draining an unfocused agent with active prompt"
+    );
+    assert!(
+        provider_run_ids.contains(second_run.id()),
+        "output pump must include the focused active prompt run"
+    );
+    assert!(
+        !provider_run_ids.contains(stale_idle_run.id()),
+        "stale Arroba runs without active prompts must not be pumped as background runs"
     );
 }
 

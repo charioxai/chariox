@@ -184,30 +184,8 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
-        let active_provider_run_id = owned
-            .session_store
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_string);
-        let mut provider_run_ids = BTreeSet::new();
-        if let Some(provider_run_id) = active_provider_run_id {
-            provider_run_ids.insert(provider_run_id);
-        }
-        provider_run_ids.extend(
-            owned
-                .provider_store
-                .list_runs()
-                .into_iter()
-                .filter(|run| run.session_id() == session_id)
-                .filter(|run| {
-                    matches!(
-                        run.state(),
-                        crate::provider::ProviderRunState::Starting
-                            | crate::provider::ProviderRunState::Running
-                    )
-                })
-                .map(|run| run.id().to_string()),
-        );
+        let session = owned.session_store.get_session(session_id)?;
+        let provider_run_ids = provider_run_ids_for_owned_output_pump(owned, &session);
         let recipient_attachment_ids = owned
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -238,4 +216,55 @@ impl KernelRuntimeState {
         let session = owned.session_snapshot(session_id).ok();
         Ok((records, session))
     }
+}
+
+pub(super) fn provider_run_ids_for_owned_output_pump(
+    owned: &KernelRuntimeOwnedState,
+    session: &crate::session::RuntimeSession,
+) -> BTreeSet<String> {
+    let mut provider_run_ids = BTreeSet::new();
+    if let Some(provider_run_id) = session.active_provider_run_id() {
+        provider_run_ids.insert(provider_run_id.to_string());
+    }
+    let mut agent_ids = session
+        .agents()
+        .iter()
+        .map(|agent| agent.id().to_string())
+        .collect::<Vec<_>>();
+    agent_ids.extend(session.prompt_states().keys().cloned());
+    agent_ids.sort();
+    agent_ids.dedup();
+    for agent_id in agent_ids {
+        if owned
+            .prompt_state_owner
+            .active_prompt_for_agent(session, &agent_id)
+            .is_none()
+        {
+            continue;
+        }
+        if let Some(provider_run_id) = owned
+            .provider_store
+            .get_run_for_agent(session.id(), &agent_id)
+            .map(|run| run.id().to_string())
+        {
+            provider_run_ids.insert(provider_run_id);
+        }
+    }
+    provider_run_ids.extend(
+        owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session.id())
+            .filter(|run| {
+                !run.client_interface().is_arroba()
+                    && matches!(
+                        run.state(),
+                        crate::provider::ProviderRunState::Starting
+                            | crate::provider::ProviderRunState::Running
+                    )
+            })
+            .map(|run| run.id().to_string()),
+    );
+    provider_run_ids
 }

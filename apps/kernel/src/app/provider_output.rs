@@ -83,6 +83,9 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
     };
     let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
     let mut provider_run_ids = BTreeSet::new();
+    if let Some(provider_run_id) = session.active_provider_run_id() {
+        provider_run_ids.insert(provider_run_id.to_string());
+    }
     let mut agent_ids = session
         .agents()
         .iter()
@@ -112,12 +115,7 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
             .list_runs()
             .into_iter()
             .filter(|run| run.session_id() == session.id())
-            .filter(|run| {
-                matches!(
-                    run.state(),
-                    ProviderRunState::Starting | ProviderRunState::Running
-                )
-            })
+            .filter(should_pump_background_provider_run)
             .map(|run| run.id().to_string()),
     );
     let mut pumped_provider_run_ids = Vec::new();
@@ -149,6 +147,14 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
         }
     }
     pumped_provider_run_ids
+}
+
+fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
+    !run.client_interface().is_arroba()
+        && matches!(
+            run.state(),
+            ProviderRunState::Starting | ProviderRunState::Running
+        )
 }
 
 pub(crate) struct ProviderOutputPump<'a> {
