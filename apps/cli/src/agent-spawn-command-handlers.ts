@@ -152,14 +152,29 @@ async function validateRemoteMachineSpawnTarget(
   }
   const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases !== false)
   if (accepting.length === 0) {
-    throw new Error(`remote machine ${machineRef} has no kernel accepting remote agents; next: enable remote leases on a kernel or choose another worker`)
+    const kernelTargets = formatKernelTargets(kernels)
+    throw new Error(`remote machine ${machineRef} has no kernel accepting remote agents; next: enable remote leases on ${kernelTargets} or choose another worker`)
   }
   if (accepting.every((kernel) => (kernel.available_providers ?? []).length === 0)) {
-    throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on the worker or choose another worker`)
+    const kernelTargets = formatKernelTargets(accepting)
+    throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on ${kernelTargets} or choose another worker`)
   }
   if (!accepting.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider`)
   }
+}
+
+function formatKernelTargets(kernels: readonly { kernel_id?: string | null; kernel_alias?: string | null; relay_alias?: string | null }[]): string {
+  const labels = kernels
+    .map((kernel) => kernel.relay_alias || kernel.kernel_alias || kernel.kernel_id)
+    .filter((label): label is string => Boolean(label))
+  if (labels.length === 0) {
+    return "the listed worker kernel"
+  }
+  if (labels.length === 1) {
+    return `kernel ${labels[0]}`
+  }
+  return `kernels ${labels.join(",")}`
 }
 
 async function prepareSliceForSpawn(
