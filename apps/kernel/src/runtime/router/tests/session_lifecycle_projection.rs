@@ -374,6 +374,70 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
 }
 
 #[tokio::test]
+async fn create_session_rejects_slice_from_another_worktree() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    create_router_test_slice(&mut app, "dev", "workspace", "other-worktree");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("workspace", "worktree").with_slice_ref("dev"),
+    );
+    let command =
+        KernelCommand::from_local_request("cmd-create-session-wrong-slice", None, None, &request);
+
+    let error = router
+        .dispatch(command, request)
+        .await
+        .expect_err("wrong-worktree slice should be rejected by the kernel");
+
+    assert!(
+        error
+            .to_string()
+            .contains("slice `dev` belongs to worktree `other-worktree`, not `worktree`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_slice_from_another_worktree() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    create_router_test_slice(&mut app, "dev", "workspace", "other-worktree");
+    let session_id = session.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id,
+        alias: Some("slice-agent".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some("worktree".to_string()),
+        kernel_ref: None,
+        slice_ref: Some("dev".to_string()),
+        worktree_placement: None,
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-spawn-agent-wrong-slice", None, None, &request);
+
+    let error = router
+        .dispatch(command, request)
+        .await
+        .expect_err("wrong-worktree slice should be rejected by the kernel");
+
+    assert!(
+        error
+            .to_string()
+            .contains("slice `dev` belongs to worktree `other-worktree`, not `worktree`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn delete_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
@@ -702,4 +766,31 @@ async fn missing_cycle_focus_uses_warmed_projection_without_app_lock() {
         }
         error => panic!("unexpected error: {error}"),
     }
+}
+
+fn create_router_test_slice(
+    app: &mut DaemonApp,
+    name: &str,
+    workspace_id: &str,
+    worktree_id: &str,
+) -> crate::slice::SliceRecord {
+    app.slices()
+        .create(
+            app.config().daemon_id.as_str(),
+            app.config().host_machine_id.as_str(),
+            crate::slice::CreateSliceInput {
+                name: name.to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                workspace_id: Some(workspace_id.to_string()),
+                worktree_id: Some(worktree_id.to_string()),
+                workspace_mount: Some(worktree_id.to_string()),
+                worker_kernel_ref: Some(format!("slice:{name}")),
+                display_url: None,
+                provider_auth: Vec::new(),
+                now_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("slice should be created")
 }
