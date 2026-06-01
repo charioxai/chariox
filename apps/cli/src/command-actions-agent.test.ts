@@ -435,10 +435,20 @@ test("agent spawn creates a local git worktree placement before spawning", async
 
 test("agent spawn with machine requires directory and does not launch local provider", async () => {
   const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined; placement: unknown }> = []
+  const kernelChecks: string[] = []
   let launchCount = 0
   let providerRunStateSet: RuntimeProviderRun | null | "unset" = "unset"
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
+    listRemoteMachineKernels: async (machineRef: string) => {
+      kernelChecks.push(machineRef)
+      return [{
+        kernel_id: "kernel-worker",
+        machine_id: "machine-worker",
+        accepting_remote_leases: true,
+        available_providers: ["opencode"],
+      }]
+    },
     spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string, placement?: unknown) => {
       spawnCalls.push({ worktreeId, machineRef, placement })
       const agent = makeAgent({
@@ -473,6 +483,7 @@ test("agent spawn with machine requires directory and does not launch local prov
     args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
   })
 
+  assert.deepEqual(kernelChecks, ["worker"])
   assert.deepEqual(spawnCalls, [{ worktreeId: "/srv/project", machineRef: "worker", placement: undefined }])
   assert.equal(launchCount, 0)
   assert.equal(providerRunStateSet, null)
@@ -498,6 +509,33 @@ test("agent spawn with machine rejects missing directory", async () => {
 
   assert.equal(spawnCount, 0)
   assert.equal(flashedMessage, "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)")
+})
+
+test("agent spawn with machine blocks workers that reject remote leases", async () => {
+  let spawnCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-worker",
+      machine_id: "machine-worker",
+      accepting_remote_leases: false,
+      available_providers: ["opencode"],
+    }],
+    spawnAgent: async () => {
+      spawnCount += 1
+      throw new Error("should not spawn")
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --machine worker --dir /srv/project",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
+  })
+
+  assert.equal(spawnCount, 0)
+  assert.equal(flashedMessage, "remote machine worker has no kernel accepting remote agents; next: enable remote leases on a kernel or choose another worker")
 })
 
 test("agent spawn with machine forwards remote git worktree placement", async () => {

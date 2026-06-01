@@ -3,6 +3,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SliceRecord,
+  WaitingRoomRemoteKernelView,
 } from "./cli-types.js"
 import {
   parseAgentSpawnOptions,
@@ -56,6 +57,7 @@ export type AgentSpawnCommandHandlerDeps = {
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
     sliceRef?: string,
   ) => Promise<AgentSpawnPayload>
+  listRemoteMachineKernels?: (machineRef: string) => Promise<WaitingRoomRemoteKernelView[]>
   refreshSplitPaneFocusRepaint: () => void
 }
 
@@ -99,6 +101,9 @@ export async function handleAgentSpawnCommand(
           from_ref: parsed.fromRef ?? null,
         }
       : undefined
+    if (parsed.machineRef) {
+      await validateRemoteMachineSpawnTarget(deps, parsed.machineRef)
+    }
     const worktreeId = await resolveLocalPlacement({
       directory: parsed.directory,
       gitWorktree: parsed.gitWorktree,
@@ -129,6 +134,26 @@ export async function handleAgentSpawnCommand(
     }), "info")
   } catch (error) {
     deps.flashFooter(deps.formatError(error), "error")
+  }
+}
+
+async function validateRemoteMachineSpawnTarget(
+  deps: AgentSpawnCommandHandlerDeps,
+  machineRef: string,
+): Promise<void> {
+  if (!deps.listRemoteMachineKernels) {
+    return
+  }
+  const kernels = await deps.listRemoteMachineKernels(machineRef)
+  if (kernels.length === 0) {
+    throw new Error(`remote machine ${machineRef} has no live worker kernels; next: run /machine kernels ${machineRef} or choose another worker`)
+  }
+  const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases !== false)
+  if (accepting.length === 0) {
+    throw new Error(`remote machine ${machineRef} has no kernel accepting remote agents; next: enable remote leases on a kernel or choose another worker`)
+  }
+  if (accepting.every((kernel) => (kernel.available_providers ?? []).length === 0)) {
+    throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on the worker or choose another worker`)
   }
 }
 
