@@ -154,6 +154,7 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 2)
   assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
+  assert.match(rendered, /next: run \/slice doctor for the affected slice/)
 })
 
 test("kernel health formatter reports remote extension sync issues", () => {
@@ -176,6 +177,7 @@ test("kernel health formatter reports remote extension sync issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 4)
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
+  assert.match(rendered, /next: run \/extension sync-status <agent>/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {
@@ -226,8 +228,11 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
   assert.match(rendered, /workspace worktree collisions:/)
   assert.match(rendered, /workspace=workspace-1 worktree=\/repo sessions=session-1,session-2/)
+  assert.match(rendered, /next: move one session\/agent to a different worktree/)
   assert.match(rendered, /workspace active operations:/)
   assert.match(rendered, /write live_sync_apply workspace=workspace-1 worktree=\/repo session=session-1/)
+  assert.match(rendered, /next: stop and relaunch affected managed\/tracked provider runs/)
+  assert.match(rendered, /next: check workspace paths and permissions/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
 })
@@ -274,7 +279,9 @@ test("kernel health formatter reports transport terminal and capability issues",
   assert.match(rendered, /terminal stream: pending_output=4 pending_notices=3 pending_completions=2 trimmed_recipients=2 limit=4096/)
   assert.match(rendered, /capability executor issues: rejected=2 join_errors=1/)
   assert.match(rendered, /transport issues: replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2/)
+  assert.match(rendered, /next: reconnect stale clients/)
   assert.match(rendered, /terminal stream trimmed pending output for 2 recipients/)
+  assert.match(rendered, /next: refresh the terminal session/)
 })
 
 test("kernel health command reports duplicate provider-run bindings", async () => {
@@ -307,5 +314,6 @@ test("kernel health command reports duplicate provider-run bindings", async () =
 
   assert.match(notices.at(-1) ?? "", /duplicate Arroba provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
+  assert.match(notices.at(-1) ?? "", /next: inspect the agent and stop duplicate provider runs/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })

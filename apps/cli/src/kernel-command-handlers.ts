@@ -105,6 +105,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
+    lines.push("  next: inspect the agent and stop duplicate provider runs before sending more prompts")
   }
 
   if (providerRuns.orphaned_active_runs.length > 0) {
@@ -112,6 +113,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const issue of providerRuns.orphaned_active_runs) {
       lines.push(`  run=${issue.provider_run_id} session=${issue.session_id} agent=${issue.agent_id ?? "-"}: ${issue.details}`)
     }
+    lines.push("  next: refresh the session; stop or relaunch the orphaned provider run if it stays active")
   }
 
   if (providerRuns.session_active_run_mismatches.length > 0) {
@@ -119,6 +121,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const issue of providerRuns.session_active_run_mismatches) {
       lines.push(`  session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
     }
+    lines.push("  next: inspect the session and relaunch the affected agent to restore one active run pointer")
   }
 
   if (capability.rejected_jobs > 0 || capability.join_errors > 0) {
@@ -128,18 +131,22 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const transportIssueCount = transportHealthIssueCount(health)
   if (transportIssueCount > 0) {
     lines.push(`transport issues: replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`)
+    lines.push("  next: reconnect stale clients; if overloads persist, reduce concurrent clients or restart the affected relay/kernel")
   }
 
   if (terminalStream.trimmed_pending_output_recipients > 0) {
     lines.push(`terminal stream trimmed pending output for ${terminalStream.trimmed_pending_output_recipients} recipient${terminalStream.trimmed_pending_output_recipients === 1 ? "" : "s"}`)
+    lines.push("  next: refresh the terminal session to receive a fresh projection snapshot")
   }
 
   if (sliceLifecycle.unhealthy_slices > 0 || sliceLifecycle.failed_operations > 0) {
     lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
+    lines.push("  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice")
   }
 
   if (remoteExtensionSyncIssueCount(health) > 0) {
     lines.push(`remote extension sync issues: failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`)
+    lines.push("  next: run /extension sync-status <agent>; use /extension sync-retry <agent> after worker connectivity is healthy")
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -147,6 +154,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const collision of workspaceCoordination.worktree_collisions) {
       lines.push(`  workspace=${collision.workspace_id} worktree=${collision.worktree_id} sessions=${collision.session_ids.join(",")}`)
     }
+    lines.push("  next: move one session/agent to a different worktree or intentionally bind the worktrees with workspace live sync")
   }
 
   if (workspaceCoordination.active_operation_claims.length > 0) {
@@ -158,10 +166,12 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
     lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
+    lines.push("  next: stop and relaunch affected managed/tracked provider runs after confirming the selected worktree")
   }
 
   if (externalChanges.live_watcher_scan_errors > 0) {
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
+    lines.push("  next: check workspace paths and permissions, then refresh workspace live sync status")
   }
 
   if (health.projection_invariants.mismatches.length === 0) {
@@ -171,6 +181,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const mismatch of health.projection_invariants.mismatches) {
       lines.push(`  ${mismatch.kind} session=${mismatch.session_id} agent=${mismatch.agent_id ?? "-"}: ${mismatch.details}`)
     }
+    lines.push("  next: refresh the session; restart the kernel if the invariant mismatch persists")
   }
 
   return lines.join("\n")
