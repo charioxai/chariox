@@ -293,7 +293,8 @@ mod tests {
         assert_eq!(
             workspace_live_sync_codex_permission_grant(
                 &requested,
-                &[std::path::PathBuf::from("/repo/main")]
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
             ),
             json!({
                 "network": {
@@ -317,7 +318,8 @@ mod tests {
         assert_eq!(
             workspace_live_sync_codex_permission_grant(
                 &requested,
-                &[std::path::PathBuf::from("/repo/main")]
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
             ),
             json!({})
         );
@@ -338,13 +340,48 @@ mod tests {
         assert_eq!(
             workspace_live_sync_codex_permission_grant(
                 &requested,
-                &[std::path::PathBuf::from("/repo/main")]
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
             ),
             json!({
                 "fileSystem": {
                     "write": ["/other-repo/src/lib.rs"]
                 }
             })
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_resolves_relative_writes_against_cwd() {
+        let requested = json!({
+            "fileSystem": {
+                "write": [
+                    "src/lib.rs",
+                    "../main/src/config.rs"
+                ]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                Some(std::path::Path::new("/repo/other")),
+            ),
+            json!({
+                "fileSystem": {
+                    "write": ["src/lib.rs"]
+                }
+            })
+        );
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                Some(std::path::Path::new("/repo/main")),
+            ),
+            json!({})
         );
     }
 
@@ -372,6 +409,40 @@ mod tests {
             client.permissions_approval_response(&message),
             json!({
                 "permissions": {},
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_client_approves_relative_writes_outside_protected_roots() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged)
+            .with_workspace_live_sync_roots(&[std::path::PathBuf::from("/repo/main")]);
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "cwd": "/repo/other",
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["src/lib.rs", "../main/src/lib.rs"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["src/lib.rs"]
+                    }
+                },
                 "scope": "turn"
             })
         );

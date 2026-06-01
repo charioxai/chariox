@@ -105,6 +105,7 @@ pub(super) fn codex_collaboration_mode(
 pub(super) fn workspace_live_sync_codex_permission_grant(
     requested_permissions: &Value,
     protected_roots: &[PathBuf],
+    cwd: Option<&Path>,
 ) -> Value {
     let Some(requested) = requested_permissions.as_object() else {
         return json!({});
@@ -119,7 +120,7 @@ pub(super) fn workspace_live_sync_codex_permission_grant(
             granted_file_system.insert("read".to_string(), read.clone());
         }
         if let Some(write) =
-            workspace_live_sync_allowed_writes(file_system.get("write"), protected_roots)
+            workspace_live_sync_allowed_writes(file_system.get("write"), protected_roots, cwd)
         {
             granted_file_system.insert("write".to_string(), write);
         }
@@ -133,13 +134,14 @@ pub(super) fn workspace_live_sync_codex_permission_grant(
 fn workspace_live_sync_allowed_writes(
     requested_write: Option<&Value>,
     protected_roots: &[PathBuf],
+    cwd: Option<&Path>,
 ) -> Option<Value> {
     let writes = requested_write?.as_array()?;
     let allowed = writes
         .iter()
         .filter(|entry| {
             entry.as_str().is_some_and(|path| {
-                workspace_live_sync_write_is_outside_protected_roots(path, protected_roots)
+                workspace_live_sync_write_is_outside_protected_roots(path, protected_roots, cwd)
             })
         })
         .cloned()
@@ -150,12 +152,24 @@ fn workspace_live_sync_allowed_writes(
 fn workspace_live_sync_write_is_outside_protected_roots(
     path: &str,
     protected_roots: &[PathBuf],
+    cwd: Option<&Path>,
 ) -> bool {
     let path = Path::new(path);
-    if protected_roots.is_empty() || !path.is_absolute() {
+    if protected_roots.is_empty() {
         return false;
     }
-    let normalized_path = normalize_path(path);
+    let resolved_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let Some(cwd) = cwd else {
+            return false;
+        };
+        if !cwd.is_absolute() {
+            return false;
+        }
+        cwd.join(path)
+    };
+    let normalized_path = normalize_path(&resolved_path);
     !protected_roots.iter().any(|root| {
         let normalized_root = normalize_path(root);
         normalized_path.starts_with(normalized_root)

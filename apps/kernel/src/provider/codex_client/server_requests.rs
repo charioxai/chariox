@@ -105,9 +105,16 @@ impl CodexClient {
                 "scope": "session",
             }),
             ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
+                let cwd = message
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("cwd"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(std::path::Path::new);
                 let granted_permissions = workspace_live_sync_codex_permission_grant(
                     &requested_permissions,
                     &self.workspace_live_sync_roots,
+                    cwd,
                 );
                 json!({
                     "permissions": granted_permissions,
