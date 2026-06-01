@@ -374,6 +374,104 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
 }
 
 #[tokio::test]
+async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let create_request = LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+        name: "ssh-slice".to_string(),
+        backend: crate::slice::SliceBackendKind::SshDocker,
+        os: "linux".to_string(),
+        display_mode: crate::slice::SliceDisplayMode::Headless,
+        workspace_id: Some("workspace".to_string()),
+        worktree_id: Some("worktree".to_string()),
+        workspace_mount: Some("worktree".to_string()),
+        worker_kernel_ref: None,
+        display_url: None,
+        provider_auth: Vec::new(),
+    });
+    let create_command =
+        KernelCommand::from_local_request("cmd-create-ssh-slice", None, None, &create_request);
+    let slice = match router
+        .dispatch(create_command, create_request)
+        .await
+        .expect("slice create should succeed")
+    {
+        LocalDaemonResponse::SliceCreated { slice } => slice,
+        _ => panic!("unexpected create slice response"),
+    };
+
+    let import_request =
+        LocalDaemonRequest::ImportSliceProviderAuth(crate::local::ImportSliceProviderAuthRequest {
+            slice_ref: slice.id.clone(),
+            provider: "codex".to_string(),
+        });
+    let import_command =
+        KernelCommand::from_local_request("cmd-import-ssh-slice-auth", None, None, &import_request);
+    let error = router
+        .dispatch(import_command, import_request)
+        .await
+        .expect_err("unsupported slice auth import should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("only implemented for local Docker slices"),
+        "unexpected error: {error}"
+    );
+    let app_guard = app.lock().await;
+    let events = app_guard
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable events should load");
+    let audit = events
+        .iter()
+        .find(|event| {
+            event.kind == "slice.audit"
+                && event.subject_id.as_deref() == Some(slice.id.as_str())
+                && event.payload["action"] == "auth.import"
+                && event.payload["result"] == "failed"
+        })
+        .expect("failed auth import should write an audit event");
+    assert_eq!(audit.payload["provider"], "codex");
+    assert!(audit.payload["redacted_error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("only implemented for local Docker slices"));
+    drop(app_guard);
+
+    let remove_request =
+        LocalDaemonRequest::RemoveSliceProviderAuth(crate::local::RemoveSliceProviderAuthRequest {
+            slice_ref: slice.id.clone(),
+            provider: "codex".to_string(),
+        });
+    let remove_command =
+        KernelCommand::from_local_request("cmd-remove-ssh-slice-auth", None, None, &remove_request);
+    let error = router
+        .dispatch(remove_command, remove_request)
+        .await
+        .expect_err("unsupported slice auth removal should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("only implemented for local Docker slices"),
+        "unexpected error: {error}"
+    );
+    let app_guard = app.lock().await;
+    let events = app_guard
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable events should load");
+    assert!(events.iter().any(|event| {
+        event.kind == "slice.audit"
+            && event.subject_id.as_deref() == Some(slice.id.as_str())
+            && event.payload["action"] == "auth.remove"
+            && event.payload["result"] == "failed"
+    }));
+}
+
+#[tokio::test]
 async fn create_session_rejects_slice_from_another_worktree() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     create_router_test_slice(&mut app, "dev", "workspace", "other-worktree");

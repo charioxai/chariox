@@ -139,17 +139,20 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             status: "imported".to_string(),
         });
     }
+    let message = format!(
+        "slice auth import is only implemented for local Docker slices, got `{:?}`",
+        slice.backend
+    );
     runtime_state.record_slice_audit_event(
         &slice,
         "auth.import",
-        "not_implemented",
+        "failed",
         Some(&provider),
-        Some("slice auth import is not implemented for this backend"),
+        Some(&message),
     )?;
-    Ok(LocalDaemonResponse::SliceProviderAuthImported {
-        slice,
-        provider,
-        status: "not_implemented".to_string(),
+    Err(DaemonError::LocalTransport {
+        operation: "slice.auth.import",
+        message,
     })
 }
 
@@ -217,17 +220,20 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
             status: "removed".to_string(),
         });
     }
+    let message = format!(
+        "slice auth removal is only implemented for local Docker slices, got `{:?}`",
+        slice.backend
+    );
     runtime_state.record_slice_audit_event(
         &slice,
         "auth.remove",
-        "not_implemented",
+        "failed",
         Some(&provider),
-        Some("slice auth removal is not implemented for this backend"),
+        Some(&message),
     )?;
-    Ok(LocalDaemonResponse::SliceProviderAuthRemoved {
-        slice,
-        provider,
-        status: "not_implemented".to_string(),
+    Err(DaemonError::LocalTransport {
+        operation: "slice.auth.remove",
+        message,
     })
 }
 
