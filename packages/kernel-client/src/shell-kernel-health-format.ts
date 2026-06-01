@@ -137,8 +137,12 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       const operationStatus = issue.last_operation_status ? ` op_status=${issue.last_operation_status}` : ""
       const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
       const agents = issue.agent_ids.length > 0 ? ` agents=${issue.agent_ids.join(",")}` : ""
-      const error = issue.last_error ? `: ${issue.last_error}` : ""
-      lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${error}`)
+      const detail = issue.last_error
+        ? `: ${issue.last_error}`
+        : issue.status === "stopped" && issue.agent_ids.length > 0
+          ? ": stopped with attached agents"
+          : ""
+      lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${detail}`)
     }
     lines.push("  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice")
   }

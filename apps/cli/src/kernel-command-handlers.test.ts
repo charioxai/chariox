@@ -314,7 +314,7 @@ test("kernel health formatter renders lifecycle issues without failed counters",
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slice lifecycle issues: unhealthy=0 failed_ops=0/)
-  assert.match(rendered, /slice=dev \(slice-1\) status=stopped worktree=\/repo agents=agent-1/)
+  assert.match(rendered, /slice=dev \(slice-1\) status=stopped worktree=\/repo agents=agent-1: stopped with attached agents/)
   assert.match(rendered, /next: run \/slice doctor for the affected slice/)
 })
 
