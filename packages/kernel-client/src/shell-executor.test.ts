@@ -437,6 +437,7 @@ test("executeShellCommand creates a session and binds assignment", async () => {
     resolveExistingDirectory: async () => "/repo/qa",
   })
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /workspace live sync: config default/)
   assert.deepEqual(result.bindings, { s: "session-2" })
   assert.deepEqual(result.contextUpdates, {
     sessionId: "session-2",
@@ -444,6 +445,27 @@ test("executeShellCommand creates a session and binds assignment", async () => {
     workspace: "/repo",
     worktree: "/repo/qa",
   })
+})
+
+test("executeShellCommand reports explicit session workspace live sync mode after create", async () => {
+  const session = makeSession({
+    id: "session-2",
+    worktree_id: "/repo/qa",
+    focused_agent_id: "agent-1",
+    workspace_live_sync_mode: "tracked",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: null } })
+    return { SessionCreated: { session } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /workspace live sync: tracked; use `workspace sync off` to disable/)
 })
 
 test("executeShellCommand creates and starts a headless slice for a new session", async () => {

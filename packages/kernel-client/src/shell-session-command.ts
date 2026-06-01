@@ -89,7 +89,7 @@ export async function executeSessionCommand(
         worktree: session.worktree_id,
       }
       return resourceResult(
-        `created session ${session.alias ?? session.id} in ${session.worktree_id}\nworkspace live sync: off; use \`workspace sync managed\` or \`workspace sync tracked\` to enable`,
+        `created session ${session.alias ?? session.id} in ${session.worktree_id}\n${formatCreatedSessionWorkspaceLiveSync(session)}`,
         parsed.assignment,
         session.id,
         contextUpdates,
@@ -273,4 +273,13 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function formatCreatedSessionWorkspaceLiveSync(session: RuntimeSession): string {
+  const mode = session.workspace_live_sync_mode
+  if (!mode || mode === "unrestricted") {
+    const inherited = mode ? "off" : "config default"
+    return `workspace live sync: ${inherited}; use \`workspace sync managed\`, \`workspace sync tracked\`, or \`workspace sync off\` to change`
+  }
+  return `workspace live sync: ${mode}; use \`workspace sync off\` to disable`
 }
