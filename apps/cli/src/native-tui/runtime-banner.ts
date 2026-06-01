@@ -10,6 +10,8 @@ export type NativeTuiRuntimeBannerInput = {
   readonly agent: AgentInstance
   readonly worktree: string
   readonly run?: RuntimeProviderRun | null
+  readonly grantedMcps?: readonly string[]
+  readonly grantedSkills?: readonly string[]
   readonly providerLines?: readonly string[]
   readonly promptPolicy?: string
 }
@@ -23,11 +25,22 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent)}`,
     `  live sync:      ${formatWorkspaceLiveSyncMode(input.session.workspace_live_sync_mode)}`,
+    `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
     ...(input.run ? [`  provider run:   ${input.run.id}`] : []),
     ...(input.providerLines ?? []),
     ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
     "",
   ].join("\n")
+}
+
+function formatGrantedExtensions(agent: AgentInstance, mcps: readonly string[], skills: readonly string[]): string {
+  if (mcps.length === 0 && skills.length === 0) return "none"
+  const activePlacement = agent.remote_execution ? "home-proxy" : "worker-local"
+  const skillPlacement = agent.remote_execution ? "skill snapshot" : "worker-local"
+  return [
+    mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
+    skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,
+  ].filter(Boolean).join("; ")
 }
 
 function formatSession(session: RuntimeSession): string {

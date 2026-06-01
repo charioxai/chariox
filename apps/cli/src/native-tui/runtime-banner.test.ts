@@ -31,6 +31,8 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
     }),
     worktree: "/repo/worktrees/feature",
     run: providerRun("session-run-1"),
+    grantedMcps: ["filesystem"],
+    grantedSkills: ["review"],
     providerLines: ["  proxy:          ws://127.0.0.1:1234"],
     promptPolicy: "native prompts pass through",
   })
@@ -42,6 +44,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)
   assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(banner, /live sync:      tracked/)
+  assert.match(banner, /extensions:     mcp=filesystem \(home-proxy\); skill=review \(skill snapshot\)/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)
@@ -59,6 +62,7 @@ test("native TUI runtime banner renders local defaults without inventing state",
   assert.match(banner, /worktree:       \/repo/)
   assert.match(banner, /placement:      worker-local/)
   assert.match(banner, /live sync:      config default/)
+  assert.match(banner, /extensions:     none/)
   assert.doesNotMatch(banner, /provider run:/)
 })
 

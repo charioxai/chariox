@@ -155,6 +155,8 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       agent,
       worktree,
       run,
+      grantedMcps: options.grantMcps,
+      grantedSkills: options.grantSkills,
       providerLines: [
         `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
         ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
@@ -395,6 +397,8 @@ async function runClaudeRemoteRendered(
       agent,
       worktree,
       run,
+      grantedMcps: options.grantMcps,
+      grantedSkills: options.grantSkills,
       providerLines: ["  tui:            target-kernel-pty"],
     }))
 

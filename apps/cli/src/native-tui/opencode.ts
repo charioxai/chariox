@@ -172,6 +172,8 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       agent,
       worktree,
       run,
+      grantedMcps: options.grantMcps,
+      grantedSkills: options.grantSkills,
       providerLines: [
         `  opencode sess:  ${providerSessionId}`,
         `  opencode server:${upstreamBaseUrl}`,

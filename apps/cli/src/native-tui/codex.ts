@@ -188,6 +188,8 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       agent,
       worktree,
       run: bindState.run,
+      grantedMcps: options.grantMcps,
+      grantedSkills: options.grantSkills,
       providerLines: [
         `  app-server:     ${upstreamEndpoint}`,
         `  proxy:          ${proxyUrl}`,
