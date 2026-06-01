@@ -41,7 +41,7 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   assert.equal(formatAgentListSummary([]), "no agents in session")
   assert.equal(
     formatAgentListSummary(agents),
-    "1 agent: agent-1 (planner) [Idle]",
+    "1 agent: agent-1 (planner) [Idle; opencode openai/gpt-5; worktree worktree-1; local]",
   )
 })
 
