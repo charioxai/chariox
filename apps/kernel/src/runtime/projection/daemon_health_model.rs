@@ -441,6 +441,13 @@ impl RemoteExecutionHealthSnapshot {
             if remote_execution.leased_agent_id.is_empty() {
                 malformed_fields.push("leased_agent_id");
             }
+            if remote_execution
+                .active_worker_provider_run_id
+                .as_deref()
+                .is_some_and(str::is_empty)
+            {
+                malformed_fields.push("active_worker_provider_run_id");
+            }
             if !malformed_fields.is_empty() {
                 snapshot.malformed_bindings += 1;
                 snapshot.issues.push(remote_execution_issue(
@@ -454,7 +461,12 @@ impl RemoteExecutionHealthSnapshot {
                 ));
             }
 
-            if active && remote_execution.active_worker_provider_run_id.is_none() {
+            if active
+                && remote_execution
+                    .active_worker_provider_run_id
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+            {
                 snapshot.missing_active_worker_runs += 1;
                 snapshot.issues.push(remote_execution_issue(
                     agent,
@@ -1265,6 +1277,11 @@ mod tests {
         missing_run.set_state(AgentState::Working);
         missing_run.set_processing(true);
 
+        let mut empty_run = remote_agent("agent-empty-run");
+        empty_run.set_remote_execution_active_worker_provider_run_id(Some(String::new()));
+        empty_run.set_state(AgentState::Working);
+        empty_run.set_processing(true);
+
         let mut malformed = remote_agent("agent-malformed");
         malformed.set_remote_execution(Some(RemoteAgentBinding {
             worker_kernel_id: String::new(),
@@ -1279,14 +1296,15 @@ mod tests {
         let snapshot = RemoteExecutionHealthSnapshot::from_agents(&[
             healthy_idle,
             missing_run,
+            empty_run,
             malformed,
             local_agent("agent-local"),
         ]);
 
-        assert_eq!(snapshot.remote_agents, 3);
-        assert_eq!(snapshot.active_remote_agents, 1);
-        assert_eq!(snapshot.missing_active_worker_runs, 1);
-        assert_eq!(snapshot.malformed_bindings, 1);
+        assert_eq!(snapshot.remote_agents, 4);
+        assert_eq!(snapshot.active_remote_agents, 2);
+        assert_eq!(snapshot.missing_active_worker_runs, 2);
+        assert_eq!(snapshot.malformed_bindings, 2);
         assert_eq!(
             snapshot
                 .issues
@@ -1295,6 +1313,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("agent-working", "missing_active_worker_provider_run"),
+                ("agent-empty-run", "malformed_binding"),
+                ("agent-empty-run", "missing_active_worker_provider_run"),
                 ("agent-malformed", "malformed_binding"),
             ]
         );
@@ -1302,6 +1322,9 @@ mod tests {
         assert_eq!(snapshot.issues[0].state, "working");
         assert_eq!(snapshot.issues[0].worktree_id.as_deref(), Some("/repo"));
         assert!(snapshot.issues[1]
+            .details
+            .contains("active_worker_provider_run_id"));
+        assert!(snapshot.issues[3]
             .details
             .contains("worker_kernel_id, execution_lease_id"));
     }
