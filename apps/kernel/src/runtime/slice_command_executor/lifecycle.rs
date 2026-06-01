@@ -287,14 +287,34 @@ fn local_docker_slice_relay(
         (config.relay_url.clone(), config.relay_token.clone())
     {
         if configured_relay_is_container_reachable(&relay_url) {
+            let cloud_relay_config_json =
+                hosted_cloud_relay_config_json(&config, &relay_url, &relay_token);
             return crate::slice::LocalDockerSliceRelay {
                 relay_url: relay_url.clone(),
                 container_relay_url: Some(relay_url),
                 relay_token,
+                cloud_relay_config_json,
             };
         }
     }
     crate::slice::local_docker_private_relay(slice)
+}
+
+fn hosted_cloud_relay_config_json(
+    config: &crate::config::DaemonConfig,
+    relay_url: &str,
+    relay_token: &str,
+) -> Option<String> {
+    if !relay_url.starts_with("wss://") {
+        return None;
+    }
+    let profile = config.cloud_relay.as_ref()?;
+    serde_json::to_string(&serde_json::json!({
+        "relay_url": relay_url,
+        "relay_token": relay_token,
+        "cloud_relay": profile,
+    }))
+    .ok()
 }
 
 fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
@@ -348,6 +368,27 @@ mod tests {
         }
     }
 
+    fn cloud_profile() -> crate::config::PersistedCloudRelayProfile {
+        crate::config::PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "user@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-1".to_string(),
+            account_slug: "acct".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "wss://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: Some("client-1".to_string()),
+            client_alias: None,
+            machine_id: Some("machine-1".to_string()),
+            machine_alias: None,
+            machine_credential: Some("machine-secret".to_string()),
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: Some(200_000),
+        }
+    }
+
     #[test]
     fn stop_and_delete_guard_rejects_active_agents() {
         let error =
@@ -373,6 +414,29 @@ mod tests {
             Some("wss://relay.example.test")
         );
         assert_eq!(relay.relay_token, "shared-token");
+        assert_eq!(relay.cloud_relay_config_json, None);
+    }
+
+    #[test]
+    fn hosted_cloud_slices_pass_refreshable_relay_profile_to_worker() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("shared-token".to_string());
+        config.cloud_relay = Some(cloud_profile());
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+
+        let profile_json = relay
+            .cloud_relay_config_json
+            .expect("hosted cloud relay should pass refreshable config");
+        let payload: serde_json::Value = serde_json::from_str(&profile_json).unwrap();
+        assert_eq!(payload["relay_url"], "wss://relay.example.test");
+        assert_eq!(payload["relay_token"], "shared-token");
+        assert_eq!(
+            payload["cloud_relay"]["machine_credential"],
+            "machine-secret"
+        );
     }
 
     #[test]
@@ -390,6 +454,7 @@ mod tests {
             Some("ws://relay.lan:49100")
         );
         assert_eq!(relay.relay_token, "self-host-token");
+        assert_eq!(relay.cloud_relay_config_json, None);
     }
 
     #[test]
@@ -404,6 +469,7 @@ mod tests {
         assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
+        assert_eq!(relay.cloud_relay_config_json, None);
     }
 
     #[test]
@@ -418,5 +484,6 @@ mod tests {
         assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
+        assert_eq!(relay.cloud_relay_config_json, None);
     }
 }

@@ -16,6 +16,7 @@ pub struct LocalDockerSliceRelay {
     pub relay_url: String,
     pub container_relay_url: Option<String>,
     pub relay_token: String,
+    pub cloud_relay_config_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,8 +431,15 @@ fn configure_local_docker_slice_command(
         let LocalDockerSliceRelay {
             relay_token,
             container_relay_url,
+            cloud_relay_config_json,
             ..
         } = relay;
+        if let Some(cloud_relay_config_json) = cloud_relay_config_json {
+            command.env(
+                "ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON",
+                cloud_relay_config_json,
+            );
+        }
         command.env("ARROBA_SLICE_RELAY_TOKEN", relay_token);
         if let Some(container_relay_url) = container_relay_url {
             command.env(
@@ -506,6 +514,7 @@ pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay
         relay_url: format!("ws://127.0.0.1:{}", ports.relay),
         container_relay_url: None,
         relay_token: local_docker_private_relay_token(record),
+        cloud_relay_config_json: None,
     }
 }
 
@@ -723,6 +732,7 @@ mod tests {
             relay_url: "wss://relay.example.test".to_string(),
             container_relay_url: Some("wss://relay.example.test".to_string()),
             relay_token: "shared-token".to_string(),
+            cloud_relay_config_json: None,
         };
         let mut command = Command::new("slice-provisioner");
 
@@ -747,6 +757,7 @@ mod tests {
             relay_url: "ws://127.0.0.1:43130".to_string(),
             container_relay_url: None,
             relay_token: "slice-local-token".to_string(),
+            cloud_relay_config_json: None,
         };
         let mut command = Command::new("slice-provisioner");
 
