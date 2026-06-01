@@ -203,7 +203,7 @@ function formatContextRemoteExtensionSync(agent: AgentInstance): string {
   }
   const sync = agent.remote_extension_manifest_sync
   if (!sync) {
-    return `pending; next=run extension sync-status ${agent.agent_ref}`
+    return `pending; next=run /extension sync-status ${agent.agent_ref}; use /extension sync-retry ${agent.agent_ref} after worker connectivity is healthy`
   }
   const details = [
     sync.state,
@@ -213,7 +213,7 @@ function formatContextRemoteExtensionSync(agent: AgentInstance): string {
   ].filter(Boolean)
   const needsAction = sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error
   if (needsAction) {
-    details.push(`next=run extension sync-status ${agent.agent_ref}`)
+    details.push(`next=run /extension sync-status ${agent.agent_ref}; use /extension sync-retry ${agent.agent_ref} after worker connectivity is healthy`)
   }
   return details.join(", ")
 }

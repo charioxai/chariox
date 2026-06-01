@@ -209,7 +209,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(contextResult.message ?? "", /provider run: session=session-run-1, worker=worker-run-1/)
   assert.match(contextResult.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; skill=1, script=1\)/)
-  assert.match(contextResult.message ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker behind, next=run extension sync-status agent-1/)
+  assert.match(contextResult.message ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker behind, next=run \/extension sync-status agent-1; use \/extension sync-retry agent-1/)
   assert.match(contextResult.message ?? "", /workflow: workflow-1/)
   assert.match(contextResult.message ?? "", /provider: codex/)
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
