@@ -89,8 +89,8 @@ impl SliceStore {
                     .map(LocalDockerSlicePorts::from_assignment)
                     .unwrap_or_else(|| LocalDockerSlicePorts::for_slice_id(&id));
                 Some(format!(
-                    "http://127.0.0.1:{}/vnc.html?autoconnect=true",
-                    ports.novnc
+                    "http://127.0.0.1:{}/vnc.html?host=127.0.0.1&port={}&autoconnect=true&resize=scale",
+                    ports.novnc, ports.novnc
                 ))
             })
         } else {

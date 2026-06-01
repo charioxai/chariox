@@ -91,7 +91,7 @@ start_desktop() {
 status() {
   printf 'display=%s\n' "$DISPLAY_ID"
   printf 'screen=%s\n' "$SCREEN_SIZE"
-  printf 'viewer=http://127.0.0.1:%s/vnc.html?autoconnect=true&resize=scale\n' "$NOVNC_PORT"
+  printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$NOVNC_PORT" "$NOVNC_PORT"
   pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
 }
 
