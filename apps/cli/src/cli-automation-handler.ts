@@ -37,6 +37,7 @@ export type CliAutomationActionDeps = {
   connectDetachedKernelFromWaitingRoom: () => Promise<void>
   submitFocusedInteractionChoice: (choiceIndex?: number) => Promise<unknown>
   cycleFocusedInteractionChoice: (delta: number) => void
+  toggleBlob: (entryId: number, collapsed: boolean) => void
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
   sleep?: (ms: number) => Promise<void>
 }
@@ -143,6 +144,14 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           throw new Error("usage: interaction_move delta=<signed integer>")
         }
         deps.cycleFocusedInteractionChoice(delta)
+        return deps.snapshot()
+      }
+      case "toggle_blob": {
+        const entryId = typeof request.entryId === "number" ? request.entryId : Number.NaN
+        if (!Number.isInteger(entryId)) {
+          throw new Error("usage: toggle_blob entryId=<integer> collapsed=<boolean>")
+        }
+        deps.toggleBlob(entryId, request.collapsed === true)
         return deps.snapshot()
       }
       case "wait_for": {

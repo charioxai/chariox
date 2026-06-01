@@ -88,6 +88,7 @@ function baseDeps() {
     connectDetachedKernelFromWaitingRoom: async () => {},
     submitFocusedInteractionChoice: async () => {},
     cycleFocusedInteractionChoice: () => {},
+    toggleBlob: () => {},
     restoreTerminalAndExit: async () => {},
   }
 }

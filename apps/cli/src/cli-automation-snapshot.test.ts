@@ -69,6 +69,8 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     selectedWorkflowNodeId: () => null,
     workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
     workspaceShellEntries: () => [],
+    transcriptEntries: () => [],
+    agentPaneEntries: () => ({}),
     footerFlash: () => null,
     interactionChoiceSelection: () => 1,
     interactionCustomReply: () => "ship it",

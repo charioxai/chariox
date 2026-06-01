@@ -110,6 +110,7 @@ pnpm --filter @arroba/cli run lint
 pnpm --filter @arroba/cli run build
 node --test apps/cli/dist/attached-session-prime-controller.test.js apps/cli/dist/deferred-bootstrap-controller.test.js apps/cli/dist/agent-pane-refresh-controller.test.js apps/cli/dist/session-bootstrap.test.js apps/cli/dist/ipc-requests.test.js packages/kernel-client/dist/shell-executor.test.js
 pnpm --filter @arroba/cli run history-outline:tui-drill
+pnpm --filter @arroba/cli run history-outline:tui-e2e-drill
 ```
 
 TUI history drill output:
@@ -123,15 +124,79 @@ TUI history drill output:
 }
 ```
 
+Live TUI e2e drill output:
+
+```json
+{
+  "drill": "history-outline-tui-e2e",
+  "sessionId": "18b4eb7a459a8628",
+  "agentId": "agent-1",
+  "outlinePromptCount": 1,
+  "outlineBlobCount": 1,
+  "initialEntryCount": 8,
+  "initialPlaceholder": {
+    "id": 3,
+    "historyBlobId": "history:2:2",
+    "historyBlobLoaded": false,
+    "blobTitle": "tool",
+    "blobSummary": "TUI live lazy blob detail from provider tool"
+  },
+  "initialHadPrompt": true,
+  "initialHadSummary": true,
+  "initialHadToolDetail": false,
+  "expandedEntryCount": 8,
+  "expandedHadToolDetail": true,
+  "expandedPlaceholderRemoved": true
+}
+```
+
+Observation: the first live TUI drill showed the kernel outline request
+completed, but deferred bootstrap history was not applied into the live
+transcript. The fix made deferred bootstrap application idempotent and scheduled
+it immediately as well as on mount. The passing drill then observed prompt and
+summary entries, an unloaded lazy blob placeholder, and independently fetched
+tool content after expanding that blob through the TUI automation toggle path.
+
+Current workspace note: a later `pnpm --filter @arroba/cli run lint` in the
+dirty shared worktree is blocked by unrelated `slice-command-handlers.ts`
+type errors from concurrent slice/auth edits. The history automation and
+deferred-bootstrap tests still pass, and the live TUI e2e drill passes.
+
 Cloud/web:
 
 ```sh
 pnpm --filter @arroba-cloud/web run build
 pnpm --filter @arroba-cloud/web run lint
 node --test apps/web/dist/terminal-history.test.js apps/web/dist/terminal/history-hydration-controller.test.js apps/web/dist/terminal/terminal-runtime-hydration-coordinator.test.js apps/web/dist/terminal/freeform-pane-chrome-dom-controller.test.js apps/web/dist/freeform-footer-controls.test.js apps/web/dist/terminal/terminal-session-orchestration-composition.test.js
+node --test apps/web/dist/terminal/history-hydration-controller.test.js apps/web/dist/terminal/terminal-output-composition.test.js apps/web/dist/terminal/freeform-pane-chrome-dom-controller.test.js apps/web/dist/terminal/freeform-transcript-renderer.test.js
+pnpm --filter @arroba-cloud/web run history-outline:web-e2e-drill
 pnpm --filter @arroba-cloud/web run drill:browser
 pnpm run smoke:browser-relay-kernel
 ```
+
+Web terminal DOM e2e drill output:
+
+```json
+{
+  "drill": "history-outline-web-e2e",
+  "outlineRequests": 1,
+  "blobRequestsBeforeClick": 0,
+  "blobRequestsAfterClick": 1,
+  "initialHadPrompt": true,
+  "initialHadSummary": true,
+  "initialHadBlobSummary": true,
+  "initialHadToolDetail": false,
+  "expandedHadToolDetail": true,
+  "expandedEntryCount": 3
+}
+```
+
+Observation: the web drill rendered an attached terminal pane from outline data,
+verified prompt, summary, and blob summary were present before expansion, and
+verified no blob content request was sent until the blob header was clicked.
+The first pass also exposed that fetched blob content replaced the placeholder
+as a collapsed tool entry; the fix now transfers expansion to the inserted
+entry so opening a lazy blob leaves the fetched content open.
 
 Browser drill result: passed through the marketing shell, waiting-room shell, and
 terminal `/test` route controls.

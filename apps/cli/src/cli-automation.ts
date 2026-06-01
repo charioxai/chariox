@@ -18,6 +18,8 @@ export type CliAutomationRequest = {
   selectedWorkflowAlias?: unknown
   shellEntryCount?: unknown
   workflowAlias?: unknown
+  entryId?: unknown
+  collapsed?: unknown
 }
 
 export type CliAutomationResponse = {
@@ -36,6 +38,8 @@ export type CliAutomationSnapshot = {
   selectedWorkflow?: (Record<string, unknown> & { alias?: unknown }) | null
   workflows?: Array<Record<string, unknown> & { alias?: unknown }>
   shell?: Record<string, unknown> & { entries?: unknown[] }
+  transcript?: Record<string, unknown> & { entries?: unknown[] }
+  agentPanes?: Record<string, Array<Record<string, unknown>>>
 }
 
 export type CliAutomationServer = NetServer

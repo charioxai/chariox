@@ -246,6 +246,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   onMount(() => {
     deferredBootstrapController.apply()
   })
+  queueMicrotask(() => deferredBootstrapController.apply())
 
   const transcriptHistoryAutoloadController = createTranscriptHistoryAutoloadController({
     scheduleTimer: deps.scheduleTimer,

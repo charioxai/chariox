@@ -59,6 +59,8 @@ export function createCliAppProcessRuntimeComposition(
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
     workspaceShellContext: deps.workspaceShellContext,
     workspaceShellEntries: deps.workspaceShellEntries,
+    transcriptEntries: deps.transcriptEntries,
+    agentPaneEntries: deps.agentPaneEntries,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
     getInteractionCustomReply: deps.getInteractionCustomReply,
@@ -76,6 +78,7 @@ export function createCliAppProcessRuntimeComposition(
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
+    toggleBlob: deps.toggleBlob,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
   })

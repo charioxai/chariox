@@ -3,6 +3,7 @@ import type { ShellContext } from "@arroba/kernel-client/shell-core"
 import type {
   RuntimeSession,
   SliceRecord,
+  TranscriptEntry,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
@@ -50,6 +51,8 @@ export type CliAutomationSnapshotDeps = {
   selectedWorkflowNodeId: () => string | null
   workspaceShellContext: () => ShellContext
   workspaceShellEntries: () => WorkspaceShellEntry[]
+  transcriptEntries: () => TranscriptEntry[]
+  agentPaneEntries: () => Record<string, TranscriptEntry[]>
   footerFlash: () => unknown
   interactionChoiceSelection: (interactionId: string) => number
   interactionCustomReply: (interactionId: string) => string
@@ -163,6 +166,35 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       entries: shellEntries,
       transcript: renderWorkspaceShellTranscript(shellEntries),
     },
+    transcript: {
+      visibleAgentId: deps.focusedAgentId(),
+      entries: deps.transcriptEntries().map(automationTranscriptEntry),
+    },
+    agentPanes: Object.fromEntries(
+      Object.entries(deps.agentPaneEntries()).map(([agentId, entries]) => [
+        agentId,
+        entries.map(automationTranscriptEntry),
+      ]),
+    ),
     footer: deps.footerFlash(),
+  }
+}
+
+function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unknown> {
+  return {
+    id: entry.id,
+    role: entry.role,
+    text: entry.text,
+    turnId: entry.turnId ?? null,
+    hidden: entry.hidden ?? false,
+    blobCollapsible: entry.blobCollapsible ?? false,
+    blobCollapsed: entry.blobCollapsed ?? null,
+    blobTitle: entry.blobTitle ?? null,
+    blobSummary: entry.blobSummary ?? null,
+    historyBlobId: entry.historyBlobId ?? null,
+    historyBlobAgentId: entry.historyBlobAgentId ?? null,
+    historyBlobLoaded: entry.historyBlobLoaded ?? null,
+    historyBlobLoading: entry.historyBlobLoading ?? null,
+    historyBlobError: entry.historyBlobError ?? null,
   }
 }

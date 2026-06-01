@@ -27,6 +27,7 @@ export type DeferredBootstrapControllerDeps = {
 }
 
 export function createDeferredBootstrapController(deps: DeferredBootstrapControllerDeps) {
+  let applied = false
   const warn = (message: string, error: unknown) => {
     deps.logWarning(message, {
       error: deps.formatError(error),
@@ -68,6 +69,10 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
   }
 
   const apply = () => {
+    if (applied) {
+      return
+    }
+    applied = true
     const deferred = deps.getDeferred()
     if (!deferred) {
       return

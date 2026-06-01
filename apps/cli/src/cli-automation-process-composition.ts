@@ -55,6 +55,8 @@ export type CliAutomationProcessCompositionDeps = {
   selectedWorkflowNodeId: AnyFn
   workspaceShellContext: AnyFn
   workspaceShellEntries: AnyFn
+  transcriptEntries: AnyFn
+  agentPaneEntries: AnyFn
   footerFlash: AnyFn
   getInteractionChoiceSelection: AnyFn
   getInteractionCustomReply: AnyFn
@@ -72,6 +74,7 @@ export type CliAutomationProcessCompositionDeps = {
   connectDetachedKernelFromWaitingRoom: AnyFn
   submitFocusedInteractionChoice: AnyFn
   cycleFocusedInteractionChoice: AnyFn
+  toggleBlob: AnyFn
   restoreTerminalAndExit: AnyFn
   sleep: AnyFn
 }
@@ -105,6 +108,8 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId,
     workspaceShellContext: deps.workspaceShellContext,
     workspaceShellEntries: deps.workspaceShellEntries,
+    transcriptEntries: deps.transcriptEntries,
+    agentPaneEntries: deps.agentPaneEntries,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
     getInteractionCustomReply: deps.getInteractionCustomReply,
@@ -134,6 +139,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
+    toggleBlob: deps.toggleBlob,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
   })
