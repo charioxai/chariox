@@ -173,9 +173,9 @@ test("kernel health formatter reports remote extension sync issues", () => {
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 3)
+  assert.equal(kernelHealthIssueCount(unhealthy), 4)
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
-  assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1/)
+  assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {

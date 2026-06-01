@@ -138,8 +138,8 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
   }
 
-  if (remoteExtensionSync.failed_agents > 0 || remoteExtensionSync.stale_agents > 0 || remoteExtensionSync.manifest_missing_agents > 0) {
-    lines.push(`remote extension sync issues: failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents}`)
+  if (remoteExtensionSyncIssueCount(health) > 0) {
+    lines.push(`remote extension sync issues: failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`)
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -197,6 +197,7 @@ function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
   return health.remote_extension_sync.failed_agents
     + health.remote_extension_sync.stale_agents
     + health.remote_extension_sync.manifest_missing_agents
+    + health.remote_extension_sync.pending_revoke_agents
 }
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
