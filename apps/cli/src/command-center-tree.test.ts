@@ -11,5 +11,7 @@ test("command center tree owns unique slash command nodes", () => {
   assert.equal(new Set(ids).size, ids.length)
   assert.equal(COMMAND_TREE.some((node) => node.id === "session"), true)
   assert.equal(COMMAND_TREE.some((node) => node.id === "workflow"), true)
+  assert.equal(COMMAND_TREE.find((node) => node.id === "machine")?.children?.some((node) => node.value === "/machine kernels "), true)
+  assert.equal(COMMAND_TREE.find((node) => node.id === "machine")?.children?.some((node) => node.value === "/machine approve "), true)
   assert.equal(COMMAND_TREE.find((node) => node.id === "misc")?.value, "/")
 })

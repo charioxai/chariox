@@ -101,6 +101,19 @@ export const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "machine",
+    label: "/machine",
+    description: "Inspect and manage remote worker machines",
+    value: "/machine ",
+    children: [
+      { id: "machine-list", label: "list", description: "List remote machines visible through the relay", value: "/machine list" },
+      { id: "machine-kernels", label: "kernels", description: "List live kernels and worker readiness for a machine", value: "/machine kernels " },
+      { id: "machine-approve", label: "approve", description: "Approve a pending remote worker machine", value: "/machine approve " },
+      { id: "machine-forget", label: "forget", description: "Forget a remote worker machine", value: "/machine forget " },
+      { id: "machine-rename", label: "rename", description: "Assign a display alias to a remote worker machine", value: "/machine rename " },
+    ],
+  },
+  {
     id: "mcp",
     label: "/mcp",
     description: "Manage Arroba MCP registry and agent grants",
