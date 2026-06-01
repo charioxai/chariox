@@ -149,6 +149,41 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.equal(fake.requests.length, 3)
 })
 
+test("executeShellCommand does not infer provider run ownership from focused agent", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            active_provider_run_id: "session-run-2",
+            focused_agent_id: "agent-1",
+            agents: [
+              makeAgent({ id: "agent-1", agent_ref: "agent-1" }),
+              makeAgent({ id: "agent-2", agent_ref: "agent-2" }),
+            ],
+          }),
+        },
+      }
+    }
+    if ("GetProviderRun" in request) {
+      return { ProviderRun: { provider_run: { id: "session-run-2", agent_instance_id: "agent-2" } } }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent: agent-1/)
+  assert.match(result.message ?? "", /provider run: session=session-run-2 owned_by=agent-2/)
+})
+
 test("executeShellCommand lists sessions with home kernel ownership", async () => {
   const sessions = [
     makeSession({

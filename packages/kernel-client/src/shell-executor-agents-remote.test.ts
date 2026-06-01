@@ -156,6 +156,27 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /remote extension sync: not applicable/)
 })
 
+test("executeShellCommand reports unknown provider run owner when lookup fails", async () => {
+  const agent = makeAgent({ id: "agent-1", agent_ref: "agent-1", alias: "focused" })
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-missing" }) } }
+    }
+    if ("GetProviderRun" in request) {
+      throw new Error("provider run disappeared")
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent inspect focused"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /provider run: session=run-missing owner unknown; provider run disappeared/)
+})
+
 test("executeShellCommand inspects remote agent lease and manifest state", async () => {
   const agent = makeAgent({
     id: "agent-remote",
