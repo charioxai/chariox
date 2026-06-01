@@ -68,7 +68,13 @@ export async function handleAgentSlashCommand(
     }
     case "list":
     case "ls": {
-      deps.flashFooter(formatAgentListSummary(deps.sessionState().agents), "info")
+      const session = deps.sessionState()
+      const providerRun = deps.providerRunState()
+      deps.flashFooter(formatAgentListSummary(session.agents, {
+        activeProviderRunId: session.active_provider_run_id,
+        activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
+        focusedAgentId: session.focused_agent_id,
+      }), "info")
       return
     }
     case "inspect":
@@ -80,7 +86,13 @@ export async function handleAgentSlashCommand(
         return
       }
       const slices = deps.listSlices ? await deps.listSlices().catch(() => []) : []
-      deps.appendNotice(formatAgentInspectSummary(resolved.agent, slices))
+      const session = deps.sessionState()
+      const providerRun = deps.providerRunState()
+      deps.appendNotice(formatAgentInspectSummary(resolved.agent, slices, {
+        activeProviderRunId: session.active_provider_run_id,
+        activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
+        focusedAgentId: session.focused_agent_id,
+      }))
       deps.flashFooter(`showing agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
       return
     }

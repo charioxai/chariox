@@ -9,7 +9,6 @@ import {
   focusAgentRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
-  listAgentsRequest,
   listSlicesRequest,
   spawnAgentRequest,
   updateAgentConfigRequest,
@@ -60,12 +59,19 @@ export async function executeAgentCommand(
   switch (action) {
     case "list":
     case "ls": {
-      const response = await deps.client.send(listAgentsRequest(sessionId))
-      const agents = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsListed").agents
+      const session = await getShellSessionState(deps, sessionId)
+      const agents = session.agents
       const { slices } = agents.some((agent) => agent.remote_execution)
         ? await listAgentInspectSlices(deps)
         : { slices: [] }
-      return { ok: true, message: formatAgentListSummary(agents, slices), data: { agents, slices } }
+      return {
+        ok: true,
+        message: formatAgentListSummary(agents, slices, {
+          activeProviderRunId: session.active_provider_run_id,
+          focusedAgentId: session.focused_agent_id,
+        }),
+        data: { agents, slices, session },
+      }
     }
     case "inspect":
     case "info":
@@ -74,13 +80,18 @@ export async function executeAgentCommand(
       if (!resolved.ok) {
         return { ok: false, message: args[0] ? resolved.message : "usage: agent inspect [agent-ref]" }
       }
+      const session = await getShellSessionState(deps, sessionId)
+      const agent = session.agents.find((entry) => entry.id === resolved.agent.id) ?? resolved.agent
       const { slices, error } = resolved.agent.remote_execution
         ? await listAgentInspectSlices(deps)
         : { slices: [], error: null }
       return {
         ok: true,
-        message: formatAgentInspectSummary(resolved.agent, slices, error),
-        data: { agent: resolved.agent, slices },
+        message: formatAgentInspectSummary(agent, slices, error, {
+          activeProviderRunId: session.active_provider_run_id,
+          focusedAgentId: session.focused_agent_id,
+        }),
+        data: { agent, slices, session },
       }
     }
     case "spawn": {
@@ -308,6 +319,14 @@ async function listAgentInspectSlices(deps: ShellAgentCommandDeps): Promise<{
       error: error instanceof Error ? error.message : "slice inventory unavailable",
     }
   }
+}
+
+async function getShellSessionState(
+  deps: ShellAgentCommandDeps,
+  sessionId: string,
+): Promise<RuntimeSession> {
+  const response = await deps.client.send(getSessionStateRequest(sessionId))
+  return expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
 }
 
 async function executeAgentSubstituteCommand(

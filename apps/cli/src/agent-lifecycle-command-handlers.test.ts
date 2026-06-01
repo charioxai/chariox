@@ -112,6 +112,35 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 
+test("agent summaries expose session and worker provider run pointers", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-worker",
+    },
+  })
+
+  assert.match(
+    formatAgentListSummary([remoteAgent], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: "agent-remote",
+    }),
+    /session run run-session/,
+  )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: "agent-remote",
+    }),
+    /provider run: session=run-session, worker=run-worker/,
+  )
+})
+
 test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {
   const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
   const agentB = agent({ id: "agent-b", agent_ref: "agent-b", provider: "codex", model: "codex/gpt-5.4" })
@@ -126,6 +155,7 @@ test("agent focus command applies focus, launches a run, and reports the focused
     sessionState: () => previousSession,
     currentModelId: () => "opencode/gpt-5.4",
     currentVariantId: () => "high",
+    providerRunState: () => null,
     multiAgentResponseLayout: () => "individual",
     maxAgentsPerScreen: () => 4,
     flashFooter: (message) => { flashedMessage = message },

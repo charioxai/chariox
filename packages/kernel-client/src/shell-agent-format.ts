@@ -1,5 +1,11 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 
+export type ShellAgentProviderRunContext = {
+  activeProviderRunId?: string | null
+  activeProviderRunAgentId?: string | null
+  focusedAgentId?: string | null
+}
+
 export function formatAgentRef(agent: AgentInstance): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
 }
@@ -7,28 +13,42 @@ export function formatAgentRef(agent: AgentInstance): string {
 export function formatAgentListSummary(
   agents: AgentInstance[],
   slices: readonly SliceRecord[] = [],
+  providerRunContext: ShellAgentProviderRunContext = {},
 ): string {
   if (agents.length === 0) {
     return "no agents in session"
   }
   const agentList = agents
-    .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices)))
+    .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices), providerRunContext))
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
 
-function formatAgentListEntry(agent: AgentInstance, slice: SliceRecord | null): string {
+function formatAgentListEntry(
+  agent: AgentInstance,
+  slice: SliceRecord | null,
+  providerRunContext: ShellAgentProviderRunContext,
+): string {
   const parts = [
     agent.state,
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
     formatAgentListPlacement(agent, slice),
+    formatAgentListProviderRun(agent, providerRunContext),
     agent.execution_mode_override ? `mode ${agent.execution_mode_override}` : null,
     agent.permission_level_override ? `permissions ${agent.permission_level_override}` : null,
     formatAgentListGrantCount(agent),
     formatAgentListRemoteExtensionSync(agent),
   ].filter(Boolean)
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${parts.join("; ")}]`
+}
+
+function formatAgentListProviderRun(
+  agent: AgentInstance,
+  context: ShellAgentProviderRunContext,
+): string | null {
+  const runId = agentProviderRunId(agent, context)
+  return runId ? `session run ${runId}` : null
 }
 
 function formatAgentProvider(agent: AgentInstance): string {
@@ -76,6 +96,7 @@ export function formatAgentInspectSummary(
   agent: AgentInstance,
   slices: readonly SliceRecord[] = [],
   sliceLookupError?: string | null,
+  providerRunContext: ShellAgentProviderRunContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
   const lines = [
@@ -90,6 +111,7 @@ export function formatAgentInspectSummary(
     `workspace: ${agent.workspace_id ?? "<none>"}`,
     `worktree: ${agent.worktree_id ?? "<none>"}`,
     `placement: ${formatAgentPlacement(agent, slice)}`,
+    `provider run: ${formatAgentProviderRunSummary(agent, providerRunContext)}`,
     ...(slice ? [
       `slice: ${formatSliceSummary(slice)}`,
       `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
@@ -141,6 +163,34 @@ function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null = 
     remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
   ].filter(Boolean)
   return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+}
+
+function formatAgentProviderRunSummary(
+  agent: AgentInstance,
+  context: ShellAgentProviderRunContext,
+): string {
+  const sessionRunId = agentProviderRunId(agent, context)
+  const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (!sessionRunId && !workerRunId) {
+    return "none"
+  }
+  return [
+    sessionRunId ? `session=${sessionRunId}` : null,
+    workerRunId ? `worker=${workerRunId}` : null,
+  ].filter(Boolean).join(", ")
+}
+
+function agentProviderRunId(
+  agent: AgentInstance,
+  context: ShellAgentProviderRunContext,
+): string | null {
+  if (!context.activeProviderRunId) {
+    return null
+  }
+  if (context.activeProviderRunAgentId) {
+    return context.activeProviderRunAgentId === agent.id ? context.activeProviderRunId : null
+  }
+  return context.focusedAgentId === agent.id ? context.activeProviderRunId : null
 }
 
 function formatAgentExtensionSummary(agent: AgentInstance): string {

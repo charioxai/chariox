@@ -21,11 +21,18 @@ type AgentFocusPayload = {
   session: RuntimeSession
 }
 
+type AgentProviderRunContext = {
+  activeProviderRunId?: string | null
+  activeProviderRunAgentId?: string | null
+  focusedAgentId?: string | null
+}
+
 export type AgentLifecycleCommandHandlerDeps = {
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   currentModelId: () => string
   currentVariantId: () => string
+  providerRunState: () => RuntimeProviderRun | null
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
@@ -119,12 +126,15 @@ export async function handleAgentFocusCommand(
   }
 }
 
-export function formatAgentListSummary(agents: AgentInstance[]): string {
+export function formatAgentListSummary(
+  agents: AgentInstance[],
+  providerRunContext: AgentProviderRunContext = {},
+): string {
   if (agents.length === 0) {
     return "no agents in session"
   }
   const agentList = agents
-    .map(formatAgentListEntry)
+    .map((agent) => formatAgentListEntry(agent, providerRunContext))
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
@@ -132,6 +142,7 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
 export function formatAgentInspectSummary(
   agent: AgentInstance,
   slices: readonly SliceRecord[] = [],
+  providerRunContext: AgentProviderRunContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
   const lines = [
@@ -145,6 +156,7 @@ export function formatAgentInspectSummary(
     `permissions: ${agent.permission_level_override ?? "session"}`,
     `worktree: ${agent.worktree_id ?? "<none>"}`,
     `placement: ${formatAgentInspectPlacement(agent, slice)}`,
+    `provider run: ${formatAgentProviderRunSummary(agent, providerRunContext)}`,
     ...(slice ? [
       `slice: ${formatSliceInspectSummary(slice)}`,
       `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
@@ -164,15 +176,24 @@ export function formatAgentInspectSummary(
   return lines.join("\n")
 }
 
-function formatAgentListEntry(agent: AgentInstance): string {
+function formatAgentListEntry(agent: AgentInstance, providerRunContext: AgentProviderRunContext): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
     agent.state,
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
     formatAgentPlacement(agent),
+    formatAgentListProviderRun(agent, providerRunContext),
     formatAgentGrantCount(agent),
     formatAgentRemoteExtensionSync(agent),
   ].filter(Boolean).join("; ")}]`
+}
+
+function formatAgentListProviderRun(
+  agent: AgentInstance,
+  context: AgentProviderRunContext,
+): string | null {
+  const runId = agentProviderRunId(agent, context)
+  return runId ? `session run ${runId}` : null
 }
 
 function formatAgentProvider(agent: AgentInstance): string {
@@ -225,6 +246,34 @@ function formatAgentInspectPlacement(agent: AgentInstance, slice: SliceRecord | 
     remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
   ].filter(Boolean)
   return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+}
+
+function formatAgentProviderRunSummary(
+  agent: AgentInstance,
+  context: AgentProviderRunContext,
+): string {
+  const sessionRunId = agentProviderRunId(agent, context)
+  const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (!sessionRunId && !workerRunId) {
+    return "none"
+  }
+  return [
+    sessionRunId ? `session=${sessionRunId}` : null,
+    workerRunId ? `worker=${workerRunId}` : null,
+  ].filter(Boolean).join(", ")
+}
+
+function agentProviderRunId(
+  agent: AgentInstance,
+  context: AgentProviderRunContext,
+): string | null {
+  if (!context.activeProviderRunId) {
+    return null
+  }
+  if (context.activeProviderRunAgentId) {
+    return context.activeProviderRunAgentId === agent.id ? context.activeProviderRunId : null
+  }
+  return context.focusedAgentId === agent.id ? context.activeProviderRunId : null
 }
 
 function formatAgentInspectExtensionSummary(agent: AgentInstance): string {

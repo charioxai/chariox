@@ -27,8 +27,8 @@ import {
 test("executeShellCommand lists agents for current session", async () => {
   const agents = [makeAgent(), makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })]
   const fake = fakeClient((request) => {
-    assert.deepEqual(request, { ListAgents: { session_id: "session-1" } })
-    return { AgentsListed: { agents } }
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return { SessionState: { session: makeSession({ agents }) } }
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
@@ -63,8 +63,8 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   const requests: unknown[] = []
   const fake = fakeClient((request) => {
     requests.push(request)
-    if ("ListAgents" in request) {
-      return { AgentsListed: { agents: [agent] } }
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
     }
     if ("ListSlices" in request) {
       return {
@@ -113,7 +113,7 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox; 1 grant; manifest stale abcdef12 error worker lagging\]/)
   assert.deepEqual(requests, [
-    { ListAgents: { session_id: "session-1" } },
+    { GetSessionState: { session_id: "session-1" } },
     { ListSlices: null },
   ])
 })
@@ -133,8 +133,11 @@ test("executeShellCommand inspects local agent placement and policy", async () =
     extension_grants: [{ kind: "skill", name: "review" }],
   })
   const fake = fakeClient((request) => {
-    assert.deepEqual(request, { ListAgents: { session_id: "session-1" } })
-    return { AgentsListed: { agents: [agent] } }
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
@@ -143,6 +146,7 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /provider: codex/)
   assert.match(result.message ?? "", /worktree: \/repo-feature/)
   assert.match(result.message ?? "", /placement: worker-local/)
+  assert.match(result.message ?? "", /provider run: session=run-session/)
   assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
   assert.match(result.message ?? "", /remote extension sync: not applicable/)
 })
@@ -177,6 +181,9 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     requests.push(request)
     if ("ListAgents" in request) {
       return { AgentsListed: { agents: [agent] } }
+    }
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
     }
     if ("ListSlices" in request) {
       return {
@@ -231,6 +238,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   const result = await executeShellCommand(parseShellCommand("agent inspect agent-remote"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(result.message ?? "", /provider run: session=run-session, worker=run-1/)
   assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, display=headed, worktree=\/repo\/feature, agents=2\)/)
   assert.match(result.message ?? "", /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(result.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; mcp=1, script=1\)/)
@@ -238,6 +246,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
+    { GetSessionState: { session_id: "session-1" } },
     { ListSlices: null },
   ])
 })
