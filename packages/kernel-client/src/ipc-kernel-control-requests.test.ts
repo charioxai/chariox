@@ -128,6 +128,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
         live_watcher_started: true,
         live_watcher_scans: 6,
         live_watcher_scan_errors: 0,
+        issues: [],
       },
     },
     projection_invariants: { checked_sessions: 1, checked_agents: 1, mismatches: [] },

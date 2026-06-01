@@ -168,6 +168,7 @@ impl Default for WorkspaceLiveSyncHealthSnapshot {
                 live_watcher_started: false,
                 live_watcher_scans: 0,
                 live_watcher_scan_errors: 0,
+                issues: Vec::new(),
             },
         }
     }
@@ -696,6 +697,7 @@ mod tests {
                     live_watcher_started: true,
                     live_watcher_scans: 7,
                     live_watcher_scan_errors: 0,
+                    issues: Vec::new(),
                 },
             },
             ProjectionInvariantHealthSnapshot {
@@ -839,6 +841,11 @@ mod tests {
                 .external_change_events,
             5
         );
+        assert!(projection
+            .workspace_live_sync
+            .external_changes
+            .issues
+            .is_empty());
         assert!(
             projection
                 .workspace_live_sync

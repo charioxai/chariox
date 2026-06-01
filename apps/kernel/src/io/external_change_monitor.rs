@@ -46,6 +46,16 @@ pub struct ArtifactExternalChangeHealthSnapshot {
     pub live_watcher_started: bool,
     pub live_watcher_scans: u64,
     pub live_watcher_scan_errors: u64,
+    pub issues: Vec<ArtifactExternalChangeIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactExternalChangeIssue {
+    pub artifact_key: String,
+    pub provider_run_id: Option<String>,
+    pub workspace_fingerprint: String,
+    pub workspace_root: Option<String>,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,14 +233,11 @@ impl ArtifactExternalChangeMonitor {
             .state
             .lock()
             .expect("artifact external change monitor lock should not be poisoned");
-        // Touch tracked fields so future refactors do not accidentally turn the
-        // records into write-only bookkeeping.
-        let _tracked_records_are_well_formed = state.tracked_artifacts.values().all(|record| {
-            !record.provider_run_id.is_empty()
-                && !record.workspace_fingerprint.is_empty()
-                && !record.workspace_root.as_os_str().is_empty()
-                && !record.path.as_os_str().is_empty()
-        });
+        let issues = state
+            .externally_changed_artifacts
+            .iter()
+            .map(|key| external_change_issue_for_key(key, state.tracked_artifacts.get(key)))
+            .collect();
         ArtifactExternalChangeHealthSnapshot {
             tracked_artifacts: state.tracked_artifacts.len(),
             externally_changed_artifacts: state.externally_changed_artifacts.len(),
@@ -238,6 +245,7 @@ impl ArtifactExternalChangeMonitor {
             live_watcher_started: state.live_watcher_started,
             live_watcher_scans: state.live_watcher_scans,
             live_watcher_scan_errors: state.live_watcher_scan_errors,
+            issues,
         }
     }
 }
@@ -257,6 +265,33 @@ fn artifact_key(workspace_identity: &WorkspaceIdentity, path: &Path) -> String {
         workspace_identity.worktree_root_fingerprint,
         path.to_string_lossy()
     )
+}
+
+fn external_change_issue_for_key(
+    key: &str,
+    tracked: Option<&TrackedExternalArtifact>,
+) -> ArtifactExternalChangeIssue {
+    if let Some(tracked) = tracked {
+        return ArtifactExternalChangeIssue {
+            artifact_key: key.to_string(),
+            provider_run_id: Some(tracked.provider_run_id.clone()),
+            workspace_fingerprint: tracked.workspace_fingerprint.clone(),
+            workspace_root: Some(tracked.workspace_root.to_string_lossy().into_owned()),
+            path: tracked.path.to_string_lossy().into_owned(),
+        };
+    }
+
+    let (workspace_fingerprint, path) = key
+        .split_once(':')
+        .map(|(fingerprint, path)| (fingerprint.to_string(), path.to_string()))
+        .unwrap_or_else(|| (String::new(), key.to_string()));
+    ArtifactExternalChangeIssue {
+        artifact_key: key.to_string(),
+        provider_run_id: None,
+        workspace_fingerprint,
+        workspace_root: None,
+        path,
+    }
 }
 
 fn file_signature(path: &Path) -> Option<FileSignature> {
@@ -306,6 +341,9 @@ mod tests {
         assert_eq!(health.externally_changed_artifacts, 1);
         assert_eq!(health.external_change_events, 2);
         assert!(health.live_watcher_started);
+        assert_eq!(health.issues.len(), 1);
+        assert_eq!(health.issues[0].provider_run_id.as_deref(), Some("run-1"));
+        assert_eq!(health.issues[0].path, "src/lib.rs");
     }
 
     #[test]
@@ -325,6 +363,13 @@ mod tests {
         assert_eq!(health.externally_changed_artifacts, 1);
         assert_eq!(health.external_change_events, 1);
         assert_eq!(health.live_watcher_scans, 1);
+        assert_eq!(health.issues.len(), 1);
+        assert_eq!(health.issues[0].provider_run_id.as_deref(), Some("run-1"));
+        assert_eq!(
+            health.issues[0].workspace_root.as_deref(),
+            Some(root.to_str().unwrap())
+        );
+        assert_eq!(health.issues[0].path, "src/lib.rs");
     }
 
     #[test]
@@ -344,6 +389,7 @@ mod tests {
         let health = monitor.health_snapshot();
         assert_eq!(health.externally_changed_artifacts, 0);
         assert_eq!(health.external_change_events, 0);
+        assert!(health.issues.is_empty());
     }
 
     #[test]

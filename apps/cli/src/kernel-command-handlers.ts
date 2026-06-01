@@ -205,6 +205,16 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push("  next: stop and relaunch affected managed/tracked provider runs after confirming the selected worktree")
   }
 
+  if (externalChanges.issues.length > 0) {
+    lines.push("workspace external changes:")
+    for (const issue of externalChanges.issues) {
+      const providerRun = issue.provider_run_id ?? "-"
+      const root = issue.workspace_root ?? "-"
+      lines.push(`  run=${providerRun} root=${root} path=${issue.path} fingerprint=${issue.workspace_fingerprint}`)
+    }
+    lines.push("  next: inspect the path; rerun or reconcile the affected managed/tracked turn before retrying workspace live sync")
+  }
+
   if (!liveSyncManagedMode.write_fence_supported && liveSyncManagedMode.unavailable_reason) {
     lines.push(`workspace live sync managed mode unavailable: ${liveSyncManagedMode.unavailable_reason}`)
     lines.push("  next: select tracked mode on this worker or run the managed provider on a supported host")
@@ -229,10 +239,14 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 }
 
 function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
+  const externalChanges = health.workspace_live_sync.external_changes
   return health.workspace_coordination.worktree_collisions.length
     + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
     + health.workspace_live_sync.workspace_identity.invalid_provider_runs
-    + health.workspace_live_sync.external_changes.live_watcher_scan_errors
+    + (externalChanges.issues.length > 0
+      ? externalChanges.issues.length
+      : externalChanges.externally_changed_artifacts)
+    + externalChanges.live_watcher_scan_errors
 }
 
 function transportHealthIssueCount(health: DaemonHealthProjection): number {

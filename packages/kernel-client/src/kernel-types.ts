@@ -453,6 +453,15 @@ export type ArtifactExternalChangeHealthSnapshot = {
   live_watcher_started: boolean
   live_watcher_scans: number
   live_watcher_scan_errors: number
+  issues: ArtifactExternalChangeIssue[]
+}
+
+export type ArtifactExternalChangeIssue = {
+  artifact_key: string
+  provider_run_id?: string | null
+  workspace_fingerprint: string
+  workspace_root?: string | null
+  path: string
 }
 
 export type WorkspaceLiveSyncHealthSnapshot = {
@@ -1221,7 +1230,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 92
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 93
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

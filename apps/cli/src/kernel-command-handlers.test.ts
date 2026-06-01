@@ -119,6 +119,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
         live_watcher_started: false,
         live_watcher_scans: 0,
         live_watcher_scan_errors: 0,
+        issues: [],
       },
     },
     projection_invariants: { checked_sessions: 1, checked_agents: 1, mismatches: [] },
@@ -276,12 +277,19 @@ test("kernel health formatter reports workspace live sync and collision issues",
         live_watcher_started: true,
         live_watcher_scans: 8,
         live_watcher_scan_errors: 1,
+        issues: [{
+          artifact_key: "root-a:src/lib.rs",
+          provider_run_id: "provider-run-external",
+          workspace_fingerprint: "root-a",
+          workspace_root: "/repo",
+          path: "src/lib.rs",
+        }],
       },
     },
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 5)
+  assert.equal(kernelHealthIssueCount(unhealthy), 6)
   assert.match(rendered, /workspace coordination: claims=1 collisions=1 active_ops=1/)
   assert.match(rendered, /workspace live sync: reservations=2 artifacts=3 managed_write_fence=no backend=- tracked_runs=4 identity_changed=1 invalid_runs=2/)
   assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
@@ -294,6 +302,9 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /next: check workspace paths and permissions/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /run=provider-run-identity root=\/repo generation=7 valid=no fingerprint=root-a->root-b branch=main->feature head=abc123->def456 repo=git@example.com:repo.git->git@example.com:repo.git/)
+  assert.match(rendered, /workspace external changes:/)
+  assert.match(rendered, /run=provider-run-external root=\/repo path=src\/lib.rs fingerprint=root-a/)
+  assert.match(rendered, /next: inspect the path; rerun or reconcile the affected managed\/tracked turn/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
   assert.match(rendered, /workspace live sync managed mode unavailable: workspace live sync managed mode needs selective write fencing/)
   assert.match(rendered, /next: select tracked mode/)
