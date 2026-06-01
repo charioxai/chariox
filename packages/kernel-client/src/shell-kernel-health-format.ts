@@ -132,19 +132,26 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     || sliceLifecycle.failed_operations > 0
   ) {
     lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
+    let hasStoppedSliceWithAgents = false
     for (const issue of sliceLifecycle.issues) {
       const operation = issue.last_operation ? ` op=${issue.last_operation}` : ""
       const operationStatus = issue.last_operation_status ? ` op_status=${issue.last_operation_status}` : ""
       const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
       const agents = issue.agent_ids.length > 0 ? ` agents=${issue.agent_ids.join(",")}` : ""
+      const stoppedWithAgents = issue.status === "stopped" && issue.agent_ids.length > 0
+      hasStoppedSliceWithAgents ||= stoppedWithAgents
       const detail = issue.last_error
         ? `: ${issue.last_error}`
-        : issue.status === "stopped" && issue.agent_ids.length > 0
+        : stoppedWithAgents
           ? ": stopped with attached agents"
           : ""
       lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${detail}`)
     }
-    lines.push("  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice")
+    lines.push(
+      hasStoppedSliceWithAgents
+        ? "  next: run /slice start for stopped slices or move attached agents to a running slice"
+        : "  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice",
+    )
   }
 
   if (sliceLifecycle.provider_auth_issues.length > 0) {
