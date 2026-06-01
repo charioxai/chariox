@@ -13,6 +13,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
           workspace_id: "/Users/miguel/arroba",
           worktree_id: "/Users/miguel/arroba",
           host_daemon_id: "home-kernel-1",
+          host_machine_id: "home-machine-1",
           status: "Active",
           created_at_ms: 2,
           attachment_ids: ["attachment-1", "attachment-2"],
@@ -31,7 +32,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
     ),
     [
       "Sessions",
-      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1 current",
+      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 current",
       "- `session-1` - ended - 0 CLIs - demo",
     ].join("\n"),
   )
