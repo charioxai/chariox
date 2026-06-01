@@ -4,6 +4,7 @@ use super::ProjectionMetadata;
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
+use crate::slice::{SliceOperationStatus, SliceRecord, SliceStatus};
 use crate::terminal::TerminalStreamHealthSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +148,44 @@ impl Default for WorkspaceLiveSyncHealthSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SliceLifecycleHealthSnapshot {
+    pub total_slices: usize,
+    pub running_slices: usize,
+    pub starting_slices: usize,
+    pub stopping_slices: usize,
+    pub stopped_slices: usize,
+    pub unhealthy_slices: usize,
+    pub attached_agents: usize,
+    pub failed_operations: usize,
+    pub in_progress_operations: usize,
+}
+
+impl SliceLifecycleHealthSnapshot {
+    pub(crate) fn from_slices(slices: &[SliceRecord]) -> Self {
+        let mut snapshot = Self {
+            total_slices: slices.len(),
+            ..Self::default()
+        };
+        for slice in slices {
+            match slice.status {
+                SliceStatus::Running => snapshot.running_slices += 1,
+                SliceStatus::Starting => snapshot.starting_slices += 1,
+                SliceStatus::Stopping => snapshot.stopping_slices += 1,
+                SliceStatus::Stopped => snapshot.stopped_slices += 1,
+                SliceStatus::Unhealthy => snapshot.unhealthy_slices += 1,
+            }
+            snapshot.attached_agents += slice.agent_ids.len();
+            match slice.last_operation_status {
+                Some(SliceOperationStatus::Failed) => snapshot.failed_operations += 1,
+                Some(SliceOperationStatus::InProgress) => snapshot.in_progress_operations += 1,
+                _ => {}
+            }
+        }
+        snapshot
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonHealthProjection {
     pub metadata: ProjectionMetadata,
@@ -163,6 +202,7 @@ pub struct DaemonHealthProjection {
     pub provider_runs: ProviderRunHealthSnapshot,
     pub transport: super::TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
+    pub slice_lifecycle: SliceLifecycleHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
@@ -184,6 +224,7 @@ impl DaemonHealthProjection {
         provider_runs: ProviderRunHealthSnapshot,
         transport: super::TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
+        slice_lifecycle: SliceLifecycleHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
         workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
         projection_invariants: ProjectionInvariantHealthSnapshot,
@@ -210,6 +251,7 @@ impl DaemonHealthProjection {
             provider_runs,
             transport,
             terminal_stream,
+            slice_lifecycle,
             workspace_coordination,
             workspace_live_sync,
             projection_invariants,
@@ -224,8 +266,8 @@ mod tests {
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
         ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, SessionProjectionHealthSnapshot,
-        WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
-        WorktreeClaimSnapshot,
+        SliceLifecycleHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
     };
     use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::runtime::process_health::KernelProcessHealthSnapshot;
@@ -321,6 +363,17 @@ mod tests {
                 pending_output_record_limit_per_attachment: 4096,
                 trimmed_pending_output_recipients: 1,
             },
+            SliceLifecycleHealthSnapshot {
+                total_slices: 5,
+                running_slices: 1,
+                starting_slices: 1,
+                stopping_slices: 1,
+                stopped_slices: 1,
+                unhealthy_slices: 1,
+                attached_agents: 3,
+                failed_operations: 1,
+                in_progress_operations: 2,
+            },
             WorkspaceCoordinationHealthSnapshot {
                 active_worktree_claims: vec![WorktreeClaimSnapshot {
                     workspace_id: "workspace-1".to_string(),
@@ -409,6 +462,12 @@ mod tests {
             projection.terminal_stream.trimmed_pending_output_recipients,
             1
         );
+        assert_eq!(projection.slice_lifecycle.total_slices, 5);
+        assert_eq!(projection.slice_lifecycle.running_slices, 1);
+        assert_eq!(projection.slice_lifecycle.unhealthy_slices, 1);
+        assert_eq!(projection.slice_lifecycle.attached_agents, 3);
+        assert_eq!(projection.slice_lifecycle.failed_operations, 1);
+        assert_eq!(projection.slice_lifecycle.in_progress_operations, 2);
         assert_eq!(
             projection.workspace_coordination.worktree_collisions.len(),
             1

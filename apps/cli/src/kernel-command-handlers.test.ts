@@ -66,6 +66,17 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       pending_output_record_limit_per_attachment: 4096,
       trimmed_pending_output_recipients: 0,
     },
+    slice_lifecycle: {
+      total_slices: 0,
+      running_slices: 0,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 0,
+      failed_operations: 0,
+      in_progress_operations: 0,
+    },
     workspace_coordination: {
       active_worktree_claims: [],
       worktree_collisions: [],
@@ -102,12 +113,34 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
+  assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
   assert.match(rendered, /provider run bindings: ok/)
   assert.match(rendered, /projection invariants: ok/)
   assert.equal(kernelHealthIssueCount(health()), 0)
+})
+
+test("kernel health formatter reports slice lifecycle issues", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 3,
+      running_slices: 1,
+      starting_slices: 0,
+      stopping_slices: 1,
+      stopped_slices: 0,
+      unhealthy_slices: 1,
+      attached_agents: 2,
+      failed_operations: 1,
+      in_progress_operations: 1,
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 2)
+  assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
+  assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {

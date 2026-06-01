@@ -65,6 +65,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.provider_runs.session_active_run_mismatches.length
     + health.projection_invariants.mismatches.length
     + workspaceHealthIssueCount(health)
+    + sliceLifecycleIssueCount(health)
     + transportHealthIssueCount(health)
     + terminalStreamHealthIssueCount(health)
     + capabilityHealthIssueCount(health)
@@ -76,6 +77,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const capability = health.capability_executor
   const transport = health.transport
   const terminalStream = health.terminal_stream
+  const sliceLifecycle = health.slice_lifecycle
   const workspaceCoordination = health.workspace_coordination
   const liveSync = health.workspace_live_sync
   const workspaceIdentity = liveSync.workspace_identity
@@ -87,6 +89,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
     `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
     `terminal stream: pending_output=${terminalStream.pending_output_records} pending_notices=${terminalStream.pending_notice_records} pending_completions=${terminalStream.pending_completion_records} trimmed_recipients=${terminalStream.trimmed_pending_output_recipients} limit=${terminalStream.pending_output_record_limit_per_attachment}`,
+    `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations}`,
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
@@ -126,6 +129,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (terminalStream.trimmed_pending_output_recipients > 0) {
     lines.push(`terminal stream trimmed pending output for ${terminalStream.trimmed_pending_output_recipients} recipient${terminalStream.trimmed_pending_output_recipients === 1 ? "" : "s"}`)
+  }
+
+  if (sliceLifecycle.unhealthy_slices > 0 || sliceLifecycle.failed_operations > 0) {
+    lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -173,6 +180,10 @@ function transportHealthIssueCount(health: DaemonHealthProjection): number {
 
 function terminalStreamHealthIssueCount(health: DaemonHealthProjection): number {
   return health.terminal_stream.trimmed_pending_output_recipients
+}
+
+function sliceLifecycleIssueCount(health: DaemonHealthProjection): number {
+  return health.slice_lifecycle.unhealthy_slices + health.slice_lifecycle.failed_operations
 }
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {

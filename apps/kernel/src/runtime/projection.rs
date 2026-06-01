@@ -20,7 +20,8 @@ pub use daemon_health_model::{
     ProjectionInvariantHealthSnapshot, ProjectionInvariantMismatch, ProviderCatalogHealthSnapshot,
     ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
     ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, SessionProjectionHealthSnapshot,
-    WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
+    SliceLifecycleHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+    WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
 };
 pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
