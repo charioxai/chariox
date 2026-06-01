@@ -68,25 +68,12 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync off"), true)
   assert.equal(values.has("/workspace sync managed"), true)
   assert.equal(values.has("/workspace sync tracked"), true)
-  assert.equal(values.has("/workspace sync enable managed"), true)
-  assert.equal(values.has("/workspace sync enable tracked"), true)
-  assert.equal(values.has("/workspace sync disable"), true)
-  assert.equal(values.has("/workspace sync mode "), true)
   assert.equal(values.has("/workspace sync link "), true)
+  assert.equal(values.has("/workspace sync enable managed"), false)
+  assert.equal(values.has("/workspace sync enable tracked"), false)
+  assert.equal(values.has("/workspace sync disable"), false)
+  assert.equal(values.has("/workspace sync mode "), false)
   assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked workspace live sync for the current session")
-
-  const modeItems = buildCommandCenterItems("/workspace sync mode ", {
-    providerCatalog: fallbackProviderCatalog(),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    currentProvider: "opencode",
-    focusedProvider: "opencode",
-    currentModel: "opencode/gpt-5.4",
-    currentVariant: "high",
-  })
-  const modeValues = new Set(modeItems.map((item) => item.value))
-  assert.equal(modeValues.has("/workspace sync mode managed"), true)
-  assert.equal(modeValues.has("/workspace sync mode tracked"), true)
-  assert.equal(modeValues.has("/workspace sync mode off"), true)
 })
 
 test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {

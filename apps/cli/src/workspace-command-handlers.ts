@@ -166,7 +166,7 @@ async function handleWorkspaceSyncCommand(
     })
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link", "error")
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|link", "error")
 }
 
 function normalizeWorkspaceLiveSyncMode(value: string): "off" | "managed" | "tracked" | null {

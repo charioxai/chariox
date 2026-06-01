@@ -38,7 +38,7 @@ export async function executeWorkspaceCommand(
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|mode|enable|disable|link or workspace link create|list|show|attach|detach" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link or workspace link create|list|show|attach|detach" }
   }
   const sessionId = context.sessionId
   if (!sessionId) {
@@ -87,7 +87,7 @@ export async function executeWorkspaceCommand(
       const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
       return {
         ok: true,
-        message: `attached ${repoRoot} to workspace link ${payload.link.name}; enroll with \`workspace sync enable managed\` (recommended)`,
+        message: `attached ${repoRoot} to workspace link ${payload.link.name}; enable with \`workspace sync managed\` (recommended)`,
         data: payload,
         contextUpdates: { sessionId: payload.session.id },
       }
@@ -219,9 +219,9 @@ async function executeWorkspaceSyncCommand(
     }
   }
   if (args.length > 0) {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link" }
   }
-  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|enable|disable|mode|link" }
+  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

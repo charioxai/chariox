@@ -39,7 +39,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
-  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|enable managed\|tracked\|disable\|mode off\|managed\|tracked\|link/)
+  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
 })
 
@@ -1058,7 +1058,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(createResult.message ?? "", /created workspace link shared-repo/)
   assert.match(listResult.message ?? "", /attachments=1/)
   assert.match(showResult.message ?? "", /workspace link shared-repo/)
-  assert.match(attachResult.message ?? "", /workspace sync enable managed.*recommended/)
+  assert.match(attachResult.message ?? "", /workspace sync managed.*recommended/)
   assert.match(syncResult.message ?? "", /workspace live sync: tracked/)
   assert.match(syncResult.message ?? "", /scope=selected workspace\/worktree only; other repositories are unrestricted/)
   assert.match(syncResult.message ?? "", /sync_groups=1/)
