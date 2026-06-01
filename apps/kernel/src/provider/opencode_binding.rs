@@ -64,7 +64,7 @@ pub(crate) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
-    let allow_native_writes = workspace_write_fence_active(run);
+    let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
     let session_permission = if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
             allow_native_writes,
@@ -205,6 +205,14 @@ fn opencode_workspace_live_sync_permission_rules(
     serde_json::Value::Array(rules)
 }
 
+fn opencode_workspace_live_sync_native_writes_allowed(run: &RuntimeProviderRun) -> bool {
+    run.tracks_workspace_live_sync() || workspace_write_fence_active(run)
+}
+
+fn opencode_prompt_should_disable_native_writes(run: &RuntimeProviderRun) -> bool {
+    run.requires_workspace_live_sync() && !opencode_workspace_live_sync_native_writes_allowed(run)
+}
+
 fn opencode_permission_rules(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> serde_json::Value {
@@ -296,11 +304,18 @@ pub(super) fn abort_opencode_session(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use super::{
-        next_opencode_message_id, opencode_workspace_live_sync_permission_rules,
-        resolve_sync_selection, OpenCodeConfiguredDefaults, OpenCodeMessage,
+        next_opencode_message_id, opencode_prompt_should_disable_native_writes,
+        opencode_workspace_live_sync_native_writes_allowed,
+        opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
+        OpenCodeConfiguredDefaults, OpenCodeMessage,
+    };
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
 
     fn message(provider_id: &str, model_id: &str, variant: &str) -> OpenCodeMessage {
@@ -390,6 +405,42 @@ mod tests {
     }
 
     #[test]
+    fn tracked_workspace_live_sync_keeps_opencode_native_tools_enabled() {
+        let run = test_run(
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+            false,
+        );
+
+        assert!(opencode_workspace_live_sync_native_writes_allowed(&run));
+        assert!(!opencode_prompt_should_disable_native_writes(&run));
+    }
+
+    #[test]
+    fn fenced_managed_workspace_live_sync_keeps_opencode_native_tools_enabled() {
+        let run = test_run(
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_workspace_live_sync_managed(),
+            true,
+        );
+
+        assert!(opencode_workspace_live_sync_native_writes_allowed(&run));
+        assert!(!opencode_prompt_should_disable_native_writes(&run));
+    }
+
+    #[test]
+    fn unfenced_managed_workspace_live_sync_disables_opencode_native_tools() {
+        let run = test_run(
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_workspace_live_sync_managed(),
+            false,
+        );
+
+        assert!(!opencode_workspace_live_sync_native_writes_allowed(&run));
+        assert!(opencode_prompt_should_disable_native_writes(&run));
+    }
+
+    #[test]
     fn generated_message_ids_use_opencode_sortable_timestamp_width() {
         let id = next_opencode_message_id();
 
@@ -458,6 +509,31 @@ mod tests {
         assert_eq!(selection.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(selection.variant.as_deref(), Some("medium"));
     }
+
+    fn test_run(request: LaunchProviderRequest, fenced: bool) -> RuntimeProviderRun {
+        let mut pty_env = BTreeMap::new();
+        if fenced {
+            pty_env.insert(
+                "ARROBA_WORKSPACE_WRITE_FENCE".to_string(),
+                "macos-seatbelt".to_string(),
+            );
+        }
+        RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "opencode:test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env,
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://127.0.0.1:1".to_string()),
+            },
+        )
+    }
 }
 
 pub(super) fn submit_opencode_prompt(
@@ -476,7 +552,7 @@ pub(super) fn submit_opencode_prompt(
         Some(run.model()),
         run.variant(),
         run.execution_mode(),
-        run.requires_workspace_live_sync(),
+        opencode_prompt_should_disable_native_writes(run),
         workspace_write_fence_active(run),
     )?;
     state.note_prompt_submitted(message_id);
@@ -499,7 +575,7 @@ pub(crate) fn run_opencode_utility_prompt(
         .to_string();
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
-    let allow_native_writes = workspace_write_fence_active(run);
+    let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
     let session_permission = if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
             allow_native_writes,
