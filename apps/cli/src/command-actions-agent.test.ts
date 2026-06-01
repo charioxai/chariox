@@ -169,6 +169,22 @@ test("agent inspect renders diagnostics as a notice with concise footer", async 
     appendNotice: (message: string) => {
       notices.push(message)
     },
+    listSlices: async () => [{
+      id: "slice-1",
+      name: "devbox",
+      owner_kernel_id: "kernel-home",
+      owner_machine_id: "machine-home",
+      backend: "local_docker",
+      os: "linux",
+      status: "running",
+      worktree_id: "worktree-1",
+      worker_kernel_ref: "slice:slice-1",
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      agent_ids: ["agent-remote"],
+      created_at_ms: 0,
+      updated_at_ms: 0,
+    }],
     formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
   }))
 
@@ -176,7 +192,8 @@ test("agent inspect renders diagnostics as a notice with concise footer", async 
 
   assert.equal(flashedMessage, "showing agent agent-remote")
   assert.equal(notices.length, 1)
-  assert.match(notices[0] ?? "", /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(notices[0] ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(notices[0] ?? "", /slice: devbox \(id=slice-1, status=running, display=headless, worktree=worktree-1, agents=1\)/)
   assert.match(notices[0] ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker offline/)
 })
 

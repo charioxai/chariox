@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  SliceRecord,
 } from "./cli-types.js"
 import {
   formatAgentInspectSummary,
@@ -78,10 +79,26 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
     },
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
     active_substitute_index: 0,
-  }))
+  }), [slice({
+    id: "slice-1",
+    name: "devbox",
+    status: "running",
+    worktree_id: "/repo/feature",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-remote", "agent-helper"],
+    provider_auth: [{
+      provider: "codex",
+      state: "authenticated",
+      email: "dev@example.com",
+      alias: "daily",
+    }],
+  })])
 
   assert.match(summary, /agent-remote \(slice qa\) \[Working\]/)
-  assert.match(summary, /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(summary, /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(summary, /slice: devbox \(id=slice-1, status=running, display=headless, worktree=\/repo\/feature, agents=2\)/)
+  assert.match(summary, /slice provider accounts: codex=dev@example.com \(daily\)/)
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
@@ -172,6 +189,22 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
       values: {},
       updated_by_attachment_id: null,
     },
+    ...overrides,
+  }
+}
+
+function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id: "slice-1",
+    name: "slice-1",
+    owner_kernel_id: "kernel-home",
+    owner_machine_id: "machine-home",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    worker_kernel_ref: "slice:slice-1",
+    created_at_ms: 0,
+    updated_at_ms: 0,
     ...overrides,
   }
 }

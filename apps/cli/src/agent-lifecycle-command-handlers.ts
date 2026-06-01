@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  SliceRecord,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
@@ -28,6 +29,7 @@ export type AgentLifecycleCommandHandlerDeps = {
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  listSlices?: () => Promise<SliceRecord[]>
   formatError: (error: unknown) => string
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
@@ -126,7 +128,11 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
 
-export function formatAgentInspectSummary(agent: AgentInstance): string {
+export function formatAgentInspectSummary(
+  agent: AgentInstance,
+  slices: readonly SliceRecord[] = [],
+): string {
+  const slice = sliceForRemoteAgent(agent, slices)
   const lines = [
     `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`,
     `id: ${agent.id}`,
@@ -137,7 +143,11 @@ export function formatAgentInspectSummary(agent: AgentInstance): string {
     `mode: ${agent.execution_mode_override ?? "session"}`,
     `permissions: ${agent.permission_level_override ?? "session"}`,
     `worktree: ${agent.worktree_id ?? "<none>"}`,
-    `placement: ${formatAgentInspectPlacement(agent)}`,
+    `placement: ${formatAgentInspectPlacement(agent, slice)}`,
+    ...(slice ? [
+      `slice: ${formatSliceInspectSummary(slice)}`,
+      `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
+    ] : []),
     `extensions: ${formatAgentInspectExtensionSummary(agent)}`,
     `remote extension sync: ${formatAgentInspectRemoteExtensionSync(agent)}`,
     `substitutes: ${formatAgentInspectSubstitutes(agent)}`,
@@ -199,12 +209,13 @@ function formatAgentGrantCount(agent: AgentInstance): string {
   return `${grants} grant${grants === 1 ? "" : "s"}`
 }
 
-function formatAgentInspectPlacement(agent: AgentInstance): string {
+function formatAgentInspectPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
   const remote = agent.remote_execution
   if (!remote) {
     return "worker-local"
   }
   const worker = remote.worker_machine_id || remote.worker_kernel_id
+  const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
   const parts = [
     worker ? `worker=${worker}` : null,
     remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
@@ -212,7 +223,7 @@ function formatAgentInspectPlacement(agent: AgentInstance): string {
     remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
     remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
   ].filter(Boolean)
-  return `remote${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+  return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
 }
 
 function formatAgentInspectExtensionSummary(agent: AgentInstance): string {
@@ -274,6 +285,44 @@ function formatTimestamp(timestampMs: number | null | undefined): string {
     return "<none>"
   }
   return new Date(timestampMs).toISOString()
+}
+
+function sliceForRemoteAgent(
+  agent: AgentInstance,
+  slices: readonly SliceRecord[],
+): SliceRecord | null {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return null
+  }
+  return slices.find((slice) =>
+    slice.worker_kernel_id === remote.worker_kernel_id
+    || slice.worker_kernel_ref === remote.worker_kernel_id
+    || slice.worker_machine_id === remote.worker_machine_id
+    || Boolean(slice.agent_ids?.includes(agent.id)),
+  ) ?? null
+}
+
+function formatSliceInspectSummary(slice: SliceRecord): string {
+  const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
+  return `${slice.name || slice.id} (${[
+    `id=${slice.id}`,
+    `status=${slice.status}`,
+    `display=${slice.display_mode ?? "headless"}`,
+    `worktree=${worktree}`,
+    `agents=${slice.agent_ids?.length ?? 0}`,
+  ].join(", ")})`
+}
+
+function formatSliceProviderAccounts(slice: SliceRecord): string {
+  const accounts = slice.provider_auth ?? []
+  if (accounts.length === 0) {
+    return "none"
+  }
+  return accounts.map((auth) => {
+    const identity = auth.email || auth.account_id || auth.alias || auth.organization_name || auth.state
+    return `${auth.provider}=${identity}${auth.alias && identity !== auth.alias ? ` (${auth.alias})` : ""}`
+  }).join(", ")
 }
 
 async function applyFocusedAgentSession(
