@@ -282,6 +282,7 @@ function outlineAgent(agentId: string, prompt: string, summary: string) {
         total_chars: prompt.length,
         entry: { kind: "user_prompt" as const, text: prompt, agent_id: agentId },
       },
+      entries: [],
       summary: {
         entry_index: 2,
         fragment_start: 0,

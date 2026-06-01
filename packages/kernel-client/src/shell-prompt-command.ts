@@ -215,7 +215,7 @@ async function readPromptHistory(
   if (!turn) {
     return []
   }
-  const entries: SessionHistoryPageEntry[] = []
+  const entries: SessionHistoryPageEntry[] = [...turn.entries]
   for (const blob of turn.blobs) {
     const blobResponse = await deps.client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id))
     entries.push(...expectVariant<{ entries: SessionHistoryPageEntry[] }>(blobResponse, "SessionHistoryBlobContent").entries)

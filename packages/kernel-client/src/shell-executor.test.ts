@@ -410,6 +410,7 @@ test("executeShellCommand waits for prompt and renders summary blob", async () =
                 total_chars: 5,
                 entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
               },
+              entries: [],
               blobs: [],
               summary: {
               entry_index: 2,
@@ -507,6 +508,7 @@ test("executeShellCommand renders provider tools through shared tool display for
                 total_chars: 5,
                 entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
               },
+              entries: [],
               blobs: [{
                 blob_id: "history:2:2",
                 kind: "provider_tool",

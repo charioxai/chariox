@@ -797,6 +797,7 @@ export type SessionHistoryOutlineTurn = {
   prompt_id?: string | null
   started_at_ms: number
   user_prompt: SessionHistoryPageEntry
+  entries: SessionHistoryPageEntry[]
   summary?: SessionHistoryPageEntry | null
   blobs: SessionHistoryOutlineBlob[]
 }

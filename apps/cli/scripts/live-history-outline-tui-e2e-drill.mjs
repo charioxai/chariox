@@ -236,6 +236,14 @@ async function seedHistory(client, requests, workspace) {
     session.id,
     attachment.id,
     providerRun.id,
+    'provider_output',
+    'TUI live assistant detail before tool',
+    'history-outline-assistant-detail',
+  ))
+  await client.send(requests.appendNativeProviderOutputRequest(
+    session.id,
+    attachment.id,
+    providerRun.id,
     'provider_tool',
     'TUI live lazy blob detail from provider tool',
     'history-outline-tool',
@@ -310,6 +318,7 @@ async function main() {
     assert.equal(outlineBeforeTui.agents.length, 1)
     assert.equal(outlineBeforeTui.agents[0].turns.length, 1)
     assert.equal(outlineBeforeTui.agents[0].turns[0].blobs.length >= 1, true)
+    assert.equal(outlineBeforeTui.agents[0].turns[0].entries.length >= 1, true)
 
     let cliStdout = ''
     let cliStderr = ''
@@ -350,6 +359,7 @@ async function main() {
     assert.equal(Boolean(placeholder), true)
     assert.equal(placeholder.historyBlobLoaded, false)
     assert.equal(initialEntries.some((entry) => entry.text === 'TUI live history outline prompt'), true)
+    assert.equal(initialEntries.some((entry) => entry.text === 'TUI live assistant detail before tool'), true)
     assert.equal(initialEntries.some((entry) => entry.text === 'TUI live history final summary'), true)
     assert.equal(initialEntries.some((entry) => entry.text === 'TUI live lazy blob detail from provider tool'), false)
 
@@ -370,6 +380,7 @@ async function main() {
       sessionId: seeded.session.id,
       agentId: seeded.agent.id,
       outlinePromptCount: outlineBeforeTui.agents[0].turns.length,
+      outlineAssistantEntryCount: outlineBeforeTui.agents[0].turns[0].entries.length,
       outlineBlobCount: outlineBeforeTui.agents[0].turns[0].blobs.length,
       initialEntryCount: initialEntries.length,
       initialPlaceholder: {
@@ -380,6 +391,7 @@ async function main() {
         blobSummary: placeholder.blobSummary,
       },
       initialHadPrompt: initialEntries.some((entry) => entry.text === 'TUI live history outline prompt'),
+      initialHadAssistantDetail: initialEntries.some((entry) => entry.text === 'TUI live assistant detail before tool'),
       initialHadSummary: initialEntries.some((entry) => entry.text === 'TUI live history final summary'),
       initialHadToolDetail: initialEntries.some((entry) => entry.text === 'TUI live lazy blob detail from provider tool'),
       expandedEntryCount: expandedEntries.length,

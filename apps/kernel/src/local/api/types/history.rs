@@ -36,6 +36,7 @@ pub struct SessionHistoryOutlineTurn {
     pub prompt_id: Option<String>,
     pub started_at_ms: u64,
     pub user_prompt: SessionHistoryPageEntry,
+    pub entries: Vec<SessionHistoryPageEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<SessionHistoryPageEntry>,
     pub blobs: Vec<SessionHistoryOutlineBlob>,

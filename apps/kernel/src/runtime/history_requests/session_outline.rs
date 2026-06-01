@@ -144,10 +144,20 @@ fn outline_turn_from_events(
             .cloned()
             .and_then(page_entry_from_event)
     });
+    let entries = events
+        .iter()
+        .filter(|event| event.sequence != prompt.sequence)
+        .filter(|event| Some(event.sequence) != summary_sequence)
+        .filter(|event| event.kind == HistoryEventKind::ProviderOutput)
+        .filter(|event| has_content(event))
+        .cloned()
+        .filter_map(page_entry_from_event)
+        .collect::<Vec<_>>();
     let blobs = events
         .into_iter()
         .filter(|event| event.sequence != prompt.sequence)
         .filter(|event| Some(event.sequence) != summary_sequence)
+        .filter(|event| event.kind != HistoryEventKind::ProviderOutput)
         .filter_map(outline_blob_from_event)
         .collect::<Vec<_>>();
     Some(SessionHistoryOutlineTurn {
@@ -159,6 +169,7 @@ fn outline_turn_from_events(
         prompt_id: prompt.prompt_id.clone(),
         started_at_ms: prompt.timestamp_ms,
         user_prompt,
+        entries,
         summary,
         blobs,
     })
@@ -295,5 +306,82 @@ fn truncate_single_line(line: &str) -> String {
         format!("{truncated}...")
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
+    use crate::terminal::TerminalOutputKind;
+
+    #[test]
+    fn outline_turn_includes_assistant_entries_without_lazy_provider_output_blobs() {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let prompt = HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+            context.clone(),
+        );
+        let assistant = HistoryEvent::transcript(
+            11,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                "assistant body before tool",
+            ),
+            context.clone(),
+        );
+        let tool = HistoryEvent::transcript(
+            12,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderTool,
+                Some("tool-1".to_string()),
+                r#"{"tool":"bash","status":"completed","input":{"command":"echo ok"},"output":"detail"}"#,
+            ),
+            context.clone(),
+        );
+        let summary = HistoryEvent::transcript(
+            13,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                "final assistant body",
+            ),
+            context,
+        );
+
+        let turn =
+            outline_turn_from_events(&prompt, vec![prompt.clone(), assistant, tool, summary])
+                .expect("turn should be outlined");
+
+        assert_eq!(turn.entries.len(), 1);
+        assert_eq!(
+            turn.entries[0].entry.kind,
+            SessionHistoryEntryKind::ProviderOutput
+        );
+        assert_eq!(turn.entries[0].entry.text, "assistant body before tool");
+        assert_eq!(turn.blobs.len(), 1);
+        assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
+        assert_eq!(
+            turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+            Some("final assistant body")
+        );
     }
 }

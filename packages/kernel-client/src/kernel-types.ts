@@ -1272,7 +1272,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 96
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 97
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -1431,6 +1431,7 @@ export type SessionHistoryOutlineTurn = {
   prompt_id?: string | null
   started_at_ms: number
   user_prompt: SessionHistoryPageEntry
+  entries: SessionHistoryPageEntry[]
   summary?: SessionHistoryPageEntry | null
   blobs: SessionHistoryOutlineBlob[]
 }

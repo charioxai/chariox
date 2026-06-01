@@ -19,12 +19,18 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
     for (const entry of promptEntries) {
       entries.push({ ...entry, id: ++nextId })
     }
-    for (const blob of turn.blobs) {
-      entries.push(outlineBlobEntry(blob, agent.agent_id, turnId, ++nextId))
-    }
-    if (turn.summary) {
-      const summaryEntries = hydratePageEntries([turn.summary], turnId)
-      for (const entry of summaryEntries) {
+    const turnItems = [
+      ...turn.entries.map((entry) => ({ sequence: entry.entry_index, entry })),
+      ...turn.blobs.map((blob) => ({ sequence: blob.sequence_start, blob })),
+      ...(turn.summary ? [{ sequence: turn.summary.entry_index, entry: turn.summary }] : []),
+    ].sort((left, right) => left.sequence - right.sequence)
+    for (const item of turnItems) {
+      if ("blob" in item) {
+        entries.push(outlineBlobEntry(item.blob, agent.agent_id, turnId, ++nextId))
+        continue
+      }
+      const hydratedEntries = hydratePageEntries([item.entry], turnId)
+      for (const entry of hydratedEntries) {
         entries.push({ ...entry, id: ++nextId })
       }
     }

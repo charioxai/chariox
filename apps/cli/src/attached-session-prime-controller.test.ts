@@ -182,6 +182,7 @@ function outlineForAgents(
         prompt_id: `${agentId}-prompt-1`,
         started_at_ms: 1,
         user_prompt: historyEntry(index * 2, "user_prompt", prompt, agentId),
+        entries: [],
         summary: historyEntry(index * 2 + 1, "provider_output", summaryPrefix === "world" ? "world" : `${summaryPrefix} ${agentId}`, agentId),
         blobs: [],
       }],
