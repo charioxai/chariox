@@ -78,14 +78,17 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync disable")
 
   assert.match(notices[0] ?? "", /Workspace live sync: managed footer=conflict/)
+  assert.match(notices[0] ?? "", /Scope: selected workspace\/worktree only; other repositories are unrestricted/)
   assert.match(notices[0] ?? "", /Sync groups: 1/)
   assert.match(notices[0] ?? "", /Rules: ignored\/\*\*, \*\.secret/)
+  assert.match(notices[0] ?? "", /Force excludes: \.git\/\*\*, \.arroba\/\*\*/)
   assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main/)
   assert.match(notices[1] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
   assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
   assert.match(notices[3] ?? "", /rule ignored\/\*\*/)
   assert.match(notices[3] ?? "", /rule \*\.secret/)
+  assert.match(notices[3] ?? "", /force-exclude \.git\/\*\*/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
   assert.deepEqual(modeUpdates, [
     "session-1:tracked",

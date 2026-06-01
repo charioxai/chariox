@@ -157,7 +157,7 @@ async function executeWorkspaceSyncCommand(
       message: [
         `ignore=${payload.status.ignore.ignore_file ?? "none"}`,
         ...payload.status.ignore.rules.map((pattern) => `rule ${pattern}`),
-        ...payload.status.ignore.force_excludes.map((pattern) => `- ${pattern}`),
+        ...payload.status.ignore.force_excludes.map((pattern) => `force-exclude ${pattern}`),
       ].join("\n"),
       data: payload,
     }

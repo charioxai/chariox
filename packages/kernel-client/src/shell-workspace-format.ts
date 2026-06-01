@@ -28,6 +28,7 @@ export function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): strin
 export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
   const lines = [
     `workspace live sync: ${status.mode} footer=${status.footer_state}`,
+    "scope=selected workspace/worktree only; other repositories are unrestricted",
     `sync_groups=${status.sync_groups.length}`,
     `targets=${status.targets.length} conflicts=${status.conflicts.length}`,
     `ignore=${status.ignore.ignore_file ?? "none"}`,
@@ -37,6 +38,9 @@ export function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): 
   }
   for (const rule of status.ignore.rules) {
     lines.push(`rule ${rule}`)
+  }
+  for (const rule of status.ignore.force_excludes) {
+    lines.push(`force-exclude ${rule}`)
   }
   for (const target of status.targets) {
     const branch = target.branch ? ` branch=${target.branch}` : ""

@@ -116,7 +116,7 @@ async function handleWorkspaceSyncCommand(
     deps.appendNotice([
       `Ignore file: ${status.ignore.ignore_file ?? "none"}`,
       ...status.ignore.rules.map((pattern) => `rule ${pattern}`),
-      ...status.ignore.force_excludes.map((pattern) => `- ${pattern}`),
+      ...status.ignore.force_excludes.map((pattern) => `force-exclude ${pattern}`),
     ].join("\n"))
     deps.flashFooter("workspace live sync ignore rules", "info")
     return
@@ -307,11 +307,13 @@ function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): string {
 function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
   return [
     `Workspace live sync: ${status.mode} footer=${status.footer_state}`,
+    "Scope: selected workspace/worktree only; other repositories are unrestricted",
     `Sync groups: ${status.sync_groups.length}`,
     `Targets: ${status.targets.length}`,
     `Conflicts: ${status.conflicts.length}`,
     `Ignore: ${status.ignore.ignore_file ?? "none"}`,
     status.ignore.rules.length > 0 ? `Rules: ${status.ignore.rules.join(", ")}` : "",
+    status.ignore.force_excludes.length > 0 ? `Force excludes: ${status.ignore.force_excludes.join(", ")}` : "",
     formatWorkspaceLiveSyncTargets(status),
     formatWorkspaceLiveSyncConflicts(status),
   ].filter(Boolean).join("\n")
