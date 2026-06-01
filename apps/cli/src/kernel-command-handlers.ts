@@ -65,10 +65,16 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.provider_runs.session_active_run_mismatches.length
     + health.projection_invariants.mismatches.length
     + workspaceHealthIssueCount(health)
+    + transportHealthIssueCount(health)
+    + terminalStreamHealthIssueCount(health)
+    + capabilityHealthIssueCount(health)
 }
 
 export function formatKernelHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
+  const capability = health.capability_executor
+  const transport = health.transport
+  const terminalStream = health.terminal_stream
   const workspaceCoordination = health.workspace_coordination
   const liveSync = health.workspace_live_sync
   const workspaceIdentity = liveSync.workspace_identity
@@ -76,6 +82,9 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const lines = [
     "kernel health",
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
+    `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
+    `terminal stream: pending_output=${terminalStream.pending_output_records} pending_notices=${terminalStream.pending_notice_records} pending_completions=${terminalStream.pending_completion_records} trimmed_recipients=${terminalStream.trimmed_pending_output_recipients} limit=${terminalStream.pending_output_record_limit_per_attachment}`,
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
@@ -102,6 +111,19 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     for (const issue of providerRuns.session_active_run_mismatches) {
       lines.push(`  session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
     }
+  }
+
+  if (capability.rejected_jobs > 0 || capability.join_errors > 0) {
+    lines.push(`capability executor issues: rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`)
+  }
+
+  const transportIssueCount = transportHealthIssueCount(health)
+  if (transportIssueCount > 0) {
+    lines.push(`transport issues: replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`)
+  }
+
+  if (terminalStream.trimmed_pending_output_recipients > 0) {
+    lines.push(`terminal stream trimmed pending output for ${terminalStream.trimmed_pending_output_recipients} recipient${terminalStream.trimmed_pending_output_recipients === 1 ? "" : "s"}`)
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -136,4 +158,21 @@ function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
     + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
     + health.workspace_live_sync.workspace_identity.invalid_provider_runs
     + health.workspace_live_sync.external_changes.live_watcher_scan_errors
+}
+
+function transportHealthIssueCount(health: DaemonHealthProjection): number {
+  const transport = health.transport
+  return transport.replay_gaps
+    + transport.inbound_overload_rejections
+    + transport.duplicate_command_conflicts
+    + transport.outgoing_queue_overflows
+    + transport.slow_consumer_closes
+}
+
+function terminalStreamHealthIssueCount(health: DaemonHealthProjection): number {
+  return health.terminal_stream.trimmed_pending_output_recipients
+}
+
+function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
+  return health.capability_executor.rejected_jobs + health.capability_executor.join_errors
 }

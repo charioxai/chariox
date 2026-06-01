@@ -97,6 +97,9 @@ test("kernel health formatter renders provider-run invariants", () => {
   const rendered = formatKernelHealth(health())
 
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
+  assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
+  assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
+  assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
@@ -155,6 +158,51 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /workspace=workspace-1 worktree=\/repo sessions=session-1,session-2/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
+})
+
+test("kernel health formatter reports transport terminal and capability issues", () => {
+  const unhealthy = health({
+    capability_executor: {
+      max_concurrent_jobs: 64,
+      available_permits: 60,
+      submitted_jobs: 8,
+      running_jobs: 4,
+      completed_jobs: 2,
+      failed_jobs: 1,
+      rejected_jobs: 2,
+      join_errors: 1,
+    },
+    transport: {
+      active_connections: 2,
+      active_subscriptions: 3,
+      retained_event_limit: 256,
+      command_result_cache_limit: 512,
+      inbound_request_limit: 8,
+      incoming_requests: 9,
+      emitted_events: 10,
+      replay_gaps: 1,
+      inbound_overload_rejections: 2,
+      duplicate_command_conflicts: 1,
+      outgoing_queue_overflows: 1,
+      slow_consumer_closes: 2,
+    },
+    terminal_stream: {
+      pending_output_records: 4,
+      pending_notice_records: 3,
+      pending_completion_records: 2,
+      pending_output_record_limit_per_attachment: 4096,
+      trimmed_pending_output_recipients: 2,
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 12)
+  assert.match(rendered, /capabilities: running=4\/64 submitted=8 failed=1 rejected=2 join_errors=1/)
+  assert.match(rendered, /transport: connections=2 subscriptions=3 incoming=9 emitted=10 replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2/)
+  assert.match(rendered, /terminal stream: pending_output=4 pending_notices=3 pending_completions=2 trimmed_recipients=2 limit=4096/)
+  assert.match(rendered, /capability executor issues: rejected=2 join_errors=1/)
+  assert.match(rendered, /transport issues: replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2/)
+  assert.match(rendered, /terminal stream trimmed pending output for 2 recipients/)
 })
 
 test("kernel health command reports duplicate provider-run bindings", async () => {
