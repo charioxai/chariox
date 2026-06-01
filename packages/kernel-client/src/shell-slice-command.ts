@@ -19,6 +19,10 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
+import {
+  formatSliceProviderAuth,
+  formatSliceRelayLabel,
+} from "./slice-format.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -282,9 +286,9 @@ function formatSlices(slices: SliceRecord[]): string {
 function formatSlice(slice: SliceRecord): string {
   const providers = (slice.providers ?? []).join(",") || "-"
   const display = slice.display_endpoint?.url ? ` display=${slice.display_endpoint.url}` : ""
-  const relay = formatSliceRelay(slice) || "none"
+  const relay = formatSliceRelayLabel(slice, { includeUrl: true }) || "none"
   const auth = (slice.provider_auth ?? [])
-    .map(formatSliceProviderAuth)
+    .map((entry) => formatSliceProviderAuth(entry))
     .join(",") || "-"
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
@@ -295,7 +299,7 @@ function formatSlice(slice: SliceRecord): string {
 
 function formatSliceDoctor(slice: SliceRecord): string {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
-  const relay = formatSliceRelay(slice) || "none"
+  const relay = formatSliceRelayLabel(slice, { includeUrl: true }) || "none"
   const providers = slice.providers ?? []
   const providerAuth = slice.provider_auth ?? []
   const providerAuthHealthy = providers.length > 0
@@ -311,7 +315,7 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider CLIs", providers.length > 0, providers.join(",") || "none"),
-    doctorCheck("provider accounts", providerAuthHealthy, providerAuth.map(formatSliceProviderAuth).join(",") || "none"),
+    doctorCheck("provider accounts", providerAuthHealthy, providerAuth.map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
@@ -397,43 +401,6 @@ function formatSliceAuthLoginCommand(slice: SliceRecord, provider = "<provider>"
 
 function formatSliceCommandRef(slice: SliceRecord): string {
   return slice.name?.trim() || slice.id
-}
-
-function formatSliceProviderAuth(entry: NonNullable<SliceRecord["provider_auth"]>[number]): string {
-  const identity = entry.email || entry.account_id || entry.auth_type || entry.state
-  const label = entry.alias && entry.alias !== identity
-    ? `${entry.alias} (${identity})`
-    : identity
-  const org = entry.organization_name || entry.organization_id
-  const authState = sliceAuthNeedsAttention(entry.state) ? `state=${entry.state}` : ""
-  return [
-    `${entry.provider}:${label}`,
-    authState,
-    org ? `org=${org}` : "",
-    entry.subscription_type ? `plan=${entry.subscription_type}` : "",
-  ].filter(Boolean).join("/")
-}
-
-function sliceAuthNeedsAttention(state: string): boolean {
-  return state !== "configured" && state !== "authenticated"
-}
-
-function formatSliceRelay(slice: SliceRecord): string {
-  const endpoint = slice.relay_endpoint
-  if (!endpoint?.url) {
-    return ""
-  }
-  return `${formatSliceRelayAuthority(endpoint.private)}:${endpoint.url}`
-}
-
-function formatSliceRelayAuthority(value: boolean | null | undefined): string {
-  if (value === true) {
-    return "private"
-  }
-  if (value === false) {
-    return "shared"
-  }
-  return "unknown"
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
