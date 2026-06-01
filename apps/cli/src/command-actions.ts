@@ -123,6 +123,7 @@ type CommandActionDeps =
     createdSession: boolean,
   ) => Promise<void>
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
+  getDaemonHealth?: KernelCommandHandlerDeps["getDaemonHealth"]
   transitionToNoSession: (message: string) => void
   updateSessionConfig: (
     sessionId: string,

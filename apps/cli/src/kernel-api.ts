@@ -3,8 +3,9 @@ import {
   type RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { deleteKernelRequest } from "./ipc-requests.js"
+import { deleteKernelRequest, getDaemonHealthRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+import type { DaemonHealthProjection } from "@arroba/kernel-client"
 
 export async function deleteKernel(client: LocalIpcClient): Promise<{
   kernelId: string
@@ -16,4 +17,9 @@ export async function deleteKernel(client: LocalIpcClient): Promise<{
     kernelId: payload.kernel_id,
     deletedSessions: payload.deleted_sessions.map(normalizeRuntimeSession),
   }
+}
+
+export async function getDaemonHealth(client: LocalIpcClient): Promise<DaemonHealthProjection> {
+  const response = await client.send<Record<string, unknown>>(getDaemonHealthRequest())
+  return expectVariant<{ projection: DaemonHealthProjection }>(response, "DaemonHealth").projection
 }

@@ -90,6 +90,16 @@ export const COMMAND_TREE: CommandNode[] = [
     ],
   },
   {
+    id: "kernel",
+    label: "/kernel",
+    description: "Inspect or delete the active kernel",
+    value: "/kernel ",
+    children: [
+      { id: "kernel-health", label: "health", description: "Show runtime health and provider-run invariants", value: "/kernel health" },
+      { id: "kernel-delete", label: "delete", description: "Delete this kernel and its sessions", value: "/kernel delete" },
+    ],
+  },
+  {
     id: "mcp",
     label: "/mcp",
     description: "Manage Arroba MCP registry and agent grants",

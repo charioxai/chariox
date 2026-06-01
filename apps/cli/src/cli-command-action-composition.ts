@@ -76,7 +76,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel } from "./kernel-api.js"
+import { deleteKernel, getDaemonHealth } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -359,6 +359,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
+    getDaemonHealth: () => getDaemonHealth(client),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
     updateAgentProfile: (sessionId, agentId, options) =>
