@@ -48,6 +48,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added session home-kernel and owner context to CLI/web-CLI agent inspection, and added a home-kernel badge to Cloud web freeform agent panes. Agent surfaces now distinguish session authority from worker/slice execution, worktree, provider run, extension grants, and remote extension manifest state.
 
+### Remote extension recovery actions
+
+- Tightened TUI/shell and Cloud web recovery text for remote extension manifest failures so diagnostics now name both `/extension sync-status <agent>` and `/machine kernels <worker-machine>` before retrying sync. Web slice provider-auth health now names `/slice doctor <slice>` directly before login/import actions.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

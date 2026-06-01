@@ -218,8 +218,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state}${pendingRevoke}${hash}${worktree}${grants}${error}`)
     }
     const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
+    const firstIssue = remoteExtensionSync.issues[0]
     const target = firstAgent ?? "<agent>"
-    lines.push(`  next: run /extension sync-status ${target}; use /extension sync-retry ${target} after worker connectivity is healthy`)
+    const worker = firstIssue?.worker_machine_id ? `; run /machine kernels ${firstIssue.worker_machine_id}` : ""
+    lines.push(`  next: run /extension sync-status ${target}${worker}; use /extension sync-retry ${target} after worker connectivity is healthy`)
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
