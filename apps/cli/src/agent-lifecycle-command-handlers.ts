@@ -30,6 +30,7 @@ type AgentSessionContext = {
   homeKernelId?: string | null
   homeMachineId?: string | null
   ownerUserId?: string | null
+  workspaceLiveSyncMode?: RuntimeSession["workspace_live_sync_mode"]
 }
 
 export type AgentLifecycleCommandHandlerDeps = {
@@ -158,6 +159,7 @@ export function formatAgentInspectSummary(
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
+    `live sync: ${formatSessionWorkspaceLiveSyncMode(sessionContext.workspaceLiveSyncMode)}`,
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,
@@ -188,6 +190,18 @@ export function formatAgentInspectSummary(
 function formatHomeKernel(context: AgentSessionContext): string {
   const homeKernel = context.homeKernelId || "<unknown>"
   return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
+}
+
+function formatSessionWorkspaceLiveSyncMode(
+  mode: AgentSessionContext["workspaceLiveSyncMode"],
+): string {
+  if (mode === "managed" || mode === "tracked") {
+    return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
+  }
+  if (mode === "unrestricted") {
+    return "off"
+  }
+  return "config default"
 }
 
 function formatAgentListEntry(

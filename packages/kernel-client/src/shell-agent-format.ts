@@ -10,6 +10,7 @@ export type ShellAgentSessionContext = {
   homeKernelId?: string | null
   homeMachineId?: string | null
   ownerUserId?: string | null
+  workspaceLiveSyncMode?: "managed" | "tracked" | "unrestricted" | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -122,6 +123,7 @@ export function formatAgentInspectSummary(
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
+    `live sync: ${formatSessionWorkspaceLiveSyncMode(sessionContext.workspaceLiveSyncMode)}`,
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,
@@ -156,6 +158,18 @@ export function formatAgentInspectSummary(
 function formatHomeKernel(context: ShellAgentSessionContext): string {
   const homeKernel = context.homeKernelId || "<unknown>"
   return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
+}
+
+function formatSessionWorkspaceLiveSyncMode(
+  mode: ShellAgentSessionContext["workspaceLiveSyncMode"],
+): string {
+  if (mode === "managed" || mode === "tracked") {
+    return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
+  }
+  if (mode === "unrestricted") {
+    return "off"
+  }
+  return "config default"
 }
 
 export function formatAgentSubstituteSummary(agent: AgentInstance): string {

@@ -95,6 +95,7 @@ export async function handleAgentSlashCommand(
         homeKernelId: session.host_daemon_id ?? null,
         homeMachineId: session.host_machine_id ?? null,
         ownerUserId: session.owner_user_id ?? null,
+        workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
       }))
       deps.flashFooter(`showing agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
       return

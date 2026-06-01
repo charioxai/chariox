@@ -144,6 +144,7 @@ test("executeShellCommand inspects local agent placement and policy", async () =
         host_daemon_id: "home-kernel",
         host_machine_id: "home-machine",
         owner_user_id: "user-1",
+        workspace_live_sync_mode: "managed",
       }) } }
     }
     if ("GetProviderRun" in request) {
@@ -157,6 +158,7 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle\]/)
   assert.match(result.message ?? "", /home kernel: home-kernel@home-machine/)
   assert.match(result.message ?? "", /session owner: user-1/)
+  assert.match(result.message ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /provider: codex/)
   assert.match(result.message ?? "", /worktree: \/repo-feature/)
   assert.match(result.message ?? "", /placement: worker-local/)
@@ -218,7 +220,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
       return { AgentsListed: { agents: [agent] } }
     }
     if ("GetSessionState" in request) {
-      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session", workspace_live_sync_mode: "tracked" }) } }
     }
     if ("GetProviderRun" in request) {
       return { ProviderRun: { provider_run: { id: "run-session", agent_instance_id: "agent-remote" } } }
@@ -275,6 +277,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent inspect agent-remote"), context, { client: fake.client })
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(result.message ?? "", /provider run: session=run-session, worker=run-1/)
   assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, display=headed, worktree=\/repo\/feature, agents=2\)/)

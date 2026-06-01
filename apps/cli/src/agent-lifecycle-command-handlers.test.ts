@@ -120,11 +120,13 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
     homeKernelId: "home-kernel",
     homeMachineId: "home-machine",
     ownerUserId: "user-1",
+    workspaceLiveSyncMode: "tracked",
   })
 
   assert.match(summary, /agent-remote \(slice qa\) \[Working\]/)
   assert.match(summary, /home kernel: home-kernel@home-machine/)
   assert.match(summary, /session owner: user-1/)
+  assert.match(summary, /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(summary, /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(summary, /provider run: session=run-session, worker=run-1/)
   assert.match(summary, /slice: devbox \(id=slice-1, status=running, display=headless, worktree=\/repo\/feature, agents=2\)/)
