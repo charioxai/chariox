@@ -25,7 +25,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
   assert.equal(rows[0]?.value, "2 configured")
   assert.deepEqual(rows.slice(1).map((row) => row.id), ["slice:slice-a", "slice:slice-b"])
   assert.equal(rows[1]?.title, "alpha")
-  assert.equal(rows[1]?.value, "running headed 1 agent relay shared /repo auth work (acct-1)")
+  assert.equal(rows[1]?.value, "running headed 1 agent relay shared /repo auth codex work (acct-1)")
   assert.equal(rows[1]?.focused, true)
   assert.equal(rows[1]?.selectable, true)
 })

@@ -76,7 +76,7 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
     ],
   })
 
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 1 agent, relay shared, work (acct-1), user@example.com)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 1 agent, relay shared, codex work (acct-1), claude user@example.com)")
 })
 
 test("waiting room slices filter reusable slices by selected worktree", () => {

@@ -96,7 +96,8 @@ function formatSliceRelayIdentity(slice: SliceRecord): string {
 
 function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {
   const identity = entry.email || entry.account_id || entry.auth_type || entry.state
-  return entry.alias && entry.alias !== identity ? `${entry.alias} (${identity})` : identity
+  const account = entry.alias && entry.alias !== identity ? `${entry.alias} (${identity})` : identity
+  return `${entry.provider} ${account}`.trim()
 }
 
 function waitingRoomLoadingText(frame = 0) {
