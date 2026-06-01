@@ -185,6 +185,77 @@ async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent()
 }
 
 #[tokio::test]
+async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let arroba_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        &agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let native_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "sonnet")
+                .with_agent_id(&agent_id)
+                .with_client_interface(ProviderClientInterface::NativeTui),
+        )
+        .expect("native provider run should start")
+        .into_run();
+    app.update_provider_run_projection(native_run.clone());
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let health_command = KernelCommand::from_local_request(
+        "cmd-health-multi-interface-provider",
+        None,
+        None,
+        &health_request,
+    );
+    let health_response = router
+        .dispatch(health_command, health_request)
+        .await
+        .expect("health projection should be returned");
+    let projection = match health_response {
+        LocalDaemonResponse::DaemonHealth { projection } => projection,
+        _ => panic!("unexpected health response"),
+    };
+
+    assert_eq!(projection.provider_runs.projected_runs, 2);
+    assert_eq!(projection.provider_runs.active_runs, 2);
+    assert_eq!(projection.provider_runs.arroba_active_runs, 1);
+    assert_eq!(projection.provider_runs.native_tui_active_runs, 1);
+    assert!(projection
+        .provider_runs
+        .duplicate_arroba_agent_bindings
+        .is_empty());
+    assert_eq!(
+        projection.provider_runs.multi_interface_agent_bindings,
+        vec![
+            crate::runtime::projection::ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids: {
+                    let mut ids = vec![
+                        format!("{}:arroba", arroba_run.id()),
+                        format!("{}:native_tui", native_run.id()),
+                    ];
+                    ids.sort();
+                    ids
+                },
+            }
+        ]
+    );
+}
+
+#[tokio::test]
 async fn daemon_health_reads_terminal_projection_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

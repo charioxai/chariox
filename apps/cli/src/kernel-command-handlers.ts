@@ -61,6 +61,7 @@ export async function handleKernelSlashCommand(
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
   return health.provider_runs.duplicate_arroba_agent_bindings.length
+    + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
     + health.projection_invariants.mismatches.length
@@ -99,7 +100,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
-  if (providerRuns.duplicate_arroba_agent_bindings.length === 0) {
+  if (
+    providerRuns.duplicate_arroba_agent_bindings.length === 0
+    && providerRuns.multi_interface_agent_bindings.length === 0
+  ) {
     lines.push("provider run bindings: ok")
   } else {
     lines.push("duplicate Arroba provider run bindings:")
@@ -107,6 +111,14 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
     lines.push("  next: inspect the agent and stop duplicate provider runs before sending more prompts")
+  }
+
+  if (providerRuns.multi_interface_agent_bindings.length > 0) {
+    lines.push("multi-interface provider run bindings:")
+    for (const conflict of providerRuns.multi_interface_agent_bindings) {
+      lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+    }
+    lines.push("  next: inspect the agent and close the extra native TUI or Arroba provider run before sending more prompts")
   }
 
   if (providerRuns.orphaned_active_runs.length > 0) {

@@ -123,6 +123,8 @@ fn provider_run_health_snapshot(
     let mut arroba_active_runs = 0;
     let mut native_tui_active_runs = 0;
     let mut active_arroba_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut active_agent_bindings: BTreeMap<(String, String), Vec<(String, &'static str)>> =
+        BTreeMap::new();
     let mut orphaned_active_runs = Vec::new();
 
     for run in &runs {
@@ -141,6 +143,15 @@ fn provider_run_health_snapshot(
                 }
             }
             ProviderClientInterface::NativeTui => native_tui_active_runs += 1,
+        }
+        if let Some(agent_id) = run.agent_instance_id() {
+            active_agent_bindings
+                .entry((run.session_id().to_string(), agent_id.to_string()))
+                .or_default()
+                .push((
+                    run.id().to_string(),
+                    provider_client_interface_key(run.client_interface()),
+                ));
         }
         match session_agents.get(run.session_id()) {
             None => orphaned_active_runs.push(ProviderRunIdentityIssue {
@@ -170,6 +181,31 @@ fn provider_run_health_snapshot(
         .filter_map(|((session_id, agent_id), mut provider_run_ids)| {
             provider_run_ids.sort();
             (provider_run_ids.len() > 1).then_some(ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids,
+            })
+        })
+        .collect();
+
+    let multi_interface_agent_bindings = active_agent_bindings
+        .into_iter()
+        .filter_map(|((session_id, agent_id), bindings)| {
+            let interfaces = bindings
+                .iter()
+                .map(|(_, client_interface)| *client_interface)
+                .collect::<BTreeSet<_>>();
+            if bindings.len() <= 1 || interfaces.len() <= 1 {
+                return None;
+            }
+            let mut provider_run_ids = bindings
+                .into_iter()
+                .map(|(provider_run_id, client_interface)| {
+                    format!("{provider_run_id}:{client_interface}")
+                })
+                .collect::<Vec<_>>();
+            provider_run_ids.sort();
+            Some(ProviderRunAgentBindingConflict {
                 session_id,
                 agent_id,
                 provider_run_ids,
@@ -212,8 +248,16 @@ fn provider_run_health_snapshot(
         arroba_active_runs,
         native_tui_active_runs,
         duplicate_arroba_agent_bindings,
+        multi_interface_agent_bindings,
         orphaned_active_runs,
         session_active_run_mismatches,
+    }
+}
+
+fn provider_client_interface_key(client_interface: ProviderClientInterface) -> &'static str {
+    match client_interface {
+        ProviderClientInterface::Arroba => "arroba",
+        ProviderClientInterface::NativeTui => "native_tui",
     }
 }
 

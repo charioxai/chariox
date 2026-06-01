@@ -42,6 +42,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       arroba_active_runs: 1,
       native_tui_active_runs: 0,
       duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
     },
@@ -310,6 +311,7 @@ test("kernel health command reports duplicate provider-run bindings", async () =
         agent_id: "agent-1",
         provider_run_ids: ["provider-run-1", "provider-run-2"],
       }],
+      multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
     },
@@ -327,5 +329,41 @@ test("kernel health command reports duplicate provider-run bindings", async () =
   assert.match(notices.at(-1) ?? "", /duplicate Arroba provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
   assert.match(notices.at(-1) ?? "", /next: inspect the agent and stop duplicate provider runs/)
+  assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
+})
+
+test("kernel health command reports multi-interface provider-run bindings", async () => {
+  const notices: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 2,
+      active_runs: 2,
+      arroba_active_runs: 1,
+      native_tui_active_runs: 1,
+      duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [{
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider_run_ids: ["provider-run-1:arroba", "provider-run-2:native_tui"],
+      }],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+
+  await handleKernelSlashCommand({
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+    getDaemonHealth: async () => unhealthy,
+    transitionToNoSession: () => {},
+  }, { kind: "kernel", raw: "/kernel health", args: ["health"] })
+
+  assert.doesNotMatch(notices.at(-1) ?? "", /provider run bindings: ok/)
+  assert.match(notices.at(-1) ?? "", /multi-interface provider run bindings/)
+  assert.match(notices.at(-1) ?? "", /provider-run-1:arroba,provider-run-2:native_tui/)
+  assert.match(notices.at(-1) ?? "", /close the extra native TUI or Arroba provider run/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })

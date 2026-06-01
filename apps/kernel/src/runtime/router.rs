@@ -96,7 +96,8 @@ mod tests {
         TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{
-        LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
+        LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,
+        ProviderClientInterface, RuntimeProviderRun,
     };
     use crate::runtime::command::{
         KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,

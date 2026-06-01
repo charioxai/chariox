@@ -373,6 +373,7 @@ export type ProviderRunHealthSnapshot = {
   arroba_active_runs: number
   native_tui_active_runs: number
   duplicate_arroba_agent_bindings: ProviderRunAgentBindingConflict[]
+  multi_interface_agent_bindings: ProviderRunAgentBindingConflict[]
   orphaned_active_runs: ProviderRunIdentityIssue[]
   session_active_run_mismatches: ProviderRunSessionPointerIssue[]
 }
@@ -1173,7 +1174,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 88
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 89
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
