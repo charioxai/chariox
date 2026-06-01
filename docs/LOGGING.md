@@ -197,6 +197,18 @@ Export a local debug bundle for one session or provider run:
 arroba-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/arroba-session-1-logs
 ```
 
+From an attached TUI session, export the current session logs without leaving the terminal:
+
+```text
+/kernel debug-bundle
+```
+
+Or choose the destination explicitly:
+
+```text
+/kernel debug-bundle /tmp/arroba-session-1-logs
+```
+
 The bundle directory contains:
 
 - `manifest.json`: filters, source log root, record count, and bundle schema.

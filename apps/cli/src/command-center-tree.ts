@@ -97,6 +97,7 @@ export const COMMAND_TREE: CommandNode[] = [
     value: "/kernel ",
     children: [
       { id: "kernel-health", label: "health", description: "Show runtime health and provider-run invariants", value: "/kernel health" },
+      { id: "kernel-debug-bundle", label: "debug-bundle", description: "Export a local session debug bundle", value: "/kernel debug-bundle " },
       { id: "kernel-delete", label: "delete", description: "Delete this kernel and its sessions", value: "/kernel delete" },
     ],
   },
