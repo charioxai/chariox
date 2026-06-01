@@ -357,12 +357,20 @@ function sliceNextAction(slice: SliceRecord): string | null {
   }
   const auth = slice.provider_auth ?? []
   if (auth.length === 0) {
-    return "import or login provider accounts for this slice"
+    return `import or login provider accounts${formatSliceProviderActionTarget(slice.providers ?? [])}`
   }
-  if (auth.some((entry) => entry.state === "unknown" || entry.state === "not_configured")) {
-    return "refresh provider login for this slice"
+  const staleProviders = auth
+    .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
+    .map((entry) => entry.provider)
+  if (staleProviders.length > 0) {
+    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)}`
   }
   return null
+}
+
+function formatSliceProviderActionTarget(providers: readonly string[]): string {
+  const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  return unique.length > 0 ? ` for ${unique.join(",")}` : " for this slice"
 }
 
 function formatSliceProviderAuth(entry: NonNullable<SliceRecord["provider_auth"]>[number]): string {

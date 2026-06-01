@@ -49,7 +49,7 @@ test("slice command list renders provider account recovery hints", async () => {
   await handleSliceSlashCommand(harness.deps, command("list"))
 
   assert.match(harness.notices.at(-1) ?? "", /providers=codex auth=-/)
-  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts with \/slice auth import linux-dev <provider> or \/slice auth login linux-dev <provider>/)
+  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-dev <provider> or \/slice auth login linux-dev <provider>/)
 })
 
 test("slice command create passes display mode and current worktree mount", async () => {

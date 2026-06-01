@@ -428,12 +428,21 @@ function sliceProviderAuthNextAction(slice: SliceRecord): string {
     return "configure provider CLIs inside the slice before spawning agents there"
   }
   if ((slice.provider_auth ?? []).length === 0) {
-    return `import or login provider accounts with /slice auth import ${formatSliceLabel(slice)} <provider> or /slice auth login ${formatSliceLabel(slice)} <provider>`
+    const provider = formatSliceProviderActionTarget(slice.providers ?? [])
+    return `import or login provider accounts${provider} with /slice auth import ${formatSliceLabel(slice)} <provider> or /slice auth login ${formatSliceLabel(slice)} <provider>`
   }
-  if ((slice.provider_auth ?? []).some((entry) => entry.state === "unknown" || entry.state === "not_configured")) {
-    return `refresh provider login with /slice auth login ${formatSliceLabel(slice)} <provider>`
+  const staleProviders = (slice.provider_auth ?? [])
+    .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
+    .map((entry) => entry.provider)
+  if (staleProviders.length > 0) {
+    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with /slice auth login ${formatSliceLabel(slice)} <provider>`
   }
   return ""
+}
+
+function formatSliceProviderActionTarget(providers: readonly string[]): string {
+  const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  return unique.length > 0 ? ` for ${unique.join(",")}` : ""
 }
 
 async function setSliceRunning(
