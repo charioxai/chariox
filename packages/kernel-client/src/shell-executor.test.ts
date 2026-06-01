@@ -63,6 +63,28 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
           session: makeSession({
             host_daemon_id: "home-kernel-1",
             host_machine_id: "home-machine-1",
+            workspace_live_sync_mode: "managed",
+            active_provider_run_id: "session-run-1",
+            agents: [makeAgent({
+              id: "agent-1",
+              agent_ref: "agent-1",
+              remote_execution: {
+                worker_kernel_id: "slice-kernel",
+                worker_machine_id: "slice-machine",
+                execution_lease_id: "lease-1",
+                leased_agent_id: "leased-agent-1",
+                active_worker_provider_run_id: "worker-run-1",
+              },
+              extension_grants: [
+                { kind: "script", name: "deploy" },
+                { kind: "skill", name: "review" },
+              ],
+              remote_extension_manifest_sync: {
+                state: "stale",
+                manifest_hash: "abcdef1234567890",
+                last_error: "worker behind",
+              },
+            })],
             prompt_states: {
               "agent-1": {
                 active_prompt: {
@@ -80,6 +102,27 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
         },
       }
     }
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [{
+            id: "slice-1",
+            name: "devbox",
+            owner_kernel_id: "home-kernel-1",
+            owner_machine_id: "home-machine-1",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            worker_kernel_ref: "slice-kernel",
+            worker_kernel_id: "slice-kernel",
+            worker_machine_id: "slice-machine",
+            agent_ids: ["agent-1"],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }],
+        },
+      }
+    }
     return {}
   })
   const contextResult = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
@@ -90,12 +133,17 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
   assert.match(contextResult.message ?? "", /session: session-1/)
   assert.match(contextResult.message ?? "", /home kernel: home-kernel-1/)
+  assert.match(contextResult.message ?? "", /workspace live sync: managed/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
+  assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
+  assert.match(contextResult.message ?? "", /provider run: session=session-run-1, worker=worker-run-1/)
+  assert.match(contextResult.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; skill=1, script=1\)/)
+  assert.match(contextResult.message ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker behind, next=run extension sync-status agent-1/)
   assert.match(contextResult.message ?? "", /workflow: workflow-1/)
   assert.match(contextResult.message ?? "", /provider: codex/)
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
-  assert.equal(fake.requests.length, 1)
+  assert.equal(fake.requests.length, 2)
 })
 
 test("executeShellCommand lists sessions with home kernel ownership", async () => {

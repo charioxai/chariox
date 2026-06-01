@@ -1,5 +1,5 @@
-import type { RuntimeSession } from "./kernel-types.js"
-import { getSessionStateRequest } from "./ipc-requests.js"
+import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
+import { getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -17,6 +17,8 @@ export async function executeContextCommand(
   deps: ShellContextCommandDeps,
 ): Promise<ShellCommandResult> {
   let session: RuntimeSession | null = null
+  let slices: SliceRecord[] = []
+  let sliceLookupError: string | null = null
   if (context.sessionId) {
     try {
       const response = await deps.client.send(getSessionStateRequest(context.sessionId))
@@ -25,13 +27,29 @@ export async function executeContextCommand(
       session = null
     }
   }
-  return { ok: true, message: formatShellContext(context, session), data: { context, session } }
+  const currentAgent = findCurrentAgent(context, session)
+  if (currentAgent?.remote_execution) {
+    try {
+      const response = await deps.client.send(listSlicesRequest())
+      slices = expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices
+    } catch (error) {
+      sliceLookupError = error instanceof Error ? error.message : "slice lookup failed"
+    }
+  }
+  return {
+    ok: true,
+    message: formatShellContext(context, session, slices, sliceLookupError),
+    data: { context, session, slices },
+  }
 }
 
-function formatShellContext(context: ShellContext, session: RuntimeSession | null = null): string {
-  const currentAgent = context.agentId
-    ? session?.agents.find((agent) => agent.id === context.agentId || agent.agent_ref === context.agentId || agent.alias === context.agentId) ?? null
-    : null
+function formatShellContext(
+  context: ShellContext,
+  session: RuntimeSession | null = null,
+  slices: readonly SliceRecord[] = [],
+  sliceLookupError: string | null = null,
+): string {
+  const currentAgent = findCurrentAgent(context, session)
   const currentAgentId = currentAgent?.id ?? context.agentId ?? null
   const currentAgentBusy = currentAgentId
     ? Boolean(session?.prompt_states?.[currentAgentId]?.active_prompt)
@@ -52,8 +70,15 @@ function formatShellContext(context: ShellContext, session: RuntimeSession | nul
     `worktree: ${context.worktree}`,
     `session: ${context.sessionId ?? "-"}`,
     `home kernel: ${session?.host_daemon_id?.trim() || session?.host_machine_id?.trim() || "-"}`,
+    `workspace live sync: ${formatContextWorkspaceLiveSyncMode(session)}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
+    ...(currentAgent ? [
+      `agent placement: ${formatContextAgentPlacement(currentAgent, slices, sliceLookupError)}`,
+      `provider run: ${formatContextProviderRun(currentAgent, session)}`,
+      `extensions: ${formatContextExtensionSummary(currentAgent)}`,
+      `remote extension sync: ${formatContextRemoteExtensionSync(currentAgent)}`,
+    ] : []),
     `mode: ${currentAgent ? `${effectiveAgentMode} (agent${currentAgent.execution_mode_override ? "-override" : "-session"})` : sessionMode}`,
     `permissions: ${currentAgent ? `${effectiveAgentPermissions} (agent${currentAgent.permission_level_override ? "-override" : "-session"})` : sessionPermissions}`,
     `workflow: ${context.workflowId ?? "-"}`,
@@ -71,6 +96,109 @@ function formatShellContext(context: ShellContext, session: RuntimeSession | nul
     }
   }
   return lines.join("\n")
+}
+
+function findCurrentAgent(context: ShellContext, session: RuntimeSession | null): AgentInstance | null {
+  if (!context.agentId) {
+    return null
+  }
+  return session?.agents.find((agent) => (
+    agent.id === context.agentId || agent.agent_ref === context.agentId || agent.alias === context.agentId
+  )) ?? null
+}
+
+function formatContextWorkspaceLiveSyncMode(session: RuntimeSession | null): string {
+  const mode = session?.workspace_live_sync_mode
+  if (!mode) {
+    return "config default"
+  }
+  return mode === "unrestricted" ? "off" : mode
+}
+
+function formatContextAgentPlacement(
+  agent: AgentInstance,
+  slices: readonly SliceRecord[],
+  sliceLookupError: string | null,
+): string {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return "worker-local"
+  }
+  const slice = sliceForRemoteAgent(agent, slices)
+  const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
+  const worker = remote.worker_machine_id || remote.worker_kernel_id
+  const parts = [
+    worker ? `worker=${worker}` : null,
+    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
+    sliceLookupError ? `slice_lookup=${sliceLookupError}` : null,
+  ].filter(Boolean)
+  return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+}
+
+function formatContextProviderRun(agent: AgentInstance, session: RuntimeSession | null): string {
+  const sessionRunId = session?.active_provider_run_id ?? null
+  const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (!sessionRunId && !workerRunId) {
+    return "none"
+  }
+  return [
+    sessionRunId ? `session=${sessionRunId}` : null,
+    workerRunId ? `worker=${workerRunId}` : null,
+  ].filter(Boolean).join(", ")
+}
+
+function formatContextExtensionSummary(agent: AgentInstance): string {
+  const grants = agent.extension_grants ?? []
+  if (grants.length === 0) {
+    return "none"
+  }
+  const counts = grants.reduce<Record<string, number>>((acc, grant) => {
+    acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
+    return acc
+  }, {})
+  const byKind = ["mcp", "skill", "script", "connector"]
+    .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
+    .filter(Boolean)
+    .join(", ")
+  const placement = agent.remote_execution ? "home-proxy/passive-snapshot" : "worker-local"
+  return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+}
+
+function formatContextRemoteExtensionSync(agent: AgentInstance): string {
+  if (!agent.remote_execution) {
+    return "not applicable"
+  }
+  const sync = agent.remote_extension_manifest_sync
+  if (!sync) {
+    return `pending; next=run extension sync-status ${agent.agent_ref}`
+  }
+  const details = [
+    sync.state,
+    sync.pending_revoke ? "pending revoke" : null,
+    sync.manifest_hash ? `hash=${sync.manifest_hash.slice(0, 12)}` : null,
+    sync.last_error ? `error=${sync.last_error}` : null,
+  ].filter(Boolean)
+  const needsAction = sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error
+  if (needsAction) {
+    details.push(`next=run extension sync-status ${agent.agent_ref}`)
+  }
+  return details.join(", ")
+}
+
+function sliceForRemoteAgent(agent: AgentInstance, slices: readonly SliceRecord[]): SliceRecord | null {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return null
+  }
+  return slices.find((slice) => slice.agent_ids?.includes(agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id,
+    ) ?? null
 }
 
 function expectSessionState(response: Record<string, unknown>): RuntimeSession {
