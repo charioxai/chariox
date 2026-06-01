@@ -4,6 +4,10 @@ import {
   hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
+import {
+  formatSliceProviderAccounts,
+  formatSliceScope,
+} from "./slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 export type ShellAgentProviderRunContext = {
@@ -338,7 +342,7 @@ function sliceForRemoteAgent(
 }
 
 function formatSliceSummary(slice: SliceRecord): string {
-  const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
+  const worktree = formatSliceScope(slice)
   return `${slice.name || slice.id} (${[
     `id=${slice.id}`,
     `status=${slice.status}`,
@@ -346,20 +350,4 @@ function formatSliceSummary(slice: SliceRecord): string {
     `worktree=${worktree}`,
     `agents=${slice.agent_ids?.length ?? 0}`,
   ].join(", ")})`
-}
-
-function formatSliceProviderAccounts(slice: SliceRecord): string {
-  const accounts = slice.provider_auth ?? []
-  if (accounts.length === 0) {
-    return "none"
-  }
-  return accounts.map((auth) => `${auth.provider}=${formatSliceAuthIdentity(auth)}`).join(", ")
-}
-
-function formatSliceAuthIdentity(auth: NonNullable<SliceRecord["provider_auth"]>[number]): string {
-  const identity = auth.email || auth.account_id || auth.auth_type || auth.state
-  if (auth.alias && auth.alias !== identity) {
-    return `${auth.alias} (${identity})`
-  }
-  return identity
 }

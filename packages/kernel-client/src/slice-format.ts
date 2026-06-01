@@ -16,6 +16,7 @@ export type SliceRecordLike = {
   readonly workspace_id?: string | null
   readonly worktree_id?: string | null
   readonly workspace_mount?: string | null
+  readonly provider_auth?: readonly SliceProviderAuthLike[] | null
   readonly relay_endpoint?: {
     readonly url?: string | null
     readonly private?: boolean | null
@@ -77,6 +78,19 @@ export function formatSliceProviderAuth(
         entry.subscription_type ? `plan=${entry.subscription_type}` : "",
       ].filter(Boolean)
   return [`${entry.provider}${separator}${identity}`, ...details].join("/")
+}
+
+export function formatSliceProviderAccounts(slice: SliceRecordLike): string {
+  const accounts = slice.provider_auth ?? []
+  if (accounts.length === 0) {
+    return "none"
+  }
+  return accounts
+    .map((entry) => formatSliceProviderAuth(entry, {
+      separator: "=",
+      includeOrgPlan: false,
+    }))
+    .join(", ")
 }
 
 export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {

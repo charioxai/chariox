@@ -7,7 +7,7 @@ import type {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
-import { formatSliceAuthIdentity, formatSliceScope } from "./slice-format.js"
+import { formatSliceProviderAccounts, formatSliceScope } from "./slice-format.js"
 import { hasActiveHomeProxyExtensionGrants } from "@arroba/kernel-client/extension-grant-placement"
 import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
@@ -430,16 +430,6 @@ function formatSliceInspectSummary(slice: SliceRecord): string {
     `worktree=${worktree}`,
     `agents=${slice.agent_ids?.length ?? 0}`,
   ].join(", ")})`
-}
-
-function formatSliceProviderAccounts(slice: SliceRecord): string {
-  const accounts = slice.provider_auth ?? []
-  if (accounts.length === 0) {
-    return "none"
-  }
-  return accounts.map((auth) => {
-    return `${auth.provider}=${formatSliceAuthIdentity(auth)}`
-  }).join(", ")
 }
 
 async function applyFocusedAgentSession(
