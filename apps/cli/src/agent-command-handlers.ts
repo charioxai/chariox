@@ -79,7 +79,8 @@ export async function handleAgentSlashCommand(
         deps.flashFooter(resolved.error ?? "usage: /agent inspect [agent-ref]", "error")
         return
       }
-      deps.flashFooter(formatAgentInspectSummary(resolved.agent), "info")
+      deps.appendNotice(formatAgentInspectSummary(resolved.agent))
+      deps.flashFooter(`showing agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
       return
     }
     case "cycle": {

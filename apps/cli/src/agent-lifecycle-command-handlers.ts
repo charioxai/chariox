@@ -27,6 +27,7 @@ export type AgentLifecycleCommandHandlerDeps = {
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
+  appendNotice: (message: string) => void
   formatError: (error: unknown) => string
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>

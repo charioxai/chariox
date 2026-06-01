@@ -104,6 +104,7 @@ test("agent focus command applies focus, launches a run, and reports the focused
     multiAgentResponseLayout: () => "individual",
     maxAgentsPerScreen: () => 4,
     flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
     formatError: (error) => String(error),
     applySessionState: (nextSession) => { appliedSessionId = nextSession.focused_agent_id },
     refreshAgentPanes: async () => {},

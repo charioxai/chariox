@@ -138,6 +138,48 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.equal(flashedMessage, "spawned agent agent-2 (review)")
 })
 
+test("agent inspect renders diagnostics as a notice with concise footer", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "qa",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-1",
+    },
+    extension_grants: [{ kind: "mcp", name: "filesystem" }],
+    remote_extension_manifest_sync: {
+      state: "stale",
+      manifest_hash: "abcdef123456",
+      last_error: "worker offline",
+    },
+  })
+  let flashedMessage = ""
+  const notices: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => makeSession({ focused_agent_id: agent.id, agents: [agent] }),
+    focusedAgentId: () => agent.id,
+    resolveSessionAgent: () => ({ agent }),
+    flashFooter: (message: string) => {
+      flashedMessage = message
+    },
+    appendNotice: (message: string) => {
+      notices.push(message)
+    },
+    formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
+  }))
+
+  await handlers.handleAgentCommand({ kind: "agent", raw: "/agent inspect", args: ["inspect"] })
+
+  assert.equal(flashedMessage, "showing agent agent-remote")
+  assert.equal(notices.length, 1)
+  assert.match(notices[0] ?? "", /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(notices[0] ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker offline/)
+})
+
 test("agent spawn count inherits session defaults for each spawn", async () => {
   const sourceAgent = makeAgent({
     id: "agent-source",
