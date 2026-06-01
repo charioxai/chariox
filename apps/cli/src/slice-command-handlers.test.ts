@@ -70,6 +70,34 @@ test("slice command list keeps provider placeholder for multi-provider recovery 
   assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev <provider> or \/slice auth login linux-dev <provider>/)
 })
 
+test("slice command list renders concrete or placeholder stale-auth recovery hints", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-a",
+        providers: ["codex"],
+        provider_auth: [{ provider: "codex", state: "not_configured" }],
+      }),
+      slice({
+        id: "slice-2",
+        name: "linux-b",
+        providers: ["codex", "opencode:openai"],
+        provider_auth: [
+          { provider: "codex", state: "not_configured" },
+          { provider: "opencode:openai", state: "unknown" },
+        ],
+      }),
+    ],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("list"))
+
+  const notice = harness.notices.at(-1) ?? ""
+  assert.match(notice, /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
+  assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
+})
+
 test("slice command create passes display mode and current worktree mount", async () => {
   const harness = sliceHarness()
 

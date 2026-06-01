@@ -440,7 +440,7 @@ function sliceProviderAuthNextAction(slice: SliceRecord): string {
     .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
     .map((entry) => entry.provider)
   if (staleProviders.length > 0) {
-    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with /slice auth login ${formatSliceLabel(slice)} <provider>`
+    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with /slice auth login ${formatSliceLabel(slice)} ${sliceProviderCommandArg(staleProviders)}`
   }
   return ""
 }

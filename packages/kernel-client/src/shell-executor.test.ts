@@ -971,6 +971,63 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
 })
 
+test("executeShellCommand renders concrete or placeholder slice stale-auth recovery", async () => {
+  const baseSlice = {
+    id: "slice-1",
+    name: "linux-a",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    display_mode: "headless",
+    workspace_id: "/repo",
+    worktree_id: "/repo/feature",
+    workspace_mount: "/repo/feature",
+    worker_kernel_ref: "slice:linux-a",
+    worker_kernel_id: "kernel-slice",
+    worker_machine_id: "machine-slice",
+    session_ids: [],
+    agent_ids: [],
+    relay_endpoint: { url: "wss://relay.example/slice", private: false },
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }
+  const fake = fakeClient((request) => {
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [
+            {
+              ...baseSlice,
+              id: "slice-1",
+              name: "linux-a",
+              providers: ["codex"],
+              provider_auth: [{ provider: "codex", state: "not_configured" }],
+            },
+            {
+              ...baseSlice,
+              id: "slice-2",
+              name: "linux-b",
+              providers: ["codex", "opencode:openai"],
+              provider_auth: [
+                { provider: "codex", state: "not_configured" },
+                { provider: "opencode:openai", state: "unknown" },
+              ],
+            },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
+  assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
+})
+
 test("executeShellCommand treats unsupported slice auth responses as failures", async () => {
   const slice = {
     id: "slice-1",
