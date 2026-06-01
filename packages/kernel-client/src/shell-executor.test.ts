@@ -123,6 +123,9 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
         },
       }
     }
+    if ("GetProviderRun" in request) {
+      return { ProviderRun: { provider_run: { id: "session-run-1", agent_instance_id: "agent-1" } } }
+    }
     return {}
   })
   const contextResult = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
@@ -143,7 +146,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /provider: codex/)
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
-  assert.equal(fake.requests.length, 2)
+  assert.equal(fake.requests.length, 3)
 })
 
 test("executeShellCommand lists sessions with home kernel ownership", async () => {

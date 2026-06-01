@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  RuntimeProviderRun,
   RuntimeSession,
   SliceRecord,
 } from "./kernel-types.js"
@@ -7,6 +8,7 @@ import {
   aliasAgentRequest,
   cycleAgentFocusRequest,
   focusAgentRequest,
+  getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
   listSlicesRequest,
@@ -64,13 +66,11 @@ export async function executeAgentCommand(
       const { slices } = agents.some((agent) => agent.remote_execution)
         ? await listAgentInspectSlices(deps)
         : { slices: [] }
+      const providerRunContext = await activeProviderRunContext(deps, session)
       return {
         ok: true,
-        message: formatAgentListSummary(agents, slices, {
-          activeProviderRunId: session.active_provider_run_id,
-          focusedAgentId: session.focused_agent_id,
-        }),
-        data: { agents, slices, session },
+        message: formatAgentListSummary(agents, slices, providerRunContext),
+        data: { agents, slices, session, providerRunContext },
       }
     }
     case "inspect":
@@ -85,13 +85,11 @@ export async function executeAgentCommand(
       const { slices, error } = resolved.agent.remote_execution
         ? await listAgentInspectSlices(deps)
         : { slices: [], error: null }
+      const providerRunContext = await activeProviderRunContext(deps, session)
       return {
         ok: true,
-        message: formatAgentInspectSummary(agent, slices, error, {
-          activeProviderRunId: session.active_provider_run_id,
-          focusedAgentId: session.focused_agent_id,
-        }),
-        data: { agent, slices, session },
+        message: formatAgentInspectSummary(agent, slices, error, providerRunContext),
+        data: { agent, slices, session, providerRunContext },
       }
     }
     case "spawn": {
@@ -327,6 +325,33 @@ async function getShellSessionState(
 ): Promise<RuntimeSession> {
   const response = await deps.client.send(getSessionStateRequest(sessionId))
   return expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+}
+
+async function activeProviderRunContext(
+  deps: ShellAgentCommandDeps,
+  session: RuntimeSession,
+): Promise<{
+  activeProviderRunId?: string | null
+  activeProviderRunAgentId?: string | null
+  activeProviderRunLookupError?: string | null
+}> {
+  if (!session.active_provider_run_id) {
+    return {}
+  }
+  try {
+    const response = await deps.client.send(getProviderRunRequest(session.active_provider_run_id))
+    const providerRun = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun").provider_run
+    return {
+      activeProviderRunId: providerRun.id,
+      activeProviderRunAgentId: providerRun.agent_instance_id ?? null,
+    }
+  } catch (error) {
+    return {
+      activeProviderRunId: session.active_provider_run_id,
+      activeProviderRunAgentId: null,
+      activeProviderRunLookupError: error instanceof Error ? error.message : "provider run lookup failed",
+    }
+  }
 }
 
 async function executeAgentSubstituteCommand(

@@ -3,7 +3,7 @@ import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 export type ShellAgentProviderRunContext = {
   activeProviderRunId?: string | null
   activeProviderRunAgentId?: string | null
-  focusedAgentId?: string | null
+  activeProviderRunLookupError?: string | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -171,6 +171,15 @@ function formatAgentProviderRunSummary(
 ): string {
   const sessionRunId = agentProviderRunId(agent, context)
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (!sessionRunId && context.activeProviderRunId && context.activeProviderRunAgentId && context.activeProviderRunAgentId !== agent.id) {
+    const worker = workerRunId ? `, worker=${workerRunId}` : ""
+    return `session=${context.activeProviderRunId} owned_by=${context.activeProviderRunAgentId}${worker}`
+  }
+  if (!sessionRunId && context.activeProviderRunId && !context.activeProviderRunAgentId) {
+    const reason = context.activeProviderRunLookupError ? `; ${context.activeProviderRunLookupError}` : ""
+    const worker = workerRunId ? `, worker=${workerRunId}` : ""
+    return `session=${context.activeProviderRunId} owner unknown${reason}${worker}`
+  }
   if (!sessionRunId && !workerRunId) {
     return "none"
   }
@@ -190,7 +199,7 @@ function agentProviderRunId(
   if (context.activeProviderRunAgentId) {
     return context.activeProviderRunAgentId === agent.id ? context.activeProviderRunId : null
   }
-  return context.focusedAgentId === agent.id ? context.activeProviderRunId : null
+  return null
 }
 
 function formatAgentExtensionSummary(agent: AgentInstance): string {

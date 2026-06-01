@@ -136,8 +136,13 @@ test("executeShellCommand inspects local agent placement and policy", async () =
     if ("ListAgents" in request) {
       return { AgentsListed: { agents: [agent] } }
     }
-    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
-    return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
+    }
+    if ("GetProviderRun" in request) {
+      return { ProviderRun: { provider_run: { id: "run-session", agent_instance_id: "agent-2" } } }
+    }
+    throw new Error("unexpected request")
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
@@ -184,6 +189,9 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     }
     if ("GetSessionState" in request) {
       return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
+    }
+    if ("GetProviderRun" in request) {
+      return { ProviderRun: { provider_run: { id: "run-session", agent_instance_id: "agent-remote" } } }
     }
     if ("ListSlices" in request) {
       return {
@@ -248,6 +256,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     { ListAgents: { session_id: "session-1" } },
     { GetSessionState: { session_id: "session-1" } },
     { ListSlices: null },
+    { GetProviderRun: { provider_run_id: "run-session" } },
   ])
 })
 

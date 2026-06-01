@@ -1,5 +1,5 @@
-import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
-import { getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
+import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
+import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -19,12 +19,22 @@ export async function executeContextCommand(
   let session: RuntimeSession | null = null
   let slices: SliceRecord[] = []
   let sliceLookupError: string | null = null
+  let activeProviderRun: RuntimeProviderRun | null = null
+  let providerRunLookupError: string | null = null
   if (context.sessionId) {
     try {
       const response = await deps.client.send(getSessionStateRequest(context.sessionId))
       session = expectSessionState(response)
     } catch {
       session = null
+    }
+  }
+  if (session?.active_provider_run_id) {
+    try {
+      const response = await deps.client.send(getProviderRunRequest(session.active_provider_run_id))
+      activeProviderRun = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun").provider_run
+    } catch (error) {
+      providerRunLookupError = error instanceof Error ? error.message : "provider run lookup failed"
     }
   }
   const currentAgent = findCurrentAgent(context, session)
@@ -38,8 +48,8 @@ export async function executeContextCommand(
   }
   return {
     ok: true,
-    message: formatShellContext(context, session, slices, sliceLookupError),
-    data: { context, session, slices },
+    message: formatShellContext(context, session, slices, sliceLookupError, activeProviderRun, providerRunLookupError),
+    data: { context, session, slices, activeProviderRun },
   }
 }
 
@@ -48,6 +58,8 @@ function formatShellContext(
   session: RuntimeSession | null = null,
   slices: readonly SliceRecord[] = [],
   sliceLookupError: string | null = null,
+  activeProviderRun: RuntimeProviderRun | null = null,
+  providerRunLookupError: string | null = null,
 ): string {
   const currentAgent = findCurrentAgent(context, session)
   const currentAgentId = currentAgent?.id ?? context.agentId ?? null
@@ -75,7 +87,7 @@ function formatShellContext(
     `agent: ${agentLabel}`,
     ...(currentAgent ? [
       `agent placement: ${formatContextAgentPlacement(currentAgent, slices, sliceLookupError)}`,
-      `provider run: ${formatContextProviderRun(currentAgent, session)}`,
+      `provider run: ${formatContextProviderRun(currentAgent, session, activeProviderRun, providerRunLookupError)}`,
       `extensions: ${formatContextExtensionSummary(currentAgent)}`,
       `remote extension sync: ${formatContextRemoteExtensionSync(currentAgent)}`,
     ] : []),
@@ -138,9 +150,27 @@ function formatContextAgentPlacement(
   return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
 }
 
-function formatContextProviderRun(agent: AgentInstance, session: RuntimeSession | null): string {
+function formatContextProviderRun(
+  agent: AgentInstance,
+  session: RuntimeSession | null,
+  activeProviderRun: RuntimeProviderRun | null,
+  providerRunLookupError: string | null,
+): string {
   const sessionRunId = session?.active_provider_run_id ?? null
+  const sessionRunAgentId = activeProviderRun?.agent_instance_id ?? null
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (sessionRunId && sessionRunAgentId && sessionRunAgentId !== agent.id) {
+    return [
+      `session=${sessionRunId} owned_by=${sessionRunAgentId}`,
+      workerRunId ? `worker=${workerRunId}` : null,
+    ].filter(Boolean).join(", ")
+  }
+  if (sessionRunId && !sessionRunAgentId) {
+    return [
+      `session=${sessionRunId} owner unknown${providerRunLookupError ? `; ${providerRunLookupError}` : ""}`,
+      workerRunId ? `worker=${workerRunId}` : null,
+    ].filter(Boolean).join(", ")
+  }
   if (!sessionRunId && !workerRunId) {
     return "none"
   }
