@@ -789,8 +789,31 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     ].filter(Boolean)
     if (result.length > 0) rows.push(`  result: ${result.join(" ")}`)
     if (typeof payload.error === "string" && payload.error) rows.push(`  error: ${payload.error}`)
+    const next = homeExtensionAuditNextAction(String(event.kind ?? ""), payload)
+    if (next) rows.push(`  next: ${next}`)
     return rows.join("\n")
   }).join("\n")
+}
+
+function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
+  const status = typeof payload.status === "string" ? payload.status : ""
+  const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
+  if (status === "denied" || kind.includes(".denied")) {
+    if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
+      return "refresh remote extension sync and verify the worker/provider run is still current before retrying"
+    }
+    return "verify the home grant, safety limit, and caller authority before retrying"
+  }
+  if (status === "timeout" || kind.includes(".timeout")) {
+    return "split the tool work or increase the home extension timeout before retrying"
+  }
+  if (status === "cancelled" || kind.includes(".cancel")) {
+    return "retry only if the provider turn still needs this tool result"
+  }
+  if (status === "failed" || kind.includes(".failed")) {
+    return "inspect the home-side tool configuration and logs, then retry"
+  }
+  return ""
 }
 
 function fieldPart(label: string, value: unknown): string | null {

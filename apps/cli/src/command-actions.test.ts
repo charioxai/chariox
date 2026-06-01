@@ -115,6 +115,16 @@ test("formatHomeExtensionAuditEvents renders diagnostic context without payload 
           },
         },
       },
+      {
+        kind: "home_extension.invoke.denied",
+        timestamp_ms: 2000,
+        payload: {
+          status: "denied",
+          error: "worker mismatch",
+          args: { secret: "not rendered" },
+          result: { body: "not rendered" },
+        },
+      },
     ]),
     [
       "1970-01-01T00:00:00.000Z home_extension.grant.created home-only",
@@ -124,6 +134,9 @@ test("formatHomeExtensionAuditEvents renders diagnostic context without payload 
       "  actor: home=alice caller=bob agent=agent-2 lease=lease-2 worker=worker-2 run=run-2",
       "  tool: connector:linear as=linear_create_issue safety=write timeout=30s hash=hash-1",
       "  result: ok=true bytes=128 duration=42ms",
+      "1970-01-01T00:00:02.000Z home_extension.invoke.denied denied",
+      "  error: worker mismatch",
+      "  next: refresh remote extension sync and verify the worker/provider run is still current before retrying",
     ].join("\n"),
   )
 })

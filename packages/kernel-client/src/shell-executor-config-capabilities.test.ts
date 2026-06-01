@@ -427,9 +427,9 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
           return {
             HomeExtensionAuditListed: {
               events: [{
-                kind: "home_extension.invoke.completed",
+                kind: "home_extension.invoke.denied",
                 timestamp_ms: 1700000000000,
-                payload: { status: "completed", tool: { tool_name: "lookup" } },
+                payload: { status: "denied", error: "worker mismatch", tool: { tool_name: "lookup" } },
               }],
             },
           }
@@ -454,7 +454,8 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.match(retryResult.message ?? "", /manifest hash: hash-1/)
   assert.match(retryResult.message ?? "", /next: keep the home revoke in place; retry sync after the worker reconnects/)
   assert.equal(auditResult.ok, true)
-  assert.match(auditResult.message ?? "", /home_extension\.invoke\.completed lookup completed/)
+  assert.match(auditResult.message ?? "", /home_extension\.invoke\.denied lookup denied/)
+  assert.match(auditResult.message ?? "", /next=refresh remote extension sync and verify the worker\/provider run is current/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
     { ListAgents: { session_id: "session-1" } },

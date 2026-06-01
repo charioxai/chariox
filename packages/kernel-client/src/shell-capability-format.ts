@@ -132,8 +132,30 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     const status = typeof payload.status === "string" ? ` ${payload.status}` : ""
     const name = typeof tool.tool_name === "string" ? ` ${tool.tool_name}` : ""
     const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
-    return `${at} ${String(event.kind ?? "event")}${name}${status}`
+    const next = homeExtensionAuditNextAction(String(event.kind ?? ""), payload)
+    return `${at} ${String(event.kind ?? "event")}${name}${status}${next ? ` next=${next}` : ""}`
   }).join("\n")
+}
+
+function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
+  const status = typeof payload.status === "string" ? payload.status : ""
+  const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
+  if (status === "denied" || kind.includes(".denied")) {
+    if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
+      return "refresh remote extension sync and verify the worker/provider run is current"
+    }
+    return "verify the home grant, safety limit, and caller authority"
+  }
+  if (status === "timeout" || kind.includes(".timeout")) {
+    return "split the tool work or increase the home extension timeout"
+  }
+  if (status === "cancelled" || kind.includes(".cancel")) {
+    return "retry only if the provider turn still needs this tool result"
+  }
+  if (status === "failed" || kind.includes(".failed")) {
+    return "inspect home-side tool configuration and logs"
+  }
+  return ""
 }
 
 function formatRemoteExtensionSyncStatusLine(status?: RemoteExtensionManifestSyncStatus | null): string {
