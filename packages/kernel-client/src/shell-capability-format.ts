@@ -114,8 +114,10 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   const status = agent.remote_extension_manifest_sync
   const rows = [
     `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
     `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
     `worker machine: ${agent.remote_execution.worker_machine_id}`,
+    `execution lease: ${agent.remote_execution.execution_lease_id}`,
     `leased agent: ${agent.remote_execution.leased_agent_id}`,
     `active worker run: ${agent.remote_execution.active_worker_provider_run_id ?? "none"}`,
   ]
@@ -127,6 +129,17 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   const nextAction = remoteExtensionSyncNextAction(status)
   if (nextAction) rows.push(`next: ${nextAction}`)
   return rows.join("\n")
+}
+
+function formatRemoteExtensionPlacement(remote: NonNullable<AgentInstance["remote_execution"]>): string {
+  const parts = [
+    remote.worker_machine_id ? `worker=${remote.worker_machine_id}` : null,
+    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
+  ].filter(Boolean)
+  return parts.length > 0 ? `remote (${parts.join(", ")})` : "remote"
 }
 
 export function formatHomeExtensionAuditEvents(events: readonly Record<string, unknown>[]): string {
