@@ -386,11 +386,14 @@ function sliceDoctorHasFailures(slice: SliceRecord): boolean {
     || scope === "-"
     || (slice.display_mode === "headed" && !slice.display_endpoint?.url)
     || slice.last_operation_status === "failed"
+    || !sliceProviderAuthHealthy(slice)
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
   const scope = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
+  const providers = slice.providers ?? []
+  const providerAuth = slice.provider_auth ?? []
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
@@ -400,7 +403,8 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
-    doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
+    doctorCheck("provider CLIs", providers.length > 0, providers.join(",") || "none"),
+    doctorCheck("provider accounts", sliceProviderAuthHealthy(slice), providerAuth.map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
@@ -438,6 +442,13 @@ function sliceProviderAuthNextAction(slice: SliceRecord): string {
     return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with /slice auth login ${formatSliceLabel(slice)} <provider>`
   }
   return ""
+}
+
+function sliceProviderAuthHealthy(slice: SliceRecord): boolean {
+  const auth = slice.provider_auth ?? []
+  return (slice.providers ?? []).length > 0
+    && auth.length > 0
+    && auth.every((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
 }
 
 function formatSliceProviderActionTarget(providers: readonly string[]): string {

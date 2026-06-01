@@ -180,6 +180,30 @@ test("slice command doctor flags running slices without a relay endpoint", async
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
+test("slice command doctor flags missing provider accounts", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        status: "running",
+        worker_kernel_id: "kernel-slice",
+        relay_endpoint: { url: "wss://relay.example/slice", private: false },
+        worktree_id: "/repo/wt",
+        providers: ["codex"],
+        provider_auth: [],
+      }),
+    ],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
+
+  assert.match(harness.notices.at(-1) ?? "", /ok provider CLIs: codex/)
+  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: none/)
+  assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for codex/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
 test("slice command logs renders focused slice diagnostics", async () => {
   const harness = sliceHarness({
     slices: [
