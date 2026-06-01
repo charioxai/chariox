@@ -58,11 +58,32 @@ pub(crate) fn provider_processes_visible_to_user(
 ) -> Vec<ProviderProcessInfo> {
     processes
         .into_iter()
-        .filter(|process| {
-            process
-                .owner_provider_run_ids
-                .iter()
-                .any(|run_id| provider_run_owned_by(run_id, caller_user_id))
+        .filter_map(|mut process| {
+            let mut owned = 0usize;
+            let mut foreign = 0usize;
+            for run_id in &process.owner_provider_run_ids {
+                if provider_run_owned_by(run_id, caller_user_id) {
+                    owned += 1;
+                } else {
+                    foreign += 1;
+                }
+            }
+            if owned == 0 {
+                return None;
+            }
+            if foreign > 0 {
+                process.teardown_safe = false;
+                if !process
+                    .teardown_blockers
+                    .iter()
+                    .any(|blocker| blocker == "shared with another user")
+                {
+                    process
+                        .teardown_blockers
+                        .push("shared with another user".to_string());
+                }
+            }
+            Some(process)
         })
         .collect()
 }
@@ -220,6 +241,12 @@ mod tests {
                 .map(|process| process.process_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["process-owned", "process-shared"]
+        );
+        assert!(visible[0].teardown_safe);
+        assert!(!visible[1].teardown_safe);
+        assert_eq!(
+            visible[1].teardown_blockers,
+            vec!["shared with another user"]
         );
     }
 

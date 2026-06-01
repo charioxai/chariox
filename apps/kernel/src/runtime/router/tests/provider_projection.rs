@@ -549,6 +549,25 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes() {
 
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let list_request =
+        LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest { provider: None });
+    let list_command = remote_command_for_request(&list_request, Some("user-2"));
+    let list_response = router
+        .dispatch(list_command, list_request)
+        .await
+        .expect("list should complete");
+    match list_response {
+        LocalDaemonResponse::ProviderProcessesListed { processes } => {
+            assert_eq!(processes.len(), 1);
+            assert!(!processes[0].teardown_safe);
+            assert_eq!(
+                processes[0].teardown_blockers,
+                vec!["shared with another user"]
+            );
+        }
+        _ => panic!("unexpected list response"),
+    }
+
     let teardown_request =
         LocalDaemonRequest::TeardownProviderProcesses(TeardownProviderProcessesRequest {
             provider: None,
