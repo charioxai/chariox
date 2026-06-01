@@ -279,10 +279,36 @@ async fn discover_started_slice_worker(
 }
 
 fn local_docker_slice_relay(
-    _config_projection: &DaemonConfigProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
 ) -> crate::slice::LocalDockerSliceRelay {
+    let config = config_projection.snapshot();
+    if let (Some(relay_url), Some(relay_token)) =
+        (config.relay_url.clone(), config.relay_token.clone())
+    {
+        if configured_relay_is_container_reachable(&relay_url) {
+            return crate::slice::LocalDockerSliceRelay {
+                relay_url: relay_url.clone(),
+                container_relay_url: Some(relay_url),
+                relay_token,
+            };
+        }
+    }
     crate::slice::local_docker_private_relay(slice)
+}
+
+fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(relay_url) else {
+        return false;
+    };
+    match url.scheme() {
+        "ws" | "wss" => {}
+        _ => return false,
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    !matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
 #[cfg(test)]
@@ -330,5 +356,67 @@ mod tests {
         assert!(error.to_string().contains("active agent"));
         ensure_slice_has_no_active_agents(&slice(Vec::new()), "slice.stop")
             .expect("idle slice should pass guard");
+    }
+
+    #[test]
+    fn hosted_cloud_slices_use_shared_relay_for_worker_projection() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("shared-token".to_string());
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+
+        assert_eq!(relay.relay_url, "wss://relay.example.test");
+        assert_eq!(
+            relay.container_relay_url.as_deref(),
+            Some("wss://relay.example.test")
+        );
+        assert_eq!(relay.relay_token, "shared-token");
+    }
+
+    #[test]
+    fn self_hosted_slices_use_configured_non_loopback_ws_relay() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://relay.lan:49100".to_string());
+        config.relay_token = Some("self-host-token".to_string());
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+
+        assert_eq!(relay.relay_url, "ws://relay.lan:49100");
+        assert_eq!(
+            relay.container_relay_url.as_deref(),
+            Some("ws://relay.lan:49100")
+        );
+        assert_eq!(relay.relay_token, "self-host-token");
+    }
+
+    #[test]
+    fn local_slices_keep_private_relay_for_loopback_relay_setups() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:49100".to_string());
+        config.relay_token = Some("local-token".to_string());
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+
+        assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
+        assert_eq!(relay.container_relay_url, None);
+        assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
+    }
+
+    #[test]
+    fn local_slices_keep_private_relay_when_configured_relay_lacks_token() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = None;
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+
+        assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
+        assert_eq!(relay.container_relay_url, None);
+        assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
     }
 }

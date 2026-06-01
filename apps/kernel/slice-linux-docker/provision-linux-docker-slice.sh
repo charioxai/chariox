@@ -162,6 +162,11 @@ ensure_container() {
 }
 
 exec_slice() {
+  local relay_env_args=()
+  relay_env_args+=(-e ARROBA_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")
+  if [[ -n "$SLICE_RELAY_URL" ]]; then
+    relay_env_args+=(-e ARROBA_SLICE_RELAY_URL="$SLICE_RELAY_URL")
+  fi
   docker exec \
     -e ARROBA_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
     -e ARROBA_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
@@ -172,8 +177,7 @@ exec_slice() {
     -e ARROBA_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
     -e ARROBA_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e ARROBA_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
-    -e ARROBA_SLICE_RELAY_URL="$SLICE_RELAY_URL" \
-    -e ARROBA_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN" \
+    "${relay_env_args[@]}" \
     -e ARROBA_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e ARROBA_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e ARROBA_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \

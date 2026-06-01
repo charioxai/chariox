@@ -427,8 +427,13 @@ fn configure_local_docker_slice_command(
         command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
     }
     if let Some(relay) = relay {
-        command.env("ARROBA_SLICE_RELAY_TOKEN", relay.relay_token);
-        if let Some(container_relay_url) = relay.container_relay_url {
+        let LocalDockerSliceRelay {
+            relay_token,
+            container_relay_url,
+            ..
+        } = relay;
+        command.env("ARROBA_SLICE_RELAY_TOKEN", relay_token);
+        if let Some(container_relay_url) = container_relay_url {
             command.env(
                 "ARROBA_SLICE_RELAY_URL",
                 relay_url_for_container(&container_relay_url),
@@ -654,10 +659,9 @@ mod tests {
     use super::*;
     use crate::slice::{CreateSliceInput, SliceStore};
 
-    #[test]
-    fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
+    fn test_record() -> SliceRecord {
         let store = SliceStore::default();
-        let record = store
+        store
             .create(
                 "kernel-1",
                 "machine-1",
@@ -675,8 +679,11 @@ mod tests {
                     now_ms: 42,
                 },
             )
-            .expect("slice should create");
-        let options = LocalDockerSliceOptions {
+            .expect("slice should create")
+    }
+
+    fn test_options() -> LocalDockerSliceOptions {
+        LocalDockerSliceOptions {
             root: std::env::temp_dir(),
             docker_image: "arroba-slice-linux:test".to_string(),
             build_image: SliceImageBuildPolicy::Never,
@@ -686,7 +693,13 @@ mod tests {
             cpus: None,
             screen_width: 1280,
             screen_height: 800,
-        };
+        }
+    }
+
+    #[test]
+    fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
+        let record = test_record();
+        let options = test_options();
         let mut command = Command::new("slice-provisioner");
 
         configure_local_docker_slice_command(&mut command, &record, None, &options);
@@ -700,5 +713,53 @@ mod tests {
             })
             .expect("provider bind host should be configured");
         assert_eq!(provider_bind_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn local_docker_slice_runtime_projects_shared_relay_env() {
+        let record = test_record();
+        let options = test_options();
+        let relay = LocalDockerSliceRelay {
+            relay_url: "wss://relay.example.test".to_string(),
+            container_relay_url: Some("wss://relay.example.test".to_string()),
+            relay_token: "shared-token".to_string(),
+        };
+        let mut command = Command::new("slice-provisioner");
+
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options);
+
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+        assert_eq!(
+            envs.get("ARROBA_SLICE_RELAY_URL"),
+            Some(&"wss://relay.example.test")
+        );
+        assert_eq!(envs.get("ARROBA_SLICE_RELAY_TOKEN"), Some(&"shared-token"));
+    }
+
+    #[test]
+    fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
+        let record = test_record();
+        let options = test_options();
+        let relay = LocalDockerSliceRelay {
+            relay_url: "ws://127.0.0.1:43130".to_string(),
+            container_relay_url: None,
+            relay_token: "slice-local-token".to_string(),
+        };
+        let mut command = Command::new("slice-provisioner");
+
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options);
+
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+        assert!(!envs.contains_key("ARROBA_SLICE_RELAY_URL"));
+        assert_eq!(
+            envs.get("ARROBA_SLICE_RELAY_TOKEN"),
+            Some(&"slice-local-token")
+        );
     }
 }
