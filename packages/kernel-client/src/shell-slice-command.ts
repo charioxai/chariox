@@ -139,7 +139,11 @@ export async function executeSliceCommand(
         }
         const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider))
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
-        return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`, data: payload }
+        return {
+          ok: payload.status === "imported",
+          message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`,
+          data: payload,
+        }
       }
       if (first === "remove") {
         const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
@@ -149,7 +153,11 @@ export async function executeSliceCommand(
         }
         const response = await deps.client.send(removeSliceProviderAuthRequest(sliceRef, provider))
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
-        return { ok: true, message: `slice ${formatSliceLabel(payload.slice)} auth remove ${payload.provider}: ${payload.status}`, data: payload }
+        return {
+          ok: payload.status === "removed",
+          message: `slice ${formatSliceLabel(payload.slice)} auth remove ${payload.provider}: ${payload.status}`,
+          data: payload,
+        }
       }
       if (first === "login") {
         const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)

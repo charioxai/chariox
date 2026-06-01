@@ -901,6 +901,49 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
 })
 
+test("executeShellCommand treats unsupported slice auth responses as failures", async () => {
+  const slice = {
+    id: "slice-1",
+    name: "linux-a",
+    backend: "ssh_docker",
+    os: "linux",
+    status: "stopped",
+    display_mode: "headless",
+    workspace_id: "/repo",
+    worktree_id: "/repo/feature",
+    workspace_mount: "/repo/feature",
+    worker_kernel_ref: "slice:linux-a",
+    worker_kernel_id: null,
+    worker_machine_id: null,
+    providers: [],
+    session_ids: [],
+    agent_ids: [],
+    provider_auth: [],
+    relay_endpoint: null,
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }
+  const fake = fakeClient((request) => {
+    if ("ImportSliceProviderAuth" in request) {
+      return { SliceProviderAuthImported: { slice, provider: "codex", status: "not_implemented" } }
+    }
+    if ("RemoveSliceProviderAuth" in request) {
+      return { SliceProviderAuthRemoved: { slice, provider: "codex", status: "not_implemented" } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+
+  const imported = await executeShellCommand(parseShellCommand("slice auth import linux-a codex"), context, { client: fake.client })
+  const removed = await executeShellCommand(parseShellCommand("slice auth remove linux-a codex"), context, { client: fake.client })
+
+  assert.equal(imported.ok, false)
+  assert.match(imported.message ?? "", /auth import codex: not_implemented/)
+  assert.equal(removed.ok, false)
+  assert.match(removed.message ?? "", /auth remove codex: not_implemented/)
+})
+
 test("executeShellCommand resolves focused agent slice by attached agent id", async () => {
   const requests: Record<string, unknown>[] = []
   const wrongWorkerSlice = {
