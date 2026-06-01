@@ -151,6 +151,7 @@ impl KernelRuntimeState {
                 });
             };
             let max_safety = crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
+            let definition_hash = connector.definition_hash()?;
             for operation in connector.operations {
                 if operation.safety > max_safety {
                     continue;
@@ -169,7 +170,7 @@ impl KernelRuntimeState {
                     execution_location: crate::extension::ExtensionExecutionLocation::Home,
                     safety: Some(operation.safety.as_str().to_string()),
                     timeout_sec: Some(connector.timeout_ms / 1000),
-                    version_hash: None,
+                    version_hash: Some(definition_hash.clone()),
                 });
             }
         }

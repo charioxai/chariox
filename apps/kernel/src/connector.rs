@@ -9,6 +9,7 @@ use std::time::Duration;
 use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -709,6 +710,35 @@ mod tests {
             }],
         };
         assert!(definition.validate().is_err());
+    }
+
+    #[test]
+    fn connector_definition_hash_changes_with_projected_operations() {
+        let mut definition = ArrobaConnectorDefinition {
+            kind: "connector".to_string(),
+            name: "demo".to_string(),
+            description: "Demo connector".to_string(),
+            adapter: "demo_adapter".to_string(),
+            credential: None,
+            timeout_ms: 30_000,
+            max_response_bytes: 1024,
+            operations: vec![ConnectorOperation {
+                name: "lookup".to_string(),
+                description: "Lookup".to_string(),
+                safety: ConnectorSafety::Read,
+                input_schema: serde_json::json!({"type": "object"}),
+                config: serde_json::json!({}),
+            }],
+        };
+        let initial = definition
+            .definition_hash()
+            .expect("connector hash should compute");
+        definition.operations[0].description = "Lookup v2".to_string();
+        let updated = definition
+            .definition_hash()
+            .expect("updated connector hash should compute");
+
+        assert_ne!(initial, updated);
     }
 
     #[test]

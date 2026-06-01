@@ -82,6 +82,15 @@ impl ArrobaConnectorDefinition {
             .map(|operation| self.operation_tool_name(&operation.name))
             .collect()
     }
+
+    pub fn definition_hash(&self) -> Result<String, DaemonError> {
+        let bytes = serde_json::to_vec(self).map_err(|error| DaemonError::LocalTransport {
+            operation: "connector.definition_hash",
+            message: format!("failed to serialize connector `{}`: {error}", self.name),
+        })?;
+        let digest = Sha256::digest(&bytes);
+        Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
 }
 
 impl ArrobaConnectorAdapterDefinition {
