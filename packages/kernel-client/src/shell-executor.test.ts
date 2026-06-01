@@ -8,6 +8,7 @@ import type {
   AgentInstance,
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
+  DaemonHealthProjection,
   ProviderProcessInfo,
   WorkflowPublicationTrustedSender,
   WorkspaceLinkDefinition,
@@ -38,9 +39,71 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /kernel health\|status\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
+})
+
+test("executeShellCommand renders kernel health diagnostics", async () => {
+  const baseHealth = daemonHealth()
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          provider_runs: {
+            ...baseHealth.provider_runs,
+            projected_runs: 2,
+            active_runs: 2,
+            arroba_active_runs: 2,
+            duplicate_arroba_agent_bindings: [{
+              session_id: "session-1",
+              agent_id: "agent-1",
+              provider_run_ids: ["run-1", "run-2"],
+            }],
+          },
+          remote_execution: {
+            ...baseHealth.remote_execution,
+            remote_agents: 1,
+            active_remote_agents: 1,
+            missing_active_worker_runs: 1,
+            issues: [{
+              kind: "missing_active_worker_provider_run",
+              session_id: "session-1",
+              agent_id: "agent-remote",
+              agent_ref: "agent-remote",
+              worker_kernel_id: "worker-kernel",
+              worker_machine_id: "worker-machine",
+              execution_lease_id: "lease-1",
+              leased_agent_id: "leased-agent-1",
+              state: "working",
+              is_processing: true,
+              details: "active remote agent has no worker run",
+            }],
+          },
+          workspace_live_sync: {
+            ...baseHealth.workspace_live_sync,
+            managed_mode: {
+              write_fence_supported: false,
+              write_fence_backend: null,
+              unavailable_reason: "managed mode needs selective write fencing",
+            },
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /kernel health: 3 issues/)
+  assert.match(result.message ?? "", /provider runs: projected=2 active=2 arroba=2 native_tui=0/)
+  assert.match(result.message ?? "", /remote execution: agents=1 active=1 missing_worker_runs=1 malformed=0/)
+  assert.match(result.message ?? "", /duplicate provider binding: session=session-1 agent=agent-1 runs=run-1,run-2/)
+  assert.match(result.message ?? "", /remote execution issue: agent=agent-remote worker=worker-kernel\/worker-machine lease=lease-1 state=working kind=missing_active_worker_provider_run active remote agent has no worker run/)
+  assert.match(result.message ?? "", /workspace live sync managed unavailable: managed mode needs selective write fencing/)
 })
 
 test("executeShellCommand renders shell-local context and pwd", async () => {
@@ -1100,6 +1163,147 @@ test("executeShellCommand attaches standalone shell clients when switching sessi
     { AttachToSession: { session_id: "session-2", client_id: "arroba-shell-test", capability_level: "FullTerminal" } },
   ])
 })
+
+function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthProjection {
+  const base: DaemonHealthProjection = {
+    metadata: { projection_version: 1, last_event_id: 0, generated_at_ms: 0 },
+    session_command_lanes: [],
+    agent_command_lanes: [],
+    workflow_command_lanes: [],
+    provider_runtime_lanes: [],
+    provider_run_actor: { enqueued_commands: 0, enqueue_rejections: 0 },
+    process: { process_id: 1234, current_resident_set_bytes: 128, peak_resident_set_bytes: 256 },
+    capability_executor: {
+      max_concurrent_jobs: 64,
+      available_permits: 64,
+      submitted_jobs: 0,
+      running_jobs: 0,
+      completed_jobs: 0,
+      failed_jobs: 0,
+      rejected_jobs: 0,
+      join_errors: 0,
+    },
+    session_projection: {
+      projected_sessions: 1,
+      projected_session_list_entries: 1,
+      active_prompts: 0,
+      queued_prompts: 0,
+    },
+    agent_runtime_projection: {
+      projected_agents: 1,
+      active_prompts: 0,
+      queued_prompts: 0,
+    },
+    provider_catalog: {
+      cached: true,
+      expired: false,
+      age_ms: 1000,
+      ttl_ms: 60000,
+    },
+    provider_runs: {
+      projected_runs: 0,
+      active_runs: 0,
+      arroba_active_runs: 0,
+      native_tui_active_runs: 0,
+      duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+    transport: {
+      active_connections: 1,
+      active_subscriptions: 1,
+      retained_event_limit: 1000,
+      command_result_cache_limit: 1000,
+      inbound_request_limit: 100,
+      incoming_requests: 0,
+      emitted_events: 0,
+      replay_gaps: 0,
+      inbound_overload_rejections: 0,
+      duplicate_command_conflicts: 0,
+      outgoing_queue_overflows: 0,
+      slow_consumer_closes: 0,
+    },
+    terminal_stream: {
+      pending_output_records: 0,
+      pending_notice_records: 0,
+      pending_completion_records: 0,
+      pending_output_record_limit_per_attachment: 4096,
+      trimmed_pending_output_recipients: 0,
+    },
+    slice_lifecycle: {
+      total_slices: 0,
+      running_slices: 0,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 0,
+      failed_operations: 0,
+      in_progress_operations: 0,
+      issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+    remote_execution: {
+      remote_agents: 0,
+      active_remote_agents: 0,
+      missing_active_worker_runs: 0,
+      malformed_bindings: 0,
+      issues: [],
+    },
+    remote_extension_sync: {
+      remote_agents: 0,
+      home_proxy_agents: 0,
+      home_proxy_grants: 0,
+      manifest_missing_agents: 0,
+      synced_agents: 0,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+      issues: [],
+    },
+    workspace_coordination: {
+      active_worktree_claims: [],
+      worktree_collisions: [],
+      active_operation_claims: [],
+    },
+    workspace_live_sync: {
+      active_reservations: 0,
+      active_reservation_artifacts: 0,
+      managed_mode: {
+        write_fence_supported: true,
+        write_fence_backend: "macos-seatbelt",
+        unavailable_reason: null,
+      },
+      workspace_identity: {
+        tracked_provider_runs: 0,
+        identity_changed_provider_runs: 0,
+        invalid_provider_runs: 0,
+        current_generation_total: 0,
+        issues: [],
+      },
+      external_changes: {
+        tracked_artifacts: 0,
+        externally_changed_artifacts: 0,
+        external_change_events: 0,
+        live_watcher_started: true,
+        live_watcher_scans: 0,
+        live_watcher_scan_errors: 0,
+        issues: [],
+      },
+    },
+    projection_invariants: {
+      checked_sessions: 1,
+      checked_agents: 1,
+      mismatches: [],
+    },
+  }
+  return { ...base, ...overrides }
+}
 
 test("executeShellCommand manages session invites and members", async () => {
   const session = makeSession({
