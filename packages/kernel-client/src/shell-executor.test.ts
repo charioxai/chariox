@@ -618,6 +618,56 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.match(result.message ?? "", /ok agents: 1 attached/)
 })
 
+test("executeShellCommand resolves focused agent slice by attached agent id", async () => {
+  const requests: Record<string, unknown>[] = []
+  const slice = {
+    id: "slice-1",
+    name: "linux-a",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    display_mode: "headless",
+    workspace_id: "/repo",
+    worktree_id: "/repo/feature",
+    workspace_mount: "/repo/feature",
+    worker_kernel_ref: "slice:linux-a",
+    worker_kernel_id: "kernel-slice-other",
+    worker_machine_id: "machine-slice-other",
+    providers: [],
+    session_ids: ["session-1"],
+    agent_ids: ["agent-1"],
+    provider_auth: [],
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [makeAgent({ remote_execution: { worker_kernel_id: "kernel-agent", worker_machine_id: "machine-agent", execution_lease_id: "lease-1", leased_agent_id: "leased-agent-1" } })] } }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [slice] } }
+    }
+    if ("GetSlice" in request) {
+      return { Slice: { slice } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo/feature",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const result = await executeShellCommand(parseShellCommand("slice status"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["ListAgents", "ListSlices", "GetSlice"])
+  assert.deepEqual(requests[2], { GetSlice: { slice_ref: "slice-1" } })
+  assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
+})
+
 test("executeShellCommand renders slice logs", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
