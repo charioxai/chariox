@@ -820,6 +820,32 @@ test("executeShellCommand lists remote kernels with recovery hints", async () =>
   assert.match(result.message ?? "", /next: enable remote leases or choose another worker/)
 })
 
+test("executeShellCommand renders unknown remote lease state without a false recovery hint", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListRemoteMachineKernels: { machine_ref: "machine-1" } })
+    return {
+      RemoteMachineKernelsListed: {
+        kernels: [{
+          kernel_id: "kernel-1",
+          machine_id: "machine-1",
+          machine_alias: "mini",
+          relay_alias: "mini-kernel",
+          kernel_alias: null,
+          leased_agent_count: 0,
+          local_session_count: 1,
+          available_providers: ["codex"],
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("machine kernels machine-1"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /accepting_remote_leases=unknown/)
+  assert.doesNotMatch(result.message ?? "", /enable remote leases/)
+})
+
 test("executeShellCommand manages remote machine trust", async () => {
   const machine = {
     machine_id: "machine-1",

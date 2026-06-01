@@ -121,7 +121,11 @@ function formatRemoteMachineKernelSummary(kernel: RemoteMachineKernelSummary): s
       ? ` kernel_alias=${kernel.kernel_alias}`
       : ""
   const next = remoteKernelNextAction(kernel)
-  return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
+  return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${formatAcceptingRemoteLeases(kernel.accepting_remote_leases)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
+}
+
+function formatAcceptingRemoteLeases(value: boolean | undefined): string {
+  return value === undefined ? "unknown" : String(value)
 }
 
 function remoteMachineNextAction(machine: RemoteMachineSummary): string {

@@ -18,11 +18,23 @@ test("remote machine command renders recovery hints", async () => {
   assert.equal(harness.footers.at(1)?.message, "listed 1 live kernel(s) for machine-1")
 })
 
+test("remote machine command renders unknown lease state without a false recovery hint", async () => {
+  const harness = remoteMachineHarness({
+    accepting_remote_leases: undefined,
+    available_providers: ["codex"],
+  })
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+
+  assert.match(harness.notices.at(0) ?? "", /accepting_remote_leases=unknown/)
+  assert.doesNotMatch(harness.notices.at(0) ?? "", /enable remote leases/)
+})
+
 function command(...args: string[]) {
   return { kind: "machine" as const, args, raw: `/machine ${args.join(" ")}` }
 }
 
-function remoteMachineHarness() {
+function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   const notices: string[] = []
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
   const deps: RemoteMachineCommandHandlerDeps = {
@@ -59,6 +71,7 @@ function remoteMachineHarness() {
       leased_agent_count: 0,
       local_session_count: 0,
       available_providers: [],
+      ...kernelOverrides,
     }],
   }
   return { deps, notices, footers }
