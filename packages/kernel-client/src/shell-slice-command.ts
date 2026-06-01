@@ -274,20 +274,23 @@ function formatSlices(slices: SliceRecord[]): string {
 function formatSlice(slice: SliceRecord): string {
   const providers = (slice.providers ?? []).join(",") || "-"
   const display = slice.display_endpoint?.url ? ` display=${slice.display_endpoint.url}` : ""
+  const relay = formatSliceRelay(slice) || "none"
   const auth = (slice.provider_auth ?? [])
     .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
     .join(",") || "-"
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
   const diagnostics = formatSliceDiagnostics(slice)
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}`
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}`
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
+  const relay = formatSliceRelay(slice) || "none"
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
+    doctorCheck("relay", slice.status !== "running" || Boolean(slice.relay_endpoint?.url), relay),
     doctorCheck("scope", scope !== "missing", scope),
     doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
@@ -298,6 +301,14 @@ function formatSliceDoctor(slice: SliceRecord): string {
       .join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks].join("\n")
+}
+
+function formatSliceRelay(slice: SliceRecord): string {
+  const endpoint = slice.relay_endpoint
+  if (!endpoint?.url) {
+    return ""
+  }
+  return `${endpoint.private ? "private" : "shared"}:${endpoint.url}`
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {

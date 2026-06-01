@@ -599,6 +599,7 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
             session_ids: ["session-1"],
             agent_ids: ["agent-1"],
             provider_auth: [],
+            relay_endpoint: { url: "wss://relay.example/slice", private: false },
             display_endpoint: null,
             created_at_ms: 0,
             updated_at_ms: 0,
@@ -614,6 +615,7 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /slice doctor linux-a id=slice-1/)
   assert.match(result.message ?? "", /fail lifecycle: unhealthy/)
+  assert.match(result.message ?? "", /ok relay: shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /fail display: headed/)
   assert.match(result.message ?? "", /ok agents: 1 attached/)
 })
@@ -637,6 +639,7 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
     session_ids: ["session-1"],
     agent_ids: ["agent-1"],
     provider_auth: [],
+    relay_endpoint: { url: "wss://relay.example/slice", private: false },
     display_endpoint: null,
     created_at_ms: 0,
     updated_at_ms: 0,
@@ -666,6 +669,7 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["ListAgents", "ListSlices", "GetSlice"])
   assert.deepEqual(requests[2], { GetSlice: { slice_ref: "slice-1" } })
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
+  assert.match(result.message ?? "", /relay=shared:wss:\/\/relay.example\/slice/)
 })
 
 test("executeShellCommand renders slice logs", async () => {
