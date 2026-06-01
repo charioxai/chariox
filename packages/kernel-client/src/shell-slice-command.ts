@@ -423,7 +423,17 @@ function formatSliceRelay(slice: SliceRecord): string {
   if (!endpoint?.url) {
     return ""
   }
-  return `${endpoint.private ? "private" : "shared"}:${endpoint.url}`
+  return `${formatSliceRelayAuthority(endpoint.private)}:${endpoint.url}`
+}
+
+function formatSliceRelayAuthority(value: boolean | null | undefined): string {
+  if (value === true) {
+    return "private"
+  }
+  if (value === false) {
+    return "shared"
+  }
+  return "unknown"
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {

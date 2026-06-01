@@ -924,6 +924,45 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.match(result.message ?? "", /next: inspect slice logs/)
 })
 
+test("executeShellCommand does not infer shared slice relay authority", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return {
+        Slice: {
+          slice: {
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: "worker-1",
+            worker_machine_id: "machine-1",
+            providers: ["codex"],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [],
+            relay_endpoint: { url: "wss://relay.example/slice" },
+            display_endpoint: null,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice status linux-a"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /relay=unknown:wss:\/\/relay.example\/slice/)
+})
+
 test("executeShellCommand renders slice account recovery hints", async () => {
   const fake = fakeClient((request) => {
     if ("ListSlices" in request) {
