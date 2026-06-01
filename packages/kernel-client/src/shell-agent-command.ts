@@ -16,6 +16,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
+  formatAgentInspectSummary,
   formatAgentListSummary,
   formatAgentRef,
   formatAgentSubstituteSummary,
@@ -60,6 +61,19 @@ export async function executeAgentCommand(
       const response = await deps.client.send(listAgentsRequest(sessionId))
       const agents = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsListed").agents
       return { ok: true, message: formatAgentListSummary(agents), data: { agents } }
+    }
+    case "inspect":
+    case "info":
+    case "show": {
+      const resolved = await resolveShellAgent(context, deps, args[0] ?? context.agentId)
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : "usage: agent inspect [agent-ref]" }
+      }
+      return {
+        ok: true,
+        message: formatAgentInspectSummary(resolved.agent),
+        data: { agent: resolved.agent },
+      }
     }
     case "spawn": {
       const parsedSpawn = parsePlacementOptions(args, true)
@@ -266,7 +280,7 @@ export async function executeAgentCommand(
     case "subs":
       return executeAgentSubstituteCommand(args, context, deps, sessionId)
     default:
-      return { ok: false, message: "usage: agent list|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
+      return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
   }
 }
 

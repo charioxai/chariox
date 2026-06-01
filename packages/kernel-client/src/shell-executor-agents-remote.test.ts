@@ -37,6 +37,73 @@ test("executeShellCommand lists agents for current session", async () => {
   assert.deepEqual((result.data as { agents: AgentInstance[] }).agents, agents)
 })
 
+test("executeShellCommand inspects local agent placement and policy", async () => {
+  const agent = makeAgent({
+    id: "agent-2",
+    agent_ref: "agent-2",
+    alias: "reviewer",
+    provider: "codex",
+    model: "gpt-5.3",
+    effort: "high",
+    workspace_id: "/repo",
+    worktree_id: "/repo-feature",
+    execution_mode_override: "plan",
+    permission_level_override: "required",
+    extension_grants: [{ kind: "skill", name: "review" }],
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListAgents: { session_id: "session-1" } })
+    return { AgentsListed: { agents: [agent] } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle\]/)
+  assert.match(result.message ?? "", /provider: codex/)
+  assert.match(result.message ?? "", /worktree: \/repo-feature/)
+  assert.match(result.message ?? "", /placement: worker-local/)
+  assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
+  assert.match(result.message ?? "", /remote extension sync: not applicable/)
+})
+
+test("executeShellCommand inspects remote agent lease and manifest state", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "slice qa",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-1",
+    },
+    extension_grants: [
+      { kind: "mcp", name: "filesystem" },
+      { kind: "script", name: "deploy" },
+    ],
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "abcdef1234567890",
+      last_error: "worker offline",
+      pending_revoke: true,
+    },
+    substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
+    active_substitute_index: 0,
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListAgents: { session_id: "session-1" } })
+    return { AgentsListed: { agents: [agent] } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent inspect agent-remote"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(result.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; mcp=1, script=1\)/)
+  assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)
+})
+
 test("executeShellCommand updates agent alias through dedicated alias request", async () => {
   const agent = makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })
   const renamed = { ...agent, alias: "ui" }
