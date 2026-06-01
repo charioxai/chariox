@@ -45,6 +45,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
+  assert.match(banner, /remote ext sync: pending, next=wait for the worker manifest update; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)
@@ -63,7 +64,56 @@ test("native TUI runtime banner renders local defaults without inventing state",
   assert.match(banner, /placement:      worker-local/)
   assert.match(banner, /live sync:      config default/)
   assert.match(banner, /extensions:     none/)
+  assert.doesNotMatch(banner, /remote ext sync:/)
   assert.doesNotMatch(banner, /provider run:/)
+})
+
+test("native TUI runtime banner surfaces blocked remote extension sync", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "claude native-tui",
+    session: session({ workspace_live_sync_mode: "managed" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [{ kind: "mcp", name: "filesystem" }],
+      remote_extension_manifest_sync: {
+        state: "failed",
+        pending_revoke: true,
+        manifest_hash: "abcdef1234567890",
+        last_error: "worker offline",
+      },
+    }),
+    worktree: "/repo",
+    grantedMcps: ["filesystem"],
+  })
+
+  assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\)/)
+  assert.match(banner, /remote ext sync: failed, pending revoke, hash=abcdef123456, error=worker offline, next=keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+})
+
+test("native TUI runtime banner omits sync line for passive skill snapshots", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "opencode native-tui",
+    session: session({ workspace_live_sync_mode: "tracked" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [{ kind: "skill", name: "review" }],
+    }),
+    worktree: "/repo",
+    grantedSkills: ["review"],
+  })
+
+  assert.match(banner, /extensions:     skill=review \(skills snapshot\)/)
+  assert.doesNotMatch(banner, /remote ext sync:/)
 })
 
 function session(overrides: Partial<RuntimeSession>): RuntimeSession {

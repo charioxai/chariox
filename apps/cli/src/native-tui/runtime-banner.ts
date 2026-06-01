@@ -4,6 +4,7 @@ import type {
   RuntimeSession,
 } from "../cli-types.js"
 import { formatExtensionGrantPlacement } from "@arroba/kernel-client/extension-grant-placement"
+import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
 export type NativeTuiRuntimeBannerInput = {
@@ -28,6 +29,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  placement:      ${formatAgentPlacement(input.agent)}`,
     `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
+    ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? []),
     ...(input.run ? [`  provider run:   ${input.run.id}`] : []),
     ...(input.providerLines ?? []),
     ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
@@ -44,6 +46,28 @@ function formatGrantedExtensions(agent: AgentInstance, mcps: readonly string[], 
     mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
     skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,
   ].filter(Boolean).join("; ")
+}
+
+function formatRemoteExtensionSync(agent: AgentInstance, mcps: readonly string[]): string[] {
+  if (!agent.remote_execution) return []
+  const status = agent.remote_extension_manifest_sync
+  const hasActiveHomeProxy = mcps.length > 0 || Boolean(agent.extension_grants?.some((grant) => (
+    grant.kind === "mcp" || grant.kind === "script" || grant.kind === "connector"
+  )))
+  if (!status && !hasActiveHomeProxy) return []
+  const details = [
+    status?.state ?? "pending",
+    status?.pending_revoke ? "pending revoke" : null,
+    status?.manifest_hash ? `hash=${status.manifest_hash.slice(0, 12)}` : null,
+    status?.last_error ? `error=${status.last_error}` : null,
+  ].filter(Boolean)
+  const needsAction = !status || status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error
+  if (needsAction) {
+    const next = remoteExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution.worker_machine_id)
+      ?? `run /extension sync-status ${agent.agent_ref}`
+    details.push(`next=${next}`)
+  }
+  return [`  remote ext sync: ${details.join(", ")}`]
 }
 
 function formatSession(session: RuntimeSession): string {
