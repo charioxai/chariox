@@ -93,6 +93,7 @@ export async function handleAgentSpawnCommand(
     const alias = parsed.positional[0]
     const model = parsed.positional[1]
     const provider = model ? deps.currentProviderId() : null
+    const effectiveProvider = provider ?? deps.currentProviderId()
     const effort = model ? deps.currentVariantId() : null
     const remoteGitPlacement = parsed.machineRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
       ? {
@@ -102,7 +103,7 @@ export async function handleAgentSpawnCommand(
         }
       : undefined
     if (parsed.machineRef) {
-      await validateRemoteMachineSpawnTarget(deps, parsed.machineRef)
+      await validateRemoteMachineSpawnTarget(deps, parsed.machineRef, effectiveProvider)
     }
     const worktreeId = await resolveLocalPlacement({
       directory: parsed.directory,
@@ -140,6 +141,7 @@ export async function handleAgentSpawnCommand(
 async function validateRemoteMachineSpawnTarget(
   deps: AgentSpawnCommandHandlerDeps,
   machineRef: string,
+  provider: string,
 ): Promise<void> {
   if (!deps.listRemoteMachineKernels) {
     return
@@ -154,6 +156,9 @@ async function validateRemoteMachineSpawnTarget(
   }
   if (accepting.every((kernel) => (kernel.available_providers ?? []).length === 0)) {
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on the worker or choose another worker`)
+  }
+  if (!accepting.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
+    throw new Error(`remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider`)
   }
 }
 
