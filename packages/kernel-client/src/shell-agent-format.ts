@@ -4,18 +4,72 @@ export function formatAgentRef(agent: AgentInstance): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
 }
 
-export function formatAgentListSummary(agents: AgentInstance[]): string {
+export function formatAgentListSummary(
+  agents: AgentInstance[],
+  slices: readonly SliceRecord[] = [],
+): string {
   if (agents.length === 0) {
     return "no agents in session"
   }
   const agentList = agents
-    .map((agent) => {
-      const mode = agent.execution_mode_override ? ` mode=${agent.execution_mode_override}` : ""
-      const permissions = agent.permission_level_override ? ` permissions=${agent.permission_level_override}` : ""
-      return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]${mode}${permissions}`
-    })
+    .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices)))
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+}
+
+function formatAgentListEntry(agent: AgentInstance, slice: SliceRecord | null): string {
+  const parts = [
+    agent.state,
+    formatAgentProvider(agent),
+    `worktree ${agent.worktree_id ?? "-"}`,
+    formatAgentListPlacement(agent, slice),
+    agent.execution_mode_override ? `mode ${agent.execution_mode_override}` : null,
+    agent.permission_level_override ? `permissions ${agent.permission_level_override}` : null,
+    formatAgentListGrantCount(agent),
+    formatAgentListRemoteExtensionSync(agent),
+  ].filter(Boolean)
+  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${parts.join("; ")}]`
+}
+
+function formatAgentProvider(agent: AgentInstance): string {
+  const provider = agent.primary_provider ?? agent.provider
+  const model = agent.primary_model ?? agent.model
+  if (!model) {
+    return provider
+  }
+  return model.startsWith(`${provider}/`) ? model : `${provider} ${model}`
+}
+
+function formatAgentListPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return "local"
+  }
+  if (slice) {
+    return `slice ${slice.name || slice.id}`
+  }
+  const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
+  const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
+  return `remote ${remote.worker_kernel_id}${machine}${run}`
+}
+
+function formatAgentListGrantCount(agent: AgentInstance): string {
+  const grants = agent.extension_grants?.length ?? 0
+  return `${grants} grant${grants === 1 ? "" : "s"}`
+}
+
+function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null {
+  if (!agent.remote_execution) {
+    return null
+  }
+  const status = agent.remote_extension_manifest_sync
+  if (!status) {
+    return "manifest pending"
+  }
+  const hash = status.manifest_hash ? ` ${status.manifest_hash.slice(0, 8)}` : ""
+  const revoke = status.pending_revoke ? " pending revoke" : ""
+  const error = status.last_error ? ` error ${status.last_error}` : ""
+  return `manifest ${status.state}${hash}${revoke}${error}`
 }
 
 export function formatAgentInspectSummary(

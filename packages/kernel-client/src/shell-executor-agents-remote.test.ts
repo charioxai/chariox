@@ -34,7 +34,72 @@ test("executeShellCommand lists agents for current session", async () => {
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /2 agents/)
+  assert.match(result.message ?? "", /agent-1 \[Idle; opencode/)
+  assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle; opencode/)
+  assert.match(result.message ?? "", /worktree \/repo; local; 0 grants/)
   assert.deepEqual((result.data as { agents: AgentInstance[] }).agents, agents)
+})
+
+test("executeShellCommand lists remote agents with slice placement and manifest state", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "worker",
+    worktree_id: "/repo/feature",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-1",
+    },
+    extension_grants: [{ kind: "script", name: "deploy" }],
+    remote_extension_manifest_sync: {
+      state: "stale",
+      manifest_hash: "abcdef1234567890",
+      last_error: "worker lagging",
+    },
+  })
+  const requests: unknown[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [{
+            id: "slice-1",
+            name: "devbox",
+            owner_kernel_id: "kernel-local",
+            owner_machine_id: "machine-local",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_mount: null,
+            worker_kernel_ref: "slice:slice-1",
+            worker_kernel_id: "slice-kernel",
+            worker_machine_id: "slice-machine",
+            agent_ids: ["agent-remote"],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }],
+        },
+      }
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox; 1 grant; manifest stale abcdef12 error worker lagging\]/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    { ListSlices: null },
+  ])
 })
 
 test("executeShellCommand inspects local agent placement and policy", async () => {

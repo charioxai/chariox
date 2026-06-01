@@ -62,7 +62,10 @@ export async function executeAgentCommand(
     case "ls": {
       const response = await deps.client.send(listAgentsRequest(sessionId))
       const agents = expectVariant<{ agents: AgentInstance[] }>(response, "AgentsListed").agents
-      return { ok: true, message: formatAgentListSummary(agents), data: { agents } }
+      const { slices } = agents.some((agent) => agent.remote_execution)
+        ? await listAgentInspectSlices(deps)
+        : { slices: [] }
+      return { ok: true, message: formatAgentListSummary(agents, slices), data: { agents, slices } }
     }
     case "inspect":
     case "info":
