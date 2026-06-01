@@ -137,6 +137,20 @@ export function buildProviderItems(input: string, providerNode: CommandNode) {
       kind: "command",
       value: "/provider reauth ",
     },
+    {
+      id: "provider-processes",
+      label: "processes",
+      description: "List daemon-tracked provider processes",
+      kind: "command",
+      value: "/provider processes ",
+    },
+    {
+      id: "provider-processes-teardown",
+      label: "teardown",
+      description: "Tear down safe daemon-tracked provider processes owned by you",
+      kind: "command",
+      value: "/provider processes teardown ",
+    },
   ], query)
 }
 
