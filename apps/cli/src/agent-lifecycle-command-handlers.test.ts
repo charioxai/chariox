@@ -16,9 +16,29 @@ test("agent list summary renders aliases and pluralization", () => {
   assert.equal(
     formatAgentListSummary([
       agent({ agent_ref: "agent-a", alias: "builder" }),
-      agent({ id: "agent-2", agent_ref: "agent-b", state: "Working" }),
+      agent({
+        id: "agent-2",
+        agent_ref: "agent-b",
+        state: "Working",
+        provider: "codex",
+        model: "codex/gpt-5.4",
+        worktree_id: "/repo/feature",
+        remote_execution: {
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+          active_worker_provider_run_id: "run-worker",
+        },
+        remote_extension_manifest_sync: {
+          state: "stale",
+          manifest_hash: "abcdef123456",
+          pending_revoke: true,
+          last_error: "worker offline",
+        },
+      }),
     ]),
-    "2 agents: agent-a (builder) [Idle], agent-b [Working]",
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; ext stale abcdef12 pending revoke error worker offline]",
   )
 })
 

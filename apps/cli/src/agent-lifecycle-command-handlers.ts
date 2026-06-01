@@ -120,9 +120,49 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
     return "no agents in session"
   }
   const agentList = agents
-    .map((agent) => `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`)
+    .map(formatAgentListEntry)
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+}
+
+function formatAgentListEntry(agent: AgentInstance): string {
+  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
+    agent.state,
+    formatAgentProvider(agent),
+    `worktree ${agent.worktree_id ?? "-"}`,
+    formatAgentPlacement(agent),
+    formatAgentRemoteExtensionSync(agent),
+  ].filter(Boolean).join("; ")}]`
+}
+
+function formatAgentProvider(agent: AgentInstance): string {
+  const model = agent.primary_model ?? agent.model
+  const provider = agent.primary_provider ?? agent.provider
+  if (!model) {
+    return provider
+  }
+  return model.startsWith(`${provider}/`) ? model : `${provider} ${model}`
+}
+
+function formatAgentPlacement(agent: AgentInstance): string {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return "local"
+  }
+  const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
+  const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
+  return `remote ${remote.worker_kernel_id}${machine}${run}`
+}
+
+function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
+  const sync = agent.remote_extension_manifest_sync
+  if (!sync) {
+    return ""
+  }
+  const hash = sync.manifest_hash ? ` ${sync.manifest_hash.slice(0, 8)}` : ""
+  const revoke = sync.pending_revoke ? " pending revoke" : ""
+  const error = sync.last_error ? ` error ${sync.last_error}` : ""
+  return `ext ${sync.state}${hash}${revoke}${error}`
 }
 
 async function applyFocusedAgentSession(
