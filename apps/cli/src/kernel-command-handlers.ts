@@ -195,12 +195,16 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (remoteExecutionIssueCount(health) > 0) {
     lines.push(`remote execution issues: missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`)
+    const affectedAgents = new Set<string>()
     for (const issue of remoteExecution.issues) {
       const workerRun = issue.active_worker_provider_run_id ? ` worker_run=${issue.active_worker_provider_run_id}` : ""
       const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
+      affectedAgents.add(issue.agent_ref || issue.agent_id)
       lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state} processing=${issue.is_processing ? "yes" : "no"} kind=${issue.kind}${worktree}: ${issue.details}`)
     }
-    lines.push("  next: inspect the agent placement; reconnect or relaunch the remote/slice worker before sending more prompts")
+    const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
+    const inspect = firstAgent ? `run /agent inspect ${firstAgent}` : "inspect the agent placement"
+    lines.push(`  next: ${inspect}; reconnect or relaunch the remote/slice worker before sending more prompts`)
   }
 
   if (remoteExtensionSyncIssueCount(health) > 0) {

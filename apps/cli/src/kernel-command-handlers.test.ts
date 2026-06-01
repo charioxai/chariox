@@ -276,7 +276,7 @@ test("kernel health formatter reports remote execution issues", () => {
   assert.match(rendered, /remote execution: remote_agents=2 active=1 missing_worker_runs=1 malformed=1/)
   assert.match(rendered, /remote execution issues: missing_worker_runs=1 malformed=1/)
   assert.match(rendered, /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run worktree=\/repo: active remote agent has no active worker provider run id/)
-  assert.match(rendered, /next: inspect the agent placement; reconnect or relaunch/)
+  assert.match(rendered, /next: run \/agent inspect agent-remote; reconnect or relaunch/)
 })
 
 test("kernel health formatter reports remote extension sync issues", () => {
