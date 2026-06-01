@@ -186,6 +186,11 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .get_session(&leased_agent.backing_session_id)
         .expect("backing session should exist");
     assert!(hidden_backing_session.is_hidden());
+    let backing_attachment = app
+        .attachments()
+        .get_attachment(&leased_agent.backing_attachment_id)
+        .expect("leased backing attachment should exist");
+    assert_eq!(backing_attachment.owner_user_id(), "user-home");
     assert!(app
         .sessions()
         .list_sessions()
