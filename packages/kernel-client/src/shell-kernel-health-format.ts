@@ -53,12 +53,16 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
-  if (
-    providerRuns.duplicate_arroba_agent_bindings.length === 0
-    && providerRuns.multi_interface_agent_bindings.length === 0
-  ) {
-    lines.push("provider run bindings: ok")
-  } else {
+  const providerRunInvariantIssues =
+    providerRuns.duplicate_arroba_agent_bindings.length
+    + providerRuns.multi_interface_agent_bindings.length
+    + providerRuns.orphaned_active_runs.length
+    + providerRuns.session_active_run_mismatches.length
+  if (providerRunInvariantIssues === 0) {
+    lines.push("provider run invariants: ok")
+  }
+
+  if (providerRuns.duplicate_arroba_agent_bindings.length > 0) {
     lines.push("duplicate Arroba provider run bindings:")
     let firstAgent: string | null = null
     for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {

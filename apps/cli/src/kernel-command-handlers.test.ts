@@ -154,7 +154,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
-  assert.match(rendered, /provider run bindings: ok/)
+  assert.match(rendered, /provider run invariants: ok/)
   assert.match(rendered, /projection invariants: ok/)
   assert.equal(kernelHealthIssueCount(health()), 0)
 })
@@ -242,6 +242,7 @@ test("kernel health formatter reports provider-run identity issues", () => {
   assert.match(rendered, /run=run-orphan session=missing-session agent=-: provider run points at a missing session/)
   assert.match(rendered, /session active provider run pointer issues:/)
   assert.match(rendered, /session=session-3 active=run-missing: active provider run is not projected/)
+  assert.doesNotMatch(rendered, /provider run invariants: ok/)
   assert.match(rendered, /next: inspect agent agent-1 and stop duplicate provider runs/)
   assert.match(rendered, /next: inspect agent agent-2 and close the extra native TUI or Arroba provider run/)
   assert.match(rendered, /next: refresh the session; stop or relaunch provider run run-orphan if it stays active/)
@@ -671,7 +672,7 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
     transitionToNoSession: () => {},
   }, { kind: "kernel", raw: "/kernel health", args: ["health"] })
 
-  assert.doesNotMatch(notices.at(-1) ?? "", /provider run bindings: ok/)
+  assert.doesNotMatch(notices.at(-1) ?? "", /provider run invariants: ok/)
   assert.match(notices.at(-1) ?? "", /multi-interface provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1:arroba,provider-run-2:native_tui/)
   assert.match(notices.at(-1) ?? "", /next: inspect agent agent-1 and close the extra native TUI or Arroba provider run/)
