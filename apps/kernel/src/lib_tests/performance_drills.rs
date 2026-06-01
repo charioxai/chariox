@@ -1,5 +1,166 @@
 use super::*;
 
+const HISTORY_BASELINE_AGENT_COUNT: usize = 6;
+const HISTORY_BASELINE_TURNS_PER_AGENT: usize = 24;
+const HISTORY_BASELINE_TOOLS_PER_TURN: usize = 4;
+const HISTORY_BASELINE_TOOL_BYTES: usize = 4_096;
+
+#[test]
+fn performance_drill_session_history_current_baseline() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-history-baseline-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("baseline root should be created");
+    let history_path = root.join("history.db");
+    let operational_history =
+        crate::history::OperationalHistoryStore::open(history_path).expect("history should open");
+    let session = crate::session::RuntimeSession::new(
+        "session-history-baseline",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    seed_history_baseline(&operational_history, session.id());
+
+    let agent_ids = (0..HISTORY_BASELINE_AGENT_COUNT)
+        .map(|index| format!("agent-{index}"))
+        .collect::<Vec<_>>();
+    let total_events = HISTORY_BASELINE_AGENT_COUNT
+        * HISTORY_BASELINE_TURNS_PER_AGENT
+        * (2 + HISTORY_BASELINE_TOOLS_PER_TURN);
+    let mut request_metrics = Vec::new();
+    let total_started = std::time::Instant::now();
+    let mut total_response_bytes = 0usize;
+    let mut total_returned_entries = 0usize;
+
+    for agent_id in &agent_ids {
+        let started = std::time::Instant::now();
+        let entries = operational_history
+            .load_session_history_entries(session.id(), None)
+            .expect("current baseline should load full session history");
+        let page = crate::runtime::projection::page_history_entries(
+            entries.clone(),
+            Some(agent_id),
+            Some(80),
+            Some(200_000),
+            None,
+            None,
+        );
+        let response = crate::local::LocalDaemonResponse::SessionHistory {
+            entries: page.entries,
+            next_cursor: page.next_cursor,
+        };
+        let response_bytes = serde_json::to_vec(&response)
+            .expect("baseline response should serialize")
+            .len();
+        let returned_entries = match &response {
+            crate::local::LocalDaemonResponse::SessionHistory { entries, .. } => entries.len(),
+            _ => 0,
+        };
+        total_response_bytes += response_bytes;
+        total_returned_entries += returned_entries;
+        request_metrics.push(serde_json::json!({
+            "agent_id": agent_id,
+            "latency_ms": started.elapsed().as_secs_f64() * 1000.0,
+            "decoded_entries": entries.len(),
+            "returned_entries": returned_entries,
+            "response_bytes": response_bytes,
+        }));
+    }
+
+    let metrics = serde_json::json!({
+        "metric": "session_history_current_baseline",
+        "agent_count": HISTORY_BASELINE_AGENT_COUNT,
+        "turns_per_agent": HISTORY_BASELINE_TURNS_PER_AGENT,
+        "tools_per_turn": HISTORY_BASELINE_TOOLS_PER_TURN,
+        "tool_bytes": HISTORY_BASELINE_TOOL_BYTES,
+        "total_seeded_events": total_events,
+        "request_count": agent_ids.len(),
+        "total_attach_history_ms": total_started.elapsed().as_secs_f64() * 1000.0,
+        "total_decoded_entries": total_events * agent_ids.len(),
+        "total_returned_entries": total_returned_entries,
+        "total_response_bytes": total_response_bytes,
+        "requests": request_metrics,
+    });
+    println!(
+        "HISTORY_BASELINE_METRICS {}",
+        serde_json::to_string(&metrics).expect("metrics should serialize")
+    );
+
+    std::fs::remove_dir_all(root).expect("baseline root should be removed");
+}
+
+fn seed_history_baseline(
+    operational_history: &crate::history::OperationalHistoryStore,
+    session_id: &str,
+) {
+    for turn_index in 0..HISTORY_BASELINE_TURNS_PER_AGENT {
+        for agent_index in 0..HISTORY_BASELINE_AGENT_COUNT {
+            let agent_id = format!("agent-{agent_index}");
+            let prompt_id = format!("{agent_id}-prompt-{turn_index}");
+            let provider_run_id = format!("{agent_id}-run");
+            let context = crate::history::HistoryEventTurnContext {
+                session_id: Some(session_id.to_string()),
+                agent_id: Some(agent_id.clone()),
+                turn_id: Some(prompt_id.clone()),
+                prompt_id: Some(prompt_id.clone()),
+                provider_run_id: Some(provider_run_id.clone()),
+                ..crate::history::HistoryEventTurnContext::default()
+            };
+            operational_history
+                .append_transcript(
+                    &crate::history::SessionHistoryEntry::user_prompt(
+                        session_id,
+                        "attachment-1",
+                        &agent_id,
+                        format!("Prompt {turn_index} for {agent_id}: summarize the latest work."),
+                    ),
+                    context.clone(),
+                )
+                .expect("user prompt should append");
+            for tool_index in 0..HISTORY_BASELINE_TOOLS_PER_TURN {
+                let tool_payload = serde_json::json!({
+                    "id": format!("{prompt_id}-tool-{tool_index}"),
+                    "tool": "bash",
+                    "status": "completed",
+                    "input": { "command": format!("generate-output --agent {agent_id} --turn {turn_index} --tool {tool_index}") },
+                    "output": "x".repeat(HISTORY_BASELINE_TOOL_BYTES),
+                });
+                operational_history
+                    .append_transcript(
+                        &crate::history::SessionHistoryEntry::provider_output(
+                            session_id,
+                            &provider_run_id,
+                            Some(&agent_id),
+                            TerminalOutputKind::ProviderTool,
+                            Some(format!("{prompt_id}-tool-{tool_index}")),
+                            tool_payload.to_string(),
+                        ),
+                        context.clone(),
+                    )
+                    .expect("tool output should append");
+            }
+            operational_history
+                .append_transcript(
+                    &crate::history::SessionHistoryEntry::provider_output(
+                        session_id,
+                        &provider_run_id,
+                        Some(&agent_id),
+                        TerminalOutputKind::ProviderOutput,
+                        None,
+                        format!("Completed turn {turn_index} for {agent_id}."),
+                    ),
+                    context,
+                )
+                .expect("assistant output should append");
+        }
+    }
+}
+
 #[test]
 fn performance_drill_noisy_prompt_queue_is_bounded_per_agent() {
     let owner = crate::runtime::prompt_state::PromptStateOwner::default();
