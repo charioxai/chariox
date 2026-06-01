@@ -263,7 +263,7 @@ function createdSessionFooter(
 function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {
   const mode = session.workspace_live_sync_mode
   if (mode === "managed" || mode === "tracked") {
-    return mode
+    return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
   }
   if (mode === "unrestricted") {
     return "off"

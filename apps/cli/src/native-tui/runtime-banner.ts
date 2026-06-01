@@ -60,7 +60,8 @@ function formatHomeKernel(session: RuntimeSession): string {
 
 function formatWorkspaceLiveSyncMode(mode: RuntimeSession["workspace_live_sync_mode"]): string {
   if (!mode) return "config default"
-  return mode === "unrestricted" ? "off" : mode
+  if (mode === "unrestricted") return "off"
+  return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
 }
 
 function formatAgentPlacement(agent: AgentInstance): string {

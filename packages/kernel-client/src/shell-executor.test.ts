@@ -204,7 +204,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
   assert.match(contextResult.message ?? "", /session: session-1/)
   assert.match(contextResult.message ?? "", /home kernel: home-kernel-1/)
-  assert.match(contextResult.message ?? "", /workspace live sync: managed/)
+  assert.match(contextResult.message ?? "", /workspace live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(contextResult.message ?? "", /provider run: session=session-run-1, worker=worker-run-1/)
@@ -648,7 +648,7 @@ test("executeShellCommand reports explicit session workspace live sync mode afte
   })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /workspace live sync: tracked; use `workspace sync off` to disable/)
+  assert.match(result.message ?? "", /workspace live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\); use `workspace sync off` to disable/)
 })
 
 test("executeShellCommand creates and starts a headless slice for a new session", async () => {

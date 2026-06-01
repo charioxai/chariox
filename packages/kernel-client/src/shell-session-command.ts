@@ -282,5 +282,5 @@ function formatCreatedSessionWorkspaceLiveSync(session: RuntimeSession): string 
     const inherited = mode ? "off" : "config default"
     return `workspace live sync: ${inherited}; use \`workspace sync managed\`, \`workspace sync tracked\`, or \`workspace sync off\` to change`
   }
-  return `workspace live sync: ${mode}; use \`workspace sync off\` to disable`
+  return `workspace live sync: ${mode} (selected workspace/worktree only; other repositories unrestricted); use \`workspace sync off\` to disable`
 }

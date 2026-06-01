@@ -143,7 +143,7 @@ test("waiting room activation reports explicit created-session live sync mode", 
   assert.deepEqual(harness.calls.slice(-3), [
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · workspace live sync tracked",
+    "flash:info:created session Review in /worktree · workspace live sync tracked (selected workspace/worktree only; other repositories unrestricted)",
   ])
 })
 

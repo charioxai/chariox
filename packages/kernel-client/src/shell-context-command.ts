@@ -124,7 +124,10 @@ function formatContextWorkspaceLiveSyncMode(session: RuntimeSession | null): str
   if (!mode) {
     return "config default"
   }
-  return mode === "unrestricted" ? "off" : mode
+  if (mode === "unrestricted") {
+    return "off"
+  }
+  return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
 }
 
 function formatContextAgentPlacement(
