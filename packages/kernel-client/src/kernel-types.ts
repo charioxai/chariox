@@ -487,6 +487,24 @@ export type RemoteExtensionSyncHealthSnapshot = {
   failed_agents: number
   stale_agents: number
   pending_revoke_agents: number
+  issues: RemoteExtensionSyncIssue[]
+}
+
+export type RemoteExtensionSyncIssue = {
+  session_id: string
+  agent_id: string
+  agent_ref: string
+  worker_kernel_id: string
+  worker_machine_id: string
+  execution_lease_id: string
+  leased_agent_id: string
+  active_worker_provider_run_id?: string | null
+  state: string
+  manifest_hash?: string | null
+  last_error?: string | null
+  pending_revoke: boolean
+  home_proxy_grants: string[]
+  worktree_id?: string | null
 }
 
 export type ProjectionInvariantMismatch = {
@@ -1187,7 +1205,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 90
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 91
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

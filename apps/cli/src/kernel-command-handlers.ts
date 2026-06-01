@@ -167,6 +167,15 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (remoteExtensionSyncIssueCount(health) > 0) {
     lines.push(`remote extension sync issues: failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`)
+    for (const issue of remoteExtensionSync.issues) {
+      const workerRun = issue.active_worker_provider_run_id ? ` worker_run=${issue.active_worker_provider_run_id}` : ""
+      const pendingRevoke = issue.pending_revoke ? " pending_revoke=yes" : ""
+      const hash = issue.manifest_hash ? ` hash=${issue.manifest_hash}` : ""
+      const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
+      const grants = issue.home_proxy_grants.length > 0 ? ` grants=${issue.home_proxy_grants.join(",")}` : ""
+      const error = issue.last_error ? `: ${issue.last_error}` : ""
+      lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state}${pendingRevoke}${hash}${worktree}${grants}${error}`)
+    }
     lines.push("  next: run /extension sync-status <agent>; use /extension sync-retry <agent> after worker connectivity is healthy")
   }
 
@@ -240,10 +249,14 @@ function sliceLifecycleIssueCount(health: DaemonHealthProjection): number {
 }
 
 function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
-  return health.remote_extension_sync.failed_agents
-    + health.remote_extension_sync.stale_agents
-    + health.remote_extension_sync.manifest_missing_agents
-    + health.remote_extension_sync.pending_revoke_agents
+  return health.remote_extension_sync.issues.length > 0
+    ? health.remote_extension_sync.issues.length
+    : (
+      health.remote_extension_sync.failed_agents
+      + health.remote_extension_sync.stale_agents
+      + health.remote_extension_sync.manifest_missing_agents
+      + health.remote_extension_sync.pending_revoke_agents
+    )
 }
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {

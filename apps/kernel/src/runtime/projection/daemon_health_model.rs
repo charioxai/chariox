@@ -275,28 +275,58 @@ pub struct RemoteExtensionSyncHealthSnapshot {
     pub failed_agents: usize,
     pub stale_agents: usize,
     pub pending_revoke_agents: usize,
+    pub issues: Vec<RemoteExtensionSyncIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExtensionSyncIssue {
+    pub session_id: String,
+    pub agent_id: String,
+    pub agent_ref: String,
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+    pub active_worker_provider_run_id: Option<String>,
+    pub state: String,
+    pub manifest_hash: Option<String>,
+    pub last_error: Option<String>,
+    pub pending_revoke: bool,
+    pub home_proxy_grants: Vec<String>,
+    pub worktree_id: Option<String>,
 }
 
 impl RemoteExtensionSyncHealthSnapshot {
     pub(crate) fn from_agents(agents: &[AgentInstance]) -> Self {
         let mut snapshot = Self::default();
         for agent in agents {
-            if agent.remote_execution().is_none() {
+            let Some(remote_execution) = agent.remote_execution() else {
                 continue;
-            }
+            };
             snapshot.remote_agents += 1;
             let home_proxy_grants = agent
                 .extension_grants()
                 .iter()
                 .filter(|grant| grant.kind != ExtensionKind::Skill)
-                .count();
-            if home_proxy_grants == 0 {
+                .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
+                .collect::<Vec<_>>();
+            let home_proxy_grant_count = home_proxy_grants.len();
+            if home_proxy_grant_count == 0 {
                 continue;
             }
             snapshot.home_proxy_agents += 1;
-            snapshot.home_proxy_grants += home_proxy_grants;
+            snapshot.home_proxy_grants += home_proxy_grant_count;
             let Some(status) = agent.remote_extension_manifest_sync() else {
                 snapshot.manifest_missing_agents += 1;
+                snapshot.issues.push(remote_extension_sync_issue(
+                    agent,
+                    remote_execution,
+                    "missing",
+                    None,
+                    None,
+                    false,
+                    home_proxy_grants,
+                ));
                 continue;
             };
             match status.state {
@@ -306,11 +336,64 @@ impl RemoteExtensionSyncHealthSnapshot {
                 RemoteExtensionManifestSyncState::Failed => snapshot.failed_agents += 1,
                 RemoteExtensionManifestSyncState::Stale => snapshot.stale_agents += 1,
             }
-            if status.pending_revoke.unwrap_or(false) {
+            let pending_revoke = status.pending_revoke.unwrap_or(false);
+            if pending_revoke {
                 snapshot.pending_revoke_agents += 1;
+            }
+            if matches!(
+                status.state,
+                RemoteExtensionManifestSyncState::Failed | RemoteExtensionManifestSyncState::Stale
+            ) || pending_revoke
+            {
+                snapshot.issues.push(remote_extension_sync_issue(
+                    agent,
+                    remote_execution,
+                    remote_extension_sync_state_key(status.state),
+                    status.manifest_hash.clone(),
+                    status.last_error.clone(),
+                    pending_revoke,
+                    home_proxy_grants,
+                ));
             }
         }
         snapshot
+    }
+}
+
+fn remote_extension_sync_issue(
+    agent: &AgentInstance,
+    remote_execution: &crate::agent::RemoteAgentBinding,
+    state: &str,
+    manifest_hash: Option<String>,
+    last_error: Option<String>,
+    pending_revoke: bool,
+    home_proxy_grants: Vec<String>,
+) -> RemoteExtensionSyncIssue {
+    RemoteExtensionSyncIssue {
+        session_id: agent.session_id().to_string(),
+        agent_id: agent.id().to_string(),
+        agent_ref: agent.agent_ref().to_string(),
+        worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+        worker_machine_id: remote_execution.worker_machine_id.clone(),
+        execution_lease_id: remote_execution.execution_lease_id.clone(),
+        leased_agent_id: remote_execution.leased_agent_id.clone(),
+        active_worker_provider_run_id: remote_execution.active_worker_provider_run_id.clone(),
+        state: state.to_string(),
+        manifest_hash,
+        last_error,
+        pending_revoke,
+        home_proxy_grants,
+        worktree_id: agent.worktree_id().map(ToString::to_string),
+    }
+}
+
+fn remote_extension_sync_state_key(state: RemoteExtensionManifestSyncState) -> &'static str {
+    match state {
+        RemoteExtensionManifestSyncState::Synced => "synced",
+        RemoteExtensionManifestSyncState::Syncing => "syncing",
+        RemoteExtensionManifestSyncState::Pending => "pending",
+        RemoteExtensionManifestSyncState::Failed => "failed",
+        RemoteExtensionManifestSyncState::Stale => "stale",
     }
 }
 
@@ -397,10 +480,10 @@ mod tests {
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
         ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
-        RemoteExtensionSyncHealthSnapshot, SessionProjectionHealthSnapshot,
-        SliceLifecycleHealthSnapshot, SliceLifecycleIssue, WorkspaceCoordinationHealthSnapshot,
-        WorkspaceLiveSyncHealthSnapshot, WorkspaceLiveSyncManagedModeHealthSnapshot,
-        WorktreeClaimSnapshot,
+        RemoteExtensionSyncHealthSnapshot, RemoteExtensionSyncIssue,
+        SessionProjectionHealthSnapshot, SliceLifecycleHealthSnapshot, SliceLifecycleIssue,
+        WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
+        WorkspaceLiveSyncManagedModeHealthSnapshot, WorktreeClaimSnapshot,
     };
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::extension::{
@@ -544,6 +627,22 @@ mod tests {
                 failed_agents: 1,
                 stale_agents: 0,
                 pending_revoke_agents: 1,
+                issues: vec![RemoteExtensionSyncIssue {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-failed".to_string(),
+                    agent_ref: "agent-failed".to_string(),
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("worker-run-1".to_string()),
+                    state: "failed".to_string(),
+                    manifest_hash: Some("hash-failed".to_string()),
+                    last_error: Some("relay offline".to_string()),
+                    pending_revoke: true,
+                    home_proxy_grants: vec!["connector:status-api".to_string()],
+                    worktree_id: Some("/repo".to_string()),
+                }],
             },
             WorkspaceCoordinationHealthSnapshot {
                 active_worktree_claims: vec![WorktreeClaimSnapshot {
@@ -666,6 +765,11 @@ mod tests {
         assert_eq!(projection.remote_extension_sync.manifest_missing_agents, 1);
         assert_eq!(projection.remote_extension_sync.failed_agents, 1);
         assert_eq!(projection.remote_extension_sync.pending_revoke_agents, 1);
+        assert_eq!(projection.remote_extension_sync.issues.len(), 1);
+        assert_eq!(
+            projection.remote_extension_sync.issues[0].agent_ref,
+            "agent-failed"
+        );
         assert_eq!(
             projection.workspace_coordination.worktree_collisions.len(),
             1
@@ -805,6 +909,28 @@ mod tests {
         assert_eq!(snapshot.stale_agents, 1);
         assert_eq!(snapshot.manifest_missing_agents, 1);
         assert_eq!(snapshot.pending_revoke_agents, 1);
+        assert_eq!(snapshot.issues.len(), 3);
+        assert_eq!(
+            snapshot
+                .issues
+                .iter()
+                .map(|issue| (issue.agent_id.as_str(), issue.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("agent-failed", "failed"),
+                ("agent-stale", "stale"),
+                ("agent-missing", "missing"),
+            ]
+        );
+        assert_eq!(
+            snapshot.issues[0].home_proxy_grants,
+            vec!["connector:status-api"]
+        );
+        assert_eq!(snapshot.issues[0].pending_revoke, true);
+        assert_eq!(
+            snapshot.issues[0].active_worker_provider_run_id.as_deref(),
+            Some("worker-run-1")
+        );
     }
 
     fn local_agent(id: &str) -> AgentInstance {
@@ -828,10 +954,11 @@ mod tests {
             worker_machine_id: "worker-machine".to_string(),
             execution_lease_id: "lease-1".to_string(),
             leased_agent_id: "leased-agent-1".to_string(),
-            active_worker_provider_run_id: None,
+            active_worker_provider_run_id: Some("worker-run-1".to_string()),
             relay_url: None,
             relay_token: None,
         }));
+        agent.set_worktree_id(Some("/repo".to_string()));
         agent
     }
 

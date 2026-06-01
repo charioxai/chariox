@@ -90,6 +90,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       failed_agents: 0,
       stale_agents: 0,
       pending_revoke_agents: 0,
+      issues: [],
     },
     workspace_coordination: {
       active_worktree_claims: [],
@@ -189,13 +190,32 @@ test("kernel health formatter reports remote extension sync issues", () => {
       failed_agents: 1,
       stale_agents: 1,
       pending_revoke_agents: 1,
+      issues: [
+        {
+          session_id: "session-1",
+          agent_id: "agent-failed",
+          agent_ref: "agent-failed",
+          worker_kernel_id: "worker-kernel",
+          worker_machine_id: "worker-machine",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+          active_worker_provider_run_id: "worker-run-1",
+          state: "failed",
+          manifest_hash: "hash-failed",
+          last_error: "relay offline",
+          pending_revoke: true,
+          home_proxy_grants: ["connector:status-api"],
+          worktree_id: "/repo",
+        },
+      ],
     },
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 4)
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
+  assert.match(rendered, /agent=agent-failed \(agent-failed\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 worker_run=worker-run-1 state=failed pending_revoke=yes hash=hash-failed worktree=\/repo grants=connector:status-api: relay offline/)
   assert.match(rendered, /next: run \/extension sync-status <agent>/)
 })
 

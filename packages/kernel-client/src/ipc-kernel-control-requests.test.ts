@@ -87,6 +87,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
       failed_agents: 0,
       stale_agents: 0,
       pending_revoke_agents: 0,
+      issues: [],
     },
     workspace_coordination: {
       active_worktree_claims: [
