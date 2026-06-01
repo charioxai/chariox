@@ -169,6 +169,51 @@ test("kernel health formatter reports stale provider catalog", () => {
   assert.match(rendered, /next: refresh provider\/model selection/)
 })
 
+test("kernel health formatter reports provider-run identity issues", () => {
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 4,
+      active_runs: 3,
+      arroba_active_runs: 2,
+      native_tui_active_runs: 1,
+      duplicate_arroba_agent_bindings: [{
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider_run_ids: ["run-1", "run-2"],
+      }],
+      multi_interface_agent_bindings: [{
+        session_id: "session-2",
+        agent_id: "agent-2",
+        provider_run_ids: ["run-3:arroba", "run-4:native_tui"],
+      }],
+      orphaned_active_runs: [{
+        provider_run_id: "run-orphan",
+        session_id: "missing-session",
+        agent_id: null,
+        details: "provider run points at a missing session",
+      }],
+      session_active_run_mismatches: [{
+        session_id: "session-3",
+        active_provider_run_id: "run-missing",
+        details: "active provider run is not projected",
+      }],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 4)
+  assert.match(rendered, /provider runs: projected=4 active=3 arroba=2 native_tui=1/)
+  assert.match(rendered, /duplicate Arroba provider run bindings:/)
+  assert.match(rendered, /session=session-1 agent=agent-1 runs=run-1,run-2/)
+  assert.match(rendered, /multi-interface provider run bindings:/)
+  assert.match(rendered, /session=session-2 agent=agent-2 runs=run-3:arroba,run-4:native_tui/)
+  assert.match(rendered, /orphaned active provider runs:/)
+  assert.match(rendered, /run=run-orphan session=missing-session agent=-: provider run points at a missing session/)
+  assert.match(rendered, /session active provider run pointer issues:/)
+  assert.match(rendered, /session=session-3 active=run-missing: active provider run is not projected/)
+  assert.match(rendered, /next: inspect the session and relaunch the affected agent/)
+})
+
 test("kernel health formatter reports slice lifecycle issues", () => {
   const unhealthy = health({
     slice_lifecycle: {
