@@ -51,7 +51,7 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
 
   assert.equal(waitingRoomSelectedSlice("linux-dev", slices)?.id, "slice-1")
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, auth missing)")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
   assert.equal(formatWaitingRoomSliceSelection("new", slices), "new")
   assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new")
@@ -102,7 +102,7 @@ test("waiting room slices filter reusable slices by selected worktree", () => {
     })
 
     assert.deepEqual(slices.map((entry) => entry.id), ["feature-slice"])
-    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent)")
+    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent, auth missing)")
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }

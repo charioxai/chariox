@@ -41,9 +41,11 @@ export function formatSliceProviderAuth(
 ): string {
   const separator = options.separator ?? ":"
   const identity = formatSliceAuthIdentity(entry)
+  const stateDetail = sliceAuthNeedsAttention(entry.state) ? `state=${entry.state}` : ""
   const details = options.includeOrgPlan === false
-    ? []
+    ? [stateDetail].filter(Boolean)
     : [
+        stateDetail,
         entry.organization_name || entry.organization_id ? `org=${entry.organization_name || entry.organization_id}` : "",
         entry.subscription_type ? `plan=${entry.subscription_type}` : "",
       ].filter(Boolean)
@@ -59,4 +61,8 @@ export function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider
     return `${entry.alias} (${identity})`
   }
   return identity
+}
+
+function sliceAuthNeedsAttention(state: string): boolean {
+  return state !== "configured" && state !== "authenticated"
 }

@@ -71,13 +71,7 @@ export function formatWaitingRoomSliceLabel(slice: SliceRecord) {
 
 export function formatWaitingRoomSliceOption(slice: SliceRecord) {
   const agents = slice.agent_ids?.length ?? 0
-  const auth = (slice.provider_auth ?? [])
-    .map((entry) => formatSliceProviderAuth(entry, {
-      separator: " ",
-      includeOrgPlan: false,
-    }))
-    .filter(Boolean)
-    .join(", ")
+  const auth = waitingRoomSliceAuthDetail(slice)
   const relay = formatSliceRelayLabel(slice)
   const failed = slice.last_operation_status === "failed"
     ? `, error ${slice.last_error ?? slice.last_operation ?? "failed"}`
@@ -89,6 +83,20 @@ export function formatWaitingRoomSliceOption(slice: SliceRecord) {
     relay ? `relay ${relay}` : "",
     auth,
   ].filter(Boolean).join(", ")}${failed})`
+}
+
+function waitingRoomSliceAuthDetail(slice: SliceRecord): string {
+  const authEntries = slice.provider_auth ?? []
+  if (authEntries.length === 0) {
+    return (slice.providers ?? []).length > 0 ? "auth missing" : "providers missing"
+  }
+  return authEntries
+    .map((entry) => formatSliceProviderAuth(entry, {
+      separator: " ",
+      includeOrgPlan: false,
+    }))
+    .filter(Boolean)
+    .join(", ")
 }
 
 export function cycleWaitingRoomSliceSelectionId(

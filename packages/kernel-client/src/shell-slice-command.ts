@@ -371,11 +371,17 @@ function formatSliceProviderAuth(entry: NonNullable<SliceRecord["provider_auth"]
     ? `${entry.alias} (${identity})`
     : identity
   const org = entry.organization_name || entry.organization_id
+  const authState = sliceAuthNeedsAttention(entry.state) ? `state=${entry.state}` : ""
   return [
     `${entry.provider}:${label}`,
+    authState,
     org ? `org=${org}` : "",
     entry.subscription_type ? `plan=${entry.subscription_type}` : "",
   ].filter(Boolean).join("/")
+}
+
+function sliceAuthNeedsAttention(state: string): boolean {
+  return state !== "configured" && state !== "authenticated"
 }
 
 function formatSliceRelay(slice: SliceRecord): string {

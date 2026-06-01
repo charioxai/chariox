@@ -68,13 +68,7 @@ export function waitingRoomSliceTitleWidth(remote: Pick<WaitingRoomRemoteState, 
 
 function formatSliceStatus(slice: SliceRecord): string {
   const agents = slice.agent_ids?.length ?? 0
-  const auth = (slice.provider_auth ?? [])
-    .map((entry) => formatSliceProviderAuth(entry, {
-      separator: " ",
-      includeOrgPlan: false,
-    }))
-    .filter(Boolean)
-    .join(",")
+  const auth = waitingRoomSliceAuthDetail(slice)
   const worktree = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice)
   return [
@@ -88,6 +82,20 @@ function formatSliceStatus(slice: SliceRecord): string {
       ? `last error ${slice.last_error ?? slice.last_operation ?? "failed"}`
       : "",
   ].filter(Boolean).join(" ")
+}
+
+function waitingRoomSliceAuthDetail(slice: SliceRecord): string {
+  const authEntries = slice.provider_auth ?? []
+  if (authEntries.length === 0) {
+    return (slice.providers ?? []).length > 0 ? "missing" : "providers missing"
+  }
+  return authEntries
+    .map((entry) => formatSliceProviderAuth(entry, {
+      separator: " ",
+      includeOrgPlan: false,
+    }))
+    .filter(Boolean)
+    .join(",")
 }
 
 function waitingRoomLoadingText(frame = 0) {
