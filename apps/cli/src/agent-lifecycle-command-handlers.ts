@@ -131,6 +131,7 @@ function formatAgentListEntry(agent: AgentInstance): string {
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
     formatAgentPlacement(agent),
+    formatAgentGrantCount(agent),
     formatAgentRemoteExtensionSync(agent),
   ].filter(Boolean).join("; ")}]`
 }
@@ -162,7 +163,12 @@ function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
   const hash = sync.manifest_hash ? ` ${sync.manifest_hash.slice(0, 8)}` : ""
   const revoke = sync.pending_revoke ? " pending revoke" : ""
   const error = sync.last_error ? ` error ${sync.last_error}` : ""
-  return `ext ${sync.state}${hash}${revoke}${error}`
+  return `manifest ${sync.state}${hash}${revoke}${error}`
+}
+
+function formatAgentGrantCount(agent: AgentInstance): string {
+  const grants = agent.extension_grants?.length ?? 0
+  return `${grants} grant${grants === 1 ? "" : "s"}`
 }
 
 async function applyFocusedAgentSession(

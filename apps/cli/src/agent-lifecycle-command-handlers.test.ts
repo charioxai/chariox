@@ -36,9 +36,13 @@ test("agent list summary renders aliases and pluralization", () => {
           pending_revoke: true,
           last_error: "worker offline",
         },
+        extension_grants: [
+          { kind: "mcp", name: "filesystem" },
+          { kind: "script", name: "deploy", environment: "prod" },
+        ],
       }),
     ]),
-    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; ext stale abcdef12 pending revoke error worker offline]",
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants; manifest stale abcdef12 pending revoke error worker offline]",
   )
 })
 
