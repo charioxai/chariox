@@ -135,7 +135,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.deepEqual(appliedProviderRunIds, [null, "provider-run-2"])
   assert.deepEqual(refreshedPaneProviderRunIds, [null, "provider-run-2"])
   assert.equal(splitPaneRefreshCount, 1)
-  assert.equal(flashedMessage, "spawned agent agent-2 (review)")
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · local · worktree worktree-1")
 })
 
 test("agent inspect renders diagnostics as a notice with concise footer", async () => {
@@ -390,7 +390,7 @@ test("agent spawn passes local directory as worktree and launches locally", asyn
   assert.equal(spawnCalls[0]?.worktreeId, process.cwd())
   assert.equal(spawnCalls[0]?.machineRef, undefined)
   assert.deepEqual(launchCalls, [{ agentId: "agent-2" }])
-  assert.match(flashedMessage, /^spawned agent agent-2 \(review\) in /)
+  assert.match(flashedMessage, /^spawned agent agent-2 \(review\) · local · worktree /)
 })
 
 test("agent spawn creates a local git worktree placement before spawning", async () => {
@@ -430,7 +430,7 @@ test("agent spawn creates a local git worktree placement before spawning", async
   assert.equal(prepareCalls[0]?.branch, "feature/test")
   assert.equal(prepareCalls[0]?.fromRef, "main")
   assert.deepEqual(spawnCalls, [{ worktreeId: preparedWorktree, machineRef: undefined }])
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) in /tmp/arroba-feature-worktree")
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · local · worktree /tmp/arroba-feature-worktree")
 })
 
 test("agent spawn with machine requires directory and does not launch local provider", async () => {
@@ -476,7 +476,7 @@ test("agent spawn with machine requires directory and does not launch local prov
   assert.deepEqual(spawnCalls, [{ worktreeId: "/srv/project", machineRef: "worker", placement: undefined }])
   assert.equal(launchCount, 0)
   assert.equal(providerRunStateSet, null)
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) on worker in /srv/project")
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker · worktree /srv/project")
 })
 
 test("agent spawn with machine rejects missing directory", async () => {
@@ -544,7 +544,7 @@ test("agent spawn with machine forwards remote git worktree placement", async ()
     },
   }])
   assert.equal(launchCount, 0)
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) on worker in /srv/project-feature")
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker · worktree /srv/project-feature")
 })
 
 test("agent mode updates the focused agent through shared agent config", async () => {

@@ -121,14 +121,12 @@ export async function handleAgentSpawnCommand(
       worktreePlacement: remoteGitPlacement,
       sliceRef,
     })
-    const placement = sliceRef
-      ? ` in slice:${sliceRef}`
-      : parsed.machineRef
-      ? ` on ${parsed.machineRef}${worktreeId ? ` in ${worktreeId}` : ""}`
-      : worktreeId
-        ? ` in ${worktreeId}`
-        : ""
-    deps.flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}${placement}`, "info")
+    deps.flashFooter(formatSpawnedAgentFooter(payload.agent, {
+      requestedAlias: alias,
+      requestedMachineRef: parsed.machineRef,
+      resolvedWorktreeId: worktreeId,
+      sliceRef,
+    }), "info")
   } catch (error) {
     deps.flashFooter(deps.formatError(error), "error")
   }
@@ -184,6 +182,33 @@ function parseSpawnCount(value: string | undefined): number | null {
   }
   const count = Number(value)
   return Number.isInteger(count) && count > 0 ? count : null
+}
+
+function formatSpawnedAgentFooter(
+  agent: AgentInstance,
+  options: {
+    requestedAlias?: string | undefined
+    requestedMachineRef?: string | undefined
+    resolvedWorktreeId?: string | undefined
+    sliceRef?: string | undefined
+  },
+): string {
+  const alias = agent.alias ?? options.requestedAlias ?? null
+  const remote = agent.remote_execution ?? null
+  const worker = remote?.worker_machine_id || remote?.worker_kernel_id || options.requestedMachineRef || null
+  const placement = options.sliceRef
+    ? `slice ${options.sliceRef}`
+    : remote
+      ? `remote ${worker ?? "worker"}`
+      : "local"
+  const worktree = options.resolvedWorktreeId || agent.worktree_id || null
+  const parts = [
+    `spawned agent ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
+    placement,
+    worktree ? `worktree ${worktree}` : null,
+    options.sliceRef && worker ? `worker ${worker}` : null,
+  ].filter(Boolean)
+  return parts.join(" · ")
 }
 
 async function spawnAndLaunchAgent(

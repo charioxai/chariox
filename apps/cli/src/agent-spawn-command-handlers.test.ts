@@ -108,7 +108,7 @@ test("agent spawn command can create and start a new slice", async () => {
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) in slice:slice-created")
+  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree /workspace-feature · worker machine-slice")
 })
 
 test("agent spawn command can create a headed slice with separate display option", async () => {
@@ -251,7 +251,7 @@ test("agent spawn command treats --slice off as normal local placement", async (
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-local (builder) in /workspace-feature")
+  assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree /workspace-feature")
 })
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
