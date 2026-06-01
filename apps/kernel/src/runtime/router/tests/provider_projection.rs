@@ -495,6 +495,93 @@ async fn provider_process_projection_updates_after_teardown() {
 }
 
 #[tokio::test]
+async fn provider_process_teardown_only_terminates_caller_owned_processes() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, local_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let (_, invite) = app
+        .sessions_mut()
+        .create_session_invite(
+            &session_id,
+            "provider-process-peer".to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+            Some(1),
+            crate::session::CollaborationLevel::Full,
+        )
+        .expect("invite should be created");
+    app.sessions_mut()
+        .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+        .expect("user should join session");
+    let peer_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("peer")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer agent should be created");
+    let local_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        local_agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let peer_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        peer_agent.id(),
+        "dev-stub",
+        "codex",
+        "gpt-5.4",
+    );
+    let process_before_teardown = app
+        .list_provider_processes(None)
+        .expect("processes should list");
+    assert_eq!(process_before_teardown.len(), 1);
+    assert_eq!(
+        process_before_teardown[0].owner_provider_run_ids,
+        vec![local_run.id().to_string(), peer_run.id().to_string()]
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let teardown_request =
+        LocalDaemonRequest::TeardownProviderProcesses(TeardownProviderProcessesRequest {
+            provider: None,
+            force: false,
+        });
+    let teardown_command = remote_command_for_request(&teardown_request, Some("user-2"));
+    let teardown_response = router
+        .dispatch(teardown_command, teardown_request)
+        .await
+        .expect("teardown should complete");
+
+    match teardown_response {
+        LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
+            assert!(
+                processes.is_empty(),
+                "caller must not tear down a shared process with another user's active run"
+            );
+        }
+        _ => panic!("unexpected teardown response"),
+    }
+    let remaining = app
+        .lock()
+        .await
+        .list_provider_processes(None)
+        .expect("remaining processes should list");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(
+        remaining[0].owner_provider_run_ids,
+        vec![local_run.id().to_string(), peer_run.id().to_string()]
+    );
+}
+
+#[tokio::test]
 async fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

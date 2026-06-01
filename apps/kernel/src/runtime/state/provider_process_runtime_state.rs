@@ -34,9 +34,13 @@ impl KernelRuntimeState {
         &self,
         provider: Option<&str>,
         force: bool,
+        allowed_process_ids: Option<&HashSet<String>>,
     ) -> Result<ProviderProcessTeardown, DaemonError> {
         let processes = filter_provider_processes(self.provider_process_snapshot(), provider)
             .into_iter()
+            .filter(|process| {
+                allowed_process_ids.is_none_or(|allowed| allowed.contains(&process.process_id))
+            })
             .filter(|process| {
                 process.teardown_safe
                     || (force

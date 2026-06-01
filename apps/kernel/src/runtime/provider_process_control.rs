@@ -19,6 +19,8 @@ pub(crate) async fn execute_provider_process_request(
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
     provider_process_projection: &ProviderProcessProjectionStore,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -36,6 +38,8 @@ pub(crate) async fn execute_provider_process_request(
                 session_projection,
                 agent_runtime_projection,
                 provider_process_projection,
+                provider_run_projection,
+                caller_user_id,
                 request,
             )
             .await
@@ -75,6 +79,35 @@ pub(crate) fn provider_processes_visible_to_user_from_projection(
     })
 }
 
+pub(crate) fn provider_processes_teardownable_by_user_from_projection(
+    processes: Vec<ProviderProcessInfo>,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
+) -> Vec<ProviderProcessInfo> {
+    provider_processes_teardownable_by_user(processes, caller_user_id, |run_id, user_id| {
+        provider_run_projection
+            .get(run_id)
+            .is_some_and(|run| run.owned_by(user_id))
+    })
+}
+
+pub(crate) fn provider_processes_teardownable_by_user(
+    processes: Vec<ProviderProcessInfo>,
+    caller_user_id: &str,
+    mut provider_run_owned_by: impl FnMut(&str, &str) -> bool,
+) -> Vec<ProviderProcessInfo> {
+    processes
+        .into_iter()
+        .filter(|process| {
+            !process.owner_provider_run_ids.is_empty()
+                && process
+                    .owner_provider_run_ids
+                    .iter()
+                    .all(|run_id| provider_run_owned_by(run_id, caller_user_id))
+        })
+        .collect()
+}
+
 pub(crate) fn projected_provider_processes_response(
     provider_process_projection: &ProviderProcessProjectionStore,
     provider_run_projection: &ProviderRunProjectionStore,
@@ -109,10 +142,26 @@ pub(crate) async fn execute_list_provider_processes_request(
 
 pub(crate) async fn teardown_provider_processes(
     runtime_state: &KernelRuntimeState,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
     request: TeardownProviderProcessesRequest,
 ) -> Result<crate::runtime::state::ProviderProcessTeardown, DaemonError> {
+    let allowed_process_ids = provider_processes_teardownable_by_user_from_projection(
+        runtime_state
+            .list_provider_processes(request.provider.as_deref())
+            .filtered_processes,
+        provider_run_projection,
+        caller_user_id,
+    )
+    .into_iter()
+    .map(|process| process.process_id)
+    .collect::<std::collections::HashSet<_>>();
     runtime_state
-        .teardown_provider_processes(request.provider.as_deref(), request.force)
+        .teardown_provider_processes(
+            request.provider.as_deref(),
+            request.force,
+            Some(&allowed_process_ids),
+        )
         .await
 }
 
@@ -121,9 +170,17 @@ pub(crate) async fn execute_teardown_provider_processes_request(
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
     provider_process_projection: &ProviderProcessProjectionStore,
+    provider_run_projection: &ProviderRunProjectionStore,
+    caller_user_id: &str,
     request: TeardownProviderProcessesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let teardown = teardown_provider_processes(runtime_state, request).await?;
+    let teardown = teardown_provider_processes(
+        runtime_state,
+        provider_run_projection,
+        caller_user_id,
+        request,
+    )
+    .await?;
     for session in &teardown.sessions {
         agent_runtime_projection.update_session(session);
         session_projection.update(session.clone());
@@ -139,7 +196,9 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::provider::{AgentEndpointMode, ProviderProcessInfo, ProviderProcessStatus};
-    use crate::runtime::provider_process_control::provider_processes_visible_to_user;
+    use crate::runtime::provider_process_control::{
+        provider_processes_teardownable_by_user, provider_processes_visible_to_user,
+    };
 
     #[test]
     fn provider_process_visibility_follows_owned_provider_runs() {
@@ -161,6 +220,29 @@ mod tests {
                 .map(|process| process.process_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["process-owned", "process-shared"]
+        );
+    }
+
+    #[test]
+    fn provider_process_teardown_requires_all_runs_owned_by_caller() {
+        let owned_runs = HashSet::from(["run-owned".to_string()]);
+        let teardownable = provider_processes_teardownable_by_user(
+            vec![
+                process("process-owned", vec!["run-owned"]),
+                process("process-shared", vec!["run-other", "run-owned"]),
+                process("process-foreign", vec!["run-other"]),
+                process("process-orphan", vec![]),
+            ],
+            "user-1",
+            |run_id, caller_user_id| caller_user_id == "user-1" && owned_runs.contains(run_id),
+        );
+
+        assert_eq!(
+            teardownable
+                .iter()
+                .map(|process| process.process_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["process-owned"]
         );
     }
 

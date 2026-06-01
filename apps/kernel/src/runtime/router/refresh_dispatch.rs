@@ -154,11 +154,14 @@ impl CommandRouter {
                 self.terminal_output_executor.execute(request).await
             }
             request @ LocalDaemonRequest::TeardownProviderProcesses(_) => {
+                let caller_user_id = crate::runtime::command::command_caller_user_id(&command);
                 execute_provider_process_request(
                     &self.runtime_state,
                     &self.session_projection,
                     &self.agent_runtime_projection,
                     &self.provider_process_projection,
+                    &self.provider_run_projection,
+                    &caller_user_id,
                     request,
                 )
                 .await
