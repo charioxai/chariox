@@ -149,6 +149,20 @@ test("agent summaries expose session and worker provider run pointers", () => {
     }),
     /provider run: session=run-session, worker=run-worker/,
   )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /provider run: session=run-session owner unknown, worker=run-worker/,
+  )
+  assert.doesNotMatch(
+    formatAgentListSummary([remoteAgent], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /session run run-session/,
+  )
 })
 
 test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {

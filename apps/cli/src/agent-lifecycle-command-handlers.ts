@@ -24,7 +24,6 @@ type AgentFocusPayload = {
 type AgentProviderRunContext = {
   activeProviderRunId?: string | null
   activeProviderRunAgentId?: string | null
-  focusedAgentId?: string | null
 }
 
 type AgentSessionContext = {
@@ -268,6 +267,12 @@ function formatAgentProviderRunSummary(
 ): string {
   const sessionRunId = agentProviderRunId(agent, context)
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
+  if (!sessionRunId && context.activeProviderRunId && !context.activeProviderRunAgentId) {
+    return [
+      `session=${context.activeProviderRunId} owner unknown`,
+      workerRunId ? `worker=${workerRunId}` : null,
+    ].filter(Boolean).join(", ")
+  }
   if (!sessionRunId && !workerRunId) {
     return "none"
   }
@@ -287,7 +292,7 @@ function agentProviderRunId(
   if (context.activeProviderRunAgentId) {
     return context.activeProviderRunAgentId === agent.id ? context.activeProviderRunId : null
   }
-  return context.focusedAgentId === agent.id ? context.activeProviderRunId : null
+  return null
 }
 
 function formatAgentInspectExtensionSummary(agent: AgentInstance): string {

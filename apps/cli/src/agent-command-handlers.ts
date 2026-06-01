@@ -73,7 +73,6 @@ export async function handleAgentSlashCommand(
       deps.flashFooter(formatAgentListSummary(session.agents, {
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
-        focusedAgentId: session.focused_agent_id,
       }), "info")
       return
     }
@@ -91,7 +90,6 @@ export async function handleAgentSlashCommand(
       deps.appendNotice(formatAgentInspectSummary(resolved.agent, slices, {
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
-        focusedAgentId: session.focused_agent_id,
       }, {
         homeKernelId: session.host_daemon_id ?? null,
         homeMachineId: session.host_machine_id ?? null,
