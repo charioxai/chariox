@@ -8,6 +8,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added durable audit events for home-executed remote extension idempotent replays and duplicate non-idempotent rejection. Script/connector and MCP proxy paths now use the same audited invocation-admission helper, so silent replay/duplicate paths show up in `/extension audit` and web extension diagnostics.
 - Revalidated focused home-extension invocation tests and the full remote authorization module.
+- Extended TUI/shell and Cloud web extension audit renderers to show invocation id, provider tool-call id, attempt, and idempotency key, and to explain replayed idempotent calls as a no-retry condition.
 
 ### Slice health issue attribution
 

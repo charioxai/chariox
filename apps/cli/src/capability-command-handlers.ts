@@ -789,6 +789,16 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
       ].filter(Boolean)
       if (details.length > 0) rows.push(`  grant: ${details.join(" ")}`)
     }
+    const invocation = typeof payload.invocation === "object" && payload.invocation ? payload.invocation as Record<string, unknown> : {}
+    if (Object.keys(invocation).length > 0) {
+      const details = [
+        fieldPart("id", invocation.invocation_id),
+        fieldPart("call", invocation.provider_tool_call_id),
+        fieldPart("attempt", invocation.attempt),
+        fieldPart("idempotency", invocation.idempotency_key),
+      ].filter(Boolean)
+      if (details.length > 0) rows.push(`  invocation: ${details.join(" ")}`)
+    }
     const result = [
       fieldPart("ok", payload.ok),
       fieldPart("bytes", payload.result_bytes),
@@ -805,6 +815,9 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
 function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
   const status = typeof payload.status === "string" ? payload.status : ""
   const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
+  if (status === "replayed" || kind.includes(".replayed")) {
+    return "cached idempotent result was returned; no retry needed"
+  }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
       return "refresh remote extension sync and verify the worker/provider run is still current before retrying"

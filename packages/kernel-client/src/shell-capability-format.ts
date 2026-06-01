@@ -138,15 +138,30 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     const tool = typeof payload.tool === "object" && payload.tool ? payload.tool as Record<string, unknown> : {}
     const status = typeof payload.status === "string" ? ` ${payload.status}` : ""
     const name = typeof tool.tool_name === "string" ? ` ${tool.tool_name}` : ""
+    const invocation = formatHomeExtensionAuditInvocation(payload.invocation)
     const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
     const next = homeExtensionAuditNextAction(String(event.kind ?? ""), payload)
-    return `${at} ${String(event.kind ?? "event")}${name}${status}${next ? ` next=${next}` : ""}`
+    return `${at} ${String(event.kind ?? "event")}${name}${status}${invocation ? ` ${invocation}` : ""}${next ? ` next=${next}` : ""}`
   }).join("\n")
+}
+
+function formatHomeExtensionAuditInvocation(value: unknown): string {
+  const invocation = typeof value === "object" && value ? value as Record<string, unknown> : {}
+  const parts = [
+    fieldPart("invocation", invocation.invocation_id),
+    fieldPart("call", invocation.provider_tool_call_id),
+    fieldPart("attempt", invocation.attempt),
+    fieldPart("idempotency", invocation.idempotency_key),
+  ].filter(Boolean)
+  return parts.join(" ")
 }
 
 function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
   const status = typeof payload.status === "string" ? payload.status : ""
   const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
+  if (status === "replayed" || kind.includes(".replayed")) {
+    return "cached idempotent result was returned; no retry needed"
+  }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
       return "refresh remote extension sync and verify the worker/provider run is current"
@@ -182,5 +197,11 @@ function remoteExtensionSyncNextAction(status?: RemoteExtensionManifestSyncStatu
   if (status.state === "failed" || status.state === "stale") {
     return "check worker connectivity, then run extension sync-retry for this agent"
   }
+  return null
+}
+
+function fieldPart(label: string, value: unknown): string | null {
+  if (typeof value === "string" && value) return `${label}=${value}`
+  if (typeof value === "number" && Number.isFinite(value)) return `${label}=${value}`
   return null
 }
