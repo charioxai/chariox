@@ -38,6 +38,9 @@ import {
 } from "./claude-remote-rendered-io.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
+  formatNativeTuiRuntimeBanner,
+} from "./runtime-banner.js"
+import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
@@ -146,16 +149,18 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       promptOrigin,
     })
 
-    process.stderr.write([
-      "[arroba claude native-tui]",
-      `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
-      `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
-      `  provider run:   ${run.id}`,
-      `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
-      ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
-      "  prompt policy:  Claude Code TUI is native; Arroba observes hooks and injects queued prompts through the PTY",
-      "",
-    ].join("\n"))
+    process.stderr.write(formatNativeTuiRuntimeBanner({
+      surface: "claude native-tui",
+      session,
+      agent,
+      worktree,
+      run,
+      providerLines: [
+        `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
+        ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
+      ],
+      promptPolicy: "Claude Code TUI is native; Arroba observes hooks and injects queued prompts through the PTY",
+    }))
 
     const launchOptions: Parameters<typeof startClaudeScreen>[2] = {
       worktree,
@@ -384,14 +389,14 @@ async function runClaudeRemoteRendered(
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
 
-    process.stderr.write([
-      "[arroba claude remote-native-tui]",
-      `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
-      `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
-      `  provider run:   ${run.id}`,
-      "  tui:            target-kernel-pty",
-      "",
-    ].join("\n"))
+    process.stderr.write(formatNativeTuiRuntimeBanner({
+      surface: "claude remote-native-tui",
+      session,
+      agent,
+      worktree,
+      run,
+      providerLines: ["  tui:            target-kernel-pty"],
+    }))
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return

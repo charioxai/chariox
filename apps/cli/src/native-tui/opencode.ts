@@ -35,6 +35,9 @@ import {
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
+  formatNativeTuiRuntimeBanner,
+} from "./runtime-banner.js"
+import {
   attachNativeSession,
   createNativeSession,
   prepareCreatedNativeAgent,
@@ -163,17 +166,19 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       throw new Error("OpenCode provider run did not expose provider_session_id")
     }
     proxy.bindProviderRun(run)
-    process.stderr.write([
-      "[arroba opencode native-tui]",
-      `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
-      `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
-      `  provider run:   ${run.id}`,
-      `  opencode sess:  ${providerSessionId}`,
-      `  opencode server:${upstreamBaseUrl}`,
-      `  proxy:          ${proxyUrl}`,
-      "  prompt policy:  native prompts pass through; Arroba observes the session",
-      "",
-    ].join("\n"))
+    process.stderr.write(formatNativeTuiRuntimeBanner({
+      surface: "opencode native-tui",
+      session,
+      agent,
+      worktree,
+      run,
+      providerLines: [
+        `  opencode sess:  ${providerSessionId}`,
+        `  opencode server:${upstreamBaseUrl}`,
+        `  proxy:          ${proxyUrl}`,
+      ],
+      promptPolicy: "native prompts pass through; Arroba observes the session",
+    }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       debug: debugNativeMutation,
       formatError,

@@ -39,6 +39,9 @@ import {
 } from "./provider-run-control.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
+  formatNativeTuiRuntimeBanner,
+} from "./runtime-banner.js"
+import {
   attachNativeSession,
   createNativeSession,
   prepareCreatedNativeAgent,
@@ -179,17 +182,19 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     const proxyUrl = `ws://127.0.0.1:${proxyAddress.port}`
     bindState.structuredEndpoint = bindProviderEndpoint || proxyUrl
-    process.stderr.write([
-      "[arroba codex native-tui]",
-      `  arroba session: ${session.id}${session.alias ? ` (${session.alias})` : ""}`,
-      `  arroba agent:   ${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`,
-      ...(bindState.run ? [`  provider run:   ${bindState.run.id}`] : []),
-      `  app-server:     ${upstreamEndpoint}`,
-      `  proxy:          ${proxyUrl}`,
-      ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
-      "  prompt policy:  native prompts pass through; Arroba observes the session",
-      "",
-    ].join("\n"))
+    process.stderr.write(formatNativeTuiRuntimeBanner({
+      surface: "codex native-tui",
+      session,
+      agent,
+      worktree,
+      run: bindState.run,
+      providerLines: [
+        `  app-server:     ${upstreamEndpoint}`,
+        `  proxy:          ${proxyUrl}`,
+        ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
+      ],
+      promptPolicy: "native prompts pass through; Arroba observes the session",
+    }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       onTerminalRecords: remotePlacement
         ? (records) => proxy?.projectKernelOutputToTui(records)
