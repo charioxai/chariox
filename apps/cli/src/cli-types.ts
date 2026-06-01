@@ -187,6 +187,7 @@ export type WaitingRoomPublicSessionSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   created_at_ms: number
   last_used_at_ms?: number | null
   status: string

@@ -67,7 +67,8 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             CreateSessionRequest::new(
                 "/tmp/arroba-public-snapshot-workspace",
                 "/tmp/arroba-public-snapshot-worktree",
-            ),
+            )
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
         ))
         .expect("session create should succeed")
     {
@@ -97,6 +98,10 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         "/tmp/arroba-public-snapshot-workspace"
     );
     assert_eq!(session.worktree_id, "/tmp/arroba-public-snapshot-worktree");
+    assert_eq!(
+        session.workspace_live_sync_mode,
+        Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+    );
     assert_eq!(session.connected_cli_count, 0);
     assert_eq!(session.activity.agent_count, 1);
     assert_eq!(session.activity.working_agent_count, 0);
@@ -127,6 +132,10 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         .pointer("/agents/0/provider_resume_state")
         .is_none());
     assert!(serialized.pointer("/agents/0/active_prompt").is_none());
+    assert_eq!(
+        serialized.pointer("/workspace_live_sync_mode"),
+        Some(&serde_json::Value::String("tracked".to_string()))
+    );
     assert!(
         serialized.get("active_prompt").is_none(),
         "public summary must not expose active prompt internals"

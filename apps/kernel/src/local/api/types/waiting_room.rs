@@ -47,6 +47,8 @@ pub struct WaitingRoomPublicSessionSummary {
     pub directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<u64>,

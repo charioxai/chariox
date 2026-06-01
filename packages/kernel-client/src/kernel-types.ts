@@ -156,6 +156,7 @@ export type WaitingRoomPublicSessionSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   created_at_ms: number
   last_used_at_ms?: number | null
   status: string
@@ -1272,7 +1273,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 97
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 98
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

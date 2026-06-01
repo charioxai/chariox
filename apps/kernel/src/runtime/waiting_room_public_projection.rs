@@ -134,6 +134,7 @@ fn waiting_room_session_summaries(
                 workspace_label: workspace_label.clone(),
                 directory: Some(workspace_id),
                 worktree_label,
+                workspace_live_sync_mode: session.workspace_live_sync_mode(),
                 created_at_ms: session.created_at_ms(),
                 last_used_at_ms: session.last_used_at_ms(),
                 status: session.status(),
@@ -274,6 +275,7 @@ mod tests {
             "machine",
             "daemon",
         );
+        session.set_workspace_live_sync_mode(Some(crate::config::WorkspaceLiveSyncMode::Managed));
         session.add_attachment("cli-1".to_string());
 
         let summaries =
@@ -286,6 +288,10 @@ mod tests {
         assert_eq!(summary.workspace_id, "workspace");
         assert_eq!(summary.worktree_id, "worktree");
         assert_eq!(summary.directory.as_deref(), Some("workspace"));
+        assert_eq!(
+            summary.workspace_live_sync_mode,
+            Some(crate::config::WorkspaceLiveSyncMode::Managed)
+        );
         assert_eq!(summary.connected_cli_count, 1);
         assert_eq!(summary.activity.agent_count, 0);
     }
