@@ -14,6 +14,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added daemon-health remote extension sync issue attribution for home-proxy remote agents whose manifest is missing, failed, stale, or pending revoke. `remote_extension_sync.issues` now names the session, agent, worker kernel/machine, lease, leased agent, active worker provider run, state, hash, error, worktree, and home-proxy grants; CLI `/kernel health` and Cloud web Settings render the affected agent directly.
 - Bumped the local daemon protocol to 91 and revalidated daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
 
+### Workspace Live Sync identity issue attribution
+
+- Added daemon-health Workspace Live Sync identity issue attribution for managed/tracked provider runs whose observed workspace identity changed. `workspace_live_sync.workspace_identity.issues` now names the provider run, root, generation, validity, baseline/current fingerprint, branch, head commit, and repo URL; CLI `/kernel health` and Cloud web Settings render the affected run directly.
+- Bumped the local daemon protocol to 92 and revalidated Workspace Live Sync identity health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

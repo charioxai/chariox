@@ -159,6 +159,7 @@ impl Default for WorkspaceLiveSyncHealthSnapshot {
                     identity_changed_provider_runs: 0,
                     invalid_provider_runs: 0,
                     current_generation_total: 0,
+                    issues: Vec::new(),
                 },
             external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
                 tracked_artifacts: 0,
@@ -671,6 +672,22 @@ mod tests {
                         identity_changed_provider_runs: 1,
                         invalid_provider_runs: 1,
                         current_generation_total: 2,
+                        issues: vec![
+                            crate::runtime::workspace_identity_monitor::WorkspaceIdentityIssue {
+                                provider_run_id: "provider-run-identity".to_string(),
+                                root: "/repo".to_string(),
+                                generation: 2,
+                                valid: false,
+                                baseline_fingerprint: "root-a".to_string(),
+                                current_fingerprint: "root-b".to_string(),
+                                baseline_branch: Some("main".to_string()),
+                                current_branch: Some("feature".to_string()),
+                                baseline_head_commit: Some("abc123".to_string()),
+                                current_head_commit: Some("def456".to_string()),
+                                baseline_repo_url: Some("git@example.com:repo.git".to_string()),
+                                current_repo_url: Some("git@example.com:repo.git".to_string()),
+                            },
+                        ],
                     },
                 external_changes: crate::io::ArtifactExternalChangeHealthSnapshot {
                     tracked_artifacts: 4,
@@ -798,6 +815,14 @@ mod tests {
                 .workspace_live_sync
                 .workspace_identity
                 .invalid_provider_runs,
+            1
+        );
+        assert_eq!(
+            projection
+                .workspace_live_sync
+                .workspace_identity
+                .issues
+                .len(),
             1
         );
         assert_eq!(

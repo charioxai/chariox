@@ -119,6 +119,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
         identity_changed_provider_runs: 1,
         invalid_provider_runs: 1,
         current_generation_total: 2,
+        issues: [],
       },
       external_changes: {
         tracked_artifacts: 4,

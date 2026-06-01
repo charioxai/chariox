@@ -40,6 +40,23 @@ pub struct WorkspaceIdentityMonitorHealthSnapshot {
     pub identity_changed_provider_runs: usize,
     pub invalid_provider_runs: usize,
     pub current_generation_total: u64,
+    pub issues: Vec<WorkspaceIdentityIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceIdentityIssue {
+    pub provider_run_id: String,
+    pub root: String,
+    pub generation: u64,
+    pub valid: bool,
+    pub baseline_fingerprint: String,
+    pub current_fingerprint: String,
+    pub baseline_branch: Option<String>,
+    pub current_branch: Option<String>,
+    pub baseline_head_commit: Option<String>,
+    pub current_head_commit: Option<String>,
+    pub baseline_repo_url: Option<String>,
+    pub current_repo_url: Option<String>,
 }
 
 impl WorkspaceIdentityMonitor {
@@ -94,13 +111,34 @@ impl WorkspaceIdentityMonitor {
         let mut identity_changed_provider_runs = 0usize;
         let mut invalid_provider_runs = 0usize;
         let mut current_generation_total = 0u64;
-        for record in state.provider_runs.values() {
+        let mut issues = Vec::new();
+        for (provider_run_id, record) in &state.provider_runs {
             current_generation_total += record.generation;
             if record.generation > 0 {
                 identity_changed_provider_runs += 1;
             }
-            if record.current_identity != record.baseline_identity {
+            let valid = record.current_identity == record.baseline_identity;
+            if !valid {
                 invalid_provider_runs += 1;
+            }
+            if record.generation > 0 || !valid {
+                issues.push(WorkspaceIdentityIssue {
+                    provider_run_id: provider_run_id.clone(),
+                    root: record.root.to_string_lossy().to_string(),
+                    generation: record.generation,
+                    valid,
+                    baseline_fingerprint: record
+                        .baseline_identity
+                        .worktree_root_fingerprint
+                        .clone(),
+                    current_fingerprint: record.current_identity.worktree_root_fingerprint.clone(),
+                    baseline_branch: record.baseline_identity.branch.clone(),
+                    current_branch: record.current_identity.branch.clone(),
+                    baseline_head_commit: record.baseline_identity.head_commit.clone(),
+                    current_head_commit: record.current_identity.head_commit.clone(),
+                    baseline_repo_url: record.baseline_identity.repo_url.clone(),
+                    current_repo_url: record.current_identity.repo_url.clone(),
+                });
             }
         }
         WorkspaceIdentityMonitorHealthSnapshot {
@@ -108,6 +146,7 @@ impl WorkspaceIdentityMonitor {
             identity_changed_provider_runs,
             invalid_provider_runs,
             current_generation_total,
+            issues,
         }
     }
 }
@@ -176,5 +215,11 @@ mod tests {
         assert_eq!(health.identity_changed_provider_runs, 1);
         assert_eq!(health.invalid_provider_runs, 1);
         assert_eq!(health.current_generation_total, 1);
+        assert_eq!(health.issues.len(), 1);
+        assert_eq!(health.issues[0].provider_run_id, "run-1");
+        assert_eq!(health.issues[0].root, "/repo");
+        assert_eq!(health.issues[0].baseline_fingerprint, "root-a");
+        assert_eq!(health.issues[0].current_fingerprint, "root-b");
+        assert!(!health.issues[0].valid);
     }
 }

@@ -196,6 +196,12 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
     lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
+    for (const issue of workspaceIdentity.issues) {
+      const branch = formatIdentityTransition(issue.baseline_branch, issue.current_branch)
+      const head = formatIdentityTransition(issue.baseline_head_commit, issue.current_head_commit)
+      const repo = formatIdentityTransition(issue.baseline_repo_url, issue.current_repo_url)
+      lines.push(`  run=${issue.provider_run_id} root=${issue.root} generation=${issue.generation} valid=${issue.valid ? "yes" : "no"} fingerprint=${issue.baseline_fingerprint}->${issue.current_fingerprint} branch=${branch} head=${head} repo=${repo}`)
+    }
     lines.push("  next: stop and relaunch affected managed/tracked provider runs after confirming the selected worktree")
   }
 
@@ -276,4 +282,8 @@ function formatBytes(bytes: number | null): string {
   }
   const formatted = unitIndex === 0 ? `${Math.round(value)}` : value >= 10 ? value.toFixed(1) : value.toFixed(2)
   return `${formatted}${units[unitIndex]}`
+}
+
+function formatIdentityTransition(before: string | null | undefined, after: string | null | undefined): string {
+  return `${before || "-"}->${after || "-"}`
 }

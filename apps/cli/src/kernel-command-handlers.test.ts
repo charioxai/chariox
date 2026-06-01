@@ -110,6 +110,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
         identity_changed_provider_runs: 0,
         invalid_provider_runs: 0,
         current_generation_total: 0,
+        issues: [],
       },
       external_changes: {
         tracked_artifacts: 0,
@@ -253,6 +254,20 @@ test("kernel health formatter reports workspace live sync and collision issues",
         identity_changed_provider_runs: 1,
         invalid_provider_runs: 2,
         current_generation_total: 7,
+        issues: [{
+          provider_run_id: "provider-run-identity",
+          root: "/repo",
+          generation: 7,
+          valid: false,
+          baseline_fingerprint: "root-a",
+          current_fingerprint: "root-b",
+          baseline_branch: "main",
+          current_branch: "feature",
+          baseline_head_commit: "abc123",
+          current_head_commit: "def456",
+          baseline_repo_url: "git@example.com:repo.git",
+          current_repo_url: "git@example.com:repo.git",
+        }],
       },
       external_changes: {
         tracked_artifacts: 5,
@@ -278,6 +293,7 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /next: stop and relaunch affected managed\/tracked provider runs/)
   assert.match(rendered, /next: check workspace paths and permissions/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
+  assert.match(rendered, /run=provider-run-identity root=\/repo generation=7 valid=no fingerprint=root-a->root-b branch=main->feature head=abc123->def456 repo=git@example.com:repo.git->git@example.com:repo.git/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
   assert.match(rendered, /workspace live sync managed mode unavailable: workspace live sync managed mode needs selective write fencing/)
   assert.match(rendered, /next: select tracked mode/)

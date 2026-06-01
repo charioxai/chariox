@@ -428,6 +428,22 @@ export type WorkspaceIdentityMonitorHealthSnapshot = {
   identity_changed_provider_runs: number
   invalid_provider_runs: number
   current_generation_total: number
+  issues: WorkspaceIdentityIssue[]
+}
+
+export type WorkspaceIdentityIssue = {
+  provider_run_id: string
+  root: string
+  generation: number
+  valid: boolean
+  baseline_fingerprint: string
+  current_fingerprint: string
+  baseline_branch?: string | null
+  current_branch?: string | null
+  baseline_head_commit?: string | null
+  current_head_commit?: string | null
+  baseline_repo_url?: string | null
+  current_repo_url?: string | null
 }
 
 export type ArtifactExternalChangeHealthSnapshot = {
@@ -1205,7 +1221,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 91
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 92
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
