@@ -346,6 +346,35 @@ export type ProviderCatalogHealthSnapshot = {
   ttl_ms: number
 }
 
+export type ProviderRunAgentBindingConflict = {
+  session_id: string
+  agent_id: string
+  provider_run_ids: string[]
+}
+
+export type ProviderRunIdentityIssue = {
+  provider_run_id: string
+  session_id: string
+  agent_id?: string | null
+  details: string
+}
+
+export type ProviderRunSessionPointerIssue = {
+  session_id: string
+  active_provider_run_id?: string | null
+  details: string
+}
+
+export type ProviderRunHealthSnapshot = {
+  projected_runs: number
+  active_runs: number
+  arroba_active_runs: number
+  native_tui_active_runs: number
+  duplicate_arroba_agent_bindings: ProviderRunAgentBindingConflict[]
+  orphaned_active_runs: ProviderRunIdentityIssue[]
+  session_active_run_mismatches: ProviderRunSessionPointerIssue[]
+}
+
 export type TransportHealthSnapshot = {
   active_connections: number
   active_subscriptions: number
@@ -438,6 +467,7 @@ export type DaemonHealthProjection = {
   session_projection: SessionProjectionHealthSnapshot
   agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot
   provider_catalog: ProviderCatalogHealthSnapshot
+  provider_runs: ProviderRunHealthSnapshot
   transport: TransportHealthSnapshot
   terminal_stream: TerminalStreamHealthSnapshot
   workspace_coordination: WorkspaceCoordinationHealthSnapshot
@@ -1104,7 +1134,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 80
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 81
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

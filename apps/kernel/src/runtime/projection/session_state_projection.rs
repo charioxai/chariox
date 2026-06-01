@@ -153,7 +153,7 @@ impl SessionStateProjectionStore {
             .map(|session| session.id().to_string())
     }
 
-    pub(super) fn projected_sessions(&self) -> Vec<RuntimeSession> {
+    pub(crate) fn projected_sessions(&self) -> Vec<RuntimeSession> {
         let state = self
             .state
             .lock()

@@ -32,6 +32,15 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     },
     agent_runtime_projection: { projected_agents: 1, active_prompts: 1, queued_prompts: 0 },
     provider_catalog: { cached: true, expired: false, age_ms: 12, ttl_ms: 5_000 },
+    provider_runs: {
+      projected_runs: 1,
+      active_runs: 1,
+      arroba_active_runs: 1,
+      native_tui_active_runs: 0,
+      duplicate_arroba_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
     transport: {
       active_connections: 1,
       active_subscriptions: 1,
@@ -93,5 +102,6 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
 
   const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
+  assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
   assert.equal(response.DaemonHealth.projection.workspace_coordination.active_operation_claims[0]?.mode, "write")
 })

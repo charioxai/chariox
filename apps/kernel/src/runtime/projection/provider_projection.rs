@@ -1,11 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
-use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
+use crate::provider::{
+    OpenCodeProviderCatalog, ProviderClientInterface, ProviderProcessInfo, ProviderRunState,
+    RuntimeProviderRun,
+};
+use crate::session::RuntimeSession;
 
-use super::ProviderCatalogHealthSnapshot;
+use super::{
+    ProviderCatalogHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
+    ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunProjectionStore {
@@ -66,11 +73,147 @@ impl ProviderRunProjectionStore {
             .collect()
     }
 
+    pub(crate) fn list(&self) -> Vec<RuntimeProviderRun> {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn update(&self, run: RuntimeProviderRun) {
         self.runs
             .lock()
             .expect("provider run projection lock should not be poisoned")
             .insert(run.id().to_string(), run);
+    }
+
+    pub(crate) fn health_snapshot(
+        &self,
+        sessions: Vec<RuntimeSession>,
+    ) -> ProviderRunHealthSnapshot {
+        provider_run_health_snapshot(self.list(), sessions)
+    }
+}
+
+fn provider_run_health_snapshot(
+    runs: Vec<RuntimeProviderRun>,
+    sessions: Vec<RuntimeSession>,
+) -> ProviderRunHealthSnapshot {
+    let session_agents = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.id().to_string(),
+                session
+                    .agents()
+                    .iter()
+                    .map(|agent| agent.id().to_string())
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let runs_by_id = runs
+        .iter()
+        .map(|run| (run.id().to_string(), run))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut active_runs = 0;
+    let mut arroba_active_runs = 0;
+    let mut native_tui_active_runs = 0;
+    let mut active_arroba_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut orphaned_active_runs = Vec::new();
+
+    for run in &runs {
+        if run.state() == ProviderRunState::Ended {
+            continue;
+        }
+        active_runs += 1;
+        match run.client_interface() {
+            ProviderClientInterface::Arroba => {
+                arroba_active_runs += 1;
+                if let Some(agent_id) = run.agent_instance_id() {
+                    active_arroba_bindings
+                        .entry((run.session_id().to_string(), agent_id.to_string()))
+                        .or_default()
+                        .push(run.id().to_string());
+                }
+            }
+            ProviderClientInterface::NativeTui => native_tui_active_runs += 1,
+        }
+        match session_agents.get(run.session_id()) {
+            None => orphaned_active_runs.push(ProviderRunIdentityIssue {
+                provider_run_id: run.id().to_string(),
+                session_id: run.session_id().to_string(),
+                agent_id: run.agent_instance_id().map(str::to_string),
+                details: "provider run points at a missing session".to_string(),
+            }),
+            Some(agents) => {
+                if let Some(agent_id) = run.agent_instance_id() {
+                    if !agents.contains(agent_id) {
+                        orphaned_active_runs.push(ProviderRunIdentityIssue {
+                            provider_run_id: run.id().to_string(),
+                            session_id: run.session_id().to_string(),
+                            agent_id: Some(agent_id.to_string()),
+                            details: "provider run points at an agent outside its session"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let duplicate_arroba_agent_bindings = active_arroba_bindings
+        .into_iter()
+        .filter_map(|((session_id, agent_id), mut provider_run_ids)| {
+            provider_run_ids.sort();
+            (provider_run_ids.len() > 1).then_some(ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids,
+            })
+        })
+        .collect();
+
+    let session_active_run_mismatches = sessions
+        .iter()
+        .filter_map(|session| {
+            let active_provider_run_id = session.active_provider_run_id()?;
+            let Some(run) = runs_by_id.get(active_provider_run_id) else {
+                return Some(ProviderRunSessionPointerIssue {
+                    session_id: session.id().to_string(),
+                    active_provider_run_id: Some(active_provider_run_id.to_string()),
+                    details: "active provider run is not projected".to_string(),
+                });
+            };
+            if run.session_id() != session.id() {
+                return Some(ProviderRunSessionPointerIssue {
+                    session_id: session.id().to_string(),
+                    active_provider_run_id: Some(active_provider_run_id.to_string()),
+                    details: format!("active provider run points at session {}", run.session_id()),
+                });
+            }
+            if run.state() == ProviderRunState::Ended {
+                return Some(ProviderRunSessionPointerIssue {
+                    session_id: session.id().to_string(),
+                    active_provider_run_id: Some(active_provider_run_id.to_string()),
+                    details: "active provider run is ended".to_string(),
+                });
+            }
+            None
+        })
+        .collect();
+
+    ProviderRunHealthSnapshot {
+        projected_runs: runs.len(),
+        active_runs,
+        arroba_active_runs,
+        native_tui_active_runs,
+        duplicate_arroba_agent_bindings,
+        orphaned_active_runs,
+        session_active_run_mismatches,
     }
 }
 

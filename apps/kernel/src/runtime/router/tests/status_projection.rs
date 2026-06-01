@@ -101,6 +101,18 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes() {
     assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
     assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
     assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
+    assert_eq!(projection.provider_runs.projected_runs, 1);
+    assert_eq!(projection.provider_runs.active_runs, 1);
+    assert_eq!(projection.provider_runs.arroba_active_runs, 1);
+    assert!(projection
+        .provider_runs
+        .duplicate_arroba_agent_bindings
+        .is_empty());
+    assert!(projection.provider_runs.orphaned_active_runs.is_empty());
+    assert!(projection
+        .provider_runs
+        .session_active_run_mismatches
+        .is_empty());
     assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
     assert_eq!(projection.capability_executor.available_permits, 64);
     assert_eq!(projection.capability_executor.submitted_jobs, 1);
@@ -108,6 +120,68 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes() {
     assert_eq!(projection.capability_executor.failed_jobs, 1);
     assert_eq!(projection.capability_executor.rejected_jobs, 0);
     assert!(!projection.provider_catalog.cached);
+}
+
+#[tokio::test]
+async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let first_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        &agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let duplicate_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "sonnet")
+                .with_agent_id(&agent_id),
+        )
+        .expect("duplicate provider run should start")
+        .into_run();
+    app.update_provider_run_projection(duplicate_run.clone());
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let health_command = KernelCommand::from_local_request(
+        "cmd-health-duplicate-provider",
+        None,
+        None,
+        &health_request,
+    );
+    let health_response = router
+        .dispatch(health_command, health_request)
+        .await
+        .expect("health projection should be returned");
+    let projection = match health_response {
+        LocalDaemonResponse::DaemonHealth { projection } => projection,
+        _ => panic!("unexpected health response"),
+    };
+
+    assert_eq!(projection.provider_runs.projected_runs, 2);
+    assert_eq!(projection.provider_runs.active_runs, 2);
+    assert_eq!(projection.provider_runs.arroba_active_runs, 2);
+    assert_eq!(
+        projection.provider_runs.duplicate_arroba_agent_bindings,
+        vec![
+            crate::runtime::projection::ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids: {
+                    let mut ids = vec![first_run.id().to_string(), duplicate_run.id().to_string()];
+                    ids.sort();
+                    ids
+                },
+            }
+        ]
+    );
 }
 
 #[tokio::test]

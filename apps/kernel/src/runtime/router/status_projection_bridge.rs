@@ -42,6 +42,7 @@ impl CommandRouter {
             session_projection: &self.session_projection,
             agent_runtime_projection: &self.agent_runtime_projection,
             provider_catalog_projection: &self.provider_catalog_projection,
+            provider_run_projection: &self.provider_run_projection,
             transport_health: &self.transport_health,
             terminal_health: &self.terminal_health,
             workspace_coordinator: &self.workspace_coordinator,

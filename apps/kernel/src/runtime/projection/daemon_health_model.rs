@@ -66,6 +66,39 @@ pub struct ProviderCatalogHealthSnapshot {
     pub ttl_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProviderRunHealthSnapshot {
+    pub projected_runs: usize,
+    pub active_runs: usize,
+    pub arroba_active_runs: usize,
+    pub native_tui_active_runs: usize,
+    pub duplicate_arroba_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
+    pub orphaned_active_runs: Vec<ProviderRunIdentityIssue>,
+    pub session_active_run_mismatches: Vec<ProviderRunSessionPointerIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunAgentBindingConflict {
+    pub session_id: String,
+    pub agent_id: String,
+    pub provider_run_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunIdentityIssue {
+    pub provider_run_id: String,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunSessionPointerIssue {
+    pub session_id: String,
+    pub active_provider_run_id: Option<String>,
+    pub details: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeClaimSnapshot {
     pub workspace_id: String,
@@ -125,6 +158,7 @@ pub struct DaemonHealthProjection {
     pub session_projection: SessionProjectionHealthSnapshot,
     pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
+    pub provider_runs: ProviderRunHealthSnapshot,
     pub transport: super::TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
@@ -144,6 +178,7 @@ impl DaemonHealthProjection {
         mut session_projection: SessionProjectionHealthSnapshot,
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
+        provider_runs: ProviderRunHealthSnapshot,
         transport: super::TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
@@ -168,6 +203,7 @@ impl DaemonHealthProjection {
             session_projection,
             agent_runtime_projection,
             provider_catalog,
+            provider_runs,
             transport,
             terminal_stream,
             workspace_coordination,
@@ -182,7 +218,8 @@ mod tests {
     use super::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
-        ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot,
+        ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
+        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, SessionProjectionHealthSnapshot,
         WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
         WorktreeClaimSnapshot,
     };
@@ -228,6 +265,31 @@ mod tests {
                 expired: false,
                 age_ms: Some(10),
                 ttl_ms: 5_000,
+            },
+            ProviderRunHealthSnapshot {
+                projected_runs: 4,
+                active_runs: 3,
+                arroba_active_runs: 2,
+                native_tui_active_runs: 1,
+                duplicate_arroba_agent_bindings: vec![ProviderRunAgentBindingConflict {
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    provider_run_ids: vec![
+                        "provider-run-1".to_string(),
+                        "provider-run-2".to_string(),
+                    ],
+                }],
+                orphaned_active_runs: vec![ProviderRunIdentityIssue {
+                    provider_run_id: "provider-run-orphan".to_string(),
+                    session_id: "missing-session".to_string(),
+                    agent_id: None,
+                    details: "provider run points at a missing session".to_string(),
+                }],
+                session_active_run_mismatches: vec![ProviderRunSessionPointerIssue {
+                    session_id: "session-1".to_string(),
+                    active_provider_run_id: Some("provider-run-missing".to_string()),
+                    details: "active provider run is not projected".to_string(),
+                }],
             },
             TransportHealthSnapshot {
                 active_connections: 2,
@@ -312,6 +374,20 @@ mod tests {
         assert_eq!(projection.agent_runtime_projection.projected_agents, 3);
         assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
         assert!(projection.provider_catalog.cached);
+        assert_eq!(projection.provider_runs.projected_runs, 4);
+        assert_eq!(projection.provider_runs.active_runs, 3);
+        assert_eq!(
+            projection
+                .provider_runs
+                .duplicate_arroba_agent_bindings
+                .len(),
+            1
+        );
+        assert_eq!(projection.provider_runs.orphaned_active_runs.len(), 1);
+        assert_eq!(
+            projection.provider_runs.session_active_run_mismatches.len(),
+            1
+        );
         assert_eq!(projection.transport.active_connections, 2);
         assert_eq!(projection.transport.slow_consumer_closes, 1);
         assert_eq!(projection.terminal_stream.pending_output_records, 4);
