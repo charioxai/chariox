@@ -5,8 +5,8 @@ const HISTORY_BASELINE_TURNS_PER_AGENT: usize = 24;
 const HISTORY_BASELINE_TOOLS_PER_TURN: usize = 4;
 const HISTORY_BASELINE_TOOL_BYTES: usize = 4_096;
 
-#[test]
-fn performance_drill_session_history_current_baseline() {
+#[tokio::test]
+async fn performance_drill_session_history_outline() {
     let root = std::env::temp_dir().join(format!(
         "arroba-history-baseline-{}-{}",
         std::process::id(),
@@ -32,62 +32,47 @@ fn performance_drill_session_history_current_baseline() {
     let total_events = HISTORY_BASELINE_AGENT_COUNT
         * HISTORY_BASELINE_TURNS_PER_AGENT
         * (2 + HISTORY_BASELINE_TOOLS_PER_TURN);
-    let mut request_metrics = Vec::new();
     let total_started = std::time::Instant::now();
-    let mut total_response_bytes = 0usize;
-    let mut total_returned_entries = 0usize;
-
-    for agent_id in &agent_ids {
-        let started = std::time::Instant::now();
-        let entries = operational_history
-            .load_session_history_entries(session.id(), None)
-            .expect("current baseline should load full session history");
-        let page = crate::runtime::projection::page_history_entries(
-            entries.clone(),
-            Some(agent_id),
-            Some(80),
-            Some(200_000),
-            None,
-            None,
-        );
-        let response = crate::local::LocalDaemonResponse::SessionHistory {
-            entries: page.entries,
-            next_cursor: page.next_cursor,
-        };
-        let response_bytes = serde_json::to_vec(&response)
-            .expect("baseline response should serialize")
-            .len();
-        let returned_entries = match &response {
-            crate::local::LocalDaemonResponse::SessionHistory { entries, .. } => entries.len(),
-            _ => 0,
-        };
-        total_response_bytes += response_bytes;
-        total_returned_entries += returned_entries;
-        request_metrics.push(serde_json::json!({
-            "agent_id": agent_id,
-            "latency_ms": started.elapsed().as_secs_f64() * 1000.0,
-            "decoded_entries": entries.len(),
-            "returned_entries": returned_entries,
-            "response_bytes": response_bytes,
-        }));
-    }
+    let response = crate::runtime::history_requests::execute_session_history_outline_request(
+        operational_history.clone(),
+        crate::local::GetSessionHistoryOutlineRequest {
+            session_id: session.id().to_string(),
+            agent_ids: Some(agent_ids.clone()),
+            latest_prompt_count: Some(4),
+        },
+    )
+    .await
+    .expect("outline should load");
+    let response_bytes = serde_json::to_vec(&response)
+        .expect("outline response should serialize")
+        .len();
+    let (returned_turns, returned_blobs) = match &response {
+        crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } => (
+            agents.iter().map(|agent| agent.turns.len()).sum::<usize>(),
+            agents
+                .iter()
+                .flat_map(|agent| agent.turns.iter())
+                .map(|turn| turn.blobs.len())
+                .sum::<usize>(),
+        ),
+        _ => (0, 0),
+    };
 
     let metrics = serde_json::json!({
-        "metric": "session_history_current_baseline",
+        "metric": "session_history_outline",
         "agent_count": HISTORY_BASELINE_AGENT_COUNT,
         "turns_per_agent": HISTORY_BASELINE_TURNS_PER_AGENT,
         "tools_per_turn": HISTORY_BASELINE_TOOLS_PER_TURN,
         "tool_bytes": HISTORY_BASELINE_TOOL_BYTES,
         "total_seeded_events": total_events,
-        "request_count": agent_ids.len(),
+        "request_count": 1,
         "total_attach_history_ms": total_started.elapsed().as_secs_f64() * 1000.0,
-        "total_decoded_entries": total_events * agent_ids.len(),
-        "total_returned_entries": total_returned_entries,
-        "total_response_bytes": total_response_bytes,
-        "requests": request_metrics,
+        "outline_turns": returned_turns,
+        "outline_blobs": returned_blobs,
+        "total_response_bytes": response_bytes,
     });
     println!(
-        "HISTORY_BASELINE_METRICS {}",
+        "HISTORY_OUTLINE_METRICS {}",
         serde_json::to_string(&metrics).expect("metrics should serialize")
     );
 
@@ -239,63 +224,6 @@ fn performance_drill_high_output_terminal_stream_coalesces_records() {
         "adjacent provider output should coalesce instead of producing 1000 records"
     );
     assert_eq!(terminal.health_store().snapshot().pending_output_records, 2);
-}
-
-#[test]
-fn performance_drill_large_history_projection_keeps_recent_suffix_hot() {
-    let store = crate::runtime::projection::SessionHistoryProjectionStore::default();
-    let entries = (0..2_500)
-        .map(|index| {
-            if index % 2 == 0 {
-                crate::history::SessionHistoryEntry::user_prompt(
-                    "session-history",
-                    "attachment-1",
-                    "agent-1",
-                    format!("prompt {index}"),
-                )
-            } else {
-                crate::history::SessionHistoryEntry::provider_output(
-                    "session-history",
-                    "provider-run-1",
-                    Some("agent-1"),
-                    TerminalOutputKind::ProviderOutput,
-                    None,
-                    format!("output {index}"),
-                )
-            }
-        })
-        .collect::<Vec<_>>();
-
-    store.update_entries("session-history", entries);
-
-    let recent_page = store
-        .page("session-history", None, Some(3), None, None, None)
-        .expect("recent unfiltered page should be served from the hot projection");
-    assert!(!recent_page.entries.is_empty());
-    assert!(
-        recent_page.entries[0].entry_index >= 1_500,
-        "projection should retain only the recent suffix with absolute entry indexes"
-    );
-
-    assert!(
-        store
-            .page("session-history", None, Some(1), None, Some(10), None)
-            .is_none(),
-        "old cursors outside the hot suffix should fall back to durable history"
-    );
-    assert!(
-        store
-            .page(
-                "session-history",
-                Some("agent-1"),
-                Some(1),
-                None,
-                None,
-                None
-            )
-            .is_none(),
-        "agent-filtered reads on truncated projections should fall back to durable history"
-    );
 }
 
 #[test]

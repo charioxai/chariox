@@ -3,26 +3,9 @@ import test from "node:test"
 
 import {
   attachToSessionRequest,
-  getSessionHistoryRequest,
   launchProviderRunRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
-
-test("getSessionHistoryRequest includes paging and agent targeting", () => {
-  assert.deepEqual(
-    getSessionHistoryRequest("session-1", 2, 1000, { before_entry_index: 12, before_entry_char_offset: 4 }, "agent-a"),
-    {
-      GetSessionHistory: {
-        session_id: "session-1",
-        agent_id: "agent-a",
-        round_count: 2,
-        max_chars: 1000,
-        before_entry_index: 12,
-        before_entry_char_offset: 4,
-      },
-    },
-  )
-})
 
 test("launchProviderRunRequest normalizes blank effort to null", () => {
   assert.deepEqual(

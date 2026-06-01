@@ -3,7 +3,6 @@ import test from "node:test"
 
 import type {
   BootstrapDeferredState,
-  SessionHistoryCursor,
   TranscriptEntry,
 } from "./cli-types.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
@@ -29,7 +28,6 @@ test("deferred bootstrap controller applies provider catalog hydration", async (
 })
 
 test("deferred bootstrap controller replaces matching attached history", async () => {
-  const cursor: SessionHistoryCursor = { before_entry_index: 4, before_entry_char_offset: null }
   const harness = bootstrapHarness({
     attachmentSessionId: "session-1",
     deferred: {
@@ -41,7 +39,7 @@ test("deferred bootstrap controller replaces matching attached history", async (
         },
         historyEntries: [entry(1, "assistant", "hello")],
         promptHistoryEntries: ["hello"],
-        nextHistoryCursor: cursor,
+        nextHistoryCursor: null,
       }),
     },
   })
@@ -51,7 +49,7 @@ test("deferred bootstrap controller replaces matching attached history", async (
 
   assert.deepEqual(harness.promptHistoryEntries, ["hello"])
   assert.equal(harness.promptHistoryResetCount, 1)
-  assert.equal(harness.nextHistoryCursor, cursor)
+  assert.equal(harness.nextHistoryCursor, null)
   assert.deepEqual(harness.agentPaneEntries["agent-1"]?.map((item) => item.text), ["hello"])
   assert.equal(harness.agentPanePreviews["agent-1"], "Asst: hello")
   assert.deepEqual(harness.replaceCalls, [{ agentId: "agent-1", entries: ["hello"] }])
@@ -125,7 +123,7 @@ function bootstrapHarness(options: {
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
-    nextHistoryCursor: undefined as SessionHistoryCursor | null | undefined,
+    nextHistoryCursor: undefined as null | undefined,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,

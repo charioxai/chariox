@@ -132,29 +132,20 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
         .all(|record| record.agent_id.as_deref() == Some(reviewer.id())));
 
     let default_history = app
-        .session_history_page(
-            session.id(),
-            Some(default_agent.id()),
-            None,
-            None,
-            None,
-            None,
-        )
+        .load_session_history_entries(&session, Some(default_agent.id()))
         .expect("default history should load");
     let reviewer_history = app
-        .session_history_page(session.id(), Some(reviewer.id()), None, None, None, None)
+        .load_session_history_entries(&session, Some(reviewer.id()))
         .expect("reviewer history should load");
 
     let default_text = default_history
-        .entries
         .iter()
-        .map(|entry| entry.entry.text.as_str())
+        .map(|entry| entry.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
     let reviewer_text = reviewer_history
-        .entries
         .iter()
-        .map(|entry| entry.entry.text.as_str())
+        .map(|entry| entry.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
 

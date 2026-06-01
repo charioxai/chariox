@@ -393,7 +393,7 @@ fn ended_sessions_reopen_on_attach_and_preserve_history() {
 }
 
 #[test]
-fn session_history_page_reads_operational_history() {
+fn session_history_entries_read_operational_history() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -409,12 +409,12 @@ fn session_history_page_reads_operational_history() {
         .append_transcript(&entry, crate::history::HistoryEventTurnContext::default())
         .expect("operational event should append");
 
-    let page = app
-        .session_history_page(session.id(), Some(agent.id()), None, None, None, None)
-        .expect("history page should load");
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history entries should load");
 
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].entry.text, "from operational history");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].text, "from operational history");
 }
 
 #[test]

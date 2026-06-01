@@ -207,26 +207,32 @@ test("executeShellCommand waits for prompt and renders summary blob", async () =
         },
       }
     }
-    if ("GetSessionHistory" in request) {
+    if ("GetSessionHistoryOutline" in request) {
       return {
-        SessionHistory: {
-          next_cursor: null,
-          entries: [
-            {
-              entry_index: 1,
-              fragment_start: 0,
-              fragment_end: 5,
-              total_chars: 5,
-              entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
-            },
-            {
+        SessionHistoryOutline: {
+          agents: [{
+            agent_id: "agent-1",
+            turns: [{
+              turn_id: "turn-1",
+              started_at_ms: 1,
+              user_prompt: {
+                entry_index: 1,
+                fragment_start: 0,
+                fragment_end: 5,
+                total_chars: 5,
+                entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
+              },
+              blobs: [],
+              summary: {
               entry_index: 2,
               fragment_start: 0,
               fragment_end: 7,
               total_chars: 7,
               entry: { agent_id: "agent-1", kind: "provider_output", text: "done ok" },
-            },
-          ],
+              },
+            }],
+            next_cursor: null,
+          }],
         },
       }
     }
@@ -298,19 +304,50 @@ test("executeShellCommand renders provider tools through shared tool display for
         },
       }
     }
-    if ("GetSessionHistory" in request) {
+    if ("GetSessionHistoryOutline" in request) {
       return {
-        SessionHistory: {
-          next_cursor: null,
-          entries: [
-            {
-              entry_index: 1,
-              fragment_start: 0,
-              fragment_end: 5,
-              total_chars: 5,
-              entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
-            },
-            {
+        SessionHistoryOutline: {
+          agents: [{
+            agent_id: "agent-1",
+            turns: [{
+              turn_id: "turn-1",
+              started_at_ms: 1,
+              user_prompt: {
+                entry_index: 1,
+                fragment_start: 0,
+                fragment_end: 5,
+                total_chars: 5,
+                entry: { agent_id: "agent-1", kind: "user_prompt", text: "hello\n" },
+              },
+              blobs: [{
+                blob_id: "history:2:2",
+                kind: "provider_tool",
+                title: "tool",
+                summary: "read seed.txt",
+                sequence_start: 2,
+                sequence_end: 2,
+                entry_count: 1,
+                total_chars: 100,
+                timestamp_ms: 2,
+              }],
+              summary: {
+                entry_index: 3,
+                fragment_start: 0,
+                fragment_end: 7,
+                total_chars: 7,
+                entry: { agent_id: "agent-1", kind: "provider_output", text: "done ok" },
+              },
+            }],
+            next_cursor: null,
+          }],
+        },
+      }
+    }
+    if ("GetSessionHistoryBlobContent" in request) {
+      return {
+        SessionHistoryBlobContent: {
+          blob_id: "history:2:2",
+          entries: [{
               entry_index: 2,
               fragment_start: 0,
               fragment_end: 100,
@@ -326,15 +363,7 @@ test("executeShellCommand renders provider tools through shared tool display for
                   output: JSON.stringify({ content_text: "TOOL_DISPLAY_FIXTURE_SEED\n", path: "seed.txt", domain: "text" }),
                 }),
               },
-            },
-            {
-              entry_index: 3,
-              fragment_start: 0,
-              fragment_end: 7,
-              total_chars: 7,
-              entry: { agent_id: "agent-1", kind: "provider_output", text: "done ok" },
-            },
-          ],
+            }],
         },
       }
     }

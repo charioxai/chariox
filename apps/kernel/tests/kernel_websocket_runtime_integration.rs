@@ -3,7 +3,7 @@ use std::time::Duration;
 use arroba_kernel::attachment::ClientCapabilityLevel;
 use arroba_kernel::local::{
     AttachToSessionRequest, CancelActivePromptRequest, FocusAgentRequest,
-    GetProviderCatalogRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+    GetProviderCatalogRequest, GetSessionHistoryOutlineRequest, GetSessionStateRequest,
     LaunchProviderRunRequest, ListProviderProcessesRequest, LocalDaemonRequest,
     PumpTerminalOutputRequest, ResizeTerminalRequest, RunShellCapabilityRequest, SpawnAgentRequest,
     SubmitPromptRequest,
@@ -101,13 +101,10 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
         json!({
             "type": "request",
             "request_id": "slow-history",
-            "request": LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+            "request": LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
                 session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                round_count: Some(1),
-                max_chars: Some(4096),
-                before_entry_index: None,
-                before_entry_char_offset: None,
+                agent_ids: Some(vec![agent_id.clone()]),
+                latest_prompt_count: Some(1),
             }),
         }),
     )
@@ -138,7 +135,7 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
 
     let history_response = wait_for_response(&mut socket, "slow-history").await;
     assert!(
-        response_variant(&history_response, "SessionHistory")["entries"].is_array(),
+        response_variant(&history_response, "SessionHistoryOutline")["agents"].is_array(),
         "history response should still complete: {history_response}"
     );
 

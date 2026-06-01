@@ -4,7 +4,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   RuntimeSession,
-  SessionHistoryCursor,
   TranscriptEntry,
 } from "./cli-types.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
@@ -78,7 +77,7 @@ function createHarness(options: {
       loads.push(`${agentId}:${cursor ? JSON.stringify(cursor) : "null"}`)
       return {
         entries: [historyEntry(agentId, agentId === "a" ? "hello" : "world\n")],
-        nextCursor: null as SessionHistoryCursor | null,
+        nextCursor: null,
       }
     },
     pruneAuxiliaryAgentPanes: (nextSession) => {

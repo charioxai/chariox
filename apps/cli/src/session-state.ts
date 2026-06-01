@@ -7,7 +7,6 @@ import {
   type RuntimeInteraction,
   type RuntimeProviderRun,
   type RuntimeSession,
-  type SessionHistoryCursor,
   type TranscriptEntry,
 } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -58,7 +57,7 @@ export type DetachedCliTransitionState = {
   working: false
   fatalError: null
   daemonDisconnected: false
-  nextHistoryCursor: SessionHistoryCursor | null
+  nextHistoryCursor: null
   statusLine: string
   waitingRoomState: WaitingRoomState
 }

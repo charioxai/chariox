@@ -9,7 +9,7 @@ impl DaemonApp {
         self.config.user_config.history.archive.mode == HistoryArchiveMode::External
     }
 
-    pub(crate) fn load_session_history_entries(
+    pub fn load_session_history_entries(
         &self,
         session: &RuntimeSession,
         agent_id: Option<&str>,
@@ -35,29 +35,5 @@ impl DaemonApp {
                 .collect(),
             None => legacy_entries,
         })
-    }
-
-    #[doc(hidden)]
-    pub fn session_history_page(
-        &self,
-        session_id: &str,
-        agent_id: Option<&str>,
-        round_count: Option<usize>,
-        max_chars: Option<usize>,
-        before_entry_index: Option<usize>,
-        before_entry_char_offset: Option<usize>,
-    ) -> Result<crate::session_history_page::SessionHistoryPage, DaemonError> {
-        let session = self.sessions().get_session(session_id)?;
-        let entries = self.load_session_history_entries(&session, agent_id)?;
-        self.session_history_projection_store()
-            .update_entries(session.id(), entries.clone());
-        Ok(crate::runtime::projection::page_history_entries(
-            entries,
-            agent_id,
-            round_count,
-            max_chars,
-            before_entry_index,
-            before_entry_char_offset,
-        ))
     }
 }

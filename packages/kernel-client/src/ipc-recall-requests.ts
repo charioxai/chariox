@@ -1,27 +1,7 @@
 import type {
   RecallQueryPayload,
   SemanticSearchRecallMode,
-  SessionHistoryCursor,
 } from "./kernel-types.js"
-
-export function getSessionHistoryRequest(
-  sessionId: string,
-  roundCount: number,
-  maxChars: number,
-  cursor?: SessionHistoryCursor | null,
-  agentId?: string | null,
-) {
-  return {
-    GetSessionHistory: {
-      session_id: sessionId,
-      agent_id: agentId ?? null,
-      round_count: roundCount,
-      max_chars: maxChars,
-      before_entry_index: cursor?.before_entry_index ?? null,
-      before_entry_char_offset: cursor?.before_entry_char_offset ?? null,
-    },
-  }
-}
 
 export function getSessionHistoryOutlineRequest(
   sessionId: string,

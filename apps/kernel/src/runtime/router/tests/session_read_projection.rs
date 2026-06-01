@@ -292,58 +292,6 @@ async fn missing_session_inspection_uses_warmed_projection_without_app_lock() {
 }
 
 #[tokio::test]
-async fn missing_session_history_uses_warmed_projection_without_app_lock() {
-    let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
-    ));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-
-    let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
-    let list_command =
-        KernelCommand::from_local_request("cmd-history-missing-warm", None, None, &list_request);
-    router
-        .dispatch(list_command, list_request)
-        .await
-        .expect("initial list should warm empty session projection");
-
-    let app_guard = app.lock().await;
-    let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
-        session_id: "missing-session".to_string(),
-        agent_id: None,
-        round_count: Some(10),
-        max_chars: None,
-        before_entry_index: None,
-        before_entry_char_offset: None,
-    });
-    let history_command = KernelCommand::from_local_request(
-        "cmd-history-missing-projection",
-        None,
-        None,
-        &history_request,
-    );
-    let history_router = router.clone();
-    let history_task = tokio::spawn(async move {
-        history_router
-            .dispatch(history_command, history_request)
-            .await
-    });
-
-    let error = timeout(Duration::from_millis(100), history_task)
-        .await
-        .expect("missing history should not wait for the app lock")
-        .expect("history task should join")
-        .expect_err("missing session should fail");
-    drop(app_guard);
-
-    match error {
-        DaemonError::SessionNotFound { session_id } => {
-            assert_eq!(session_id, "missing-session");
-        }
-        error => panic!("unexpected error: {error}"),
-    }
-}
-
-#[tokio::test]
 async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)

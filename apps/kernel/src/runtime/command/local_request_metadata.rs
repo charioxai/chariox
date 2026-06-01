@@ -198,14 +198,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::GetSessionHistory(request) => {
-            let mut metadata = LocalRequestMetadata::new("session.history.get", Background)
-                .session(&request.session_id);
-            if let Some(agent_id) = request.agent_id.as_deref() {
-                metadata = metadata.agent(agent_id);
-            }
-            metadata
-        }
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
             LocalRequestMetadata::new("session.history.outline", Background)
                 .session(&request.session_id)
@@ -495,7 +487,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DeleteSession(_)
         | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
-        | LocalDaemonRequest::GetSessionHistory(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),

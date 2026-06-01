@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::GetSessionHistoryOutlineRequest;
 
 #[tokio::test]
 async fn pending_provider_launch_cleanup_does_not_wait_for_app_lock_when_projection_is_cold() {
@@ -194,14 +195,12 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
         .await
         .expect("state read should warm session projection");
 
-    let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
-        session_id: session_id.clone(),
-        agent_id: Some(agent_id.clone()),
-        round_count: Some(10),
-        max_chars: None,
-        before_entry_index: None,
-        before_entry_char_offset: None,
-    });
+    let history_request =
+        LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
+            session_id: session_id.clone(),
+            agent_ids: Some(vec![agent_id.clone()]),
+            latest_prompt_count: Some(4),
+        });
     let history_command = KernelCommand::from_local_request(
         "cmd-history-slow-background",
         None,

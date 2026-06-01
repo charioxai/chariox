@@ -757,16 +757,6 @@ export type PromptSubmittedPayload = {
   session: RuntimeSession
 }
 
-export type SessionHistoryPage = {
-  entries: SessionHistoryPageEntry[]
-  next_cursor: SessionHistoryCursor | null
-}
-
-export type SessionHistoryCursor = {
-  before_entry_index: number
-  before_entry_char_offset: number | null
-}
-
 export type SessionHistoryPageEntry = {
   entry_index: number
   fragment_start: number
@@ -1079,7 +1069,7 @@ export type SessionBinding = {
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]
-  nextHistoryCursor: SessionHistoryCursor | null
+  nextHistoryCursor: null
 }
 
 export type BootstrapDeferredState = {
@@ -1091,7 +1081,7 @@ export type BootstrapDeferredState = {
     agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
-    nextHistoryCursor: SessionHistoryCursor | null
+    nextHistoryCursor: null
   }>
 }
 

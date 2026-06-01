@@ -86,15 +86,14 @@ mod tests {
         DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
         FocusAgentRequest, GetDaemonHealthRequest, GetProviderAuthStatusRequest,
         GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
-        GetSessionHistoryRequest, GetSessionStateRequest, GetWorkspaceLiveSyncStatusRequest,
-        InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-        QueryRecallRequest, RelayStatusRequest, RemoveWorkflowEdgeRequest, ResizeTerminalRequest,
-        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
-        SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
-        UpdateSessionConfigRequest,
+        GetSessionStateRequest, GetWorkspaceLiveSyncStatusRequest, InvokeWorkflowEndpointRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, RelayStatusRequest, RemoveWorkflowEdgeRequest,
+        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
@@ -173,7 +172,6 @@ mod tests {
     mod remote_workspace_live_sync_authorization;
     mod runtime_persistence;
     mod session_actor_projection;
-    mod session_history_projection;
     mod session_lifecycle_projection;
     mod session_read_projection;
     mod status_projection;

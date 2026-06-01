@@ -31,7 +31,7 @@ use crate::session::{
     WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition,
 };
-use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
+use crate::session_history_page::SessionHistoryPageEntry;
 use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};
 #[cfg(test)]
 mod tests;

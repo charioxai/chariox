@@ -6,15 +6,13 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
-use crate::runtime::history_executor::projected_session_history_response;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::projected_provider_processes_response;
 use crate::runtime::provider_run_control::projected_provider_run_response;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::session_read_control::{
-    projected_session_inspection_response, projected_session_or_absence,
-    projected_session_read_response,
+    projected_session_inspection_response, projected_session_read_response,
 };
 use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
@@ -163,19 +161,6 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = request {
             if let Some(response) = self.terminal_output_executor.projected_response(request) {
-                return response.map(Some);
-            }
-        }
-        if let LocalDaemonRequest::GetSessionHistory(request) = request {
-            if let Some(response) = projected_session_history_response(
-                self.history_store.clone(),
-                self.operational_history_store.clone(),
-                self.history_projection.clone(),
-                projected_session_or_absence(&self.session_projection, &request.session_id),
-                request,
-            )
-            .await
-            {
                 return response.map(Some);
             }
         }

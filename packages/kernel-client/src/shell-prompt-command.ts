@@ -3,11 +3,12 @@ import type {
   PromptQueueItem,
   PromptSubmittedPayload,
   RuntimeSession,
-  SessionHistoryPage,
   SessionHistoryPageEntry,
+  SessionHistoryOutline,
 } from "./kernel-types.js"
 import {
-  getSessionHistoryRequest,
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   pumpTerminalOutputRequest,
   submitPromptRequest,
@@ -203,22 +204,26 @@ async function readPromptHistory(
   promptText: string,
   deps: ShellPromptCommandDeps,
 ): Promise<SessionHistoryPageEntry[]> {
-  const response = await deps.client.send(getSessionHistoryRequest(sessionId, 12, 120_000, null, agentId))
-  const page = expectVariant<SessionHistoryPage>(response, "SessionHistory")
-  const entries = [...page.entries].sort((left, right) => left.entry_index - right.entry_index)
-  const promptIndex = findPromptHistoryIndex(entries, promptText)
-  return promptIndex === null
-    ? entries.filter((entry) => entry.entry.kind !== "user_prompt")
-    : entries.filter((entry) => entry.entry_index > promptIndex && entry.entry.kind !== "user_prompt")
-}
-
-function findPromptHistoryIndex(entries: SessionHistoryPageEntry[], promptText: string): number | null {
   const normalizedPrompt = promptText.trim()
-  const matches = entries.filter((entry) => entry.entry.kind === "user_prompt" && entry.entry.text.trim() === normalizedPrompt)
-  const matched = matches[matches.length - 1]
-  if (matched) return matched.entry_index
-  const lastPrompt = [...entries].reverse().find((entry) => entry.entry.kind === "user_prompt")
-  return lastPrompt?.entry_index ?? null
+  const response = await deps.client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 4))
+  const outline = expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
+  const agent = outline.agents.find((candidate) => candidate.agent_id === agentId)
+  const turn = [...(agent?.turns ?? [])]
+    .reverse()
+    .find((candidate) => candidate.user_prompt.entry.text.trim() === normalizedPrompt)
+    ?? agent?.turns.at(-1)
+  if (!turn) {
+    return []
+  }
+  const entries: SessionHistoryPageEntry[] = []
+  for (const blob of turn.blobs) {
+    const blobResponse = await deps.client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id))
+    entries.push(...expectVariant<{ entries: SessionHistoryPageEntry[] }>(blobResponse, "SessionHistoryBlobContent").entries)
+  }
+  if (turn.summary) {
+    entries.push(turn.summary)
+  }
+  return entries.sort((left, right) => left.entry_index - right.entry_index)
 }
 
 function sessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {

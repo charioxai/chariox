@@ -5,9 +5,8 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import { clampScrollTop } from "./history-viewport.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
-import { getSessionHistory, getSessionHistoryOutline } from "./session-history-api.js"
+import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
-import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,
@@ -248,35 +247,16 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     deferredBootstrapController.apply()
   })
 
-  const transcriptHistoryLoadController = createTranscriptHistoryLoadController({
-    isAttached: deps.isAttached,
-    isLoading: deps.loadingHistory,
-    getCursor: deps.nextHistoryCursor,
-    getSessionId: () => deps.sessionState().id,
-    getVisibleAgentId: deps.visibleTranscriptAgentId,
-    getEntryCounter: deps.entryCounter,
-    setLoading: deps.setHistoryLoadingState,
-    setNextCursor: deps.setNextHistoryCursor,
-    loadPage: (sessionId, cursor, agentId) => getSessionHistory(deps.client, sessionId, cursor, agentId),
-    prependEntries: prependTranscriptEntries,
-    flashError: (message) => {
-      deps.flashFooter(message, "error")
-    },
-    logWarning: (message, fields) => {
-      deps.appLogger?.warn(message, fields)
-    },
-    formatError: deps.formatError,
-  })
   const transcriptHistoryAutoloadController = createTranscriptHistoryAutoloadController({
     scheduleTimer: deps.scheduleTimer,
     getScrollbox: deps.transcriptScrollboxRefController.current,
     isScrollRestoring: () => deps.historyScrollRestoreController.isRestoring(),
     isAttached: deps.isAttached,
     isLoadingHistory: deps.loadingHistory,
-    hasMoreHistory: () => deps.nextHistoryCursor() !== null,
+    hasMoreHistory: () => false,
     getLastScrollTop: deps.primaryTranscriptRuntimeStore.getLastScrollTop,
     setLastScrollTop: deps.primaryTranscriptRuntimeStore.setLastScrollTop,
-    loadOlderHistory: () => transcriptHistoryLoadController.loadOlderPage(),
+    loadOlderHistory: async () => false,
   })
 
   return {
@@ -287,7 +267,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     replaceTranscriptEntries,
     prependTranscriptEntries,
     primeAttachedSessionBinding,
-    bumpHistoryLoadGeneration: transcriptHistoryLoadController.bumpGeneration,
+    bumpHistoryLoadGeneration: () => undefined,
     transcriptHistoryAutoloadController,
   }
 }

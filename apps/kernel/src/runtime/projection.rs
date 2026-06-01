@@ -27,7 +27,7 @@ pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
 };
 pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
-pub(crate) use session_history_projection::{page_history_entries, SessionHistoryProjectionStore};
+pub(crate) use session_history_projection::SessionHistoryProjectionStore;
 pub(crate) use session_snapshot_projection::agent_activity_for_session_projection;
 pub use session_snapshot_projection::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,

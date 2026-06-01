@@ -1,16 +1,6 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GetSessionHistoryRequest {
-    pub session_id: String,
-    pub agent_id: Option<String>,
-    pub round_count: Option<usize>,
-    pub max_chars: Option<usize>,
-    pub before_entry_index: Option<usize>,
-    pub before_entry_char_offset: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryOutlineRequest {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

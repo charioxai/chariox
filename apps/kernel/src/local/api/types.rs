@@ -42,7 +42,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 85;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 86;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -186,7 +186,6 @@ pub enum LocalDaemonRequest {
     LogoutProvider(LogoutProviderRequest),
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
-    GetSessionHistory(GetSessionHistoryRequest),
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),
     GetSessionHistoryBlobContent(GetSessionHistoryBlobContentRequest),
     GetPromptInputHistory(GetPromptInputHistoryRequest),
@@ -722,10 +721,6 @@ pub enum LocalDaemonResponse {
     },
     ProviderProcessesTornDown {
         processes: Vec<ProviderProcessInfo>,
-    },
-    SessionHistory {
-        entries: Vec<SessionHistoryPageEntry>,
-        next_cursor: Option<SessionHistoryCursor>,
     },
     SessionHistoryOutline {
         agents: Vec<SessionHistoryOutlineAgent>,

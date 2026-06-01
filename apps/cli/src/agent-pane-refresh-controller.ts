@@ -1,7 +1,6 @@
 import type {
   AgentInstance,
   RuntimeSession,
-  SessionHistoryCursor,
   TranscriptEntry,
 } from "./cli-types.js"
 import {
@@ -29,13 +28,13 @@ type AgentPaneRefreshControllerDeps = {
   loadHistoryPage: (
     sessionId: string,
     agentId: string,
-    cursor: SessionHistoryCursor | null,
-  ) => Promise<{ entries: TranscriptEntry[]; nextCursor: SessionHistoryCursor | null }>
+    cursor: null,
+  ) => Promise<{ entries: TranscriptEntry[]; nextCursor: null }>
   pruneAuxiliaryAgentPanes: (session: RuntimeSession) => void
   setExpandedTurnIdsByAgent: (expandedTurnIdsByAgent: Record<string, number[]>) => void
   setAgentPanePreviews: (previews: Record<string, string>) => void
   setAgentPaneEntries: (entries: Record<string, TranscriptEntry[]>) => void
-  setNextHistoryCursor: (cursor: SessionHistoryCursor | null) => void
+  setNextHistoryCursor: (cursor: null) => void
   applyExpandedTurns: (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => TranscriptEntry[]
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   applyResponseLayout: () => void
@@ -56,7 +55,7 @@ export function createAgentPaneRefreshController(
   }
 
   const refresh = async (session: RuntimeSession) => {
-    const nextPaneState = await refreshAgentPaneState<AgentInstance, TranscriptEntry, TranscriptEntry, SessionHistoryCursor>({
+    const nextPaneState = await refreshAgentPaneState<AgentInstance, TranscriptEntry, TranscriptEntry, null>({
       session,
       hasPromptWork: sessionHasPromptWork(session),
       expandedTurnIdsByAgent: deps.getExpandedTurnIdsByAgent(),

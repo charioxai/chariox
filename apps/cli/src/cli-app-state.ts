@@ -6,7 +6,6 @@ import type {
   BootstrapState,
   RuntimeAttachment,
   RuntimeProviderRun,
-  SessionHistoryCursor,
   SliceRecord,
   TranscriptEntry,
   WorkspaceLiveSyncStatus,
@@ -147,7 +146,7 @@ export function createCliAppState(options: {
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
   const [kernelConnected, setKernelConnected] = createSignal(!launchedDetached)
-  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(null)
+  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<null>(null)
   const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
   const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
