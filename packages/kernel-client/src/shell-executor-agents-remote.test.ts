@@ -723,6 +723,16 @@ test("executeShellCommand lists remote machines", async () => {
           pending: false,
           kernel_count: 1,
           available_providers: ["codex"],
+        }, {
+          machine_id: "machine-2",
+          machine_alias: "cold",
+          registry_alias: null,
+          display_name: "cold",
+          trust_status: "pending",
+          online: true,
+          pending: true,
+          kernel_count: 0,
+          available_providers: [],
         }],
       },
     }
@@ -731,6 +741,35 @@ test("executeShellCommand lists remote machines", async () => {
   const result = await executeShellCommand(parseShellCommand("machine list"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /mini id=machine-1/)
+  assert.match(result.message ?? "", /cold id=machine-2 status=pending/)
+  assert.match(result.message ?? "", /next: approve with machine approve machine-2/)
+})
+
+test("executeShellCommand lists remote kernels with recovery hints", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListRemoteMachineKernels: { machine_ref: "machine-1" } })
+    return {
+      RemoteMachineKernelsListed: {
+        kernels: [{
+          kernel_id: "kernel-1",
+          machine_id: "machine-1",
+          machine_alias: "mini",
+          relay_alias: "mini-kernel",
+          kernel_alias: null,
+          accepting_remote_leases: false,
+          leased_agent_count: 0,
+          local_session_count: 1,
+          available_providers: [],
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("machine kernels machine-1"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /mini-kernel id=kernel-1/)
+  assert.match(result.message ?? "", /accepting_remote_leases=false/)
+  assert.match(result.message ?? "", /next: enable remote leases or choose another worker/)
 })
 
 test("executeShellCommand manages remote machine trust", async () => {

@@ -89,7 +89,8 @@ async function listRemoteMachines(deps: RemoteMachineCommandHandlerDeps): Promis
 }
 
 function formatRemoteMachineSummary(machine: RemoteMachineSummary): string {
-  return `${machine.display_name ?? machine.machine_alias ?? "-"} id=${machine.machine_id} status=${machine.trust_status ?? "pending"}${machine.online === false ? ",offline" : ""} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}`
+  const next = remoteMachineNextAction(machine)
+  return `${machine.display_name ?? machine.machine_alias ?? "-"} id=${machine.machine_id} status=${machine.trust_status ?? "pending"}${machine.online === false ? ",offline" : ""} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}${next ? ` next: ${next}` : ""}`
 }
 
 async function listRemoteMachineKernels(
@@ -119,7 +120,34 @@ function formatRemoteMachineKernelSummary(kernel: RemoteMachineKernelSummary): s
     kernel.kernel_alias && kernel.kernel_alias !== displayName
       ? ` kernel_alias=${kernel.kernel_alias}`
       : ""
-  return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
+  const next = remoteKernelNextAction(kernel)
+  return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
+}
+
+function remoteMachineNextAction(machine: RemoteMachineSummary): string {
+  if (machine.online === false) {
+    return "connect or restart the remote kernel on this machine"
+  }
+  if (machine.trust_status !== "approved" || machine.pending) {
+    return `approve with /machine approve ${machine.machine_id}`
+  }
+  if (machine.kernel_count === 0) {
+    return "start a kernel on this machine"
+  }
+  if ((machine.available_providers ?? []).length === 0) {
+    return "configure provider CLIs on the worker"
+  }
+  return ""
+}
+
+function remoteKernelNextAction(kernel: RemoteMachineKernelSummary): string {
+  if (kernel.accepting_remote_leases === false) {
+    return "enable remote leases or choose another worker"
+  }
+  if ((kernel.available_providers ?? []).length === 0) {
+    return "configure provider CLIs on this kernel"
+  }
+  return ""
 }
 
 async function approveRemoteMachine(

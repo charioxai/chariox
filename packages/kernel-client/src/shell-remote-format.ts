@@ -15,7 +15,8 @@ export function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
     const name = formatRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "-"
     const offline = machine.online ? "" : ",offline"
-    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}`
+    const next = remoteMachineNextAction(machine)
+    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers}${next ? ` next: ${next}` : ""}`
   }).join("\n")
 }
 
@@ -60,8 +61,35 @@ export function formatRemoteKernels(kernels: RelayKernelPresence[], kernelRef: s
   return kernels.map((kernel) => {
     const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
     const providers = (kernel.available_providers ?? []).join(",") || "-"
-    return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${providers} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
+    const next = remoteKernelNextAction(kernel)
+    return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${providers} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
   }).join("\n")
+}
+
+function remoteMachineNextAction(machine: RemoteMachineRecord): string {
+  if (machine.online === false) {
+    return "connect or restart the remote kernel on this machine"
+  }
+  if (machine.trust_status !== "approved" || machine.pending) {
+    return `approve with machine approve ${machine.machine_id}`
+  }
+  if (machine.kernel_count === 0) {
+    return "start a kernel on this machine"
+  }
+  if ((machine.available_providers ?? []).length === 0) {
+    return "configure provider CLIs on the worker"
+  }
+  return ""
+}
+
+function remoteKernelNextAction(kernel: RelayKernelPresence): string {
+  if (kernel.accepting_remote_leases === false) {
+    return "enable remote leases or choose another worker"
+  }
+  if ((kernel.available_providers ?? []).length === 0) {
+    return "configure provider CLIs on this kernel"
+  }
+  return ""
 }
 
 export function formatRelayStatus(status: RelayStatus): string {

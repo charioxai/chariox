@@ -121,10 +121,11 @@ export function waitingRoomRemoteRows(
     const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
     const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
+    const next = waitingRoomRemoteMachineNextAction(machine)
     rows.push({
       id: `machine:${machine.machine_id}`,
       title: `${label}${status !== "approved" ? ` (${status})` : ""}`,
-      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}`,
+      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}${next ? ` · next: ${next}` : ""}`,
       titleWidth,
       indent: 1,
       focused: state.focus === "machine" && state.machineIndex === index,
@@ -149,10 +150,11 @@ export function waitingRoomRemoteRows(
       const machine = kernel.machine_alias ?? kernel.machine_id
       const providers = (kernel.available_providers ?? []).join(",") || "no providers"
       const status = waitingRoomRemoteKernelIsAttachable(kernel) ? "ready" : "inactive"
+      const next = waitingRoomRemoteKernelNextAction(kernel)
       rows.push({
         id: `remote-kernel:${kernel.kernel_id}`,
         title: `${label} @ ${machine}`,
-        value: `${status} ${providers}`,
+        value: `${status} ${providers}${next ? ` · next: ${next}` : ""}`,
         titleWidth,
         indent: 1,
         focused: state.focus === "remote-kernel" && state.remoteKernelIndex === index,
@@ -187,6 +189,32 @@ export function waitingRoomRemoteKernelCanDelete(kernel: WaitingRoomRemoteKernel
   return kernel.accepting_remote_leases === false
     && (kernel.leased_agent_count ?? 0) === 0
     && (kernel.local_session_count ?? 0) === 0
+}
+
+function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine): string {
+  if (machine.online === false) {
+    return "connect or restart the remote kernel"
+  }
+  if (machine.trust_status !== "approved" || machine.pending) {
+    return `approve ${machine.machine_id}`
+  }
+  if (machine.kernel_count === 0) {
+    return "start a kernel on this machine"
+  }
+  if ((machine.available_providers ?? []).length === 0) {
+    return "configure provider CLIs"
+  }
+  return ""
+}
+
+function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): string {
+  if (kernel.accepting_remote_leases === false) {
+    return "enable remote leases or choose another worker"
+  }
+  if ((kernel.available_providers ?? []).length === 0) {
+    return "configure provider CLIs"
+  }
+  return ""
 }
 
 function waitingRoomLoadingText(frame = 0) {
