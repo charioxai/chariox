@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { decideBootstrapAction, formatSessionList, selectAttachableSession } from "./sessions.js"
+import { decideBootstrapAction, formatSessionHomeLabel, formatSessionList, selectAttachableSession } from "./sessions.js"
 
 test("formatSessionList renders aliases, attachment counts, and current session marker", () => {
   assert.equal(
@@ -40,6 +40,13 @@ test("formatSessionList renders aliases, attachment counts, and current session 
 
 test("formatSessionList handles empty session sets", () => {
   assert.equal(formatSessionList([]), "No sessions found.")
+})
+
+test("formatSessionHomeLabel keeps home kernel and machine visible", () => {
+  assert.equal(formatSessionHomeLabel({ host_daemon_id: "home-kernel", host_machine_id: "home-machine" }), "home-kernel@home-machine")
+  assert.equal(formatSessionHomeLabel({ kernel_id: "kernel", host_machine_id: "machine" }), "kernel@machine")
+  assert.equal(formatSessionHomeLabel({ host_machine_id: "machine" }), "machine")
+  assert.equal(formatSessionHomeLabel({}), "-")
 })
 
 test("selectAttachableSession ignores ended sessions and prefers the newest workspace match", () => {

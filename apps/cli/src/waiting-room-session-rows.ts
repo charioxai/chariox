@@ -1,10 +1,11 @@
-import type { SessionListEntry } from "./sessions.js"
+import { formatSessionHomeLabel, type SessionListEntry } from "./sessions.js"
 import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 2
 
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
 const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
+const WAITING_ROOM_HOME_MIN_WIDTH = "Home".length
 const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
 const WAITING_ROOM_MENU_TRAILING_PADDING = 2
 
@@ -24,6 +25,10 @@ export function waitingRoomSessionRows(
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,
     ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
+  )
+  const homeWidth = Math.max(
+    WAITING_ROOM_HOME_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionHomeLabel(session).length),
   )
   const lastUsedWidth = Math.max(
     "Last used".length,
@@ -68,6 +73,7 @@ export function waitingRoomSessionRows(
     titleWidth: options.titleWidth,
     columns: [
       formatWaitingRoomColumnHeader("Status", statusWidth),
+      formatWaitingRoomColumnHeader("Home", homeWidth),
       formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
       formatWaitingRoomColumnHeader("Created at", createdAtWidth),
     ],
@@ -86,6 +92,7 @@ export function waitingRoomSessionRows(
       titleWidth: options.titleWidth,
       columns: [
         formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
+        formatWaitingRoomColumn(formatSessionHomeLabel(session), homeWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
       ],
@@ -113,6 +120,10 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
     WAITING_ROOM_STATUS_MIN_WIDTH,
     ...visibleSessions.map((session) => formatWaitingRoomSessionStatus(session).length),
   )
+  const homeWidth = Math.max(
+    WAITING_ROOM_HOME_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionHomeLabel(session).length),
+  )
   const lastUsedWidth = Math.max(
     "Last used".length,
     WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
@@ -128,6 +139,7 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
   const titleWidthSpace = Math.max(0, titleWidth - 1)
   const rowColumns = [
     formatWaitingRoomColumnHeader("Status", statusWidth),
+    formatWaitingRoomColumnHeader("Home", homeWidth),
     formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
     formatWaitingRoomColumnHeader("Created at", createdAtWidth),
   ]

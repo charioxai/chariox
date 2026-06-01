@@ -68,10 +68,14 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
 }
 
 function formatSessionHomeKernel(session: SessionListEntry): string {
+  const home = formatSessionHomeLabel(session)
+  return home === "-" ? "" : ` - home ${home}`
+}
+
+export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_daemon_id" | "host_machine_id" | "kernel_id">): string {
   const kernel = session.host_daemon_id?.trim() || session.kernel_id?.trim()
   const machine = session.host_machine_id?.trim()
-  const home = kernel && machine ? `${kernel}@${machine}` : kernel || machine || ""
-  return home ? ` - home ${home}` : ""
+  return kernel && machine ? `${kernel}@${machine}` : kernel || machine || "-"
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {

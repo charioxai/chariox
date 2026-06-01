@@ -18,6 +18,8 @@ test("waiting room session rows render active sessions with stable columns", () 
       id: "session-working",
       alias: "frontend",
       status: "Active",
+      host_daemon_id: "home-kernel",
+      host_machine_id: "home-machine",
       last_used_at_ms: Date.UTC(2026, 0, 2, 10, 0),
       activity: {
         agent_count: 2,
@@ -39,7 +41,8 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.id, "session:session-working")
   assert.equal(rows[1]?.title, "* session-working (frontend)")
   assert.equal(rows[1]?.value, "Working")
-  assert.equal(rows[1]?.columns?.[1]?.trim(), "2026-01-02 10:00 UTC")
+  assert.equal(rows[1]?.columns?.[1]?.trim(), "home-kernel@home-machine")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "2026-01-02 10:00 UTC")
   assert.equal(rows[1]?.focused, true)
 })
 
