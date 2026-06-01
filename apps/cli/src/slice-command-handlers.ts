@@ -127,7 +127,8 @@ function formatSlice(slice: SliceRecord): string {
   const worktree = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
   const diagnostics = formatSliceDiagnostics(slice)
-  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth=${auth}${diagnostics}${display}`
+  const next = sliceProviderAuthNextAction(slice)
+  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth=${auth}${diagnostics}${next ? ` next=${next}` : ""}${display}`
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
@@ -417,8 +418,22 @@ function sliceDoctorNextActions(slice: SliceRecord): string[] {
     scope === "-" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
     slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
     slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+    sliceProviderAuthNextAction(slice),
   ].filter((action): action is string => Boolean(action))
   return actions.length > 0 ? [`next: ${actions.join("; ")}`] : []
+}
+
+function sliceProviderAuthNextAction(slice: SliceRecord): string {
+  if ((slice.providers ?? []).length === 0) {
+    return "configure provider CLIs inside the slice before spawning agents there"
+  }
+  if ((slice.provider_auth ?? []).length === 0) {
+    return `import or login provider accounts with /slice auth import ${formatSliceLabel(slice)} <provider> or /slice auth login ${formatSliceLabel(slice)} <provider>`
+  }
+  if ((slice.provider_auth ?? []).some((entry) => entry.state === "unknown" || entry.state === "not_configured")) {
+    return `refresh provider login with /slice auth login ${formatSliceLabel(slice)} <provider>`
+  }
+  return ""
 }
 
 async function setSliceRunning(
