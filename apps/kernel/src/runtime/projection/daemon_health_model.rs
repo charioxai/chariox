@@ -7,6 +7,7 @@ use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::slice::{SliceOperationStatus, SliceRecord, SliceStatus};
+use crate::slice_provider_auth::{SliceProviderAuthState, SliceProviderAuthSummary};
 use crate::terminal::TerminalStreamHealthSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +187,9 @@ pub struct SliceLifecycleHealthSnapshot {
     pub failed_operations: usize,
     pub in_progress_operations: usize,
     pub issues: Vec<SliceLifecycleIssue>,
+    pub provider_auth_missing_slices: usize,
+    pub provider_auth_unconfigured_slices: usize,
+    pub provider_auth_issues: Vec<SliceProviderAuthIssue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +203,21 @@ pub struct SliceLifecycleIssue {
     pub session_ids: Vec<String>,
     pub agent_ids: Vec<String>,
     pub worktree_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceProviderAuthIssue {
+    pub slice_id: String,
+    pub name: String,
+    pub status: String,
+    pub session_ids: Vec<String>,
+    pub agent_ids: Vec<String>,
+    pub worktree_id: Option<String>,
+    pub provider: Option<String>,
+    pub provider_auth_state: Option<String>,
+    pub alias: Option<String>,
+    pub identity: Option<String>,
+    pub details: String,
 }
 
 impl SliceLifecycleHealthSnapshot {
@@ -240,9 +259,80 @@ impl SliceLifecycleHealthSnapshot {
                     worktree_id: slice.worktree_id.clone(),
                 });
             }
+
+            if !slice.agent_ids.is_empty() {
+                if slice.provider_auth.is_empty() {
+                    snapshot.provider_auth_missing_slices += 1;
+                    snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
+                        slice_id: slice.id.clone(),
+                        name: slice.name.clone(),
+                        status: slice_status_key(&slice.status).to_string(),
+                        session_ids: slice.session_ids.clone(),
+                        agent_ids: slice.agent_ids.clone(),
+                        worktree_id: slice.worktree_id.clone(),
+                        provider: None,
+                        provider_auth_state: None,
+                        alias: None,
+                        identity: None,
+                        details: "slice has attached agents but no provider account configured"
+                            .to_string(),
+                    });
+                } else {
+                    let mut slice_has_unconfigured_auth = false;
+                    for auth in slice
+                        .provider_auth
+                        .iter()
+                        .filter(|auth| slice_provider_auth_needs_attention(&auth.state))
+                    {
+                        if !slice_has_unconfigured_auth {
+                            snapshot.provider_auth_unconfigured_slices += 1;
+                            slice_has_unconfigured_auth = true;
+                        }
+                        snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
+                            slice_id: slice.id.clone(),
+                            name: slice.name.clone(),
+                            status: slice_status_key(&slice.status).to_string(),
+                            session_ids: slice.session_ids.clone(),
+                            agent_ids: slice.agent_ids.clone(),
+                            worktree_id: slice.worktree_id.clone(),
+                            provider: Some(auth.provider.clone()),
+                            provider_auth_state: Some(
+                                slice_provider_auth_state_key(&auth.state).to_string(),
+                            ),
+                            alias: auth.alias.clone(),
+                            identity: slice_provider_auth_identity(auth),
+                            details: "slice provider account needs login or import".to_string(),
+                        });
+                    }
+                }
+            }
         }
         snapshot
     }
+}
+
+fn slice_provider_auth_needs_attention(state: &SliceProviderAuthState) -> bool {
+    matches!(
+        state,
+        SliceProviderAuthState::Unknown | SliceProviderAuthState::NotConfigured
+    )
+}
+
+fn slice_provider_auth_state_key(state: &SliceProviderAuthState) -> &'static str {
+    match state {
+        SliceProviderAuthState::Unknown => "unknown",
+        SliceProviderAuthState::NotConfigured => "not_configured",
+        SliceProviderAuthState::Configured => "configured",
+        SliceProviderAuthState::Authenticated => "authenticated",
+    }
+}
+
+fn slice_provider_auth_identity(auth: &SliceProviderAuthSummary) -> Option<String> {
+    auth.alias_or_identity()
+        .or(auth.organization_name.as_deref())
+        .or(auth.organization_id.as_deref())
+        .or(auth.auth_type.as_deref())
+        .map(str::to_string)
 }
 
 fn slice_status_key(status: &SliceStatus) -> &'static str {
@@ -732,6 +822,9 @@ mod tests {
                     agent_ids: vec!["agent-1".to_string(), "agent-2".to_string()],
                     worktree_id: Some("/repo".to_string()),
                 }],
+                provider_auth_missing_slices: 0,
+                provider_auth_unconfigured_slices: 0,
+                provider_auth_issues: Vec::new(),
             },
             RemoteExecutionHealthSnapshot {
                 remote_agents: 4,
@@ -1036,6 +1129,60 @@ mod tests {
         assert_eq!(issue.session_ids, vec!["session-1"]);
         assert_eq!(issue.agent_ids, vec!["agent-1"]);
         assert_eq!(issue.worktree_id.as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn slice_lifecycle_health_identifies_provider_auth_issues_for_attached_slices() {
+        let missing_auth = slice_record(
+            "slice-missing-auth",
+            "dev-missing-auth",
+            crate::slice::SliceStatus::Running,
+            None,
+            None,
+        );
+        let mut stale_auth = slice_record(
+            "slice-stale-auth",
+            "dev-stale-auth",
+            crate::slice::SliceStatus::Running,
+            None,
+            None,
+        );
+        stale_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: "codex".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::NotConfigured,
+            auth_type: Some("chatgpt".to_string()),
+            account_id: Some("acct-1".to_string()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: Some("work".to_string()),
+            source: "slice".to_string(),
+        }];
+
+        let snapshot = SliceLifecycleHealthSnapshot::from_slices(&[missing_auth, stale_auth]);
+
+        assert_eq!(snapshot.provider_auth_missing_slices, 1);
+        assert_eq!(snapshot.provider_auth_unconfigured_slices, 1);
+        assert_eq!(snapshot.provider_auth_issues.len(), 2);
+        assert_eq!(
+            snapshot.provider_auth_issues[0].details,
+            "slice has attached agents but no provider account configured"
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[1].provider.as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[1]
+                .provider_auth_state
+                .as_deref(),
+            Some("not_configured")
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[1].identity.as_deref(),
+            Some("work")
+        );
     }
 
     #[test]

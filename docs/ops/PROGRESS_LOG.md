@@ -29,6 +29,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added daemon-health remote execution attribution for malformed remote-agent bindings and actively working remote agents missing an active worker provider-run id. `remote_execution.issues` names the session, agent, worker kernel/machine, lease, leased agent, state, processing flag, worktree, and details; CLI `/kernel health` and Cloud web Settings render the affected remote/slice agent directly.
 - Bumped the local daemon protocol to 94 and revalidated remote execution health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
 
+### Slice provider auth issue attribution
+
+- Added daemon-health slice provider auth attribution for attached-agent slices with missing provider account summaries or `unknown`/`not_configured` provider auth. `slice_lifecycle.provider_auth_issues` now names slice, sessions, agents, worktree, provider, state, alias/identity, and details; CLI `/kernel health` and Cloud web Settings render the affected slice auth blocker directly.
+- Bumped the local daemon protocol to 95 and revalidated slice provider auth health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

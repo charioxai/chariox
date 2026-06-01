@@ -487,6 +487,9 @@ export type SliceLifecycleHealthSnapshot = {
   failed_operations: number
   in_progress_operations: number
   issues: SliceLifecycleIssue[]
+  provider_auth_missing_slices: number
+  provider_auth_unconfigured_slices: number
+  provider_auth_issues: SliceProviderAuthIssue[]
 }
 
 export type SliceLifecycleIssue = {
@@ -499,6 +502,20 @@ export type SliceLifecycleIssue = {
   session_ids: string[]
   agent_ids: string[]
   worktree_id?: string | null
+}
+
+export type SliceProviderAuthIssue = {
+  slice_id: string
+  name: string
+  status: string
+  session_ids: string[]
+  agent_ids: string[]
+  worktree_id?: string | null
+  provider?: string | null
+  provider_auth_state?: string | null
+  alias?: string | null
+  identity?: string | null
+  details: string
 }
 
 export type RemoteExtensionSyncHealthSnapshot = {
@@ -1255,7 +1272,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 94
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 95
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

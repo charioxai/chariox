@@ -78,6 +78,9 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       failed_operations: 0,
       in_progress_operations: 0,
       issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
     },
     remote_execution: {
       remote_agents: 0,
@@ -142,7 +145,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
-  assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0/)
+  assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0 auth_missing=0 auth_unconfigured=0/)
   assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
@@ -176,6 +179,9 @@ test("kernel health formatter reports slice lifecycle issues", () => {
         agent_ids: ["agent-1", "agent-2"],
         worktree_id: "/repo",
       }],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
     },
   })
   const rendered = formatKernelHealth(unhealthy)
@@ -185,6 +191,44 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=unhealthy op=start op_status=failed worktree=\/repo agents=agent-1,agent-2: worker kernel discovery timed out/)
   assert.match(rendered, /next: run \/slice doctor for the affected slice/)
+})
+
+test("kernel health formatter reports slice provider auth issues", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 2,
+      running_slices: 2,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 2,
+      failed_operations: 0,
+      in_progress_operations: 0,
+      issues: [],
+      provider_auth_missing_slices: 1,
+      provider_auth_unconfigured_slices: 1,
+      provider_auth_issues: [{
+        slice_id: "slice-1",
+        name: "dev",
+        status: "running",
+        session_ids: ["session-1"],
+        agent_ids: ["agent-1"],
+        worktree_id: "/repo",
+        provider: "codex",
+        provider_auth_state: "not_configured",
+        alias: "work",
+        identity: "work",
+        details: "slice provider account needs login or import",
+      }],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
+  assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
+  assert.match(rendered, /next: run \/slice doctor/)
 })
 
 test("kernel health formatter reports remote execution issues", () => {
