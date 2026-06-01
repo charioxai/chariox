@@ -84,7 +84,8 @@ function formatShellContext(
     `workspace: ${context.workspace}`,
     `worktree: ${context.worktree}`,
     `session: ${context.sessionId ?? "-"}`,
-    `home kernel: ${session?.host_daemon_id?.trim() || session?.host_machine_id?.trim() || "-"}`,
+    `home kernel: ${formatContextHomeKernel(session)}`,
+    `session owner: ${session?.owner_user_id?.trim() || "-"}`,
     `workspace live sync: ${formatContextWorkspaceLiveSyncMode(session)}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
@@ -111,6 +112,15 @@ function formatShellContext(
     }
   }
   return lines.join("\n")
+}
+
+function formatContextHomeKernel(session: RuntimeSession | null): string {
+  const homeKernel = session?.host_daemon_id?.trim() || ""
+  const homeMachine = session?.host_machine_id?.trim() || ""
+  if (homeKernel && homeMachine) {
+    return `${homeKernel}@${homeMachine}`
+  }
+  return homeKernel || homeMachine || "-"
 }
 
 function findCurrentAgent(context: ShellContext, session: RuntimeSession | null): AgentInstance | null {

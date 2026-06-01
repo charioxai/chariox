@@ -131,6 +131,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
           session: makeSession({
             host_daemon_id: "home-kernel-1",
             host_machine_id: "home-machine-1",
+            owner_user_id: "user-1",
             workspace_live_sync_mode: "managed",
             active_provider_run_id: "session-run-1",
             agents: [makeAgent({
@@ -203,7 +204,8 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /workspace: \/repo/)
   assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
   assert.match(contextResult.message ?? "", /session: session-1/)
-  assert.match(contextResult.message ?? "", /home kernel: home-kernel-1/)
+  assert.match(contextResult.message ?? "", /home kernel: home-kernel-1@home-machine-1/)
+  assert.match(contextResult.message ?? "", /session owner: user-1/)
   assert.match(contextResult.message ?? "", /workspace live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
@@ -215,6 +217,30 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
   assert.equal(fake.requests.length, 3)
+})
+
+test("executeShellCommand context keeps home machine visible without daemon id", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return {
+      SessionState: {
+        session: makeSession({
+          host_machine_id: "home-machine-1",
+        }),
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /home kernel: home-machine-1/)
+  assert.match(result.message ?? "", /session owner: -/)
 })
 
 test("executeShellCommand does not infer provider run ownership from focused agent", async () => {
