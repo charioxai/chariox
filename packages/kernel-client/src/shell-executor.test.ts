@@ -965,7 +965,7 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
   assert.match(result.message ?? "", /providers=codex auth=-/)
-  assert.match(result.message ?? "", /next=import or login provider accounts for codex/)
+  assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a <provider> or \/slice auth login linux-a <provider>/)
   assert.equal(doctor.ok, false)
   assert.match(doctor.message ?? "", /fail provider accounts: none/)
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
@@ -1091,7 +1091,7 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
   assert.match(result.message ?? "", /relay=shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /auth=codex:oauth/)
-  assert.match(result.message ?? "", /next=refresh provider login for codex/)
+  assert.match(result.message ?? "", /next=refresh provider login for codex with \/slice auth login linux-a codex/)
 })
 
 test("executeShellCommand renders slice logs", async () => {

@@ -365,13 +365,13 @@ function sliceNextAction(slice: SliceRecord): string | null {
   }
   const auth = slice.provider_auth ?? []
   if (auth.length === 0) {
-    return `import or login provider accounts${formatSliceProviderActionTarget(slice.providers ?? [])}`
+    return `import or login provider accounts${formatSliceProviderActionTarget(slice.providers ?? [])} with ${formatSliceAuthImportCommand(slice)} or ${formatSliceAuthLoginCommand(slice)}`
   }
   const staleProviders = auth
     .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
     .map((entry) => entry.provider)
   if (staleProviders.length > 0) {
-    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)}`
+    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with ${formatSliceAuthLoginCommand(slice, staleProviders[0])}`
   }
   return null
 }
@@ -379,6 +379,18 @@ function sliceNextAction(slice: SliceRecord): string | null {
 function formatSliceProviderActionTarget(providers: readonly string[]): string {
   const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
   return unique.length > 0 ? ` for ${unique.join(",")}` : " for this slice"
+}
+
+function formatSliceAuthImportCommand(slice: SliceRecord, provider = "<provider>"): string {
+  return `/slice auth import ${formatSliceCommandRef(slice)} ${provider}`
+}
+
+function formatSliceAuthLoginCommand(slice: SliceRecord, provider = "<provider>"): string {
+  return `/slice auth login ${formatSliceCommandRef(slice)} ${provider}`
+}
+
+function formatSliceCommandRef(slice: SliceRecord): string {
+  return slice.name?.trim() || slice.id
 }
 
 function formatSliceProviderAuth(entry: NonNullable<SliceRecord["provider_auth"]>[number]): string {
