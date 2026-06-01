@@ -117,15 +117,18 @@ export function waitingRoomRemoteRows(
     return rows
   }
 
+  const kernels = waitingRoomRemoteKernels(remote)
   for (const [index, machine] of machines.entries()) {
     const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
     const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
-    const next = waitingRoomRemoteMachineNextAction(machine)
+    const machineKernels = kernels.filter((kernel) => kernel.machine_id === machine.machine_id)
+    const leaseSummary = waitingRoomMachineLeaseSummary(machine, machineKernels)
+    const next = waitingRoomRemoteMachineNextAction(machine, machineKernels)
     rows.push({
       id: `machine:${machine.machine_id}`,
       title: `${label}${status !== "approved" ? ` (${status})` : ""}`,
-      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}${next ? ` · next: ${next}` : ""}`,
+      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}${leaseSummary}${next ? ` · next: ${next}` : ""}`,
       titleWidth,
       indent: 1,
       focused: state.focus === "machine" && state.machineIndex === index,
@@ -133,7 +136,6 @@ export function waitingRoomRemoteRows(
       scrollbar: "",
     })
   }
-  const kernels = waitingRoomRemoteKernels(remote)
   if (kernels.length > 0) {
     rows.push({
       id: "remote-kernels-header",
@@ -191,7 +193,16 @@ export function waitingRoomRemoteKernelCanDelete(kernel: WaitingRoomRemoteKernel
     && (kernel.local_session_count ?? 0) === 0
 }
 
-function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine): string {
+function waitingRoomMachineLeaseSummary(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[]): string {
+  if (machine.online === false || machine.pending || machine.kernel_count === 0 || kernels.length === 0) {
+    return ""
+  }
+  const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases !== false).length
+  const leased = kernels.reduce((sum, kernel) => sum + (kernel.leased_agent_count ?? 0), 0)
+  return ` · accepting=${accepting}/${kernels.length} leased=${leased}`
+}
+
+function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[] = []): string {
   if (machine.online === false) {
     return "connect or restart the remote kernel"
   }
@@ -203,6 +214,9 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine): 
   }
   if ((machine.available_providers ?? []).length === 0) {
     return "configure provider CLIs"
+  }
+  if (kernels.length > 0 && kernels.every((kernel) => kernel.accepting_remote_leases === false)) {
+    return "enable remote leases on a kernel or choose another worker"
   }
   return ""
 }

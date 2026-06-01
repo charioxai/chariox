@@ -76,13 +76,42 @@ test("waiting room remote rows render machine and kernel inventory", () => {
 
   assert.equal(rows.find((row) => row.id === "machines-header")?.value, "2 online (1 pending)")
   assert.equal(rows.find((row) => row.id === "machine:machine-1")?.title, "Builder")
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · accepting=1/1 leased=0")
   assert.equal(rows.find((row) => row.id === "machine:machine-2")?.title, "Cold (pending)")
   assert.equal(rows.find((row) => row.id === "machine:machine-2")?.value, "0 kernels no providers · next: approve machine-2")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.title, "builder-kernel @ builder")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.value, "ready codex,opencode")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.focused, true)
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "inactive no providers · next: enable remote leases or choose another worker")
+})
+
+test("waiting room remote rows warn when machine kernels reject leases", () => {
+  const rows = waitingRoomRemoteRows(
+    { focus: "machine", machineIndex: 0, remoteKernelIndex: 0 },
+    {
+      relay: { configured: true, connected: true },
+      machines: [{
+        machine_id: "machine-1",
+        display_name: "Worker",
+        trust_status: "approved" as const,
+        online: true,
+        pending: false,
+        kernel_count: 1,
+        available_providers: ["codex"],
+      }],
+      kernels: [{
+        kernel_id: "kernel-1",
+        machine_id: "machine-1",
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        available_providers: ["codex"],
+      }],
+    },
+    24,
+  )
+
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · accepting=0/1 leased=0 · next: enable remote leases on a kernel or choose another worker")
 })
 
 test("waiting room remote helpers classify deletable and attachable inventory", () => {
