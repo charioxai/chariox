@@ -27,6 +27,19 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
+        if name != tool.tool_name {
+            let error = DaemonError::LocalTransport {
+                operation: "home MCP proxy",
+                message: format!(
+                    "home MCP proxy name `{name}` does not match authorized home-proxy tool `{}`",
+                    tool.tool_name
+                ),
+            };
+            let _ = self
+                .append_home_extension_denied_event(&context, &metadata, &tool, &error)
+                .await;
+            return Err(error);
+        }
         if let Some(cached) = self
             .begin_audited_home_extension_invocation(&context, &metadata, &tool)
             .await?
