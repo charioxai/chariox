@@ -21,7 +21,8 @@ pub use daemon_health_model::{
     ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
     ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, RemoteExtensionSyncHealthSnapshot,
     SessionProjectionHealthSnapshot, SliceLifecycleHealthSnapshot,
-    WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
+    WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
+    WorkspaceLiveSyncManagedModeHealthSnapshot, WorktreeClaimSnapshot,
 };
 pub(crate) use provider_projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,

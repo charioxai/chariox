@@ -97,6 +97,11 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
     workspace_live_sync: {
       active_reservations: 0,
       active_reservation_artifacts: 0,
+      managed_mode: {
+        write_fence_supported: true,
+        write_fence_backend: "macos-seatbelt",
+        unavailable_reason: null,
+      },
       workspace_identity: {
         tracked_provider_runs: 0,
         identity_changed_provider_runs: 0,
@@ -128,7 +133,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
-  assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 tracked_runs=0 identity_changed=0 invalid_runs=0/)
+  assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
   assert.match(rendered, /provider run bindings: ok/)
   assert.match(rendered, /projection invariants: ok/)
@@ -204,6 +209,11 @@ test("kernel health formatter reports workspace live sync and collision issues",
     workspace_live_sync: {
       active_reservations: 2,
       active_reservation_artifacts: 3,
+      managed_mode: {
+        write_fence_supported: false,
+        write_fence_backend: null,
+        unavailable_reason: "workspace live sync managed mode needs selective write fencing",
+      },
       workspace_identity: {
         tracked_provider_runs: 4,
         identity_changed_provider_runs: 1,
@@ -224,7 +234,7 @@ test("kernel health formatter reports workspace live sync and collision issues",
 
   assert.equal(kernelHealthIssueCount(unhealthy), 5)
   assert.match(rendered, /workspace coordination: claims=1 collisions=1 active_ops=1/)
-  assert.match(rendered, /workspace live sync: reservations=2 artifacts=3 tracked_runs=4 identity_changed=1 invalid_runs=2/)
+  assert.match(rendered, /workspace live sync: reservations=2 artifacts=3 managed_write_fence=no backend=- tracked_runs=4 identity_changed=1 invalid_runs=2/)
   assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
   assert.match(rendered, /workspace worktree collisions:/)
   assert.match(rendered, /workspace=workspace-1 worktree=\/repo sessions=session-1,session-2/)
@@ -235,6 +245,8 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /next: check workspace paths and permissions/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
+  assert.match(rendered, /workspace live sync managed mode unavailable: workspace live sync managed mode needs selective write fencing/)
+  assert.match(rendered, /next: select tracked mode/)
 })
 
 test("kernel health formatter reports transport terminal and capability issues", () => {

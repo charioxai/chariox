@@ -441,6 +441,11 @@ export type ArtifactExternalChangeHealthSnapshot = {
 export type WorkspaceLiveSyncHealthSnapshot = {
   active_reservations: number
   active_reservation_artifacts: number
+  managed_mode: {
+    write_fence_supported: boolean
+    write_fence_backend?: string | null
+    unavailable_reason?: string | null
+  }
   workspace_identity: WorkspaceIdentityMonitorHealthSnapshot
   external_changes: ArtifactExternalChangeHealthSnapshot
 }
@@ -1167,7 +1172,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 86
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 87
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

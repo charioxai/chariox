@@ -73,6 +73,8 @@ impl KernelRuntimeState {
         crate::runtime::projection::WorkspaceLiveSyncHealthSnapshot {
             active_reservations: reservations.len(),
             active_reservation_artifacts,
+            managed_mode:
+                crate::runtime::projection::WorkspaceLiveSyncManagedModeHealthSnapshot::current(),
             workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
             external_changes: self
                 .owned

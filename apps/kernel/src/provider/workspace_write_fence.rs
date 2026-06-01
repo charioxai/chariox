@@ -12,9 +12,18 @@ use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, Runt
 
 pub(crate) const WORKSPACE_WRITE_FENCE_ENV: &str = "ARROBA_WORKSPACE_WRITE_FENCE";
 pub(crate) const MACOS_SEATBELT_BACKEND: &str = "macos-seatbelt";
+pub(crate) const WORKSPACE_WRITE_FENCE_UNSUPPORTED_REASON: &str = "workspace live sync managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host";
 
 pub(crate) fn workspace_write_fence_supported() -> bool {
     cfg!(target_os = "macos")
+}
+
+pub(crate) fn workspace_write_fence_backend() -> Option<&'static str> {
+    workspace_write_fence_supported().then_some(MACOS_SEATBELT_BACKEND)
+}
+
+pub(crate) fn workspace_write_fence_unavailable_reason() -> Option<&'static str> {
+    (!workspace_write_fence_supported()).then_some(WORKSPACE_WRITE_FENCE_UNSUPPORTED_REASON)
 }
 
 pub(crate) fn apply_workspace_write_fence(
@@ -131,7 +140,7 @@ fn apply_platform_workspace_write_fence(
     let _ = launch;
     Err(DaemonError::LocalTransport {
         operation: "workspace_write_fence",
-        message: "workspace live sync managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host".to_string(),
+        message: WORKSPACE_WRITE_FENCE_UNSUPPORTED_REASON.to_string(),
     })
 }
 

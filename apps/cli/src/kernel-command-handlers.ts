@@ -82,6 +82,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const remoteExtensionSync = health.remote_extension_sync
   const workspaceCoordination = health.workspace_coordination
   const liveSync = health.workspace_live_sync
+  const liveSyncManagedMode = liveSync.managed_mode
   const workspaceIdentity = liveSync.workspace_identity
   const externalChanges = liveSync.external_changes
   const lines = [
@@ -94,7 +95,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
-    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
+    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
@@ -167,6 +168,11 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
     lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
     lines.push("  next: stop and relaunch affected managed/tracked provider runs after confirming the selected worktree")
+  }
+
+  if (!liveSyncManagedMode.write_fence_supported && liveSyncManagedMode.unavailable_reason) {
+    lines.push(`workspace live sync managed mode unavailable: ${liveSyncManagedMode.unavailable_reason}`)
+    lines.push("  next: select tracked mode on this worker or run the managed provider on a supported host")
   }
 
   if (externalChanges.live_watcher_scan_errors > 0) {

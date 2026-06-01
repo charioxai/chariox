@@ -121,9 +121,29 @@ pub struct WorkspaceCoordinationHealthSnapshot {
 pub struct WorkspaceLiveSyncHealthSnapshot {
     pub active_reservations: usize,
     pub active_reservation_artifacts: usize,
+    pub managed_mode: WorkspaceLiveSyncManagedModeHealthSnapshot,
     pub workspace_identity:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot,
     pub external_changes: crate::io::ArtifactExternalChangeHealthSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceLiveSyncManagedModeHealthSnapshot {
+    pub write_fence_supported: bool,
+    pub write_fence_backend: Option<String>,
+    pub unavailable_reason: Option<String>,
+}
+
+impl WorkspaceLiveSyncManagedModeHealthSnapshot {
+    pub fn current() -> Self {
+        Self {
+            write_fence_supported: crate::provider::workspace_write_fence_supported(),
+            write_fence_backend: crate::provider::workspace_write_fence_backend()
+                .map(ToString::to_string),
+            unavailable_reason: crate::provider::workspace_write_fence_unavailable_reason()
+                .map(ToString::to_string),
+        }
+    }
 }
 
 impl Default for WorkspaceLiveSyncHealthSnapshot {
@@ -131,6 +151,7 @@ impl Default for WorkspaceLiveSyncHealthSnapshot {
         Self {
             active_reservations: 0,
             active_reservation_artifacts: 0,
+            managed_mode: WorkspaceLiveSyncManagedModeHealthSnapshot::current(),
             workspace_identity:
                 crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
                     tracked_provider_runs: 0,
@@ -324,7 +345,8 @@ mod tests {
         ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
         RemoteExtensionSyncHealthSnapshot, SessionProjectionHealthSnapshot,
         SliceLifecycleHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
-        WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
+        WorkspaceLiveSyncHealthSnapshot, WorkspaceLiveSyncManagedModeHealthSnapshot,
+        WorktreeClaimSnapshot,
     };
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::extension::{
@@ -464,6 +486,11 @@ mod tests {
             WorkspaceLiveSyncHealthSnapshot {
                 active_reservations: 2,
                 active_reservation_artifacts: 1,
+                managed_mode: WorkspaceLiveSyncManagedModeHealthSnapshot {
+                    write_fence_supported: true,
+                    write_fence_backend: Some("macos-seatbelt".to_string()),
+                    unavailable_reason: None,
+                },
                 workspace_identity:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
                         tracked_provider_runs: 3,
@@ -556,6 +583,20 @@ mod tests {
         assert_eq!(
             projection.workspace_live_sync.active_reservation_artifacts,
             1
+        );
+        assert!(
+            projection
+                .workspace_live_sync
+                .managed_mode
+                .write_fence_supported
+        );
+        assert_eq!(
+            projection
+                .workspace_live_sync
+                .managed_mode
+                .write_fence_backend
+                .as_deref(),
+            Some("macos-seatbelt")
         );
         assert_eq!(
             projection

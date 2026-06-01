@@ -78,5 +78,6 @@ pub(crate) use workspace_live_sync_policy::{
     NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
 };
 pub(crate) use workspace_write_fence::{
-    apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_supported,
+    apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
+    workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
 };

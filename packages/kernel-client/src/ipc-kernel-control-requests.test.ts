@@ -106,6 +106,11 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     workspace_live_sync: {
       active_reservations: 2,
       active_reservation_artifacts: 1,
+      managed_mode: {
+        write_fence_supported: true,
+        write_fence_backend: "macos-seatbelt",
+        unavailable_reason: null,
+      },
       workspace_identity: {
         tracked_provider_runs: 3,
         identity_changed_provider_runs: 1,
@@ -126,6 +131,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
 
   const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
+  assert.equal(response.DaemonHealth.projection.workspace_live_sync.managed_mode.write_fence_supported, true)
   assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
   assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
   assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)
