@@ -242,7 +242,10 @@ test("kernel health formatter reports provider-run identity issues", () => {
   assert.match(rendered, /run=run-orphan session=missing-session agent=-: provider run points at a missing session/)
   assert.match(rendered, /session active provider run pointer issues:/)
   assert.match(rendered, /session=session-3 active=run-missing: active provider run is not projected/)
-  assert.match(rendered, /next: inspect the session and relaunch the affected agent/)
+  assert.match(rendered, /next: inspect agent agent-1 and stop duplicate provider runs/)
+  assert.match(rendered, /next: inspect agent agent-2 and close the extra native TUI or Arroba provider run/)
+  assert.match(rendered, /next: refresh the session; stop or relaunch provider run run-orphan if it stays active/)
+  assert.match(rendered, /next: inspect session session-3 and relaunch the affected agent/)
 })
 
 test("kernel health formatter reports slice lifecycle issues", () => {
@@ -635,7 +638,7 @@ test("kernel health command reports duplicate provider-run bindings", async () =
 
   assert.match(notices.at(-1) ?? "", /duplicate Arroba provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
-  assert.match(notices.at(-1) ?? "", /next: inspect the agent and stop duplicate provider runs/)
+  assert.match(notices.at(-1) ?? "", /next: inspect agent agent-1 and stop duplicate provider runs/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
@@ -671,6 +674,6 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
   assert.doesNotMatch(notices.at(-1) ?? "", /provider run bindings: ok/)
   assert.match(notices.at(-1) ?? "", /multi-interface provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1:arroba,provider-run-2:native_tui/)
-  assert.match(notices.at(-1) ?? "", /close the extra native TUI or Arroba provider run/)
+  assert.match(notices.at(-1) ?? "", /next: inspect agent agent-1 and close the extra native TUI or Arroba provider run/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })

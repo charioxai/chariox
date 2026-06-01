@@ -60,18 +60,24 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push("provider run bindings: ok")
   } else {
     lines.push("duplicate Arroba provider run bindings:")
+    let firstAgent: string | null = null
     for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
+      firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    lines.push("  next: inspect the agent and stop duplicate provider runs before sending more prompts")
+    const target = firstAgent ? `agent ${firstAgent}` : "the affected agent"
+    lines.push(`  next: inspect ${target} and stop duplicate provider runs before sending more prompts`)
   }
 
   if (providerRuns.multi_interface_agent_bindings.length > 0) {
     lines.push("multi-interface provider run bindings:")
+    let firstAgent: string | null = null
     for (const conflict of providerRuns.multi_interface_agent_bindings) {
+      firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    lines.push("  next: inspect the agent and close the extra native TUI or Arroba provider run before sending more prompts")
+    const target = firstAgent ? `agent ${firstAgent}` : "the affected agent"
+    lines.push(`  next: inspect ${target} and close the extra native TUI or Arroba provider run before sending more prompts`)
   }
 
   if (providerCatalog.expired) {
@@ -81,18 +87,24 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (providerRuns.orphaned_active_runs.length > 0) {
     lines.push("orphaned active provider runs:")
+    let firstRun: string | null = null
     for (const issue of providerRuns.orphaned_active_runs) {
+      firstRun ??= issue.provider_run_id
       lines.push(`  run=${issue.provider_run_id} session=${issue.session_id} agent=${issue.agent_id ?? "-"}: ${issue.details}`)
     }
-    lines.push("  next: refresh the session; stop or relaunch the orphaned provider run if it stays active")
+    const target = firstRun ? `provider run ${firstRun}` : "the orphaned provider run"
+    lines.push(`  next: refresh the session; stop or relaunch ${target} if it stays active`)
   }
 
   if (providerRuns.session_active_run_mismatches.length > 0) {
     lines.push("session active provider run pointer issues:")
+    let firstSession: string | null = null
     for (const issue of providerRuns.session_active_run_mismatches) {
+      firstSession ??= issue.session_id
       lines.push(`  session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
     }
-    lines.push("  next: inspect the session and relaunch the affected agent to restore one active run pointer")
+    const target = firstSession ? `session ${firstSession}` : "the affected session"
+    lines.push(`  next: inspect ${target} and relaunch the affected agent to restore one active run pointer`)
   }
 
   if (providerRunActor.enqueue_rejections > 0) {
