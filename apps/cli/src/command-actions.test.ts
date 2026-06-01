@@ -81,7 +81,7 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
       },
       extension_grants: [{ kind: "script", name: "lookup", environment: "python" }],
     }), "script"),
-    "agent-1 script grants:\n- lookup (home-proxy, env=python)\n\nremote extension sync: stale, worker offline\nplacement: remote (worker=machine-1, kernel=worker-1, lease=lease-1, leased_agent=leased-agent-1)\nnext: check worker connectivity, then run /extension sync-retry for this agent",
+    "agent-1 script grants:\n- lookup (home-proxy, env=python)\n\nremote extension sync: stale, worker offline\nplacement: remote (worker=machine-1, kernel=worker-1, lease=lease-1, leased_agent=leased-agent-1)\nnext: check worker connectivity, then run /extension sync-retry agent-1",
   )
 })
 

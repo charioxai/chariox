@@ -104,7 +104,7 @@ function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
     `remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
   ]
-  const nextAction = remoteExtensionSyncNextAction(status)
+  const nextAction = remoteExtensionSyncNextAction(status, agent.agent_ref)
   if (nextAction) lines.push(`next: ${nextAction}`)
   return `\n\n${lines.join("\n")}`
 }
@@ -129,7 +129,7 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   if (status?.last_attempted_at_ms) rows.push(`last attempted: ${new Date(status.last_attempted_at_ms).toISOString()}`)
   if (status?.last_error) rows.push(`last error: ${status.last_error}`)
   if (status?.pending_revoke) rows.push("revoke state: pending worker acknowledgement")
-  const nextAction = remoteExtensionSyncNextAction(status)
+  const nextAction = remoteExtensionSyncNextAction(status, agent.agent_ref)
   if (nextAction) rows.push(`next: ${nextAction}`)
   return rows.join("\n")
 }
@@ -244,15 +244,15 @@ function formatRemoteExtensionSyncStatusLine(status?: RemoteExtensionManifestSyn
   return `${status.state}${revoke}${error}`
 }
 
-function remoteExtensionSyncNextAction(status?: RemoteExtensionManifestSyncStatus | null): string | null {
+function remoteExtensionSyncNextAction(status: RemoteExtensionManifestSyncStatus | null | undefined, agentRef: string): string | null {
   if (!status || status.state === "pending" || status.state === "syncing") {
-    return "wait for the worker manifest update; retry if it does not settle"
+    return `wait for the worker manifest update; run /extension sync-status ${agentRef} if it does not settle`
   }
   if (status.pending_revoke) {
-    return "keep the home revoke in place; retry sync after the worker reconnects"
+    return `keep the home revoke in place; run /extension sync-retry ${agentRef} after the worker reconnects`
   }
   if (status.state === "failed" || status.state === "stale") {
-    return "check worker connectivity, then run /extension sync-retry for this agent"
+    return `check worker connectivity, then run /extension sync-retry ${agentRef}`
   }
   return null
 }
