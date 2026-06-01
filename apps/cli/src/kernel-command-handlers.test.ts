@@ -465,7 +465,7 @@ test("kernel health formatter reports workspace live sync and collision issues",
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 6)
+  assert.equal(kernelHealthIssueCount(unhealthy), 7)
   assert.match(rendered, /workspace coordination: claims=1 collisions=1 active_ops=1/)
   assert.match(rendered, /workspace live sync: reservations=2 artifacts=3 managed_write_fence=no backend=- tracked_runs=4 identity_changed=1 invalid_runs=2/)
   assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
@@ -483,6 +483,41 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /next: inspect the path; rerun or reconcile the affected managed\/tracked turn/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
   assert.match(rendered, /workspace live sync managed mode unavailable: workspace live sync managed mode needs selective write fencing/)
+  assert.match(rendered, /next: select tracked mode/)
+})
+
+test("kernel health counts unsupported managed workspace live sync as an issue", () => {
+  const unhealthy = health({
+    workspace_live_sync: {
+      active_reservations: 0,
+      active_reservation_artifacts: 0,
+      managed_mode: {
+        write_fence_supported: false,
+        write_fence_backend: null,
+        unavailable_reason: "managed mode needs a selective write fence",
+      },
+      workspace_identity: {
+        tracked_provider_runs: 0,
+        identity_changed_provider_runs: 0,
+        invalid_provider_runs: 0,
+        current_generation_total: 0,
+        issues: [],
+      },
+      external_changes: {
+        tracked_artifacts: 0,
+        externally_changed_artifacts: 0,
+        external_change_events: 0,
+        live_watcher_started: false,
+        live_watcher_scans: 0,
+        live_watcher_scan_errors: 0,
+        issues: [],
+      },
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /workspace live sync managed mode unavailable: managed mode needs a selective write fence/)
   assert.match(rendered, /next: select tracked mode/)
 })
 
