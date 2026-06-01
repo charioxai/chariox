@@ -74,7 +74,24 @@ function formatProviderProcessNotice(process: ProviderProcessInfo): string {
   if (process.teardown_blockers.length > 0) {
     lines.push(`  blockers: ${process.teardown_blockers.join("; ")}`)
   }
+  lines.push(`  next: ${providerProcessNextAction(process)}`)
   return lines.join("\n")
+}
+
+function providerProcessNextAction(process: ProviderProcessInfo): string {
+  if (process.teardown_safe) {
+    return `run /provider processes teardown ${process.provider} to stop only safe daemon-tracked processes owned by you`
+  }
+  if (process.attached_session_ids.length > 0) {
+    return `detach or finish attached sessions ${process.attached_session_ids.join(",")} before teardown`
+  }
+  if (process.active_workflow_run_ids.length > 0) {
+    return `stop or finish workflow runs ${process.active_workflow_run_ids.join(",")} before teardown`
+  }
+  if (process.teardown_blockers.length > 0) {
+    return `resolve blockers: ${process.teardown_blockers.join("; ")}`
+  }
+  return "inspect the owning session before teardown"
 }
 
 function formatBytes(bytes: number | null): string {

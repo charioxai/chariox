@@ -74,6 +74,7 @@ test("executeShellCommand manages provider auth and processes", async () => {
   assert.match(reauth.message ?? "", /codex reauth started/)
   assert.equal(list.ok, true)
   assert.match(list.message ?? "", /process-1 codex codex-agent pid=4321 rss=128.0MiB/)
+  assert.match(list.message ?? "", /next=run \/provider processes teardown codex to stop only safe daemon-tracked processes owned by you/)
   assert.equal(teardown.ok, true)
   assert.match(teardown.message ?? "", /tore down 1 provider process/)
   assert.deepEqual(requests, [

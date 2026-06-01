@@ -26,8 +26,24 @@ export function formatProviderProcesses(processes: ProviderProcessInfo[]): strin
   }
   return processes.map((process) => {
     const blockers = process.teardown_blockers.length > 0 ? ` blockers=${process.teardown_blockers.join(",")}` : ""
-    return `${process.process_id} ${process.provider} ${process.process_label} pid=${process.pid ?? "-"} rss=${formatBytes(process.resident_set_bytes ?? null)} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers}`
+    return `${process.process_id} ${process.provider} ${process.process_label} pid=${process.pid ?? "-"} rss=${formatBytes(process.resident_set_bytes ?? null)} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers} next=${providerProcessNextAction(process)}`
   }).join("\n")
+}
+
+function providerProcessNextAction(process: ProviderProcessInfo): string {
+  if (process.teardown_safe) {
+    return `run /provider processes teardown ${process.provider} to stop only safe daemon-tracked processes owned by you`
+  }
+  if (process.attached_session_ids.length > 0) {
+    return `detach or finish attached sessions ${process.attached_session_ids.join(",")} before teardown`
+  }
+  if (process.active_workflow_run_ids.length > 0) {
+    return `stop or finish workflow runs ${process.active_workflow_run_ids.join(",")} before teardown`
+  }
+  if (process.teardown_blockers.length > 0) {
+    return `resolve blockers: ${process.teardown_blockers.join("; ")}`
+  }
+  return "inspect the owning session before teardown"
 }
 
 function formatBytes(bytes: number | null): string {

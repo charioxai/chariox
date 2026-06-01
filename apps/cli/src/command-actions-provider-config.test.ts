@@ -334,6 +334,7 @@ test("provider processes command lists and tears down safe daemon-tracked proces
   assert.match(notice, /codex:shared-token provider=codex pid=4321 rss=128.0MiB status=idle mode=managed safe=true/)
   assert.match(notice, /provider sessions: thread-1/)
   assert.match(notice, /owner runs: provider-run-1/)
+  assert.match(notice, /next: run \/provider processes teardown codex to stop only safe daemon-tracked processes owned by you/)
 
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes teardown codex", value: "processes teardown codex" })
   assert.equal(tornDownProvider, "codex")
@@ -437,4 +438,5 @@ test("provider processes teardown reports blocked daemon-tracked processes", asy
   assert.equal(flashedMessage, "no safe provider processes to tear down")
   assert.match(notices[0]!, /blocked provider processes:/)
   assert.match(notices[0]!, /blockers: attached sessions: session-1/)
+  assert.match(notices[0]!, /next: detach or finish attached sessions session-1 before teardown/)
 })
