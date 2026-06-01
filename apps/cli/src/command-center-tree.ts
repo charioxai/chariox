@@ -33,6 +33,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "agent-model", label: "model", description: "Set the focused or named agent model", value: "/agent model " },
       { id: "agent-variant", label: "variant", description: "Set or clear the focused or named agent variant", value: "/agent variant " },
       { id: "agent-list", label: "list", description: "List all agents in the session", value: "/agent list" },
+      { id: "agent-inspect", label: "inspect", description: "Show agent placement, grants, and sync state", value: "/agent inspect " },
       { id: "agent-cycle", label: "cycle", description: "Cycle to next agent", value: "/agent cycle" },
       {
         id: "agent-substitute",

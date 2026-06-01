@@ -7,6 +7,7 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import {
+  formatAgentInspectSummary,
   formatAgentListSummary,
   handleAgentFocusCommand,
 } from "./agent-lifecycle-command-handlers.js"
@@ -44,6 +45,46 @@ test("agent list summary renders aliases and pluralization", () => {
     ]),
     "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants; manifest stale abcdef12 pending revoke error worker offline]",
   )
+})
+
+test("agent inspect summary renders placement, grants, manifest, and substitutes", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "slice qa",
+    state: "Working",
+    provider: "codex",
+    model: "codex/gpt-5.4",
+    effort: "high",
+    execution_mode_override: "plan",
+    permission_level_override: "required",
+    worktree_id: "/repo/feature",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-1",
+    },
+    extension_grants: [
+      { kind: "mcp", name: "filesystem" },
+      { kind: "skill", name: "review" },
+    ],
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+    substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
+    active_substitute_index: 0,
+  }))
+
+  assert.match(summary, /agent-remote \(slice qa\) \[Working\]/)
+  assert.match(summary, /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
+  assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 
 test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {

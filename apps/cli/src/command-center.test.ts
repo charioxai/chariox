@@ -209,6 +209,7 @@ test("buildCommandCenterItems keeps the scoped parent visible for grouped comman
 
   assert.equal(items[0]?.label, "/agent")
   assert.equal(items.some((item) => item.label === "spawn"), true)
+  assert.equal(items.some((item) => item.label === "inspect"), true)
 })
 
 test("buildCommandCenterItems keeps the parent group visible while filtering scoped agent commands", () => {

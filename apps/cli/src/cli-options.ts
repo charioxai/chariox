@@ -230,6 +230,7 @@ function printUsage() {
     "  /agent destroy [r]    alias for /agent delete",
     "  /agent focus <id>     focus a specific agent",
     "  /agent list           list all agents in the session",
+    "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",
     "  /machine list         list approved, pending, and offline remote machines",
     "  /machine kernels <m>  list live kernels for a remote machine",

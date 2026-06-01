@@ -15,6 +15,7 @@ import {
   type AgentSubstituteCommandHandlerDeps,
 } from "./agent-substitute-command-handlers.js"
 import {
+  formatAgentInspectSummary,
   formatAgentListSummary,
   handleAgentDeleteCommand,
   handleAgentFocusCommand,
@@ -29,6 +30,7 @@ export type AgentCommandHandlerDeps =
   & AgentSubstituteCommandHandlerDeps
 
 export {
+  formatAgentInspectSummary,
   formatAgentListSummary,
   handleCycleAgentFocus,
 } from "./agent-lifecycle-command-handlers.js"
@@ -69,6 +71,17 @@ export async function handleAgentSlashCommand(
       deps.flashFooter(formatAgentListSummary(deps.sessionState().agents), "info")
       return
     }
+    case "inspect":
+    case "info":
+    case "show": {
+      const resolved = deps.resolveSessionAgent(args[1] ?? deps.sessionState().focused_agent_id)
+      if (resolved.error || !resolved.agent) {
+        deps.flashFooter(resolved.error ?? "usage: /agent inspect [agent-ref]", "error")
+        return
+      }
+      deps.flashFooter(formatAgentInspectSummary(resolved.agent), "info")
+      return
+    }
     case "cycle": {
       await handleCycleAgentFocus(deps)
       return
@@ -94,7 +107,7 @@ export async function handleAgentSlashCommand(
     }
     default:
       deps.flashFooter(
-        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
+        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
         "error",
       )
   }

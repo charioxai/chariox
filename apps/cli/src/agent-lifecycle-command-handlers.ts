@@ -125,6 +125,33 @@ export function formatAgentListSummary(agents: AgentInstance[]): string {
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
 
+export function formatAgentInspectSummary(agent: AgentInstance): string {
+  const lines = [
+    `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`,
+    `id: ${agent.id}`,
+    `session: ${agent.session_id}`,
+    `provider: ${agent.provider}`,
+    `model: ${agent.model ?? "<none>"}`,
+    `variant: ${agent.effort ?? "<none>"}`,
+    `mode: ${agent.execution_mode_override ?? "session"}`,
+    `permissions: ${agent.permission_level_override ?? "session"}`,
+    `worktree: ${agent.worktree_id ?? "<none>"}`,
+    `placement: ${formatAgentInspectPlacement(agent)}`,
+    `extensions: ${formatAgentInspectExtensionSummary(agent)}`,
+    `remote extension sync: ${formatAgentInspectRemoteExtensionSync(agent)}`,
+    `substitutes: ${formatAgentInspectSubstitutes(agent)}`,
+  ]
+  if (agent.active_substitute_index != null) {
+    lines.push(`active substitute: ${agent.active_substitute_index}`)
+  }
+  if (agent.last_substitution) {
+    lines.push(`last substitution: ${agent.last_substitution.reason}`)
+  }
+  lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
+  lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
+  return lines.join("\n")
+}
+
 function formatAgentListEntry(agent: AgentInstance): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
     agent.state,
@@ -169,6 +196,83 @@ function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
 function formatAgentGrantCount(agent: AgentInstance): string {
   const grants = agent.extension_grants?.length ?? 0
   return `${grants} grant${grants === 1 ? "" : "s"}`
+}
+
+function formatAgentInspectPlacement(agent: AgentInstance): string {
+  const remote = agent.remote_execution
+  if (!remote) {
+    return "worker-local"
+  }
+  const worker = remote.worker_machine_id || remote.worker_kernel_id
+  const parts = [
+    worker ? `worker=${worker}` : null,
+    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
+  ].filter(Boolean)
+  return `remote${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+}
+
+function formatAgentInspectExtensionSummary(agent: AgentInstance): string {
+  const grants = agent.extension_grants ?? []
+  if (grants.length === 0) {
+    return "none"
+  }
+  const counts = grants.reduce<Record<string, number>>((acc, grant) => {
+    acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
+    return acc
+  }, {})
+  const byKind = ["mcp", "skill", "script", "connector"]
+    .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
+    .filter(Boolean)
+    .join(", ")
+  const activeHomeProxy = agent.remote_execution && (counts.mcp || counts.script || counts.connector)
+  const passiveSkillSnapshot = agent.remote_execution && counts.skill
+  const placement = agent.remote_execution
+    ? [
+        activeHomeProxy ? "active tools home-proxy" : null,
+        passiveSkillSnapshot ? "skills snapshot" : null,
+      ].filter(Boolean).join("; ") || "home-proxy"
+    : "worker-local"
+  return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+}
+
+function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {
+  if (!agent.remote_execution) {
+    return "not applicable"
+  }
+  const sync = agent.remote_extension_manifest_sync
+  if (!sync) {
+    return "pending"
+  }
+  return [
+    sync.state,
+    sync.pending_revoke ? "pending revoke" : null,
+    sync.manifest_hash ? `hash=${sync.manifest_hash.slice(0, 12)}` : null,
+    sync.last_error ? `error=${sync.last_error}` : null,
+    sync.last_synced_at_ms ? `synced=${formatTimestamp(sync.last_synced_at_ms)}` : null,
+    sync.last_attempted_at_ms ? `attempted=${formatTimestamp(sync.last_attempted_at_ms)}` : null,
+  ].filter(Boolean).join(", ")
+}
+
+function formatAgentInspectSubstitutes(agent: AgentInstance): string {
+  const substitutes = agent.substitutes ?? []
+  if (substitutes.length === 0) {
+    return "none"
+  }
+  return substitutes.map((substitute, index) => {
+    const marker = agent.active_substitute_index === index ? "*" : ""
+    const variant = substitute.variant ? `/${substitute.variant}` : ""
+    return `${marker}${index}:${substitute.provider}/${substitute.model}${variant}`
+  }).join(", ")
+}
+
+function formatTimestamp(timestampMs: number | null | undefined): string {
+  if (!timestampMs) {
+    return "<none>"
+  }
+  return new Date(timestampMs).toISOString()
 }
 
 async function applyFocusedAgentSession(
