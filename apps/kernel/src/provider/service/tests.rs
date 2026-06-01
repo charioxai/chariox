@@ -84,6 +84,25 @@ fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
 }
 
 #[test]
+fn tracked_workspace_live_sync_does_not_require_managed_write_enforcement() {
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let outcome = providers
+        .start_run_provider_only(
+            launch_request(session.id(), "sonnet")
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        )
+        .expect("tracked mode should not need managed write fencing");
+
+    assert!(!outcome.run().requires_workspace_live_sync());
+    assert!(outcome.run().tracks_workspace_live_sync());
+}
+
+#[test]
 fn claude_native_tui_runs_use_pty_output_pumping() {
     let providers = ProviderProcessService::new();
     let request = LaunchProviderRequest::new("session-1", "claude", "default", "sonnet", "low")

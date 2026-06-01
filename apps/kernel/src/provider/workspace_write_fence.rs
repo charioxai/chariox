@@ -13,6 +13,10 @@ use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, Runt
 pub(crate) const WORKSPACE_WRITE_FENCE_ENV: &str = "ARROBA_WORKSPACE_WRITE_FENCE";
 pub(crate) const MACOS_SEATBELT_BACKEND: &str = "macos-seatbelt";
 
+pub(crate) fn workspace_write_fence_supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
 pub(crate) fn apply_workspace_write_fence(
     mut launch: ProviderLaunchResult,
     request: &LaunchProviderRequest,
@@ -125,7 +129,10 @@ fn apply_platform_workspace_write_fence(
     _program: String,
 ) -> Result<(), DaemonError> {
     let _ = launch;
-    Ok(())
+    Err(DaemonError::LocalTransport {
+        operation: "workspace_write_fence",
+        message: "workspace live sync managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host".to_string(),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -202,8 +209,8 @@ mod tests {
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
     use super::{
-        apply_workspace_write_fence, workspace_write_fence_active_env, MACOS_SEATBELT_BACKEND,
-        WORKSPACE_WRITE_FENCE_ENV,
+        apply_workspace_write_fence, workspace_write_fence_active_env,
+        workspace_write_fence_supported, MACOS_SEATBELT_BACKEND, WORKSPACE_WRITE_FENCE_ENV,
     };
 
     #[test]
@@ -238,6 +245,36 @@ mod tests {
             apply_workspace_write_fence(launch.clone(), &request).expect("launch should resolve");
 
         assert_eq!(wrapped, launch);
+    }
+
+    #[test]
+    fn workspace_write_fence_support_is_platform_explicit() {
+        assert_eq!(workspace_write_fence_supported(), cfg!(target_os = "macos"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn managed_workspace_live_sync_fails_without_selective_write_fence() {
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "model")
+                .with_workspace_live_sync_managed()
+                .with_working_directory(std::env::temp_dir());
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode:serve".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/echo".to_string()),
+            pty_args: vec!["hello".to_string()],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(std::env::temp_dir()),
+            structured_endpoint: Some("http://127.0.0.1:1".to_string()),
+        };
+
+        let error =
+            apply_workspace_write_fence(launch, &request).expect_err("managed fence should fail");
+
+        assert!(error.to_string().contains("selective write fencing"));
     }
 
     #[cfg(target_os = "macos")]

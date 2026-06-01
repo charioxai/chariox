@@ -23,7 +23,9 @@ impl ProviderProcessService {
         {
             return Err(DaemonError::ProviderWorkspaceLiveSyncUnsupported {
                 adapter_key: request.adapter_key.clone(),
-                message: "this adapter cannot guarantee that provider-session writes are restricted to Arroba workspace live sync tools".to_string(),
+                message: adapter
+                    .workspace_live_sync_write_enforcement_unavailable_reason()
+                    .to_string(),
             });
         }
 

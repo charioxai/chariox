@@ -2,7 +2,8 @@ mod dev_stub_adapter;
 
 use super::{
     apply_workspace_write_fence, plan_claude_launch, plan_codex_launch, plan_opencode_launch,
-    LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    workspace_write_fence_supported, LaunchProviderRequest, ProviderLaunchResult,
+    RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -18,6 +19,9 @@ pub trait AgentEndpointAdapter: Send + Sync {
         -> Result<ProviderLaunchResult, DaemonError>;
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
         false
+    }
+    fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
+        "this adapter cannot guarantee that provider-session writes are restricted to Arroba workspace live sync tools"
     }
     fn supports_turn_scoped_execution_config(&self) -> bool {
         false
@@ -126,7 +130,11 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
     }
 
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
-        true
+        workspace_write_fence_supported()
+    }
+
+    fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
+        "managed workspace live sync needs selective write fencing, which is only implemented on macOS for this adapter; use tracked mode on this worker or run the managed provider on a supported host"
     }
 
     fn connect(
@@ -162,7 +170,11 @@ impl AgentEndpointAdapter for CodexAdapter {
     }
 
     fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
-        true
+        workspace_write_fence_supported()
+    }
+
+    fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
+        "managed workspace live sync needs selective write fencing, which is only implemented on macOS for this adapter; use tracked mode on this worker or run the managed provider on a supported host"
     }
 
     fn supports_turn_scoped_execution_config(&self) -> bool {
@@ -193,6 +205,30 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{LaunchProviderRequest, ProviderRegistry};
+
+    #[test]
+    fn managed_workspace_live_sync_support_matches_selective_write_fence_support() {
+        let registry = ProviderRegistry::new();
+        assert_eq!(
+            registry
+                .resolve("opencode")
+                .expect("opencode adapter should exist")
+                .supports_workspace_live_sync_write_enforcement(),
+            cfg!(target_os = "macos"),
+        );
+        assert_eq!(
+            registry
+                .resolve("codex")
+                .expect("codex adapter should exist")
+                .supports_workspace_live_sync_write_enforcement(),
+            cfg!(target_os = "macos"),
+        );
+        assert!(registry
+            .resolve("opencode")
+            .expect("opencode adapter should exist")
+            .workspace_live_sync_write_enforcement_unavailable_reason()
+            .contains("use tracked mode"));
+    }
 
     #[test]
     fn opencode_adapter_resolves_override_and_uses_working_directory() {
