@@ -2,6 +2,7 @@ import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } f
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
 import { formatAgentExtensionPlacementSummary } from "./shell-agent-format.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import { hasActiveHomeProxyExtensionGrants } from "./extension-grant-placement.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -207,6 +208,9 @@ function formatContextRemoteExtensionSync(agent: AgentInstance): string {
     return "not applicable"
   }
   const sync = agent.remote_extension_manifest_sync
+  if (!sync && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
+    return "not applicable (no active home-proxy tools)"
+  }
   const action = remoteExtensionSyncNextAction(sync, agent.agent_ref, agent.remote_execution.worker_machine_id)
     ?? `run /extension sync-status ${agent.agent_ref}`
   if (!sync) {

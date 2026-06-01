@@ -137,6 +137,30 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 
+test("remote skill-only agent summaries do not report pending home-proxy manifest", () => {
+  const remoteSkillOnlyAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "reviewer",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "skill", name: "review" }],
+  })
+
+  const listSummary = formatAgentListSummary([remoteSkillOnlyAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteSkillOnlyAgent)
+
+  assert.match(listSummary, /1 grant \(skills snapshot\)/)
+  assert.doesNotMatch(listSummary, /manifest pending/)
+  assert.match(inspectSummary, /extensions: 1 grant \(skills snapshot; skill=1\)/)
+  assert.match(inspectSummary, /remote extension sync: not applicable \(no active home-proxy tools\)/)
+  assert.doesNotMatch(inspectSummary, /pending, next=/)
+})
+
 test("agent summaries expose session and worker provider run pointers", () => {
   const remoteAgent = agent({
     id: "agent-remote",

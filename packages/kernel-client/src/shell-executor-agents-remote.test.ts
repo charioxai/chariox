@@ -118,6 +118,36 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   ])
 })
 
+test("executeShellCommand lists remote skill-only agents without manifest pending", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "reviewer",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "skill", name: "review" }],
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-remote \(reviewer\).*1 grant \(skills snapshot\)/)
+  assert.doesNotMatch(result.message ?? "", /manifest pending/)
+})
+
 test("executeShellCommand inspects local agent placement and policy", async () => {
   const agent = makeAgent({
     id: "agent-2",
@@ -165,6 +195,40 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /provider run: session=run-session/)
   assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
   assert.match(result.message ?? "", /remote extension sync: not applicable/)
+})
+
+test("executeShellCommand inspects remote skill-only agents without manifest pending", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "reviewer",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "skill", name: "review" }],
+  })
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /extensions: 1 grant \(skills snapshot; skill=1\)/)
+  assert.match(result.message ?? "", /remote extension sync: not applicable \(no active home-proxy tools\)/)
+  assert.doesNotMatch(result.message ?? "", /manifest pending/)
 })
 
 test("executeShellCommand reports unknown provider run owner when lookup fails", async () => {

@@ -1,5 +1,9 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import {
+  hasActiveHomeProxyExtensionGrants,
+  shouldShowRemoteExtensionManifestSync,
+} from "./extension-grant-placement.js"
 
 export type ShellAgentProviderRunContext = {
   activeProviderRunId?: string | null
@@ -92,6 +96,9 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
     return null
   }
   const status = agent.remote_extension_manifest_sync
+  if (!shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)) {
+    return null
+  }
   if (!status) {
     return `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}`
   }
@@ -265,7 +272,7 @@ export function formatAgentExtensionPlacementSummary(agent: AgentInstance): stri
     return "worker-local"
   }
   const grants = agent.extension_grants ?? []
-  const activeHomeProxy = grants.some((grant) => grant.kind !== "skill")
+  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(grants)
   const passiveSkillSnapshot = grants.some((grant) => grant.kind === "skill")
   return [
     activeHomeProxy ? "active tools home-proxy" : null,
@@ -279,6 +286,9 @@ function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
   }
   const status = agent.remote_extension_manifest_sync
   if (!status) {
+    if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
+      return "not applicable (no active home-proxy tools)"
+    }
     return `pending, next=${formatAgentRemoteExtensionSyncNextAction(agent)}`
   }
   const details = [

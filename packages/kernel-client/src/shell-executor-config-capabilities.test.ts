@@ -502,6 +502,30 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   ])
 })
 
+test("executeShellCommand treats remote skill snapshots as passive for sync diagnostics", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "skill", name: "qa" }],
+  })
+  const fake = fakeClient(() => ({ AgentsListed: { agents: [agent] } }))
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+
+  const grantsResult = await executeShellCommand(parseShellCommand("extension grants skill"), context, { client: fake.client })
+  const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
+
+  assert.equal(grantsResult.ok, true)
+  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skill snapshot\)/)
+  assert.doesNotMatch(grantsResult.message ?? "", /remote extension sync:/)
+  assert.equal(statusResult.ok, true)
+  assert.match(statusResult.message ?? "", /agent-1 has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected\./)
+  assert.doesNotMatch(statusResult.message ?? "", /manifest pending/)
+})
+
 test("executeShellCommand makes pending remote extension sync retryable", async () => {
   const agent = makeAgent({
     remote_execution: {

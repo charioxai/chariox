@@ -8,6 +8,7 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 import { formatSliceAuthIdentity, formatSliceScope } from "./slice-format.js"
+import { hasActiveHomeProxyExtensionGrants } from "@arroba/kernel-client/extension-grant-placement"
 import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 
 type FooterTone = "info" | "error"
@@ -255,7 +256,9 @@ function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): 
 function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
   const sync = agent.remote_extension_manifest_sync
   if (!sync) {
-    return agent.remote_execution ? `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}` : ""
+    return agent.remote_execution && hasActiveHomeProxyExtensionGrants(agent.extension_grants)
+      ? `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}`
+      : ""
   }
   const hash = sync.manifest_hash ? ` ${sync.manifest_hash.slice(0, 8)}` : ""
   const revoke = sync.pending_revoke ? " pending revoke" : ""
@@ -353,7 +356,7 @@ function formatAgentExtensionPlacementSummary(agent: AgentInstance): string {
     return "worker-local"
   }
   const grants = agent.extension_grants ?? []
-  const activeHomeProxy = grants.some((grant) => grant.kind !== "skill")
+  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(grants)
   const passiveSkillSnapshot = grants.some((grant) => grant.kind === "skill")
   return [
     activeHomeProxy ? "active tools home-proxy" : null,
@@ -367,6 +370,9 @@ function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {
   }
   const sync = agent.remote_extension_manifest_sync
   if (!sync) {
+    if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
+      return "not applicable (no active home-proxy tools)"
+    }
     return `pending, next=${formatAgentRemoteExtensionSyncNextAction(agent)}`
   }
   const details = [

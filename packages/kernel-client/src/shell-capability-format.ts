@@ -9,6 +9,10 @@ import type {
   McpImportOutcome,
   SkillImportOutcome,
 } from "./kernel-types.js"
+import {
+  hasActiveHomeProxyExtensionGrants,
+  shouldShowRemoteExtensionManifestSync,
+} from "./extension-grant-placement.js"
 
 export type RemoteExtensionSyncNextActionStatus = {
   state?: string | null
@@ -105,6 +109,9 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
 function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
   if (!agent.remote_execution) return ""
   const status = agent.remote_extension_manifest_sync
+  if (!shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)) {
+    return ""
+  }
   const lines = [
     `remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
@@ -124,6 +131,9 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
     return `${agentLabel} is worker-local; no home-proxy manifest is projected.`
   }
   const status = agent.remote_extension_manifest_sync
+  if (!status && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
+    return `${agentLabel} has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected.`
+  }
   const rows = [
     `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
