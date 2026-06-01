@@ -1,6 +1,7 @@
 import type {
   AgentInstance,
   RuntimeSession,
+  SliceRecord,
 } from "./kernel-types.js"
 import {
   aliasAgentRequest,
@@ -9,6 +10,7 @@ import {
   getSessionStateRequest,
   launchProviderRunRequest,
   listAgentsRequest,
+  listSlicesRequest,
   spawnAgentRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
@@ -69,10 +71,13 @@ export async function executeAgentCommand(
       if (!resolved.ok) {
         return { ok: false, message: args[0] ? resolved.message : "usage: agent inspect [agent-ref]" }
       }
+      const { slices, error } = resolved.agent.remote_execution
+        ? await listAgentInspectSlices(deps)
+        : { slices: [], error: null }
       return {
         ok: true,
-        message: formatAgentInspectSummary(resolved.agent),
-        data: { agent: resolved.agent },
+        message: formatAgentInspectSummary(resolved.agent, slices, error),
+        data: { agent: resolved.agent, slices },
       }
     }
     case "spawn": {
@@ -281,6 +286,24 @@ export async function executeAgentCommand(
       return executeAgentSubstituteCommand(args, context, deps, sessionId)
     default:
       return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
+  }
+}
+
+async function listAgentInspectSlices(deps: ShellAgentCommandDeps): Promise<{
+  slices: SliceRecord[]
+  error: string | null
+}> {
+  try {
+    const response = await deps.client.send(listSlicesRequest())
+    return {
+      slices: expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices,
+      error: null,
+    }
+  } catch (error) {
+    return {
+      slices: [],
+      error: error instanceof Error ? error.message : "slice inventory unavailable",
+    }
   }
 }
 

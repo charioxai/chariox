@@ -91,17 +91,57 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
     active_substitute_index: 0,
   })
+  const requests: unknown[] = []
   const fake = fakeClient((request) => {
-    assert.deepEqual(request, { ListAgents: { session_id: "session-1" } })
-    return { AgentsListed: { agents: [agent] } }
+    requests.push(request)
+    if ("ListAgents" in request) {
+      return { AgentsListed: { agents: [agent] } }
+    }
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [{
+            id: "slice-1",
+            name: "devbox",
+            owner_kernel_id: "kernel-local",
+            owner_machine_id: "machine-local",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headed",
+            worktree_id: "/repo/feature",
+            workspace_mount: null,
+            worker_kernel_ref: "slice:slice-1",
+            worker_kernel_id: "slice-kernel",
+            worker_machine_id: "slice-machine",
+            agent_ids: ["agent-remote", "agent-helper"],
+            provider_auth: [{
+              provider: "codex",
+              state: "authenticated",
+              email: "dev@example.com",
+              alias: "daily",
+            }],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }],
+        },
+      }
+    }
+    throw new Error("unexpected request")
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent inspect agent-remote"), context, { client: fake.client })
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /placement: remote \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(result.message ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, display=headed, worktree=\/repo\/feature, agents=2\)/)
+  assert.match(result.message ?? "", /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(result.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; mcp=1, script=1\)/)
   assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    { ListSlices: null },
+  ])
 })
 
 test("executeShellCommand updates agent alias through dedicated alias request", async () => {
