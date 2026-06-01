@@ -51,7 +51,7 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
 
   assert.equal(waitingRoomSelectedSlice("linux-dev", slices)?.id, "slice-1")
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (0 agents)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents)")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
   assert.equal(formatWaitingRoomSliceSelection("new", slices), "new")
   assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new")
@@ -66,6 +66,8 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
         id: "slice-1",
         name: "linux-dev",
         agent_ids: ["agent-1"],
+        display_mode: "headed",
+        relay_endpoint: { url: "wss://relay.example/slice", private: false },
         provider_auth: [
           { provider: "codex", state: "configured", alias: "work", account_id: "acct-1" },
           { provider: "claude", state: "authenticated", email: "user@example.com" },
@@ -74,7 +76,7 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
     ],
   })
 
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (1 agent, work (acct-1),user@example.com)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 1 agent, relay shared, work (acct-1), user@example.com)")
 })
 
 test("waiting room slices filter reusable slices by selected worktree", () => {
@@ -100,7 +102,7 @@ test("waiting room slices filter reusable slices by selected worktree", () => {
     })
 
     assert.deepEqual(slices.map((entry) => entry.id), ["feature-slice"])
-    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (1 agent)")
+    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent)")
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }

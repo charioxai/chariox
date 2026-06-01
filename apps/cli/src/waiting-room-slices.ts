@@ -73,16 +73,31 @@ export function formatWaitingRoomSliceOption(slice: SliceRecord) {
   const auth = (slice.provider_auth ?? [])
     .map(formatSliceAuthIdentity)
     .filter(Boolean)
-    .join(",")
+    .join(", ")
+  const relay = formatSliceRelayIdentity(slice)
   const failed = slice.last_operation_status === "failed"
     ? `, error ${slice.last_error ?? slice.last_operation ?? "failed"}`
     : ""
-  return `${formatWaitingRoomSliceLabel(slice)} (${agents} agent${agents === 1 ? "" : "s"}${auth ? `, ${auth}` : ""}${failed})`
+  return `${formatWaitingRoomSliceLabel(slice)} (${[
+    slice.status,
+    slice.display_mode ?? "headless",
+    `${agents} agent${agents === 1 ? "" : "s"}`,
+    relay ? `relay ${relay}` : "",
+    auth,
+  ].filter(Boolean).join(", ")}${failed})`
 }
 
 function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {
   const identity = entry.email || entry.account_id || entry.auth_type || entry.state
   return entry.alias && entry.alias !== identity ? `${entry.alias} (${identity})` : identity
+}
+
+function formatSliceRelayIdentity(slice: SliceRecord): string {
+  const endpoint = slice.relay_endpoint
+  if (!endpoint?.url) {
+    return ""
+  }
+  return endpoint.private ? "private" : "shared"
 }
 
 export function cycleWaitingRoomSliceSelectionId(
