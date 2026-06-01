@@ -242,6 +242,7 @@ impl SliceLifecycleHealthSnapshot {
             }
             if slice.status == SliceStatus::Unhealthy
                 || slice.last_operation_status == Some(SliceOperationStatus::Failed)
+                || (slice.status == SliceStatus::Stopped && !slice.agent_ids.is_empty())
             {
                 snapshot.issues.push(SliceLifecycleIssue {
                     slice_id: slice.id.clone(),
@@ -1121,13 +1122,21 @@ mod tests {
                 Some(crate::slice::SliceOperationStatus::Failed),
                 Some("worker kernel discovery timed out"),
             ),
+            slice_record(
+                "slice-stopped",
+                "dev-stopped",
+                crate::slice::SliceStatus::Stopped,
+                None,
+                None,
+            ),
         ]);
 
-        assert_eq!(snapshot.total_slices, 2);
+        assert_eq!(snapshot.total_slices, 3);
         assert_eq!(snapshot.running_slices, 1);
+        assert_eq!(snapshot.stopped_slices, 1);
         assert_eq!(snapshot.unhealthy_slices, 1);
         assert_eq!(snapshot.failed_operations, 1);
-        assert_eq!(snapshot.issues.len(), 1);
+        assert_eq!(snapshot.issues.len(), 2);
         let issue = &snapshot.issues[0];
         assert_eq!(issue.slice_id, "slice-bad");
         assert_eq!(issue.name, "dev-bad");
@@ -1141,6 +1150,10 @@ mod tests {
         assert_eq!(issue.session_ids, vec!["session-1"]);
         assert_eq!(issue.agent_ids, vec!["agent-1"]);
         assert_eq!(issue.worktree_id.as_deref(), Some("/repo"));
+        let stopped_issue = &snapshot.issues[1];
+        assert_eq!(stopped_issue.slice_id, "slice-stopped");
+        assert_eq!(stopped_issue.status, "stopped");
+        assert_eq!(stopped_issue.agent_ids, vec!["agent-1"]);
     }
 
     #[test]
