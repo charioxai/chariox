@@ -76,7 +76,7 @@ async fn submit_remote_prompt_to_worker(
 ) -> Result<String, DaemonError> {
     let config = remote_dispatch_relay_config(state.config_snapshot().await, dispatch);
     match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(30),
         crate::transport::relay_client::send_peer_request_via_temporary_connection(
             &config,
             ClientTarget {
@@ -124,7 +124,6 @@ fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonE
                 || message.contains("execution lease") && message.contains("was not found")
                 || message.contains("leased_agent_not_found")
                 || message.contains("execution_lease_not_found")
-                || message.contains("timed out waiting for worker response")
         }
         _ => false,
     }
@@ -157,4 +156,29 @@ fn remote_dispatch_relay_config(
         config.cloud_relay = None;
     }
     config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_prompt_dispatch_does_not_refresh_binding_after_worker_timeout() {
+        let result = Err(DaemonError::LocalTransport {
+            operation: "submit remote prepared prompt",
+            message: "remote prompt dispatch timed out waiting for worker response".to_string(),
+        });
+
+        assert!(!remote_prompt_dispatch_should_refresh_binding(&result));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_refreshes_binding_for_missing_lease_errors() {
+        let result = Err(DaemonError::LocalTransport {
+            operation: "submit remote prepared prompt",
+            message: "leased_agent_not_found".to_string(),
+        });
+
+        assert!(remote_prompt_dispatch_should_refresh_binding(&result));
+    }
 }

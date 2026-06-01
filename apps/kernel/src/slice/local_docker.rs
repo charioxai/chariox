@@ -410,7 +410,7 @@ fn configure_local_docker_slice_command(
                 "0"
             },
         )
-        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "0.0.0.0")
+        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
         .env(
             "ARROBA_SLICE_DAEMON_ALIAS",
             record.worker_kernel_ref.clone(),
@@ -646,5 +646,59 @@ fn command_log_preview(path: &Path) -> String {
         "<no output>".to_string()
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slice::{CreateSliceInput, SliceStore};
+
+    #[test]
+    fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
+        let store = SliceStore::default();
+        let record = store
+            .create(
+                "kernel-1",
+                "machine-1",
+                CreateSliceInput {
+                    name: "dev".to_string(),
+                    backend: SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        let options = LocalDockerSliceOptions {
+            root: std::env::temp_dir(),
+            docker_image: "arroba-slice-linux:test".to_string(),
+            build_image: SliceImageBuildPolicy::Never,
+            extension_dockerfile: None,
+            allow_unconfined_seccomp: false,
+            memory_mb: None,
+            cpus: None,
+            screen_width: 1280,
+            screen_height: 800,
+        };
+        let mut command = Command::new("slice-provisioner");
+
+        configure_local_docker_slice_command(&mut command, &record, None, &options);
+
+        let provider_bind_host = command
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "ARROBA_SLICE_PROVIDER_BIND_HOST")
+                    .then(|| value.and_then(|value| value.to_str()))
+                    .flatten()
+            })
+            .expect("provider bind host should be configured");
+        assert_eq!(provider_bind_host, "127.0.0.1");
     }
 }

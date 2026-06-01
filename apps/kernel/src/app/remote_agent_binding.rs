@@ -273,11 +273,21 @@ impl DaemonApp {
                 message: format!("agent `{agent_id}` is not remote-backed"),
             });
         };
-        let worker_kernel = self.select_remote_kernel_for_machine(
+        let relay_config = self.relay_config_for_remote_execution(&remote_execution);
+        let uses_remote_execution_relay =
+            remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
+        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
             &remote_execution.worker_machine_id,
             agent.provider(),
+            &relay_config,
         )?;
-        let rebound = self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None, None)?;
+        let rebound = self.bind_remote_agent_to_worker(
+            &agent,
+            &worker_kernel,
+            None,
+            None,
+            uses_remote_execution_relay.then_some(relay_config),
+        )?;
         self.durable_state_store().append_event(
             "agent.updated",
             Some(rebound.id().to_string()),
@@ -394,14 +404,27 @@ impl DaemonApp {
         machine_ref: &str,
         provider: &str,
     ) -> Result<RelayKernelPresence, DaemonError> {
+        self.select_remote_kernel_for_machine_with_config(machine_ref, provider, &self.config)
+    }
+
+    fn select_remote_kernel_for_machine_with_config(
+        &self,
+        machine_ref: &str,
+        provider: &str,
+        relay_config: &DaemonConfig,
+    ) -> Result<RelayKernelPresence, DaemonError> {
         let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(machine_ref)
             .unwrap_or_else(|| machine_ref.to_string());
-        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-        if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
-            return Ok(kernel);
+        if relay_config.relay_url == self.config.relay_url
+            && relay_config.relay_token == self.config.relay_token
+        {
+            let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+            if let Some(kernel) = select_remote_kernel(projected_kernels, &machine_ref, provider) {
+                return Ok(kernel);
+            }
         }
         let kernels = self.block_on_relay_future(
-            relay_discovery::list_live_kernels_for_machine(&self.config, &machine_ref),
+            relay_discovery::list_live_kernels_for_machine(relay_config, &machine_ref),
         )?;
         select_remote_kernel(kernels, &machine_ref, provider).ok_or_else(|| {
             DaemonError::NoRemoteKernelAvailable {
