@@ -463,6 +463,10 @@ export type DaemonHealthProjection = {
   workflow_command_lanes: ActorQueueSnapshot[]
   provider_runtime_lanes: ActorQueueSnapshot[]
   provider_run_actor: ProviderRunActorHealthSnapshot
+  process: {
+    process_id: number
+    peak_resident_set_bytes?: number | null
+  }
   capability_executor: CapabilityExecutorHealthSnapshot
   session_projection: SessionProjectionHealthSnapshot
   agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot
@@ -1134,7 +1138,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 81
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 82
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

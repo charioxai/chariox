@@ -14,6 +14,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     workflow_command_lanes: [],
     provider_runtime_lanes: [],
     provider_run_actor: { enqueued_commands: 1, enqueue_rejections: 0 },
+    process: { process_id: 1234, peak_resident_set_bytes: 268435456 },
     capability_executor: {
       max_concurrent_jobs: 64,
       available_permits: 63,
@@ -103,5 +104,6 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
   const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
   assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
+  assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
   assert.equal(response.DaemonHealth.projection.workspace_coordination.active_operation_claims[0]?.mode, "write")
 })

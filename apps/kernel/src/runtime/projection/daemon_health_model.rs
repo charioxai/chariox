@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ProjectionMetadata;
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
+use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::terminal::TerminalStreamHealthSnapshot;
 
@@ -154,6 +155,7 @@ pub struct DaemonHealthProjection {
     pub workflow_command_lanes: Vec<ActorQueueSnapshot>,
     pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
     pub provider_run_actor: ProviderRunActorHealthSnapshot,
+    pub process: KernelProcessHealthSnapshot,
     pub capability_executor: CapabilityExecutorHealthSnapshot,
     pub session_projection: SessionProjectionHealthSnapshot,
     pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
@@ -174,6 +176,7 @@ impl DaemonHealthProjection {
         workflow_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
         provider_run_actor: ProviderRunActorHealthSnapshot,
+        process: KernelProcessHealthSnapshot,
         capability_executor: CapabilityExecutorHealthSnapshot,
         mut session_projection: SessionProjectionHealthSnapshot,
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
@@ -199,6 +202,7 @@ impl DaemonHealthProjection {
             workflow_command_lanes,
             provider_runtime_lanes,
             provider_run_actor,
+            process,
             capability_executor,
             session_projection,
             agent_runtime_projection,
@@ -224,6 +228,7 @@ mod tests {
         WorktreeClaimSnapshot,
     };
     use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
+    use crate::runtime::process_health::KernelProcessHealthSnapshot;
     use crate::runtime::projection::TransportHealthSnapshot;
     use crate::terminal::TerminalStreamHealthSnapshot;
 
@@ -238,6 +243,10 @@ mod tests {
             ProviderRunActorHealthSnapshot {
                 enqueued_commands: 5,
                 enqueue_rejections: 1,
+            },
+            KernelProcessHealthSnapshot {
+                process_id: 42,
+                peak_resident_set_bytes: Some(128 * 1024 * 1024),
             },
             CapabilityExecutorHealthSnapshot {
                 max_concurrent_jobs: 64,
@@ -367,6 +376,11 @@ mod tests {
         );
         assert_eq!(projection.provider_run_actor.enqueued_commands, 5);
         assert_eq!(projection.provider_run_actor.enqueue_rejections, 1);
+        assert_eq!(projection.process.process_id, 42);
+        assert_eq!(
+            projection.process.peak_resident_set_bytes,
+            Some(128 * 1024 * 1024)
+        );
         assert_eq!(projection.capability_executor.submitted_jobs, 8);
         assert_eq!(projection.capability_executor.running_jobs, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);

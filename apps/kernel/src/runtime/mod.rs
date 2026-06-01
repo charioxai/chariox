@@ -24,6 +24,7 @@ pub(crate) mod invite_tokens;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod native_interaction_bridge;
 pub(crate) mod pairing_invite_executor;
+pub mod process_health;
 pub mod projection;
 pub mod prompt_state;
 pub(crate) mod provider_auth_control;

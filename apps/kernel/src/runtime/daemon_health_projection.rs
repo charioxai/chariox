@@ -41,6 +41,7 @@ pub(crate) async fn build_daemon_health_projection(
         input.workflow_runtime.queue_snapshots().await,
         input.provider_runtime_lanes.queue_snapshots(),
         input.provider_runtime_lanes.health_snapshot(),
+        crate::runtime::process_health::KernelProcessHealthSnapshot::current(),
         input.capability_health.snapshot(),
         input.session_projection.health_snapshot(),
         input.agent_runtime_projection.health_snapshot(),
