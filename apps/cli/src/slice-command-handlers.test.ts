@@ -15,6 +15,7 @@ test("slice command list renders lifecycle scope and provider auth details", asy
         worktree_id: "/repo/feature",
         session_ids: ["session-1", "session-2"],
         agent_ids: ["agent-1"],
+        relay_endpoint: { url: "wss://relay.example/slice", private: false },
         providers: ["codex", "claude"],
         provider_auth: [
           { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "test" },
@@ -28,6 +29,7 @@ test("slice command list renders lifecycle scope and provider auth details", asy
 
   assert.match(harness.notices.at(-1) ?? "", /linux-dev id=slice-1 status=running display=headed/)
   assert.match(harness.notices.at(-1) ?? "", /worktree=\/repo\/feature agents=1 sessions=2/)
+  assert.match(harness.notices.at(-1) ?? "", /worker=kernel-slice relay=shared:wss:\/\/relay.example\/slice/)
   assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth=codex:work \(acct-1\),claude:user@example.com\/org=Team\/plan=pro/)
   assert.equal(harness.footers.at(-1)?.message, "listed 1 slice")
 })
@@ -87,6 +89,7 @@ test("slice command doctor renders health checks", async () => {
         display_mode: "headed",
         worker_kernel_id: null,
         worktree_id: "/repo/wt",
+        relay_endpoint: null,
         session_ids: ["session-1"],
         agent_ids: ["agent-1"],
       }),
@@ -98,7 +101,27 @@ test("slice command doctor renders health checks", async () => {
   assert.match(harness.notices.at(-1) ?? "", /slice doctor linux-dev \(slice-1\)/)
   assert.match(harness.notices.at(-1) ?? "", /fail lifecycle: unhealthy/)
   assert.match(harness.notices.at(-1) ?? "", /fail display: headed/)
+  assert.match(harness.notices.at(-1) ?? "", /ok relay: none/)
   assert.match(harness.notices.at(-1) ?? "", /ok agents: 1 attached/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
+test("slice command doctor flags running slices without a relay endpoint", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        status: "running",
+        worker_kernel_id: "kernel-slice",
+        relay_endpoint: null,
+      }),
+    ],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
+
+  assert.match(harness.notices.at(-1) ?? "", /fail relay: none/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
