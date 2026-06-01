@@ -31,6 +31,7 @@ test("waiting room start rows render configuration labels and join action", () =
     "effort",
     "workspace",
     "worktree",
+    "live-sync",
     "collaborators",
     "slice",
     "slice-display",
@@ -40,6 +41,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
+  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing)")
   assert.equal(rows.find((row) => row.id === "slice-display")?.value, "new slices only")
@@ -66,6 +68,7 @@ test("waiting room start rows render loading placeholders before inventory arriv
   assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
@@ -99,6 +102,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     remoteKernelIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "main",
+    workspaceLiveSyncMode: "off",
     sliceSelectionId: "none",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",

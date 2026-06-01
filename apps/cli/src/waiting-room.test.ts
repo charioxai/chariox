@@ -151,7 +151,7 @@ test("waiting room cycles slices for new sessions", () => {
   }]
   let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
-  state = moveWaitingRoomFocus(state, [], 7, { slices })
+  state = moveWaitingRoomFocus(state, [], 8, { slices })
   assert.equal(state.focus, "slice")
   assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "off")
 
@@ -187,7 +187,7 @@ test("waiting room renders indented sections and only previews the last two acti
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 9)
+  state = moveWaitingRoomFocus(state, sessions, 10)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "provider")
@@ -196,15 +196,17 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[3]?.id, "effort")
   assert.equal(firstWindow[4]?.id, "workspace")
   assert.equal(firstWindow[5]?.id, "worktree")
-  assert.equal(firstWindow[6]?.id, "collaborators")
-  assert.equal(firstWindow[7]?.id, "slice")
-  assert.equal(firstWindow[7]?.value, "off")
-  assert.equal(firstWindow[8]?.id, "slice-display")
-  assert.equal(firstWindow[8]?.value, "new slices only")
-  assert.equal(firstWindow[9]?.id, "join-header")
-  assert.equal(firstWindow[9]?.indent, 0)
-  assert.equal(firstWindow[9]?.focused, true)
-  assert.equal(firstWindow[9]?.value, "Press Enter")
+  assert.equal(firstWindow[6]?.id, "live-sync")
+  assert.equal(firstWindow[6]?.value, "off")
+  assert.equal(firstWindow[7]?.id, "collaborators")
+  assert.equal(firstWindow[8]?.id, "slice")
+  assert.equal(firstWindow[8]?.value, "off")
+  assert.equal(firstWindow[9]?.id, "slice-display")
+  assert.equal(firstWindow[9]?.value, "new slices only")
+  assert.equal(firstWindow[10]?.id, "join-header")
+  assert.equal(firstWindow[10]?.indent, 0)
+  assert.equal(firstWindow[10]?.focused, true)
+  assert.equal(firstWindow[10]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
@@ -297,17 +299,19 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[3]?.id, "effort")
   assert.equal(rows[4]?.id, "workspace")
   assert.equal(rows[5]?.id, "worktree")
-  assert.equal(rows[6]?.id, "collaborators")
-  assert.equal(rows[7]?.id, "slice")
-  assert.equal(rows[7]?.value, "off")
-  assert.equal(rows[8]?.id, "slice-display")
-  assert.equal(rows[8]?.value, "new slices only")
-  assert.equal(rows[9]?.id, "join-header")
-  assert.equal(rows[9]?.title, "Join Existing Session")
+  assert.equal(rows[6]?.id, "live-sync")
+  assert.equal(rows[6]?.value, "off")
+  assert.equal(rows[7]?.id, "collaborators")
+  assert.equal(rows[8]?.id, "slice")
+  assert.equal(rows[8]?.value, "off")
+  assert.equal(rows[9]?.id, "slice-display")
+  assert.equal(rows[9]?.value, "new slices only")
+  assert.equal(rows[10]?.id, "join-header")
+  assert.equal(rows[10]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")
   assert.equal(rows.at(-1)?.indent, 0)
 
-  state = moveWaitingRoomFocus(state, [], 9)
+  state = moveWaitingRoomFocus(state, [], 10)
   assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
@@ -378,7 +382,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 11, remote)
+  state = moveWaitingRoomFocus(state, [], 12, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
@@ -420,7 +424,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 10, remote)
+  state = moveWaitingRoomFocus(state, [], 11, remote)
   assert.equal(state.focus, "machine")
   let rows = waitingRoomRows(state, [], catalog, remote)
   const machineRow = rows.find((row) => row.id === "machine:machine-offline")

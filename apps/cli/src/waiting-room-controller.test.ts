@@ -73,6 +73,7 @@ test("waiting room activation stages existing worktree selections for session cr
         provider: "opencode",
         model: "opencode/gpt-5.4",
         effort: "high",
+        workspaceLiveSyncMode: "off",
       },
     })
     assert.equal(
@@ -171,6 +172,7 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
       provider: "opencode",
       model: "opencode/gpt-5.4",
       effort: "high",
+      workspaceLiveSyncMode: "off",
     },
   })
   assert.deepEqual(errorDecision, {
@@ -602,6 +604,20 @@ test("deriveWaitingRoomKeyNavigationDecision cycles focused values", () => {
   }
 })
 
+test("deriveWaitingRoomKeyNavigationDecision cycles waiting-room live sync mode", () => {
+  const decision = deriveWaitingRoomKeyNavigationDecision({
+    event: { name: "right", eventType: "press" },
+    state: waitingRoomState({ focus: "live-sync" }),
+    sessions: [],
+    catalog: catalog(),
+  })
+
+  assert.equal(decision.action, "navigate")
+  if (decision.action === "navigate") {
+    assert.equal(decision.nextState.workspaceLiveSyncMode, "managed")
+  }
+})
+
 test("waitingRoomSessionLifecycleActionForEvent maps archive and delete keys", () => {
   assert.equal(waitingRoomSessionLifecycleActionForEvent({
     event: { name: "a", eventType: "press" },
@@ -630,6 +646,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     sliceIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "existing:/workspace",
+    workspaceLiveSyncMode: "off",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",
     effort: "high",

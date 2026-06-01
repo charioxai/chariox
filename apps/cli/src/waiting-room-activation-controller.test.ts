@@ -78,6 +78,7 @@ test("waiting room activation creates and attaches sessions with launch defaults
       account_profile: "work",
       execution_mode: "build",
       permission_level: "yolo",
+      workspaceLiveSyncMode: "off",
       sliceRef: "slice-1",
     },
   }])
@@ -131,6 +132,7 @@ test("waiting room activation reports explicit created-session live sync mode", 
     provider: "opencode",
     model: "gpt-5.4",
     effort: "high",
+    workspaceLiveSyncMode: "tracked",
   }
   const harness = createHarness({
     controlDecision: { action: "none" },
@@ -145,6 +147,7 @@ test("waiting room activation reports explicit created-session live sync mode", 
     "attachBinding",
     "flash:info:created session Review in /worktree · workspace live sync tracked (selected workspace/worktree only; other repositories unrestricted)",
   ])
+  assert.equal(harness.createdLaunches[0]?.launch.workspaceLiveSyncMode, "tracked")
 })
 
 test("waiting room prompt bootstrap creates from launch defaults without using focused activation", async () => {

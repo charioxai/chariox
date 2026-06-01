@@ -30,6 +30,7 @@ export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
   model: string
   effort: string
+  workspaceLiveSyncMode?: "off" | "managed" | "tracked"
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
 }
@@ -251,6 +252,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
+    workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
@@ -299,6 +301,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
       provider: choice.providerId ?? options.currentProvider,
       model: choice.model?.id ?? options.currentModel,
       effort: choice.effort,
+      workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
       ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
       ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
     },
@@ -326,6 +329,11 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         action: "stage-command",
         command: `/worktree ${options.worktreePath}`,
         message: "edit the worktree path and press Enter",
+      }
+    case "live-sync":
+      return {
+        action: "info",
+        message: "Use left/right to choose off, managed, or tracked before starting the session. Live sync applies only to the selected workspace/worktree.",
       }
     case "collaborators":
       return {

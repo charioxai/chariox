@@ -77,6 +77,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     remoteKernelIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "main",
+    workspaceLiveSyncMode: "off",
     sliceSelectionId: "none",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",

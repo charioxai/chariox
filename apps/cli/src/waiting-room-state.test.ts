@@ -13,6 +13,7 @@ test("waiting room state creation normalizes provider model, variant, and theme"
 
   assert.equal(state.focus, "new")
   assert.equal(state.providerId, "opencode")
+  assert.equal(state.workspaceLiveSyncMode, "off")
   assert.notEqual(state.modelId, "")
   assert.notEqual(state.effort, "")
   assert.equal(state.themeId, "opencode")
@@ -32,6 +33,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
       machineIndex: 3,
       remoteKernelIndex: 2,
       terminalIndex: 4,
+      workspaceLiveSyncMode: "invalid" as WaitingRoomState["workspaceLiveSyncMode"],
       sliceSelectionId: "slice-1",
     }),
     sessions,
@@ -50,6 +52,7 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   assert.equal(normalized.machineIndex, 0)
   assert.equal(normalized.remoteKernelIndex, 0)
   assert.equal(normalized.terminalIndex, 0)
+  assert.equal(normalized.workspaceLiveSyncMode, "off")
   assert.equal(normalized.sliceSelectionId, "slice-1")
 
   const withoutSessions = normalizeWaitingRoomState(
@@ -69,6 +72,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     remoteKernelIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "main",
+    workspaceLiveSyncMode: "off",
     sliceSelectionId: "none",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",

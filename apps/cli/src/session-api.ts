@@ -32,10 +32,11 @@ export async function createSession(
   alias?: string,
   agentDefaults?: RuntimeSession["agent_defaults"],
   sliceRef?: string | null,
+  workspaceLiveSyncMode?: "off" | "managed" | "tracked" | "unrestricted" | null,
 ): Promise<RuntimeSession> {
   const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
   const response = await client.send<Record<string, unknown>>(
-    createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults, sliceRef),
+    createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults, sliceRef, workspaceLiveSyncMode),
   )
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
   return normalizeRuntimeSession(payload.session)

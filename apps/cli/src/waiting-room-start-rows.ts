@@ -14,7 +14,7 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "sliceSelectionId" | "sliceDisplayMode">,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -106,6 +106,16 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
     {
+      id: "live-sync",
+      title: "Live Sync",
+      value: formatWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "live-sync",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
       id: "collaborators",
       title: "Collaborators",
       value: collaborationBackend === "cloud" ? "use Cloud" : "after session start",
@@ -158,6 +168,12 @@ function formatTitleCase(value: string) {
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {
   return backendProviderLabel(providerId)
+}
+
+function formatWorkspaceLiveSyncMode(mode: WaitingRoomState["workspaceLiveSyncMode"]) {
+  if (mode === "managed") return "managed"
+  if (mode === "tracked") return "tracked"
+  return "off"
 }
 
 function formatWaitingRoomModelLabel(

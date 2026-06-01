@@ -9,6 +9,7 @@ export type WaitingRoomFocus =
   | "effort"
   | "workspace"
   | "worktree"
+  | "live-sync"
   | "collaborators"
   | "slice"
   | "slice-display"
@@ -37,6 +38,7 @@ export type WaitingRoomState = {
   sliceIndex?: number
   terminalIndex: number
   worktreeSelectionId: string
+  workspaceLiveSyncMode: "off" | "managed" | "tracked"
   sliceSelectionId?: string
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId

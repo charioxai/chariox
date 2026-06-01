@@ -85,6 +85,14 @@ export function cycleWaitingRoomFocusedValue(
       worktreeSelectionId: cycleWaitingRoomWorktreeSelectionId(state.worktreeSelectionId, delta),
     }
   }
+  if (state.focus === "live-sync") {
+    const modes: readonly WaitingRoomState["workspaceLiveSyncMode"][] = ["off", "managed", "tracked"]
+    const index = Math.max(0, modes.indexOf(state.workspaceLiveSyncMode))
+    return {
+      ...state,
+      workspaceLiveSyncMode: modes[modulo(index + delta, modes.length)] ?? "off",
+    }
+  }
   if (state.focus === "slice") {
     return {
       ...state,

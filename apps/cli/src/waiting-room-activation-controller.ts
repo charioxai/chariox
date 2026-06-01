@@ -201,6 +201,7 @@ export function createWaitingRoomActivationController(
         account_profile: deps.getAccountProfile() ?? null,
         execution_mode: "build",
         permission_level: "yolo",
+        workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
         ...(sliceRef ? { sliceRef } : {}),
       },
     )

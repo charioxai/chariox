@@ -48,6 +48,7 @@ export function createWaitingRoomState(
       sliceIndex: 0,
       terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
+      workspaceLiveSyncMode: "off",
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -103,6 +104,7 @@ export function normalizeWaitingRoomState(
     sliceIndex: allSlices.length === 0 ? 0 : modulo(state.sliceIndex ?? 0, allSlices.length),
     terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
+    workspaceLiveSyncMode: normalizeWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
     sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
     sliceDisplayMode: normalizeSliceDisplayMode(state.sliceDisplayMode),
     modelId: selected?.id ?? state.modelId,
@@ -113,6 +115,10 @@ export function normalizeWaitingRoomState(
 
 function normalizeSliceDisplayMode(value: WaitingRoomState["sliceDisplayMode"]): NonNullable<WaitingRoomState["sliceDisplayMode"]> {
   return value === "headed" ? "headed" : "headless"
+}
+
+function normalizeWorkspaceLiveSyncMode(value: WaitingRoomState["workspaceLiveSyncMode"]): WaitingRoomState["workspaceLiveSyncMode"] {
+  return value === "managed" || value === "tracked" ? value : "off"
 }
 
 function normalizeBackendProvider(value: string): BackendProviderId {

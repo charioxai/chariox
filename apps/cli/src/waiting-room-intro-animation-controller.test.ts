@@ -83,6 +83,7 @@ function waitingRoomState(introStep: number): WaitingRoomState {
     remoteKernelIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "current",
+    workspaceLiveSyncMode: "off",
     providerId: "opencode",
     modelId: "default",
     effort: "medium",

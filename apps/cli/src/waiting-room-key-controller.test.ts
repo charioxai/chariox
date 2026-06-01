@@ -119,6 +119,7 @@ function waitingRoomState(): WaitingRoomState {
     remoteKernelIndex: 0,
     terminalIndex: 0,
     worktreeSelectionId: "current",
+    workspaceLiveSyncMode: "off",
     providerId: "opencode",
     modelId: "opencode/gpt-5.4",
     effort: "medium",

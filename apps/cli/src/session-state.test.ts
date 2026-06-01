@@ -385,6 +385,7 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
       remoteKernelIndex: 0,
   terminalIndex: 0,
       worktreeSelectionId: "existing:/workspace/tree",
+      workspaceLiveSyncMode: "off",
       providerId: "opencode",
       modelId: "opencode/gpt-5.4",
       effort: "medium",

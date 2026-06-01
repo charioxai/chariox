@@ -70,6 +70,13 @@ test("waiting room focused value cycling updates local value selectors", () => {
   })
   assert.equal(sliceState.sliceSelectionId, "new")
 
+  const liveSyncState = cycleWaitingRoomFocusedValue({ ...state, focus: "live-sync" }, 1, {
+    catalog,
+    themeRegistry: DEFAULT_THEME_REGISTRY,
+    normalizeState: (next) => next,
+  })
+  assert.equal(liveSyncState.workspaceLiveSyncMode, "managed")
+
   const sliceDisplayState = cycleWaitingRoomFocusedValue({ ...sliceState, focus: "slice-display" }, 1, {
     catalog,
     themeRegistry: DEFAULT_THEME_REGISTRY,
