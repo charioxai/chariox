@@ -120,7 +120,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     if (commandLanes.saturatedLanes.length > 8) {
       lines.push(`  ${commandLanes.saturatedLanes.length - 8} more saturated lane${commandLanes.saturatedLanes.length - 8 === 1 ? "" : "s"}`)
     }
-    lines.push("  next: wait for active operations to drain; inspect stuck sessions/agents if saturation persists")
+    lines.push(`  next: wait for active operations to drain; inspect ${commandLaneInspectionTargets(commandLanes.saturatedLanes)} if saturation persists`)
   }
 
   if (capability.rejected_jobs > 0 || capability.join_errors > 0) {
@@ -393,6 +393,27 @@ type CommandLaneIssue = {
   laneId: string
   queued: number
   limit: number
+}
+
+function commandLaneInspectionTargets(lanes: readonly CommandLaneIssue[]): string {
+  const targets = lanes.slice(0, 4).map(commandLaneInspectionTarget)
+  if (lanes.length > 4) {
+    targets.push(`${lanes.length - 4} more lane${lanes.length - 4 === 1 ? "" : "s"}`)
+  }
+  return targets.length > 0 ? targets.join(", ") : "stuck sessions/agents"
+}
+
+function commandLaneInspectionTarget(lane: CommandLaneIssue): string {
+  switch (lane.kind) {
+    case "session":
+      return `session ${lane.laneId}`
+    case "agent":
+      return `agent ${lane.laneId}`
+    case "workflow":
+      return `workflow ${lane.laneId}`
+    case "provider":
+      return `provider run ${lane.laneId}`
+  }
 }
 
 function summarizeCommandLanes(

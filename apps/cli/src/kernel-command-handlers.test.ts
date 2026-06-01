@@ -173,7 +173,7 @@ test("kernel health formatter reports saturated command lanes", () => {
   assert.match(rendered, /command lane saturation: 2 lanes at capacity/)
   assert.match(rendered, /session lane=session-1 queued=2\/2/)
   assert.match(rendered, /workflow lane=workflow-session-1 queued=1\/1/)
-  assert.match(rendered, /next: wait for active operations to drain/)
+  assert.match(rendered, /next: wait for active operations to drain; inspect session session-1, workflow workflow-session-1/)
 })
 
 test("kernel health formatter reports provider-run actor backpressure", () => {
