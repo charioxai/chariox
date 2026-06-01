@@ -70,7 +70,8 @@ export async function handleAgentSlashCommand(
     case "ls": {
       const session = deps.sessionState()
       const providerRun = deps.providerRunState()
-      deps.flashFooter(formatAgentListSummary(session.agents, {
+      const slices = deps.listSlices ? await deps.listSlices().catch(() => []) : []
+      deps.flashFooter(formatAgentListSummary(session.agents, slices, {
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
       }), "info")

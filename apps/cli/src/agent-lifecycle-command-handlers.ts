@@ -133,13 +133,14 @@ export async function handleAgentFocusCommand(
 
 export function formatAgentListSummary(
   agents: AgentInstance[],
+  slices: readonly SliceRecord[] = [],
   providerRunContext: AgentProviderRunContext = {},
 ): string {
   if (agents.length === 0) {
     return "no agents in session"
   }
   const agentList = agents
-    .map((agent) => formatAgentListEntry(agent, providerRunContext))
+    .map((agent) => formatAgentListEntry(agent, slices, providerRunContext))
     .join(", ")
   return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
 }
@@ -189,12 +190,16 @@ function formatHomeKernel(context: AgentSessionContext): string {
   return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
 }
 
-function formatAgentListEntry(agent: AgentInstance, providerRunContext: AgentProviderRunContext): string {
+function formatAgentListEntry(
+  agent: AgentInstance,
+  slices: readonly SliceRecord[],
+  providerRunContext: AgentProviderRunContext,
+): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
     agent.state,
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
-    formatAgentPlacement(agent),
+    formatAgentPlacement(agent, sliceForRemoteAgent(agent, slices)),
     formatAgentListProviderRun(agent, providerRunContext),
     formatAgentGrantCount(agent),
     formatAgentRemoteExtensionSync(agent),
@@ -218,10 +223,14 @@ function formatAgentProvider(agent: AgentInstance): string {
   return model.startsWith(`${provider}/`) ? model : `${provider} ${model}`
 }
 
-function formatAgentPlacement(agent: AgentInstance): string {
+function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
   const remote = agent.remote_execution
   if (!remote) {
     return "local"
+  }
+  if (slice) {
+    const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
+    return `slice ${slice.name || slice.id}${run}`
   }
   const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
   const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
