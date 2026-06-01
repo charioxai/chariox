@@ -1,6 +1,6 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
-import { extractPromptHistoryEntries, extractPromptInputHistoryEntries, pushPromptHistoryEntry } from "./prompt-history.js"
+import { extractPromptInputHistoryEntries } from "./prompt-history.js"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
@@ -12,8 +12,7 @@ import type {
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
-  SessionHistoryCursor,
-  SessionHistoryPageEntry,
+  SessionHistoryOutlineAgent,
   TranscriptEntry,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -48,18 +47,17 @@ type BootstrapDeps = {
     session: RuntimeSession,
     logger?: ArrobaLogger | null,
   ) => Promise<void>
-  getSessionHistory: (
+  getSessionHistoryOutline: (
     client: LocalIpcClient,
     sessionId: string,
-    cursor?: SessionHistoryCursor | null,
-    agentId?: string | null,
-  ) => Promise<{ entries: SessionHistoryPageEntry[]; next_cursor: SessionHistoryCursor | null }>
+    agentIds: readonly string[],
+  ) => Promise<{ agents: SessionHistoryOutlineAgent[] }>
   getPromptInputHistory?: (
     client: LocalIpcClient,
     sessionId: string,
   ) => Promise<{ entries: PromptInputHistoryEntry[] }>
   resolveVisibleAgentId: (session: RuntimeSession, preferences: ArrobaPreferences) => string | null
-  prepareHistoryEntries: (entries: SessionHistoryPageEntry[], session: RuntimeSession) => TranscriptEntry[]
+  prepareHistoryOutlineAgent: (agent: SessionHistoryOutlineAgent, session: RuntimeSession) => TranscriptEntry[]
 }
 
 export async function bootstrapSession(
@@ -204,52 +202,41 @@ async function hydrateAttachedHistory(
   sessionId: string,
   visibleAgentId: string | null,
   session: RuntimeSession,
-  deps: Pick<BootstrapDeps, "getSessionHistory" | "prepareHistoryEntries">,
+  deps: Pick<BootstrapDeps, "getSessionHistoryOutline" | "getPromptInputHistory" | "prepareHistoryOutlineAgent">,
 ) {
-  const historyPagePromise = visibleAgentId
-    ? deps.getSessionHistory(client, sessionId, null, visibleAgentId)
-    : Promise.resolve({ entries: [], next_cursor: null })
-  const [historyPage, promptHistoryEntries] = await Promise.all([
-    historyPagePromise,
+  const agentIds = session.agents.map((agent) => agent.id)
+  const outlinePromise = agentIds.length > 0
+    ? deps.getSessionHistoryOutline(client, sessionId, agentIds)
+    : Promise.resolve({ agents: [] })
+  const [outline, promptHistoryEntries] = await Promise.all([
+    outlinePromise,
     loadSessionPromptHistory(client, sessionId, deps),
   ])
+  const agentEntries = Object.fromEntries(outline.agents.map((agent) => [
+    agent.agent_id,
+    deps.prepareHistoryOutlineAgent(agent, session),
+  ]))
+  const historyEntries = visibleAgentId ? agentEntries[visibleAgentId] ?? [] : []
   return {
     sessionId,
     visibleAgentId,
-    historyEntries: deps.prepareHistoryEntries(historyPage.entries, session),
+    agentEntries,
+    historyEntries,
     promptHistoryEntries,
-    nextHistoryCursor: historyPage.next_cursor,
+    nextHistoryCursor: null,
   }
 }
 
 async function loadSessionPromptHistory(
   client: LocalIpcClient,
   sessionId: string,
-  deps: Pick<BootstrapDeps, "getSessionHistory" | "getPromptInputHistory">,
+  deps: Pick<BootstrapDeps, "getPromptInputHistory">,
 ) {
   if (deps.getPromptInputHistory) {
     const history = await deps.getPromptInputHistory(client, sessionId)
     return extractPromptInputHistoryEntries(history.entries)
   }
-  const promptHistoryPages: string[][] = []
-  let cursor: SessionHistoryCursor | null = null
-
-  for (;;) {
-    const historyPage = await deps.getSessionHistory(client, sessionId, cursor, null)
-    promptHistoryPages.push(extractPromptHistoryEntries(historyPage.entries))
-    if (!historyPage.next_cursor) {
-      break
-    }
-    cursor = historyPage.next_cursor
-  }
-
-  let promptHistoryEntries: string[] = []
-  for (const page of promptHistoryPages.reverse()) {
-    for (const prompt of page) {
-      promptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries, prompt)
-    }
-  }
-  return promptHistoryEntries
+  return []
 }
 
 function resolveLaunchTargetAgent(session: RuntimeSession) {

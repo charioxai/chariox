@@ -23,7 +23,7 @@ import {
 } from "./session-runtime-api.js"
 import {
   getPromptInputHistory,
-  getSessionHistory,
+  getSessionHistoryOutline,
 } from "./session-history-api.js"
 import {
   getProviderCatalog,
@@ -52,9 +52,7 @@ import {
 import {
   selectResponsePaneAgents,
 } from "./response-panes.js"
-import {
-  hydrateTranscriptEntries,
-} from "./transcript-history.js"
+import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import {
   reindexTranscriptEntries,
 } from "./transcript-text.js"
@@ -299,7 +297,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     launchProviderRun,
     tryGetProviderRun,
     catchUpAttachedSession,
-    getSessionHistory,
+    getSessionHistoryOutline,
     getPromptInputHistory,
     resolveVisibleAgentId: (session, nextPreferences) => {
       const focusedAgentId = focusedAgentIdForSession(session)
@@ -310,9 +308,9 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
         resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
       ).visibleTranscriptAgentId
     },
-    prepareHistoryEntries: (entries, session) =>
+    prepareHistoryOutlineAgent: (agent, _session) =>
       reindexTranscriptEntries(
-        hydrateTranscriptEntries(entries),
+        hydrateOutlineAgentEntries(agent),
         0,
       ),
   })

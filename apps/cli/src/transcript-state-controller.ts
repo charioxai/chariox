@@ -1,4 +1,9 @@
 import type { TranscriptEntry } from "./cli-types.js"
+import type { SessionHistoryBlobContent } from "./cli-types.js"
+import {
+  markHistoryBlobLoading,
+  replaceHistoryBlobPlaceholder,
+} from "./session-history-outline.js"
 import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
@@ -19,6 +24,8 @@ export type TranscriptStateControllerDeps = {
   reconcileMountedTranscript: (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => void
   retainPromptFocus: () => void
   enforceTranscriptRetention: () => void
+  loadHistoryBlobContent?: (agentId: string, blobId: string) => Promise<SessionHistoryBlobContent>
+  formatError?: (error: unknown) => string
 }
 
 export function createTranscriptStateController(deps: TranscriptStateControllerDeps) {
@@ -58,6 +65,50 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
   const toggleBlob = (entryId: number, collapsed: boolean) => {
     const currentEntries = deps.entries().filter(Boolean)
     const agentId = deps.visibleTranscriptAgentId()
+    const target = currentEntries.find((entry) => entry.id === entryId)
+    if (
+      collapsed === false
+      && target?.historyBlobId
+      && target.historyBlobLoaded !== true
+      && target.historyBlobLoading !== true
+      && target.historyBlobAgentId
+      && deps.loadHistoryBlobContent
+    ) {
+      const loadingEntries = markHistoryBlobLoading(currentEntries, entryId, true)
+      deps.setEntries(loadingEntries)
+      deps.persistVisibleTranscriptEntries(loadingEntries)
+      deps.reconcileMountedTranscript(currentEntries, loadingEntries)
+      deps.retainPromptFocus()
+      void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
+        .then((content) => {
+          const latestEntries = deps.entries().filter(Boolean)
+          const nextEntries = replaceHistoryBlobPlaceholder(
+            latestEntries,
+            entryId,
+            content,
+            deps.expandedTurnIdsForAgent(agentId),
+          )
+          deps.setEntries(nextEntries)
+          deps.setEntryCounter(maxTranscriptEntryId(nextEntries))
+          deps.persistVisibleTranscriptEntries(nextEntries)
+          deps.reconcileMountedTranscript(latestEntries, nextEntries)
+          deps.retainPromptFocus()
+        })
+        .catch((error) => {
+          const latestEntries = deps.entries().filter(Boolean)
+          const nextEntries = markHistoryBlobLoading(
+            latestEntries,
+            entryId,
+            false,
+            deps.formatError?.(error) ?? String(error),
+          )
+          deps.setEntries(nextEntries)
+          deps.persistVisibleTranscriptEntries(nextEntries)
+          deps.reconcileMountedTranscript(latestEntries, nextEntries)
+          deps.retainPromptFocus()
+        })
+      return
+    }
     const nextEntries = setTranscriptBlobCollapsed(
       currentEntries,
       entryId,

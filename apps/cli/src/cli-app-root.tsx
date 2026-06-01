@@ -767,6 +767,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setKernelTerminalOutputRecordProcessor,
   } = createCliTranscriptRuntimeComposition({
     batchUpdate: batch,
+    client,
+    formatError,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
     runUiBatch: (callback) => runUiBatch(callback),
@@ -1021,6 +1023,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setExpandedTurnState,
     applyExpandedTurns,
     retainPromptFocus,
+    formatError,
     agentPaneRuntimeStore,
     transcriptSyntaxStyleController,
     auxiliaryTranscriptSurfaceTone,

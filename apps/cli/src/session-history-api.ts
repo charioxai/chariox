@@ -1,11 +1,15 @@
 import type {
   PromptInputHistoryEntry,
   PromptInputHistoryPage,
+  SessionHistoryBlobContent,
   SessionHistoryCursor,
+  SessionHistoryOutline,
   SessionHistoryPage,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   getPromptInputHistoryRequest,
   getSessionHistoryRequest,
   recordPromptInputHistoryRequest,
@@ -25,6 +29,30 @@ export async function getSessionHistory(
     getSessionHistoryRequest(sessionId, HISTORY_PAGE_ROUND_COUNT, BOOTSTRAP_HISTORY_MAX_CHARS, cursor, agentId),
   )
   return expectVariant<SessionHistoryPage>(response, "SessionHistory")
+}
+
+export async function getSessionHistoryOutline(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentIds: readonly string[],
+  latestPromptCount = 4,
+): Promise<SessionHistoryOutline> {
+  const response = await client.send<Record<string, unknown>>(
+    getSessionHistoryOutlineRequest(sessionId, agentIds, latestPromptCount),
+  )
+  return expectVariant<SessionHistoryOutline>(response, "SessionHistoryOutline")
+}
+
+export async function getSessionHistoryBlobContent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  blobId: string,
+): Promise<SessionHistoryBlobContent> {
+  const response = await client.send<Record<string, unknown>>(
+    getSessionHistoryBlobContentRequest(sessionId, agentId, blobId),
+  )
+  return expectVariant<SessionHistoryBlobContent>(response, "SessionHistoryBlobContent")
 }
 
 export async function getPromptInputHistory(

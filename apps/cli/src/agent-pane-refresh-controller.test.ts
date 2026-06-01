@@ -5,7 +5,7 @@ import type {
   AgentInstance,
   RuntimeSession,
   SessionHistoryCursor,
-  SessionHistoryPageEntry,
+  TranscriptEntry,
 } from "./cli-types.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 
@@ -163,17 +163,11 @@ function agent(id: string): AgentInstance {
   }
 }
 
-function historyEntry(agentId: string, text: string): SessionHistoryPageEntry {
-  const kind = agentId === "a" ? "user_prompt" : "provider_output"
+function historyEntry(agentId: string, text: string): TranscriptEntry {
+  const role = agentId === "a" ? "user" : "assistant"
   return {
-    entry_index: agentId === "a" ? 0 : 1,
-    fragment_start: 0,
-    fragment_end: text.length,
-    total_chars: text.length,
-    entry: {
-      agent_id: agentId,
-      kind,
-      text,
-    },
+    id: agentId === "a" ? 1 : 2,
+    role,
+    text,
   }
 }

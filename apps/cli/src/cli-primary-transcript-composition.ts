@@ -5,7 +5,7 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import { clampScrollTop } from "./history-viewport.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
-import { getSessionHistory } from "./session-history-api.js"
+import { getSessionHistory, getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
 import { createTranscriptHistoryLoadController } from "./transcript-history-load-controller.js"
 import {
@@ -202,7 +202,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
-    loadVisibleAgentHistory: (sessionId, agentId) => getSessionHistory(deps.client, sessionId, null, agentId),
+    loadSessionHistoryOutline: (sessionId, agentIds) => getSessionHistoryOutline(deps.client, sessionId, agentIds, 4),
     setAgentPaneEntries: (agentId, nextEntries) => {
       deps.setAgentPaneEntries((current: any) => ({
         ...current,

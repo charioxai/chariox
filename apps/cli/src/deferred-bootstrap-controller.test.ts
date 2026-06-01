@@ -36,6 +36,9 @@ test("deferred bootstrap controller replaces matching attached history", async (
       attachedHistory: Promise.resolve({
         sessionId: "session-1",
         visibleAgentId: "agent-1",
+        agentEntries: {
+          "agent-1": [entry(1, "assistant", "hello")],
+        },
         historyEntries: [entry(1, "assistant", "hello")],
         promptHistoryEntries: ["hello"],
         nextHistoryCursor: cursor,
@@ -64,6 +67,9 @@ test("deferred bootstrap controller prepends attached history when transcript al
       attachedHistory: Promise.resolve({
         sessionId: "session-1",
         visibleAgentId: "agent-1",
+        agentEntries: {
+          "agent-1": [entry(1, "assistant", "older")],
+        },
         historyEntries: [entry(1, "assistant", "older")],
         promptHistoryEntries: ["older"],
         nextHistoryCursor: null,
@@ -85,6 +91,9 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
       attachedHistory: Promise.resolve({
         sessionId: "stale-session",
         visibleAgentId: "agent-1",
+        agentEntries: {
+          "agent-1": [entry(1, "assistant", "stale")],
+        },
         historyEntries: [entry(1, "assistant", "stale")],
         promptHistoryEntries: ["stale"],
         nextHistoryCursor: null,

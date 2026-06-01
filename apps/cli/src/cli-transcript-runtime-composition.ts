@@ -10,6 +10,7 @@ import {
 import type { TerminalOutputRecord } from "./cli-types.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import { getTurnCompletionDelayMs } from "./runtime.js"
+import { getSessionHistoryBlobContent } from "./session-history-api.js"
 import { sessionHasPromptWork } from "./session-state.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalOutputRecordQueue } from "./terminal-output-record-queue.js"
@@ -26,6 +27,8 @@ type AnyFn = (...args: any[]) => any
 
 export type CliTranscriptRuntimeCompositionDeps = {
   batchUpdate: AnyFn
+  client: any
+  formatError: AnyFn
   scheduleTimer: AnyFn
   clearTimer: AnyFn
   runUiBatch: AnyFn
@@ -202,6 +205,13 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     reconcileMountedTranscript: deps.reconcileMountedTranscript,
     retainPromptFocus: deps.retainPromptFocus,
     enforceTranscriptRetention,
+    loadHistoryBlobContent: (agentId, blobId) => getSessionHistoryBlobContent(
+      deps.client,
+      deps.sessionState().id,
+      agentId,
+      blobId,
+    ),
+    formatError: deps.formatError,
   })
   const applyVisibleTranscriptState = transcriptStateController.applyVisibleState
   const toggleTurn = transcriptStateController.toggleTurn

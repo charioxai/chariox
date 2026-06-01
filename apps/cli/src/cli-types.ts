@@ -781,6 +781,48 @@ export type SessionHistoryEntry = {
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   merge_key?: string
   text: string
+  timestamp_ms?: number
+  source_attachment_id?: string | null
+}
+
+export type SessionHistoryOutline = {
+  agents: SessionHistoryOutlineAgent[]
+}
+
+export type SessionHistoryOutlineAgent = {
+  agent_id: string
+  turns: SessionHistoryOutlineTurn[]
+  next_cursor?: SessionHistoryOutlineCursor | null
+}
+
+export type SessionHistoryOutlineCursor = {
+  before_sequence: number
+}
+
+export type SessionHistoryOutlineTurn = {
+  turn_id: string
+  prompt_id?: string | null
+  started_at_ms: number
+  user_prompt: SessionHistoryPageEntry
+  summary?: SessionHistoryPageEntry | null
+  blobs: SessionHistoryOutlineBlob[]
+}
+
+export type SessionHistoryOutlineBlob = {
+  blob_id: string
+  kind: SessionHistoryEntry["kind"]
+  title: string
+  summary: string
+  sequence_start: number
+  sequence_end: number
+  entry_count: number
+  total_chars: number
+  timestamp_ms: number
+}
+
+export type SessionHistoryBlobContent = {
+  blob_id: string
+  entries: SessionHistoryPageEntry[]
 }
 
 export type PromptInputHistoryEntry = {
@@ -810,6 +852,11 @@ export type TranscriptEntry = {
   blobCollapsed?: boolean
   blobTitle?: string
   blobSummary?: string
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobLoaded?: boolean
+  historyBlobLoading?: boolean
+  historyBlobError?: string
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number
@@ -1041,6 +1088,7 @@ export type BootstrapDeferredState = {
   attachedHistory?: Promise<{
     sessionId: string
     visibleAgentId: string | null
+    agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
     nextHistoryCursor: SessionHistoryCursor | null

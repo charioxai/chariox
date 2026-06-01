@@ -4,7 +4,7 @@ import test from "node:test"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { hydrateTranscriptEntries } from "./transcript-history.js"
+import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 
 test("bootstrapSession returns waiting-room bootstrap when no session should attach", async () => {
   const catalog = fallbackProviderCatalog()
@@ -30,9 +30,9 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
       launchProviderRun: async () => { throw new Error("should not launch") },
       tryGetProviderRun: async () => { throw new Error("should not lookup") },
       catchUpAttachedSession: async () => undefined,
-      getSessionHistory: async () => ({ entries: [], next_cursor: null }),
+      getSessionHistoryOutline: async () => ({ agents: [] }),
       resolveVisibleAgentId: () => null,
-      prepareHistoryEntries: () => [],
+      prepareHistoryOutlineAgent: () => [],
     },
   )
 
@@ -127,25 +127,30 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
       catchUpAttachedSession: async () => {
         calls.push("catchup")
       },
-      getSessionHistory: async (_client, _sessionId, _cursor, agentId) => {
-        calls.push(`history:${agentId}`)
+      getSessionHistoryOutline: async (_client, _sessionId, agentIds) => {
+        calls.push(`outline:${agentIds.join(",")}`)
+        return {
+          agents: [outlineAgent("agent-a", "hi", "done")],
+        }
+      },
+      getPromptInputHistory: async () => {
+        calls.push("prompt-history")
         return {
           entries: [{
-            entry_index: 0,
-            fragment_start: 0,
-            fragment_end: 1,
-            total_chars: 1,
-            entry: { kind: "user_prompt", text: "hi" },
+            sequence: 1,
+            timestamp_ms: 1,
+            session_id: "session-1",
+            kind: "prompt",
+            text: "hi",
           }],
-          next_cursor: null,
         }
       },
       resolveVisibleAgentId: () => "agent-a",
-      prepareHistoryEntries: (entries) => entries.map((_entry, index) => ({ id: index + 1, role: "user", text: "hi" })),
+      prepareHistoryOutlineAgent: (agent) => agent.turns.map((_turn, index) => ({ id: index + 1, role: "user", text: "hi" })),
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "history:agent-a", "history:null"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
@@ -153,6 +158,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
+  assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
 })
 
@@ -236,28 +242,20 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
       catchUpAttachedSession: async () => {
         calls.push("catchup")
       },
-      getSessionHistory: async (_client, _sessionId, _cursor, agentId) => ({
-        entries: agentId === null
-          ? [{
-            entry_index: 3,
-            fragment_start: 0,
-            fragment_end: 6,
-            total_chars: 6,
-            entry: { kind: "user_prompt", text: "hello\n" },
-          }]
-          : [
-            {
-              entry_index: 4,
-              fragment_start: 24,
-              fragment_end: 42,
-              total_chars: 42,
-              entry: { kind: "provider_output", text: "while you were away", merge_key: "reply-1" },
-            },
-          ],
-        next_cursor: null,
+      getSessionHistoryOutline: async () => ({
+        agents: [outlineAgent("agent-a", "hello\n", "while you were away")],
+      }),
+      getPromptInputHistory: async () => ({
+        entries: [{
+          sequence: 1,
+          timestamp_ms: 1,
+          session_id: "session-1",
+          kind: "prompt",
+          text: "hello\n",
+        }],
       }),
       resolveVisibleAgentId: () => "agent-a",
-      prepareHistoryEntries: hydrateTranscriptEntries,
+      prepareHistoryOutlineAgent: hydrateOutlineAgentEntries,
     },
   )
 
@@ -266,7 +264,33 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hello"])
-  assert.equal(deferredHistory?.historyEntries[0]?.role, "assistant")
-  assert.equal(deferredHistory?.historyEntries[0]?.text, "while you were away")
-  assert.equal(deferredHistory?.historyEntries[0]?.historyDeferred, true)
+  const assistantEntry = deferredHistory?.historyEntries.find((entry) => entry.role === "assistant")
+  assert.equal(assistantEntry?.text, "while you were away")
 })
+
+function outlineAgent(agentId: string, prompt: string, summary: string) {
+  return {
+    agent_id: agentId,
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      user_prompt: {
+        entry_index: 1,
+        fragment_start: 0,
+        fragment_end: prompt.length,
+        total_chars: prompt.length,
+        entry: { kind: "user_prompt" as const, text: prompt, agent_id: agentId },
+      },
+      summary: {
+        entry_index: 2,
+        fragment_start: 0,
+        fragment_end: summary.length,
+        total_chars: summary.length,
+        entry: { kind: "provider_output" as const, text: summary, agent_id: agentId },
+      },
+      blobs: [],
+    }],
+    next_cursor: null,
+  }
+}

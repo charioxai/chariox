@@ -1,11 +1,11 @@
 import type {
   RuntimeSession,
-  SessionHistoryPage,
+  SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
 import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { selectResponsePaneAgents } from "./response-panes.js"
-import { hydrateTranscriptEntries } from "./transcript-history.js"
+import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries } from "./transcript-text.js"
 
@@ -13,11 +13,11 @@ export type AttachedSessionPrimeControllerDeps = {
   promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">
   splitAgentResponseMode: () => boolean
   maxAgentsPerScreen: () => number
-  loadVisibleAgentHistory: (sessionId: string, agentId: string) => Promise<SessionHistoryPage>
+  loadSessionHistoryOutline: (sessionId: string, agentIds: readonly string[]) => Promise<SessionHistoryOutline>
   setAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
   setAgentPanePreview: (agentId: string, preview: string) => void
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
-  setNextHistoryCursor: (cursor: SessionHistoryPage["next_cursor"]) => void
+  setNextHistoryCursor: (cursor: null) => void
 }
 
 export function createAttachedSessionPrimeController(
@@ -39,17 +39,23 @@ export function createAttachedSessionPrimeController(
       return
     }
 
-    const historyPage = await deps.loadVisibleAgentHistory(session.id, visibleAgentId)
-    await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
-    const preparedEntries = reindexTranscriptEntries(
-      hydrateTranscriptEntries(historyPage.entries),
-      0,
+    const outline = await deps.loadSessionHistoryOutline(
+      session.id,
+      session.agents.map((agent) => agent.id),
     )
+    await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
+    const entriesByAgent = new Map(outline.agents.map((agent) => [
+      agent.agent_id,
+      reindexTranscriptEntries(hydrateOutlineAgentEntries(agent), 0),
+    ]))
+    for (const [agentId, entries] of entriesByAgent) {
+      deps.setAgentPaneEntries(agentId, cloneTranscriptEntries(entries))
+      deps.setAgentPanePreview(agentId, formatTranscriptPreview(entries))
+    }
+    const preparedEntries = entriesByAgent.get(visibleAgentId) ?? []
 
-    deps.setAgentPaneEntries(visibleAgentId, cloneTranscriptEntries(preparedEntries))
-    deps.setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
     deps.replaceTranscriptEntries(cloneTranscriptEntries(preparedEntries), visibleAgentId)
-    deps.setNextHistoryCursor(historyPage.next_cursor)
+    deps.setNextHistoryCursor(null)
   }
 
   return {

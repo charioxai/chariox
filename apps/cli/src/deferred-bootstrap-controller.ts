@@ -47,6 +47,12 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       return
     }
 
+    for (const [agentId, entries] of Object.entries(history.agentEntries)) {
+      const preparedAgentEntries = cloneTranscriptEntries(entries)
+      deps.setAgentPaneEntries(agentId, preparedAgentEntries)
+      deps.setAgentPanePreview(agentId, formatTranscriptPreview(preparedAgentEntries))
+    }
+
     const visibleAgentId = history.visibleAgentId
     const preparedEntries = cloneTranscriptEntries(history.historyEntries)
     if (preparedEntries.length === 0) {
@@ -54,8 +60,6 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       return
     }
 
-    deps.setAgentPaneEntries(visibleAgentId, cloneTranscriptEntries(preparedEntries))
-    deps.setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
     if (deps.currentTranscriptEntryCount() === 0) {
       deps.replaceTranscriptEntries(preparedEntries, visibleAgentId)
     } else {

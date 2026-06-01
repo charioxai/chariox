@@ -83,9 +83,11 @@ export function applyTranscriptDisplayState(
       if (blobCollapsible) {
         entry.blobCollapsible = true
         entry.blobCollapsed = entry.blobCollapsed ?? true
-        const preview = describeCollapsedBlob(entry)
-        entry.blobTitle = preview.title
-        entry.blobSummary = preview.summary
+        if (!entry.historyBlobId) {
+          const preview = describeCollapsedBlob(entry)
+          entry.blobTitle = preview.title
+          entry.blobSummary = preview.summary
+        }
       } else {
         entry.blobCollapsible = false
         delete entry.blobCollapsed
@@ -186,6 +188,9 @@ export function resolveVisibleTurnToggle(
 }
 
 function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number | null) {
+  if (entry.historyBlobId) {
+    return true
+  }
   if (entry.role === "user" || entry.role === "reasoning" || entry.role === "turn_toggle" || entry.role === "assistant") {
     return false
   }

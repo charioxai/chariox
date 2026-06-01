@@ -5,8 +5,7 @@ import { createAttachedSessionPrimeController } from "./attached-session-prime-c
 import type {
   AgentInstance,
   RuntimeSession,
-  SessionHistoryCursor,
-  SessionHistoryPage,
+  SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
 
@@ -22,20 +21,13 @@ test("attached session prime clears the transcript when no agent is visible", as
 })
 
 test("attached session prime seeds the visible agent transcript and pane preview", async () => {
-  const cursor: SessionHistoryCursor = { before_entry_index: 2, before_entry_char_offset: null }
   const harness = primeHarness({
-    historyPage: {
-      entries: [
-        historyEntry(0, "user_prompt", "hello\n"),
-        historyEntry(1, "provider_output", "world"),
-      ],
-      next_cursor: cursor,
-    },
+    outline: outlineForAgents(["agent-1"], "hello\n", "world"),
   })
 
   await harness.controller.prime(session())
 
-  assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentId: "agent-1" }])
+  assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentIds: ["agent-1"] }])
   assert.deepEqual(harness.promptHistoryCalls, [{ sessionId: "session-1", generation: 1 }])
   assert.deepEqual(harness.agentPaneEntries["agent-1"]?.map((entry) => entry.text), ["hello", "world"])
   assert.equal(harness.agentPanePreviews["agent-1"], "You: hello\nAsst: world")
@@ -46,7 +38,7 @@ test("attached session prime seeds the visible agent transcript and pane preview
       { id: 2, role: "assistant", text: "world" },
     ],
   }])
-  assert.equal(harness.nextHistoryCursor, cursor)
+  assert.equal(harness.nextHistoryCursor, null)
   assert.notEqual(harness.agentPaneEntries["agent-1"]?.[0], harness.replacedEntries[0]?.[0])
 })
 
@@ -58,20 +50,20 @@ test("attached session prime selects the visible split-pane screen", async () =>
     agents: [agent("agent-1"), agent("agent-2"), agent("agent-3"), agent("agent-4")],
   }))
 
-  assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentId: "agent-3" }])
+  assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentIds: ["agent-1", "agent-2", "agent-3", "agent-4"] }])
   assert.deepEqual(harness.replaceCalls[0]?.agentId, "agent-3")
 })
 
 function primeHarness(options: {
   split?: boolean
   maxAgentsPerScreen?: number
-  historyPage?: SessionHistoryPage
+  outline?: SessionHistoryOutline
 } = {}) {
   const harness = {
     promptGeneration: 0,
-    historyCalls: [] as Array<{ sessionId: string; agentId: string }>,
+    historyCalls: [] as Array<{ sessionId: string; agentIds: string[] }>,
     promptHistoryCalls: [] as Array<{ sessionId: string; generation: number }>,
-    nextHistoryCursor: undefined as SessionHistoryCursor | null | undefined,
+    nextHistoryCursor: undefined as null | undefined,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
     replaceCalls: [] as Array<{
@@ -93,12 +85,9 @@ function primeHarness(options: {
     },
     splitAgentResponseMode: () => options.split ?? false,
     maxAgentsPerScreen: () => options.maxAgentsPerScreen ?? 3,
-    loadVisibleAgentHistory: async (sessionId, agentId) => {
-      harness.historyCalls.push({ sessionId, agentId })
-      return options.historyPage ?? {
-        entries: [historyEntry(0, "provider_output", `history for ${agentId}`)],
-        next_cursor: null,
-      }
+    loadSessionHistoryOutline: async (sessionId, agentIds) => {
+      harness.historyCalls.push({ sessionId, agentIds: [...agentIds] })
+      return options.outline ?? outlineForAgents([...agentIds])
     },
     setAgentPaneEntries: (agentId, entries) => {
       harness.agentPaneEntries[agentId] = entries
@@ -167,14 +156,36 @@ function agent(id: string): AgentInstance {
 
 function historyEntry(
   entryIndex: number,
-  kind: SessionHistoryPage["entries"][number]["entry"]["kind"],
+  kind: "user_prompt" | "provider_output",
   text: string,
-): SessionHistoryPage["entries"][number] {
+  agentId: string,
+) {
   return {
     entry_index: entryIndex,
     fragment_start: 0,
     fragment_end: text.length,
     total_chars: text.length,
-    entry: { kind, text },
+    entry: { kind, text, agent_id: agentId },
+  }
+}
+
+function outlineForAgents(
+  agentIds: string[],
+  prompt = "hello\n",
+  summaryPrefix = "history for",
+): SessionHistoryOutline {
+  return {
+    agents: agentIds.map((agentId, index) => ({
+      agent_id: agentId,
+      turns: [{
+        turn_id: `${agentId}-turn-1`,
+        prompt_id: `${agentId}-prompt-1`,
+        started_at_ms: 1,
+        user_prompt: historyEntry(index * 2, "user_prompt", prompt, agentId),
+        summary: historyEntry(index * 2 + 1, "provider_output", summaryPrefix === "world" ? "world" : `${summaryPrefix} ${agentId}`, agentId),
+        blobs: [],
+      }],
+      next_cursor: null,
+    })),
   }
 }

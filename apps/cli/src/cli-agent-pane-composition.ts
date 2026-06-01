@@ -15,7 +15,11 @@ import {
 import { clampScrollTop } from "./history-viewport.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
-import { getSessionHistory } from "./session-history-api.js"
+import {
+  getSessionHistoryBlobContent,
+  getSessionHistoryOutline,
+} from "./session-history-api.js"
+import { hydrateOutlineAgentEntries } from "./session-history-outline.js"
 import { splitPaneAuxiliaryAgentIds } from "./response-panes.js"
 import {
   buildTranscriptEntryRenderable,
@@ -45,6 +49,7 @@ export type CliAgentPaneCompositionDeps = {
   setExpandedTurnState: AnyFn
   applyExpandedTurns: AnyFn
   retainPromptFocus: AnyFn
+  formatError: AnyFn
   agentPaneRuntimeStore: {
     scrollboxes: any
     entryRenderables: any
@@ -124,6 +129,13 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
     },
     retainPromptFocus: deps.retainPromptFocus,
+    loadHistoryBlobContent: (agentId, blobId) => getSessionHistoryBlobContent(
+      deps.client,
+      deps.sessionState().id,
+      agentId,
+      blobId,
+    ),
+    formatError: deps.formatError,
   })
   const toggleAuxiliaryPaneTurn = agentPaneTranscriptInteractionController.toggleTurn
   const toggleAuxiliaryPaneBlob = agentPaneTranscriptInteractionController.toggleBlob
@@ -222,10 +234,17 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadHistoryPage: async (sessionId, agentId, cursor) => {
-      const historyPage = await getSessionHistory(deps.client, sessionId, cursor, agentId)
+      if (cursor !== null) {
+        return {
+          entries: [],
+          nextCursor: null,
+        }
+      }
+      const outline = await getSessionHistoryOutline(deps.client, sessionId, [agentId], 4)
+      const outlineAgent = outline.agents.find((agent) => agent.agent_id === agentId)
       return {
-        entries: historyPage.entries,
-        nextCursor: historyPage.next_cursor,
+        entries: outlineAgent ? hydrateOutlineAgentEntries(outlineAgent) : [],
+        nextCursor: null,
       }
     },
     pruneAuxiliaryAgentPanes,

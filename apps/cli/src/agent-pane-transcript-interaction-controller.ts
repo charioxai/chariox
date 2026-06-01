@@ -1,4 +1,11 @@
-import type { TranscriptEntry } from "./cli-types.js"
+import type {
+  SessionHistoryBlobContent,
+  TranscriptEntry,
+} from "./cli-types.js"
+import {
+  markHistoryBlobLoading,
+  replaceHistoryBlobPlaceholder,
+} from "./session-history-outline.js"
 import {
   applyTranscriptDisplayState,
   resolveVisibleTurnToggle,
@@ -20,6 +27,8 @@ export type AgentPaneTranscriptInteractionControllerDeps = {
     nextEntries: TranscriptEntry[],
   ) => void
   retainPromptFocus: () => void
+  loadHistoryBlobContent?: (agentId: string, blobId: string) => Promise<SessionHistoryBlobContent>
+  formatError?: (error: unknown) => string
 }
 
 export function createAgentPaneTranscriptInteractionController(
@@ -52,6 +61,40 @@ export function createAgentPaneTranscriptInteractionController(
 
   const toggleBlob = (agentId: string, entryId: number, collapsed: boolean) => {
     const currentEntries = deps.currentAgentPaneEntries(agentId)
+    const target = currentEntries.find((entry) => entry.id === entryId)
+    if (
+      collapsed === false
+      && target?.historyBlobId
+      && target.historyBlobLoaded !== true
+      && target.historyBlobLoading !== true
+      && target.historyBlobAgentId
+      && deps.loadHistoryBlobContent
+    ) {
+      const loadingEntries = markHistoryBlobLoading(currentEntries, entryId, true)
+      commitAndRefocus(deps, agentId, currentEntries, loadingEntries)
+      void deps.loadHistoryBlobContent(target.historyBlobAgentId, target.historyBlobId)
+        .then((content) => {
+          const latestEntries = deps.currentAgentPaneEntries(agentId)
+          const nextEntries = replaceHistoryBlobPlaceholder(
+            latestEntries,
+            entryId,
+            content,
+            deps.expandedTurnIdsForAgent(agentId),
+          )
+          commitAndRefocus(deps, agentId, latestEntries, nextEntries)
+        })
+        .catch((error) => {
+          const latestEntries = deps.currentAgentPaneEntries(agentId)
+          const nextEntries = markHistoryBlobLoading(
+            latestEntries,
+            entryId,
+            false,
+            deps.formatError?.(error) ?? String(error),
+          )
+          commitAndRefocus(deps, agentId, latestEntries, nextEntries)
+        })
+      return
+    }
     const nextEntries = setTranscriptBlobCollapsed(
       currentEntries,
       entryId,
