@@ -64,6 +64,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
+    + providerCatalogHealthIssueCount(health)
     + health.projection_invariants.mismatches.length
     + workspaceHealthIssueCount(health)
     + sliceLifecycleIssueCount(health)
@@ -76,6 +77,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
 
 export function formatKernelHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
+  const providerCatalog = health.provider_catalog
   const process = health.process
   const capability = health.capability_executor
   const transport = health.transport
@@ -91,6 +93,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const lines = [
     "kernel health",
     `process: pid=${process.process_id} rss=${formatBytes(process.current_resident_set_bytes ?? null)} peak_rss=${formatBytes(process.peak_resident_set_bytes ?? null)}`,
+    `provider catalog: cached=${providerCatalog.cached ? "yes" : "no"} expired=${providerCatalog.expired ? "yes" : "no"} age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`,
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
     `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
     `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
@@ -122,6 +125,11 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
     lines.push("  next: inspect the agent and close the extra native TUI or Arroba provider run before sending more prompts")
+  }
+
+  if (providerCatalog.expired) {
+    lines.push(`provider catalog is stale: age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`)
+    lines.push("  next: refresh provider/model selection before launching new sessions or agents")
   }
 
   if (providerRuns.orphaned_active_runs.length > 0) {
@@ -268,6 +276,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   return lines.join("\n")
 }
 
+function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {
+  return health.provider_catalog.expired ? 1 : 0
+}
+
 function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
   const externalChanges = health.workspace_live_sync.external_changes
   return health.workspace_coordination.worktree_collisions.length
@@ -336,6 +348,21 @@ function formatBytes(bytes: number | null): string {
   }
   const formatted = unitIndex === 0 ? `${Math.round(value)}` : value >= 10 ? value.toFixed(1) : value.toFixed(2)
   return `${formatted}${units[unitIndex]}`
+}
+
+function formatDuration(ms: number | null): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    return "unknown"
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`
+  }
+  const seconds = ms / 1000
+  if (seconds < 60) {
+    return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)}s`
+  }
+  const minutes = seconds / 60
+  return `${minutes >= 10 ? minutes.toFixed(1) : minutes.toFixed(2)}m`
 }
 
 function formatIdentityTransition(before: string | null | undefined, after: string | null | undefined): string {

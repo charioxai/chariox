@@ -34,6 +34,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added daemon-health slice provider auth attribution for attached-agent slices with missing provider account summaries or `unknown`/`not_configured` provider auth. `slice_lifecycle.provider_auth_issues` now names slice, sessions, agents, worktree, provider, state, alias/identity, and details; CLI `/kernel health` and Cloud web Settings render the affected slice auth blocker directly.
 - Bumped the local daemon protocol to 95 and revalidated slice provider auth health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
 
+### Provider catalog health surfacing
+
+- Surfaced existing daemon-health provider catalog cache state in CLI `/kernel health` and Cloud web Settings. Stale provider/model metadata is now counted as a health issue with cache age/TTL and a direct refresh/reselect next action before users launch new sessions or agents.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

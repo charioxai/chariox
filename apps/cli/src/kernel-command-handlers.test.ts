@@ -141,6 +141,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   const rendered = formatKernelHealth(health())
 
   assert.match(rendered, /process: pid=1234 rss=128.0MiB peak_rss=256.0MiB/)
+  assert.match(rendered, /provider catalog: cached=no expired=no age=unknown ttl=5.00s/)
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
@@ -154,6 +155,18 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /provider run bindings: ok/)
   assert.match(rendered, /projection invariants: ok/)
   assert.equal(kernelHealthIssueCount(health()), 0)
+})
+
+test("kernel health formatter reports stale provider catalog", () => {
+  const unhealthy = health({
+    provider_catalog: { cached: true, expired: true, age_ms: 70_000, ttl_ms: 60_000 },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /provider catalog: cached=yes expired=yes age=1.17m ttl=1.00m/)
+  assert.match(rendered, /provider catalog is stale: age=1.17m ttl=1.00m/)
+  assert.match(rendered, /next: refresh provider\/model selection/)
 })
 
 test("kernel health formatter reports slice lifecycle issues", () => {
