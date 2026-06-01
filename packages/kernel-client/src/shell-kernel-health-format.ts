@@ -220,23 +220,32 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
     lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
+    let firstProviderRun: string | null = null
     for (const issue of workspaceIdentity.issues) {
       const branch = formatIdentityTransition(issue.baseline_branch, issue.current_branch)
       const head = formatIdentityTransition(issue.baseline_head_commit, issue.current_head_commit)
       const repo = formatIdentityTransition(issue.baseline_repo_url, issue.current_repo_url)
+      firstProviderRun ??= issue.provider_run_id ?? null
       lines.push(`  run=${issue.provider_run_id} root=${issue.root} generation=${issue.generation} valid=${issue.valid ? "yes" : "no"} fingerprint=${issue.baseline_fingerprint}->${issue.current_fingerprint} branch=${branch} head=${head} repo=${repo}`)
     }
-    lines.push("  next: stop and relaunch affected managed/tracked provider runs after confirming the selected worktree")
+    const target = firstProviderRun ? `provider run ${firstProviderRun}` : "affected managed/tracked provider runs"
+    lines.push(`  next: stop and relaunch ${target} after confirming the selected worktree`)
   }
 
   if (externalChanges.issues.length > 0) {
     lines.push("workspace external changes:")
+    let firstPath: string | null = null
+    let firstProviderRun: string | null = null
     for (const issue of externalChanges.issues) {
       const providerRun = issue.provider_run_id ?? "-"
       const root = issue.workspace_root ?? "-"
+      firstPath ??= issue.path
+      firstProviderRun ??= issue.provider_run_id ?? null
       lines.push(`  run=${providerRun} root=${root} path=${issue.path} fingerprint=${issue.workspace_fingerprint}`)
     }
-    lines.push("  next: inspect the path; rerun or reconcile the affected managed/tracked turn before retrying workspace live sync")
+    const pathTarget = firstPath ? `path ${firstPath}` : "the affected path"
+    const runTarget = firstProviderRun ? ` for provider run ${firstProviderRun}` : ""
+    lines.push(`  next: inspect ${pathTarget}${runTarget}; rerun or reconcile the affected managed/tracked turn before retrying workspace live sync`)
   }
 
   if (!liveSyncManagedMode.write_fence_supported && liveSyncManagedMode.unavailable_reason) {
