@@ -198,8 +198,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state} processing=${issue.is_processing ? "yes" : "no"} kind=${issue.kind}${worktree}: ${issue.details}`)
     }
     const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
+    const firstIssue = remoteExecution.issues[0]
     const inspect = firstAgent ? `run /agent inspect ${firstAgent}` : "inspect the agent placement"
-    lines.push(`  next: ${inspect}; reconnect or relaunch the remote/slice worker before sending more prompts`)
+    const worker = firstIssue?.worker_machine_id ? `; run /machine kernels ${firstIssue.worker_machine_id}` : ""
+    lines.push(`  next: ${inspect}${worker}; reconnect or relaunch the remote/slice worker before sending more prompts`)
   }
 
   if (remoteExtensionSyncIssueCount(health) > 0) {
