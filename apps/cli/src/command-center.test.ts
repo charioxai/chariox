@@ -45,9 +45,9 @@ test("buildCommandCenterItems includes config subcommands", () => {
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
-  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync off"), true)
-  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync managed"), true)
-  assert.equal(configSyncItems.some((item) => item.kind === "command" && item.value === "/config workspace-live-sync tracked"), true)
+  assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync off")?.description, "Default new sessions to live sync off")
+  assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync managed")?.description, "Default new sessions to managed sync for their selected workspace/worktree")
+  assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync tracked")?.description, "Default new sessions to tracked turn-end sync for their selected workspace/worktree")
 })
 
 test("buildCommandCenterItems includes workspace live sync subcommands", () => {
@@ -73,7 +73,9 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync enable tracked"), false)
   assert.equal(values.has("/workspace sync disable"), false)
   assert.equal(values.has("/workspace sync mode "), false)
-  assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked workspace live sync for the current session")
+  assert.equal(items.find((item) => item.value === "/workspace sync off")?.description, "Disable live sync for this session; other repositories stay unrestricted")
+  assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed live sync for this session's selected workspace/worktree")
+  assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked turn-end live sync for this session's selected workspace/worktree")
 })
 
 test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {
