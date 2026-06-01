@@ -41,7 +41,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off")
+  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing)")
   assert.equal(rows.find((row) => row.id === "slice-display")?.value, "new slices only")
@@ -68,7 +68,7 @@ test("waiting room start rows render loading placeholders before inventory arriv
   assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off")
+  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
@@ -92,6 +92,37 @@ test("waiting room start rows hint cloud collaborator setup when cloud-linked", 
 
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "use Cloud")
   assert.equal(rows.find((row) => row.id === "collaborators")?.focused, true)
+})
+
+test("waiting room start rows explain managed and tracked live sync modes", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+
+  const managedRows = waitingRoomStartRows(
+    waitingRoomState({ workspaceLiveSyncMode: "managed" }),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+  const trackedRows = waitingRoomStartRows(
+    waitingRoomState({ workspaceLiveSyncMode: "tracked" }),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(managedRows.find((row) => row.id === "live-sync")?.value, "managed (coordinated)")
+  assert.equal(trackedRows.find((row) => row.id === "live-sync")?.value, "tracked (turn-end)")
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

@@ -171,9 +171,9 @@ function formatBackendProviderLabel(providerId: BackendProviderId) {
 }
 
 function formatWorkspaceLiveSyncMode(mode: WaitingRoomState["workspaceLiveSyncMode"]) {
-  if (mode === "managed") return "managed"
-  if (mode === "tracked") return "tracked"
-  return "off"
+  if (mode === "managed") return "managed (coordinated)"
+  if (mode === "tracked") return "tracked (turn-end)"
+  return "off (default)"
 }
 
 function formatWaitingRoomModelLabel(
