@@ -82,6 +82,60 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
   )
 })
 
+test("deriveCurrentProviderSelection does not infer focused agent ownership from provider run", () => {
+  assert.deepEqual(
+    deriveCurrentProviderSelection({
+      providerRun: providerRun({
+        agent_instance_id: null,
+        provider: "openai",
+        model: "opencode/gpt-5.4",
+        variant: "low",
+      }),
+      focusedAgent: agent("agent-a", {
+        provider: "codex",
+        model: "openai/gpt-5.3-codex",
+        effort: "medium",
+      }),
+      waitingRoomState: waitingRoomState({
+        providerId: "claude",
+        modelId: "anthropic/claude-sonnet-4",
+        effort: "high",
+      }),
+      defaultModel: "default",
+      defaultEffort: "normal",
+    }),
+    {
+      provider: "codex",
+      model: "openai/gpt-5.3-codex",
+      effort: "medium",
+    },
+  )
+
+  assert.deepEqual(
+    deriveCurrentProviderSelection({
+      providerRun: providerRun({
+        agent_instance_id: "agent-b",
+        provider: "openai",
+        model: "opencode/gpt-5.4",
+        variant: "low",
+      }),
+      focusedAgent: agent("agent-a", {
+        provider: "codex",
+        model: "openai/gpt-5.3-codex",
+        effort: "medium",
+      }),
+      waitingRoomState: waitingRoomState(),
+      defaultModel: "default",
+      defaultEffort: "normal",
+    }),
+    {
+      provider: "codex",
+      model: "openai/gpt-5.3-codex",
+      effort: "medium",
+    },
+  )
+})
+
 test("derivePromptMetaState formats provider, model, and effort from the current selection", () => {
   const parts = derivePromptMetaState({
     providerRun: providerRun({

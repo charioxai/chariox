@@ -11,6 +11,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("provider prompt projection prefers provider run, then focused agent, then waiting room/defaults", () => {
   let run: RuntimeProviderRun | null = providerRun({
+    agent_instance_id: "agent-a",
     provider: "openai",
     model: "opencode/gpt-5.4",
     variant: "low",
@@ -42,6 +43,19 @@ test("provider prompt projection prefers provider run, then focused agent, then 
   })
   assert.equal(controller.currentModelId(), "opencode/gpt-5.4")
   assert.equal(controller.currentVariantId(), "low")
+
+  run = providerRun({
+    agent_instance_id: "agent-b",
+    provider: "openai",
+    model: "opencode/gpt-5.4",
+    variant: "low",
+  })
+
+  assert.deepEqual(controller.currentProviderSelection(), {
+    provider: "codex",
+    model: "openai/gpt-5.3-codex",
+    effort: "medium",
+  })
 
   run = null
 

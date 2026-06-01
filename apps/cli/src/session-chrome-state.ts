@@ -33,21 +33,32 @@ type ProviderSelectionOptions = {
 }
 
 export function deriveCurrentProviderSelection(options: ProviderSelectionOptions) {
+  const providerRun = providerRunForFocusedSelection(options.providerRun, options.focusedAgent)
   return {
-    provider: options.providerRun?.provider
+    provider: providerRun?.provider
       ?? normalizeProvider(options.focusedAgent?.provider)
       ?? options.waitingRoomState.providerId
       ?? options.defaultProvider
       ?? "opencode",
-    model: options.providerRun?.model
+    model: providerRun?.model
       ?? options.focusedAgent?.model
       ?? options.waitingRoomState.modelId
       ?? options.defaultModel,
-    effort: options.providerRun?.variant
+    effort: providerRun?.variant
       ?? options.focusedAgent?.effort
       ?? options.waitingRoomState.effort
       ?? options.defaultEffort,
   }
+}
+
+function providerRunForFocusedSelection(
+  providerRun: RuntimeProviderRun | null,
+  focusedAgent: AgentInstance | null | undefined,
+): RuntimeProviderRun | null {
+  if (!providerRun || !focusedAgent) {
+    return providerRun
+  }
+  return providerRun.agent_instance_id === focusedAgent.id ? providerRun : null
 }
 
 export function applyProviderRunProfileToSession(
