@@ -20,6 +20,7 @@ export type SessionListEntry = {
   alias?: string | null
   workspace_id?: string
   worktree_id: string
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   host_machine_id?: string | null
   host_daemon_id?: string | null
   kernel_id?: string | null
@@ -61,8 +62,9 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const attachmentCount = session.attachment_ids?.length ?? session.connected_cli_count ?? 0
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
+      const liveSync = formatSessionLiveSyncLabel(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${current}`
     }),
   ].join("\n")
 }
@@ -76,6 +78,11 @@ export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_dae
   const kernel = session.host_daemon_id?.trim() || session.kernel_id?.trim()
   const machine = session.host_machine_id?.trim()
   return kernel && machine ? `${kernel}@${machine}` : kernel || machine || "-"
+}
+
+export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {
+  const mode = session.workspace_live_sync_mode
+  return mode === "managed" || mode === "tracked" ? mode : "off"
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
