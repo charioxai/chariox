@@ -7,6 +7,7 @@ import type {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import { formatSliceAuthIdentity, formatSliceScope } from "./slice-format.js"
 
 type FooterTone = "info" | "error"
 
@@ -304,7 +305,7 @@ function sliceForRemoteAgent(
 }
 
 function formatSliceInspectSummary(slice: SliceRecord): string {
-  const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
+  const worktree = formatSliceScope(slice)
   return `${slice.name || slice.id} (${[
     `id=${slice.id}`,
     `status=${slice.status}`,
@@ -320,8 +321,7 @@ function formatSliceProviderAccounts(slice: SliceRecord): string {
     return "none"
   }
   return accounts.map((auth) => {
-    const identity = auth.email || auth.account_id || auth.alias || auth.organization_name || auth.state
-    return `${auth.provider}=${identity}${auth.alias && identity !== auth.alias ? ` (${auth.alias})` : ""}`
+    return `${auth.provider}=${formatSliceAuthIdentity(auth)}`
   }).join(", ")
 }
 

@@ -1,4 +1,5 @@
 import type { SliceRecord } from "./cli-types.js"
+import { formatSliceProviderAuth, formatSliceRelayLabel } from "./slice-format.js"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 
 export type WaitingRoomSliceScope = {
@@ -71,10 +72,13 @@ export function formatWaitingRoomSliceLabel(slice: SliceRecord) {
 export function formatWaitingRoomSliceOption(slice: SliceRecord) {
   const agents = slice.agent_ids?.length ?? 0
   const auth = (slice.provider_auth ?? [])
-    .map(formatSliceAuthIdentity)
+    .map((entry) => formatSliceProviderAuth(entry, {
+      separator: " ",
+      includeOrgPlan: false,
+    }))
     .filter(Boolean)
     .join(", ")
-  const relay = formatSliceRelayIdentity(slice)
+  const relay = formatSliceRelayLabel(slice)
   const failed = slice.last_operation_status === "failed"
     ? `, error ${slice.last_error ?? slice.last_operation ?? "failed"}`
     : ""
@@ -85,20 +89,6 @@ export function formatWaitingRoomSliceOption(slice: SliceRecord) {
     relay ? `relay ${relay}` : "",
     auth,
   ].filter(Boolean).join(", ")}${failed})`
-}
-
-function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {
-  const identity = entry.email || entry.account_id || entry.auth_type || entry.state
-  const account = entry.alias && entry.alias !== identity ? `${entry.alias} (${identity})` : identity
-  return `${entry.provider} ${account}`.trim()
-}
-
-function formatSliceRelayIdentity(slice: SliceRecord): string {
-  const endpoint = slice.relay_endpoint
-  if (!endpoint?.url) {
-    return ""
-  }
-  return endpoint.private ? "private" : "shared"
 }
 
 export function cycleWaitingRoomSliceSelectionId(

@@ -5,6 +5,13 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
+import {
+  formatSliceDiagnostics,
+  formatSliceOperation,
+  formatSliceProviderAuth,
+  formatSliceRelayLabel,
+  formatSliceScope,
+} from "./slice-format.js"
 
 type FooterTone = "info" | "error"
 
@@ -117,27 +124,10 @@ function formatSlice(slice: SliceRecord): string {
   const providers = (slice.providers ?? []).join(",") || "-"
   const auth = (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "-"
   const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
-  const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
-  const relay = formatSliceRelay(slice)
+  const worktree = formatSliceScope(slice)
+  const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
   const diagnostics = formatSliceDiagnostics(slice)
   return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth=${auth}${diagnostics}${display}`
-}
-
-function formatSliceProviderAuth(auth: NonNullable<SliceRecord["provider_auth"]>[number]): string {
-  const identity = auth.email
-    || auth.account_id
-    || auth.auth_type
-    || auth.state
-  const label = auth.alias && auth.alias !== identity
-    ? `${auth.alias} (${identity})`
-    : identity
-  const organization = auth.organization_name || auth.organization_id
-  const subscription = auth.subscription_type
-  return [
-    `${auth.provider}:${label}`,
-    organization ? `org=${organization}` : "",
-    subscription ? `plan=${subscription}` : "",
-  ].filter(Boolean).join("/")
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
@@ -386,23 +376,23 @@ async function doctorSlice(
 }
 
 function sliceDoctorHasFailures(slice: SliceRecord): boolean {
-  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id
+  const scope = formatSliceScope(slice)
   return slice.status === "unhealthy"
     || (slice.status === "running" && !slice.worker_kernel_id)
     || (slice.status === "running" && !slice.relay_endpoint?.url)
-    || !scope
+    || scope === "-"
     || (slice.display_mode === "headed" && !slice.display_endpoint?.url)
     || slice.last_operation_status === "failed"
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
-  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
-  const relay = formatSliceRelay(slice)
+  const scope = formatSliceScope(slice)
+  const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
     doctorCheck("relay", slice.status !== "running" || Boolean(slice.relay_endpoint?.url), relay),
-    doctorCheck("scope", scope !== "missing", scope),
+    doctorCheck("scope", scope !== "-", scope === "-" ? "missing" : scope),
     doctorCheck("agents", true, `${slice.agent_ids?.length ?? 0} attached`),
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
@@ -410,28 +400,6 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks].join("\n")
-}
-
-function formatSliceRelay(slice: SliceRecord): string {
-  const endpoint = slice.relay_endpoint
-  if (!endpoint?.url) {
-    return "none"
-  }
-  return `${endpoint.private ? "private" : "shared"}:${endpoint.url}`
-}
-
-function formatSliceOperation(slice: SliceRecord): string {
-  if (!slice.last_operation && !slice.last_operation_status && !slice.last_error) {
-    return ""
-  }
-  const status = slice.last_operation_status ? `:${slice.last_operation_status}` : ""
-  const error = slice.last_error ? ` error=${slice.last_error}` : ""
-  return `${slice.last_operation ?? "operation"}${status}${error}`
-}
-
-function formatSliceDiagnostics(slice: SliceRecord): string {
-  const operation = formatSliceOperation(slice)
-  return operation ? ` last_operation=${operation}` : ""
 }
 
 function doctorCheck(name: string, ok: boolean, detail: string): string {
