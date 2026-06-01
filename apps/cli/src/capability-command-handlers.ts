@@ -178,7 +178,10 @@ export function formatAgentCapabilityGrants(agent: AgentInstance, kind: Extensio
 function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
   if (!agent.remote_execution) return ""
   const status = agent.remote_extension_manifest_sync
-  const lines = [`remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`]
+  const lines = [
+    `remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
+  ]
   const nextAction = remoteExtensionSyncNextAction(status)
   if (nextAction) lines.push(`next: ${nextAction}`)
   return `\n\n${lines.join("\n")}`
