@@ -57,6 +57,7 @@ export function createProviderPromptProjectionController(
     promptUsageMeta(): PromptUsageMeta | null {
       return derivePromptUsageState({
         providerRun: deps.getProviderRun(),
+        focusedAgent: deps.getFocusedAgent(),
         catalog: deps.getProviderCatalog(),
       })
     },

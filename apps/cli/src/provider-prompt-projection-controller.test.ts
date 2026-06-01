@@ -67,8 +67,58 @@ test("provider prompt projection prefers provider run, then focused agent, then 
 })
 
 test("provider prompt projection derives prompt meta and usage", () => {
+  let focusedAgent: AgentInstance | null = null
+  let run: RuntimeProviderRun | null = providerRun({
+    provider: "opencode",
+    model: "opencode/gpt-5.4",
+    variant: "high",
+    usage_tokens_total: 42_100,
+    usage: {
+      context_tokens: 4096,
+    },
+  })
+  const controller = createProviderPromptProjectionController({
+    getProviderRun: () => run,
+    getFocusedAgent: () => focusedAgent,
+    getWaitingRoomState: () => waitingRoomState(),
+    getDefaults: () => ({
+      provider: "opencode",
+      model: "default-model",
+      effort: "medium",
+    }),
+    getProviderCatalog: catalog,
+  })
+
+  assert.deepEqual(
+    controller.promptMetaParts().map((part) => part.text),
+    ["OpenCode", "OpenCode GPT-5.4", "High"],
+  )
+  assert.equal(controller.promptUsageMeta()?.tokensLabel, "42,100 tok")
+  assert.equal(controller.promptUsageMeta()?.usageLabel, "4%")
+
+  focusedAgent = agent("agent-a")
+  run = providerRun({
+    agent_instance_id: "agent-b",
+    provider: "opencode",
+    model: "opencode/gpt-5.4",
+    variant: "high",
+    usage_tokens_total: 42_100,
+    usage: {
+      context_tokens: 4096,
+    },
+  })
+
+  assert.deepEqual(
+    controller.promptMetaParts().map((part) => part.text),
+    ["OpenCode", "Default", "High"],
+  )
+  assert.equal(controller.promptUsageMeta(), null)
+})
+
+test("provider prompt projection uses owned provider run metadata for focused agent", () => {
   const controller = createProviderPromptProjectionController({
     getProviderRun: () => providerRun({
+      agent_instance_id: "agent-a",
       provider: "opencode",
       model: "opencode/gpt-5.4",
       variant: "high",
@@ -77,7 +127,7 @@ test("provider prompt projection derives prompt meta and usage", () => {
         context_tokens: 4096,
       },
     }),
-    getFocusedAgent: () => null,
+    getFocusedAgent: () => agent("agent-a"),
     getWaitingRoomState: () => waitingRoomState(),
     getDefaults: () => ({
       provider: "opencode",

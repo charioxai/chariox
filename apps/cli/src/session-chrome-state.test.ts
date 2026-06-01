@@ -157,6 +157,7 @@ test("derivePromptMetaState formats provider, model, and effort from the current
 test("derivePromptUsageState resolves usage metadata from the provider catalog", () => {
   const usage = derivePromptUsageState({
     providerRun: providerRun({
+      agent_instance_id: "agent-1",
       provider: "openai",
       model: "opencode/gpt-5.4",
       usage_tokens_total: 42_100,
@@ -164,12 +165,33 @@ test("derivePromptUsageState resolves usage metadata from the provider catalog",
         context_tokens: 4096,
       },
     }),
+    focusedAgent: agent("agent-1"),
     catalog: catalog(),
   })
 
   assert.equal(usage?.tokensLabel, "42,100 tok")
   assert.equal(usage?.usagePercent, 4)
   assert.equal(usage?.usageLabel, "4%")
+
+  const unownedUsage = derivePromptUsageState({
+    providerRun: providerRun({
+      agent_instance_id: null,
+      usage_tokens_total: 42_100,
+    }),
+    focusedAgent: agent("agent-1"),
+    catalog: catalog(),
+  })
+  assert.equal(unownedUsage, null)
+
+  const otherAgentUsage = derivePromptUsageState({
+    providerRun: providerRun({
+      agent_instance_id: "agent-2",
+      usage_tokens_total: 42_100,
+    }),
+    focusedAgent: agent("agent-1"),
+    catalog: catalog(),
+  })
+  assert.equal(otherAgentUsage, null)
 })
 
 test("deriveSessionStatusMode and footer hint reflect prompt and failure state", () => {

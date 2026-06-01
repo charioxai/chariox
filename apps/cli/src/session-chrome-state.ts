@@ -105,9 +105,10 @@ export function derivePromptMetaState(options: ProviderSelectionOptions): Prompt
 
 export function derivePromptUsageState(options: {
   providerRun: RuntimeProviderRun | null
+  focusedAgent?: AgentInstance | null
   catalog: ProviderCatalog
 }): PromptUsageMeta | null {
-  const run = options.providerRun
+  const run = providerRunForFocusedSelection(options.providerRun, options.focusedAgent)
   if (!run) {
     return null
   }
