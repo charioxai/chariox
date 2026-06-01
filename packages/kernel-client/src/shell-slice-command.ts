@@ -300,7 +300,20 @@ function formatSliceDoctor(slice: SliceRecord): string {
       .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
       .join(",") || "none"),
   ]
-  return [`slice doctor ${formatSliceLabel(slice)}`, ...checks].join("\n")
+  return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
+}
+
+function sliceDoctorNextActions(slice: SliceRecord): string[] {
+  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
+  const actions = [
+    slice.status === "unhealthy" ? "inspect slice logs, then try slice start or recreate the slice" : null,
+    slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
+    slice.status === "running" && !slice.relay_endpoint?.url ? "check relay connectivity and restart the slice if the relay endpoint stays missing" : null,
+    scope === "missing" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
+    slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
+    slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+  ].filter((action): action is string => Boolean(action))
+  return actions.length > 0 ? [`next: ${actions.join("; ")}`] : []
 }
 
 function formatSliceRelay(slice: SliceRecord): string {

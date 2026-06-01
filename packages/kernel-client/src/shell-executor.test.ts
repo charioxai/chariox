@@ -640,6 +640,7 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.match(result.message ?? "", /ok relay: shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /fail display: headed/)
   assert.match(result.message ?? "", /ok agents: 1 attached/)
+  assert.match(result.message ?? "", /next: inspect slice logs/)
 })
 
 test("executeShellCommand resolves focused agent slice by attached agent id", async () => {

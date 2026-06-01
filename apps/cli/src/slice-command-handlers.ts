@@ -401,11 +401,24 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
   ]
-  return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks].join("\n")
+  return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
 
 function doctorCheck(name: string, ok: boolean, detail: string): string {
   return `${ok ? "ok" : "fail"} ${name}: ${detail}`
+}
+
+function sliceDoctorNextActions(slice: SliceRecord): string[] {
+  const scope = formatSliceScope(slice)
+  const actions = [
+    slice.status === "unhealthy" ? "inspect slice logs, then try /slice start or recreate the slice" : null,
+    slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
+    slice.status === "running" && !slice.relay_endpoint?.url ? "check relay connectivity and restart the slice if the relay endpoint stays missing" : null,
+    scope === "-" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
+    slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
+    slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+  ].filter((action): action is string => Boolean(action))
+  return actions.length > 0 ? [`next: ${actions.join("; ")}`] : []
 }
 
 async function setSliceRunning(

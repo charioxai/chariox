@@ -138,6 +138,7 @@ test("slice command doctor renders health checks", async () => {
   assert.match(harness.notices.at(-1) ?? "", /fail display: headed/)
   assert.match(harness.notices.at(-1) ?? "", /ok relay: none/)
   assert.match(harness.notices.at(-1) ?? "", /ok agents: 1 attached/)
+  assert.match(harness.notices.at(-1) ?? "", /next: inspect slice logs/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
@@ -157,6 +158,7 @@ test("slice command doctor flags running slices without a relay endpoint", async
   await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
 
   assert.match(harness.notices.at(-1) ?? "", /fail relay: none/)
+  assert.match(harness.notices.at(-1) ?? "", /next: check relay connectivity/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
