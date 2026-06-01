@@ -88,6 +88,27 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(modeValues.has("/workspace sync mode off"), true)
 })
 
+test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {
+  const items = buildCommandCenterItems("/slice", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  })
+  const values = new Set(items.map((item) => item.value))
+
+  assert.equal(values.has("/slice list"), true)
+  assert.equal(values.has("/slice status "), true)
+  assert.equal(values.has("/slice doctor "), true)
+  assert.equal(values.has("/slice logs "), true)
+  assert.equal(values.has("/slice start "), true)
+  assert.equal(values.has("/slice stop "), true)
+  assert.equal(values.has("/slice delete "), true)
+  assert.equal(values.has("/slice auth login "), true)
+})
+
 test("buildCommandCenterItems filters model options", () => {
   const items = buildCommandCenterItems("/model gpt", {
     providerCatalog: fallbackProviderCatalog(),

@@ -315,6 +315,8 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "slice-list", label: "list", description: "List slices owned by this kernel", value: "/slice list" },
       { id: "slice-create", label: "create", description: "Create a slice inventory entry", value: "/slice create " },
       { id: "slice-status", label: "status", description: "Show a slice", value: "/slice status " },
+      { id: "slice-doctor", label: "doctor", description: "Check slice worker, display, scope, operation, and provider account health", value: "/slice doctor " },
+      { id: "slice-logs", label: "logs", description: "Show slice worker and lifecycle logs", value: "/slice logs " },
       { id: "slice-start", label: "start", description: "Start a slice", value: "/slice start " },
       { id: "slice-stop", label: "stop", description: "Stop a slice", value: "/slice stop " },
       { id: "slice-delete", label: "delete", description: "Delete a slice", value: "/slice delete " },
