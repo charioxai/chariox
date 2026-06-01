@@ -46,6 +46,23 @@ test("normal prompt submit prepares attachments, submits, and records history", 
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello" }])
 })
 
+test("normal prompt submit drops stale focused agent ids", async () => {
+  const harness = createHarness({
+    focusedAgentId: "old-agent",
+    hasAgent: (agentId) => agentId === "agent-1",
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.submissions(), [{
+    attachmentId: "attachment-1",
+    targetAgentId: null,
+    prompt: "hello\n",
+    attachments: [],
+  }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "hello\n", agentId: null }])
+})
+
 test("normal prompt submit reports queued status with active prompt id", async () => {
   const harness = createHarness({
     submitPrompt: async () => promptSubmissionResult("session-submitted", null, "Queued", "prompt-active"),
@@ -79,6 +96,8 @@ function createHarness(options: {
   attachment?: RuntimeAttachment | null
   pendingAttachments?: PendingPromptAttachment[]
   inlineLocalFiles?: boolean
+  focusedAgentId?: string | null
+  hasAgent?: (agentId: string) => boolean
   submitPrompt?: NormalPromptSubmitControllerDeps["submitPrompt"]
 } = {}) {
   const preparedAttachments: Array<{ attachments: PromptAttachmentPart[]; inlineLocalFiles: boolean }> = []
@@ -106,7 +125,8 @@ function createHarness(options: {
   const controller = createNormalPromptSubmitController({
     getPendingAttachments: () => options.pendingAttachments ?? [],
     waitForPendingAgentFocusTransition: async () => {},
-    getFocusedAgentId: () => "agent-1",
+    getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},
     setProviderActivityLabel: () => {},
     setActiveStatusLabel: () => {},

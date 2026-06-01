@@ -17,6 +17,7 @@ export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
+  hasAgent: (agentId: string) => boolean
   clearActiveToolLabels: () => void
   setProviderActivityLabel: (label: string | null) => void
   setActiveStatusLabel: (label: string | null) => void
@@ -71,7 +72,10 @@ export function createNormalPromptSubmitController(
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
-        const targetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
+        const requestedTargetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
+        const targetAgentId = requestedTargetAgentId && deps.hasAgent(requestedTargetAgentId)
+          ? requestedTargetAgentId
+          : null
         deps.logInfo?.("submitting prompt", {
           chars: prompt.length,
           attachments: rawAttachments.length,

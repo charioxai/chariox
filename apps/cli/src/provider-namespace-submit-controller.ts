@@ -20,6 +20,7 @@ export type ProviderNamespaceSubmitControllerDeps = {
   getPendingAttachmentCount: () => number
   waitForPendingAgentFocusTransition: () => Promise<void>
   getFocusedAgentId: () => string | null
+  hasAgent: (agentId: string) => boolean
   clearActiveToolLabels: () => void
   setProviderActivityLabel: (label: string | null) => void
   setActiveStatusLabel: (label: string | null) => void
@@ -83,7 +84,8 @@ export function createProviderNamespaceSubmitController(
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
-        const targetAgentId = deps.getFocusedAgentId()
+        const focusedAgentId = deps.getFocusedAgentId()
+        const targetAgentId = focusedAgentId && deps.hasAgent(focusedAgentId) ? focusedAgentId : null
         deps.clearActiveToolLabels()
         deps.setProviderActivityLabel(null)
         deps.setActiveStatusLabel(null)

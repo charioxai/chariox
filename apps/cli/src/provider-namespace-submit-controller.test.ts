@@ -53,6 +53,22 @@ test("provider namespace submit forwards commands and applies submission state",
   assert.equal(harness.workingValues().at(-1), true)
 })
 
+test("provider namespace submit drops stale focused agent ids", async () => {
+  const harness = createHarness({
+    focusedAgentId: "old-agent",
+    hasAgent: (agentId) => agentId === "agent-1",
+  })
+
+  assert.equal(await harness.controller.submit("/opencode session list"), true)
+
+  assert.deepEqual(harness.submissions(), [{
+    attachmentId: "attachment-1",
+    targetAgentId: null,
+    prompt: "/session list\n",
+  }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "/opencode session list\n", agentId: null }])
+})
+
 test("provider namespace submit restores UI after submission failure", async () => {
   const harness = createHarness({
     submitProviderNamespacePrompt: async () => {
@@ -73,6 +89,8 @@ test("provider namespace submit restores UI after submission failure", async () 
 
 function createHarness(options: {
   focusedProvider?: "opencode" | "codex" | "claude" | null
+  focusedAgentId?: string | null
+  hasAgent?: (agentId: string) => boolean
   attachment?: RuntimeAttachment | null
   submitProviderNamespacePrompt?: ProviderNamespaceSubmitControllerDeps["submitProviderNamespacePrompt"]
 } = {}) {
@@ -98,7 +116,8 @@ function createHarness(options: {
     workflowScreenShowing: () => false,
     getPendingAttachmentCount: () => 0,
     waitForPendingAgentFocusTransition: async () => {},
-    getFocusedAgentId: () => "agent-1",
+    getFocusedAgentId: () => options.focusedAgentId ?? "agent-1",
+    hasAgent: options.hasAgent ?? ((agentId) => agentId === "agent-1"),
     clearActiveToolLabels: () => {},
     setProviderActivityLabel: () => {},
     setActiveStatusLabel: () => {},
