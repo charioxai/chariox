@@ -38,6 +38,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Surfaced existing daemon-health provider catalog cache state in CLI `/kernel health` and Cloud web Settings. Stale provider/model metadata is now counted as a health issue with cache age/TTL and a direct refresh/reselect next action before users launch new sessions or agents.
 
+### Agent home-kernel placement surfacing
+
+- Added session home-kernel and owner context to CLI/web-CLI agent inspection, and added a home-kernel badge to Cloud web freeform agent panes. Agent surfaces now distinguish session authority from worker/slice execution, worktree, provider run, extension grants, and remote extension manifest state.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

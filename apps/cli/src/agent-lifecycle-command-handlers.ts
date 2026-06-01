@@ -27,6 +27,12 @@ type AgentProviderRunContext = {
   focusedAgentId?: string | null
 }
 
+type AgentSessionContext = {
+  homeKernelId?: string | null
+  homeMachineId?: string | null
+  ownerUserId?: string | null
+}
+
 export type AgentLifecycleCommandHandlerDeps = {
   isAttached: () => boolean
   sessionState: () => RuntimeSession
@@ -143,12 +149,15 @@ export function formatAgentInspectSummary(
   agent: AgentInstance,
   slices: readonly SliceRecord[] = [],
   providerRunContext: AgentProviderRunContext = {},
+  sessionContext: AgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
   const lines = [
     `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`,
     `id: ${agent.id}`,
     `session: ${agent.session_id}`,
+    `home kernel: ${formatHomeKernel(sessionContext)}`,
+    `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,
@@ -174,6 +183,11 @@ export function formatAgentInspectSummary(
   lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
   lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
   return lines.join("\n")
+}
+
+function formatHomeKernel(context: AgentSessionContext): string {
+  const homeKernel = context.homeKernelId || "<unknown>"
+  return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
 }
 
 function formatAgentListEntry(agent: AgentInstance, providerRunContext: AgentProviderRunContext): string {

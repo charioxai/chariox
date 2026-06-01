@@ -216,6 +216,7 @@ Semantics:
 - Arroba clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Arroba-side parameter mutation is disabled for the active native TUI run
 - daemon health reports `duplicate_arroba_agent_bindings` when more than one active Arroba provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Arroba and native TUI provider runs are bound to the same session/agent
 - daemon health `provider_catalog` reports whether provider/model metadata is cached, expired, and how old it is; clients should surface stale catalog state near provider/session launch diagnostics
+- Agent inspection and pane chrome should surface the session home kernel/machine alongside agent placement, worktree, provider run, extension grants, and remote extension manifest state so users can distinguish session authority from worker execution.
 
 Remote native TUI composition:
 

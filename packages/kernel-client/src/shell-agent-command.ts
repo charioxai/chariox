@@ -88,7 +88,11 @@ export async function executeAgentCommand(
       const providerRunContext = await activeProviderRunContext(deps, session)
       return {
         ok: true,
-        message: formatAgentInspectSummary(agent, slices, error, providerRunContext),
+        message: formatAgentInspectSummary(agent, slices, error, providerRunContext, {
+          homeKernelId: session.host_daemon_id ?? null,
+          homeMachineId: session.host_machine_id ?? null,
+          ownerUserId: session.owner_user_id ?? null,
+        }),
         data: { agent, slices, session, providerRunContext },
       }
     }

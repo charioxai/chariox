@@ -137,7 +137,14 @@ test("executeShellCommand inspects local agent placement and policy", async () =
       return { AgentsListed: { agents: [agent] } }
     }
     if ("GetSessionState" in request) {
-      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id, active_provider_run_id: "run-session" }) } }
+      return { SessionState: { session: makeSession({
+        agents: [agent],
+        focused_agent_id: agent.id,
+        active_provider_run_id: "run-session",
+        host_daemon_id: "home-kernel",
+        host_machine_id: "home-machine",
+        owner_user_id: "user-1",
+      }) } }
     }
     if ("GetProviderRun" in request) {
       return { ProviderRun: { provider_run: { id: "run-session", agent_instance_id: "agent-2" } } }
@@ -148,6 +155,8 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle\]/)
+  assert.match(result.message ?? "", /home kernel: home-kernel@home-machine/)
+  assert.match(result.message ?? "", /session owner: user-1/)
   assert.match(result.message ?? "", /provider: codex/)
   assert.match(result.message ?? "", /worktree: \/repo-feature/)
   assert.match(result.message ?? "", /placement: worker-local/)

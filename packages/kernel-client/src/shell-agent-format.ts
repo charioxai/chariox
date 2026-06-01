@@ -6,6 +6,12 @@ export type ShellAgentProviderRunContext = {
   activeProviderRunLookupError?: string | null
 }
 
+export type ShellAgentSessionContext = {
+  homeKernelId?: string | null
+  homeMachineId?: string | null
+  ownerUserId?: string | null
+}
+
 export function formatAgentRef(agent: AgentInstance): string {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
 }
@@ -97,12 +103,15 @@ export function formatAgentInspectSummary(
   slices: readonly SliceRecord[] = [],
   sliceLookupError?: string | null,
   providerRunContext: ShellAgentProviderRunContext = {},
+  sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
   const lines = [
     `${formatAgentRef(agent)} [${agent.state}]`,
     `id: ${agent.id}`,
     `session: ${agent.session_id}`,
+    `home kernel: ${formatHomeKernel(sessionContext)}`,
+    `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,
@@ -132,6 +141,11 @@ export function formatAgentInspectSummary(
   lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
   lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
   return lines.join("\n")
+}
+
+function formatHomeKernel(context: ShellAgentSessionContext): string {
+  const homeKernel = context.homeKernelId || "<unknown>"
+  return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
 }
 
 export function formatAgentSubstituteSummary(agent: AgentInstance): string {
