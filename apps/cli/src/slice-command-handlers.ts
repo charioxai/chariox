@@ -176,7 +176,8 @@ function parseSliceLogsArgs(args: string[]): {
 async function resolveFocusedSliceRef(deps: SliceCommandHandlerDeps): Promise<string> {
   const focusedId = deps.focusedAgentId()
   const resolved = deps.resolveSessionAgent(focusedId)
-  const remote = resolved.agent?.remote_execution
+  const agent = resolved.agent
+  const remote = agent?.remote_execution
   if (!remote) {
     throw new Error("no slice specified and focused agent is not running in a slice")
   }
@@ -184,11 +185,12 @@ async function resolveFocusedSliceRef(deps: SliceCommandHandlerDeps): Promise<st
     throw new Error("slice inventory is unavailable in this build")
   }
   const slices = await deps.listSlices()
-  const match = slices.find((slice) =>
-    slice.worker_kernel_id === remote.worker_kernel_id
-    || slice.worker_kernel_ref === remote.worker_kernel_id
-    || slice.worker_machine_id === remote.worker_machine_id
-  )
+  const match = slices.find((slice) => slice.agent_ids?.includes(agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id,
+    )
   if (!match) {
     throw new Error("no slice specified and focused agent is not running in a slice")
   }

@@ -79,6 +79,41 @@ test("slice command screen resolves focused agent slice and opens endpoint", asy
   assert.equal(harness.footers.at(-1)?.message, "opened http://127.0.0.1:6080")
 })
 
+test("slice command focused lookup prefers explicit agent bindings", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "wrong-by-worker",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        agent_ids: ["agent-other"],
+      }),
+      slice({
+        id: "slice-2",
+        name: "right-by-agent",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        agent_ids: ["agent-1"],
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+    endpoint: { slice_id: "slice-2", kind: "novnc", url: "http://127.0.0.1:6081", access: "local" },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("screen"))
+
+  assert.deepEqual(harness.displayEndpointRefs, ["right-by-agent"])
+  assert.deepEqual(harness.openedUrls, ["http://127.0.0.1:6081"])
+})
+
 test("slice command doctor renders health checks", async () => {
   const harness = sliceHarness({
     slices: [
