@@ -40,7 +40,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|enable managed\|tracked\|disable\|mode off\|managed\|tracked\|link/)
-  assert.match(result.message ?? "", /slice list\|create\|status\|start\|stop\|delete\|auth import\|auth remove\|screen/)
+  assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
 })
 
 test("executeShellCommand renders shell-local context and pwd", async () => {
@@ -617,10 +617,17 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
             worker_kernel_ref: "slice:linux-a",
             worker_kernel_id: null,
             worker_machine_id: null,
-            providers: [],
+            providers: ["codex"],
             session_ids: ["session-1"],
             agent_ids: ["agent-1"],
-            provider_auth: [],
+            provider_auth: [{
+              provider: "codex",
+              state: "authenticated",
+              alias: "daily",
+              email: "dev@example.com",
+              organization_name: "Team",
+              subscription_type: "pro",
+            }],
             relay_endpoint: { url: "wss://relay.example/slice", private: false },
             display_endpoint: null,
             created_at_ms: 0,
@@ -640,7 +647,82 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.match(result.message ?? "", /ok relay: shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /fail display: headed/)
   assert.match(result.message ?? "", /ok agents: 1 attached/)
+  assert.match(result.message ?? "", /ok provider CLIs: codex/)
+  assert.match(result.message ?? "", /ok provider accounts: codex:daily \(dev@example.com\)\/org=Team\/plan=pro/)
   assert.match(result.message ?? "", /next: inspect slice logs/)
+})
+
+test("executeShellCommand renders slice account recovery hints", async () => {
+  const fake = fakeClient((request) => {
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [{
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: "kernel-slice",
+            worker_machine_id: "machine-slice",
+            providers: ["codex"],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [],
+            relay_endpoint: { url: "wss://relay.example/slice", private: false },
+            display_endpoint: null,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }],
+        },
+      }
+    }
+    if ("GetSlice" in request) {
+      return {
+        Slice: {
+          slice: {
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: "kernel-slice",
+            worker_machine_id: "machine-slice",
+            providers: ["codex"],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [],
+            relay_endpoint: { url: "wss://relay.example/slice", private: false },
+            display_endpoint: null,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice list"), context, { client: fake.client })
+  const doctor = await executeShellCommand(parseShellCommand("slice doctor linux-a"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
+  assert.match(result.message ?? "", /providers=codex auth=-/)
+  assert.match(result.message ?? "", /next=import or login provider accounts for this slice/)
+  assert.equal(doctor.ok, false)
+  assert.match(doctor.message ?? "", /fail provider accounts: none/)
+  assert.match(doctor.message ?? "", /next: import or login provider accounts for this slice/)
 })
 
 test("executeShellCommand resolves focused agent slice by attached agent id", async () => {
@@ -680,10 +762,14 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
     worker_kernel_ref: "slice:linux-a",
     worker_kernel_id: "kernel-slice-other",
     worker_machine_id: "machine-slice-other",
-    providers: [],
+    providers: ["codex"],
     session_ids: ["session-1"],
     agent_ids: ["agent-1"],
-    provider_auth: [],
+    provider_auth: [{
+      provider: "codex",
+      state: "not_configured",
+      auth_type: "oauth",
+    }],
     relay_endpoint: { url: "wss://relay.example/slice", private: false },
     display_endpoint: null,
     created_at_ms: 0,
@@ -715,6 +801,8 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
   assert.deepEqual(requests[2], { GetSlice: { slice_ref: "slice-1" } })
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
   assert.match(result.message ?? "", /relay=shared:wss:\/\/relay.example\/slice/)
+  assert.match(result.message ?? "", /auth=codex:oauth/)
+  assert.match(result.message ?? "", /next=refresh provider login for this slice/)
 })
 
 test("executeShellCommand renders slice logs", async () => {

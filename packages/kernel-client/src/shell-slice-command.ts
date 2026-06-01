@@ -90,7 +90,7 @@ export async function executeSliceCommand(
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
       const response = await deps.client.send(getSliceRequest(sliceRef))
       const slice = expectVariant<{ slice: SliceRecord }>(response, "Slice").slice
-      return { ok: slice.status !== "unhealthy", message: formatSliceDoctor(slice), data: { slice } }
+      return { ok: sliceDoctorHealthy(slice), message: formatSliceDoctor(slice), data: { slice } }
     }
     case "logs":
     case "log": {
@@ -276,17 +276,23 @@ function formatSlice(slice: SliceRecord): string {
   const display = slice.display_endpoint?.url ? ` display=${slice.display_endpoint.url}` : ""
   const relay = formatSliceRelay(slice) || "none"
   const auth = (slice.provider_auth ?? [])
-    .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
+    .map(formatSliceProviderAuth)
     .join(",") || "-"
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
   const diagnostics = formatSliceDiagnostics(slice)
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}`
+  const next = sliceNextAction(slice)
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}${next ? ` next=${next}` : ""}`
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
   const relay = formatSliceRelay(slice) || "none"
+  const providers = slice.providers ?? []
+  const providerAuth = slice.provider_auth ?? []
+  const providerAuthHealthy = providers.length > 0
+    && providerAuth.length > 0
+    && providerAuth.every((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
@@ -296,15 +302,30 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
-    doctorCheck("provider accounts", true, (slice.provider_auth ?? [])
-      .map((entry) => `${entry.provider}:${entry.alias ?? entry.email ?? entry.account_id ?? entry.auth_type ?? entry.state}`)
-      .join(",") || "none"),
+    doctorCheck("provider CLIs", providers.length > 0, providers.join(",") || "none"),
+    doctorCheck("provider accounts", providerAuthHealthy, providerAuth.map(formatSliceProviderAuth).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
 
+function sliceDoctorHealthy(slice: SliceRecord): boolean {
+  const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || ""
+  const providers = slice.providers ?? []
+  const providerAuth = slice.provider_auth ?? []
+  return slice.status !== "unhealthy"
+    && (slice.status !== "running" || Boolean(slice.worker_kernel_id))
+    && (slice.status !== "running" || Boolean(slice.relay_endpoint?.url))
+    && Boolean(scope)
+    && (slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url))
+    && slice.last_operation_status !== "failed"
+    && providers.length > 0
+    && providerAuth.length > 0
+    && providerAuth.every((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
+}
+
 function sliceDoctorNextActions(slice: SliceRecord): string[] {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
+  const next = sliceNextAction(slice)
   const actions = [
     slice.status === "unhealthy" ? "inspect slice logs, then try slice start or recreate the slice" : null,
     slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
@@ -312,8 +333,49 @@ function sliceDoctorNextActions(slice: SliceRecord): string[] {
     scope === "missing" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
     slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
     slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+    next,
   ].filter((action): action is string => Boolean(action))
-  return actions.length > 0 ? [`next: ${actions.join("; ")}`] : []
+  const unique = [...new Set(actions)]
+  return unique.length > 0 ? [`next: ${unique.join("; ")}`] : []
+}
+
+function sliceNextAction(slice: SliceRecord): string | null {
+  if (slice.status === "unhealthy") {
+    return "inspect logs, then start or delete/recreate the slice"
+  }
+  if (slice.status === "running" && !slice.relay_endpoint?.url) {
+    return "check relay connectivity or restart the slice"
+  }
+  if (slice.display_mode === "headed" && !slice.display_endpoint?.url) {
+    return "start the slice screen service or recreate as headless if a display is not needed"
+  }
+  if (slice.last_operation_status === "failed") {
+    return "open logs and retry the failed operation after fixing the error"
+  }
+  if ((slice.providers ?? []).length === 0) {
+    return "configure provider CLIs inside the slice before spawning agents there"
+  }
+  const auth = slice.provider_auth ?? []
+  if (auth.length === 0) {
+    return "import or login provider accounts for this slice"
+  }
+  if (auth.some((entry) => entry.state === "unknown" || entry.state === "not_configured")) {
+    return "refresh provider login for this slice"
+  }
+  return null
+}
+
+function formatSliceProviderAuth(entry: NonNullable<SliceRecord["provider_auth"]>[number]): string {
+  const identity = entry.email || entry.account_id || entry.auth_type || entry.state
+  const label = entry.alias && entry.alias !== identity
+    ? `${entry.alias} (${identity})`
+    : identity
+  const org = entry.organization_name || entry.organization_id
+  return [
+    `${entry.provider}:${label}`,
+    org ? `org=${org}` : "",
+    entry.subscription_type ? `plan=${entry.subscription_type}` : "",
+  ].filter(Boolean).join("/")
 }
 
 function formatSliceRelay(slice: SliceRecord): string {
