@@ -72,16 +72,26 @@ function formatSliceStatus(slice: SliceRecord): string {
     .filter(Boolean)
     .join(",")
   const worktree = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "-"
+  const relay = formatSliceRelayIdentity(slice)
   return [
     slice.status,
     slice.display_mode ?? "headless",
     `${agents} agent${agents === 1 ? "" : "s"}`,
+    relay ? `relay ${relay}` : "",
     worktree,
     auth ? `auth ${auth}` : "",
     slice.last_operation_status === "failed"
       ? `last error ${slice.last_error ?? slice.last_operation ?? "failed"}`
       : "",
   ].filter(Boolean).join(" ")
+}
+
+function formatSliceRelayIdentity(slice: SliceRecord): string {
+  const endpoint = slice.relay_endpoint
+  if (!endpoint?.url) {
+    return ""
+  }
+  return endpoint.private ? "private" : "shared"
 }
 
 function formatSliceAuthIdentity(entry: NonNullable<SliceRecord["provider_auth"]>[number]) {

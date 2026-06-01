@@ -15,6 +15,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
         display_mode: "headed",
         worktree_id: "/repo",
         agent_ids: ["agent-1"],
+        relay_endpoint: { url: "wss://relay.example/slice", private: false },
         provider_auth: [{ provider: "codex", state: "configured", alias: "work", account_id: "acct-1" }],
       }),
     ],
@@ -24,7 +25,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
   assert.equal(rows[0]?.value, "2 configured")
   assert.deepEqual(rows.slice(1).map((row) => row.id), ["slice:slice-a", "slice:slice-b"])
   assert.equal(rows[1]?.title, "alpha")
-  assert.equal(rows[1]?.value, "running headed 1 agent /repo auth work (acct-1)")
+  assert.equal(rows[1]?.value, "running headed 1 agent relay shared /repo auth work (acct-1)")
   assert.equal(rows[1]?.focused, true)
   assert.equal(rows[1]?.selectable, true)
 })
