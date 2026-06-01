@@ -298,4 +298,79 @@ mod tests {
         assert!(profile.contains("(deny file-write* (subpath \"/repo/attached\"))"));
         assert!(!profile.contains("(subpath \"/repo\")"));
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_workspace_write_fence_blocks_only_protected_roots_at_runtime() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-workspace-write-fence-runtime-test-{}",
+            std::process::id()
+        ));
+        let protected_root = base.join("selected");
+        let outside_root = base.join("sibling");
+        std::fs::create_dir_all(&protected_root).expect("protected fixture should exist");
+        std::fs::create_dir_all(&outside_root).expect("outside fixture should exist");
+
+        let outside_launch =
+            fenced_shell_launch(&protected_root, &outside_root, "printf ok > outside.txt");
+        let outside = std::process::Command::new(outside_launch.pty_program.as_deref().unwrap())
+            .args(&outside_launch.pty_args)
+            .current_dir(&outside_root)
+            .envs(&outside_launch.pty_env)
+            .output()
+            .expect("outside write process should launch");
+
+        let protected_launch = fenced_shell_launch(
+            &protected_root,
+            &outside_root,
+            &format!(
+                "printf denied > {}",
+                protected_root.join("inside.txt").display()
+            ),
+        );
+        let protected =
+            std::process::Command::new(protected_launch.pty_program.as_deref().unwrap())
+                .args(&protected_launch.pty_args)
+                .current_dir(&outside_root)
+                .envs(&protected_launch.pty_env)
+                .output()
+                .expect("protected write process should launch");
+
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            outside.status.success(),
+            "outside write should succeed: stderr={}",
+            String::from_utf8_lossy(&outside.stderr)
+        );
+        assert!(
+            !protected.status.success(),
+            "protected write should fail inside selected root"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fenced_shell_launch(
+        protected_root: &std::path::Path,
+        working_directory: &std::path::Path,
+        command: &str,
+    ) -> ProviderLaunchResult {
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "model")
+                .with_workspace_live_sync_managed()
+                .with_working_directory(working_directory.to_path_buf())
+                .with_workspace_live_sync_roots(vec![protected_root.to_path_buf()]);
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode:serve".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-c".to_string(), command.to_string()],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(working_directory.to_path_buf()),
+            structured_endpoint: Some("http://127.0.0.1:1".to_string()),
+        };
+        apply_workspace_write_fence(launch, &request).expect("launch should be fenced")
+    }
 }
