@@ -29,6 +29,27 @@ test("formatAgentLocationLabel prefers matching slice labels", () => {
   )
 })
 
+test("formatAgentLocationLabel prefers explicit agent slice bindings", () => {
+  assert.equal(
+    formatAgentLocationLabel(
+      agent({
+        id: "agent-2",
+        remote_execution: {
+          worker_kernel_id: "kernel-1",
+          worker_machine_id: "machine-1",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-1",
+        },
+      }),
+      [
+        slice({ worker_kernel_ref: "kernel-1", name: "wrong", agent_ids: ["agent-1"] }),
+        slice({ worker_kernel_ref: "kernel-1", name: "right", agent_ids: ["agent-2"] }),
+      ],
+    ),
+    "slice:right",
+  )
+})
+
 test("formatAgentLocationLabel falls back to remote kernel labels", () => {
   assert.equal(formatAgentLocationLabel(agent(), []), null)
   assert.equal(

@@ -80,6 +80,14 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
     active_substitute_index: 0,
   }), [slice({
+    id: "slice-wrong",
+    name: "wrong-by-worker",
+    status: "running",
+    worktree_id: "/repo/other",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-other"],
+  }), slice({
     id: "slice-1",
     name: "devbox",
     status: "running",

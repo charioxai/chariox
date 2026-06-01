@@ -15,11 +15,12 @@ export function formatAgentLocationLabel(
   if (!remote) {
     return null
   }
-  const slice = slices.find((candidate) =>
-    candidate.worker_kernel_id === remote.worker_kernel_id
-    || candidate.worker_kernel_ref === remote.worker_kernel_id
-    || candidate.worker_machine_id === remote.worker_machine_id
-  )
+  const slice = slices.find((candidate) => agent ? candidate.agent_ids?.includes(agent.id) : false)
+    ?? slices.find((candidate) =>
+      candidate.worker_kernel_id === remote.worker_kernel_id
+      || candidate.worker_kernel_ref === remote.worker_kernel_id
+      || candidate.worker_machine_id === remote.worker_machine_id,
+    )
   if (slice) {
     return `slice:${slice.name || slice.id}`
   }

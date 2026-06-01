@@ -70,6 +70,22 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
       return {
         SlicesListed: {
           slices: [{
+            id: "slice-wrong",
+            name: "wrong-by-worker",
+            owner_kernel_id: "kernel-local",
+            owner_machine_id: "machine-local",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_mount: null,
+            worker_kernel_ref: "slice:slice-wrong",
+            worker_kernel_id: "slice-kernel",
+            worker_machine_id: "slice-machine",
+            agent_ids: ["agent-other"],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }, {
             id: "slice-1",
             name: "devbox",
             owner_kernel_id: "kernel-local",
@@ -166,6 +182,23 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
       return {
         SlicesListed: {
           slices: [{
+            id: "slice-wrong",
+            name: "wrong-by-worker",
+            owner_kernel_id: "kernel-local",
+            owner_machine_id: "machine-local",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headed",
+            worktree_id: "/repo/other",
+            workspace_mount: null,
+            worker_kernel_ref: "slice:slice-wrong",
+            worker_kernel_id: "slice-kernel",
+            worker_machine_id: "slice-machine",
+            agent_ids: ["agent-other"],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          }, {
             id: "slice-1",
             name: "devbox",
             owner_kernel_id: "kernel-local",

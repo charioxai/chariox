@@ -644,6 +644,28 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
 
 test("executeShellCommand resolves focused agent slice by attached agent id", async () => {
   const requests: Record<string, unknown>[] = []
+  const wrongWorkerSlice = {
+    id: "slice-wrong",
+    name: "wrong-by-worker",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    display_mode: "headless",
+    workspace_id: "/repo",
+    worktree_id: "/repo/other",
+    workspace_mount: "/repo/other",
+    worker_kernel_ref: "slice:wrong-by-worker",
+    worker_kernel_id: "kernel-agent",
+    worker_machine_id: "machine-agent",
+    providers: [],
+    session_ids: ["session-1"],
+    agent_ids: ["agent-other"],
+    provider_auth: [],
+    relay_endpoint: null,
+    display_endpoint: null,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  }
   const slice = {
     id: "slice-1",
     name: "linux-a",
@@ -672,7 +694,7 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
       return { AgentsListed: { agents: [makeAgent({ remote_execution: { worker_kernel_id: "kernel-agent", worker_machine_id: "machine-agent", execution_lease_id: "lease-1", leased_agent_id: "leased-agent-1" } })] } }
     }
     if ("ListSlices" in request) {
-      return { SlicesListed: { slices: [slice] } }
+      return { SlicesListed: { slices: [wrongWorkerSlice, slice] } }
     }
     if ("GetSlice" in request) {
       return { Slice: { slice } }

@@ -206,12 +206,12 @@ function sliceForRemoteAgent(
   if (!remote) {
     return null
   }
-  return slices.find((slice) =>
-    Boolean(slice.agent_ids?.includes(agent.id))
-    || slice.worker_kernel_id === remote.worker_kernel_id
-    || slice.worker_kernel_ref === remote.worker_kernel_id
-    || slice.worker_machine_id === remote.worker_machine_id,
-  ) ?? null
+  return slices.find((slice) => slice.agent_ids?.includes(agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id,
+    ) ?? null
 }
 
 function formatSliceSummary(slice: SliceRecord): string {

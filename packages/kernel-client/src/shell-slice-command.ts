@@ -359,12 +359,12 @@ async function focusedAgentSliceRef(context: ShellContext, deps: ShellSliceComma
   }
   const response = await deps.client.send(listSlicesRequest())
   const slices = expectVariant<{ slices: SliceRecord[] }>(response, "SlicesListed").slices
-  const match = slices.find((slice) =>
-    Boolean(slice.agent_ids?.includes(resolved.agent.id))
-    || slice.worker_kernel_id === remote.worker_kernel_id
-    || slice.worker_kernel_ref === remote.worker_kernel_id
-    || slice.worker_machine_id === remote.worker_machine_id
-  )
+  const match = slices.find((slice) => slice.agent_ids?.includes(resolved.agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id,
+    )
   if (!match) {
     throw new Error("no slice specified and focused agent is not running in a slice")
   }
