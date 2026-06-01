@@ -14,7 +14,11 @@ export function formatSliceRelayLabel(
   if (!endpoint?.url) {
     return options.emptyLabel ?? ""
   }
-  const label = endpoint.private ? "private" : "shared"
+  const label = endpoint.private === true
+    ? "private"
+    : endpoint.private === false
+      ? "shared"
+      : "unknown"
   return options.includeUrl ? `${label}:${endpoint.url}` : label
 }
 

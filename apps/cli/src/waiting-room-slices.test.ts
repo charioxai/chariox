@@ -79,6 +79,20 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
   assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 1 agent, relay shared, codex work (acct-1), claude user@example.com)")
 })
 
+test("waiting room slice labels do not infer shared relay when private flag is missing", () => {
+  const slices = waitingRoomSlices({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        relay_endpoint: { url: "wss://relay.example/slice" },
+      }),
+    ],
+  })
+
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, relay unknown, auth missing)")
+})
+
 test("waiting room slices filter reusable slices by selected worktree", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",
