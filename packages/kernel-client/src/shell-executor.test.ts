@@ -533,6 +533,33 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
+test("executeShellCommand does not adopt stale focused agent ids from session payloads", async () => {
+  const session = makeSession({
+    id: "session-2",
+    worktree_id: "/repo/qa",
+    focused_agent_id: "stale-agent",
+    agents: [makeAgent({ id: "agent-1" })],
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: null } })
+    return { SessionCreated: { session } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.contextUpdates, {
+    sessionId: "session-2",
+    agentId: "agent-1",
+    workspace: "/repo",
+    worktree: "/repo/qa",
+  })
+})
+
 test("executeShellCommand reports explicit session workspace live sync mode after create", async () => {
   const session = makeSession({
     id: "session-2",

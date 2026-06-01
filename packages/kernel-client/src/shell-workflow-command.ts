@@ -23,6 +23,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAttachmentId } from "./shell-session-attachment.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
 import {
   executeWorkflowQueueCommand,
   executeWorkflowWatchdogCommand,
@@ -75,7 +76,7 @@ export async function executeWorkflowCommand(
         `created workflow ${formatWorkflowLabel(payload.workflow)}`,
         parsed.assignment,
         payload.workflow.id,
-        { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
         payload,
       )
     }
@@ -121,7 +122,7 @@ export async function executeWorkflowCommand(
           ok: true,
           message: `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
           data: payload,
-          contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+          contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
         }
       }
       const payload = expectVariant<{
@@ -134,7 +135,7 @@ export async function executeWorkflowCommand(
         ok: true,
         message: `queued workflow prompt ${payload.queued_prompt.id}`,
         data: payload,
-        contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       }
     }
     case "flush-context": {
@@ -147,7 +148,7 @@ export async function executeWorkflowCommand(
       }
       const response = await deps.client.send(setWorkflowFlushContextRequest(sessionId, workflowRef, value === "true"))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowFlushContextUpdated")
-      return { ok: true, message: `workflow ${payload.workflow.id} flush-context set to ${String(payload.workflow.flush_agent_context_before_run ?? true)}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+      return { ok: true, message: `workflow ${payload.workflow.id} flush-context set to ${String(payload.workflow.flush_agent_context_before_run ?? true)}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
     case "run-output-schema":
     case "intermediate-output-schema": {
@@ -165,7 +166,7 @@ export async function executeWorkflowCommand(
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
       const field = action === "run-output-schema" ? "run-output-schema" : "intermediate-output-schema"
       const value = action === "run-output-schema" ? payload.workflow.run_output_schema_ref : payload.workflow.intermediate_output_schema_ref
-      return { ok: true, message: `workflow ${payload.workflow.id} ${field} set to ${value ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+      return { ok: true, message: `workflow ${payload.workflow.id} ${field} set to ${value ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
     case "max-turns": {
       const value = args[0]?.trim().toLowerCase()
@@ -184,7 +185,7 @@ export async function executeWorkflowCommand(
       }
       const response = await deps.client.send(updateSessionConfigRequest(sessionId, attachmentId.attachmentId, { "workflow.max_turns": nextValue }, false))
       const payload = expectVariant<{ session: RuntimeSession; config: SessionConfigState }>(response, "SessionConfigUpdated")
-      return { ok: true, message: nextValue === "0" ? "workflow max turns disabled" : `workflow max turns set to ${nextValue}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+      return { ok: true, message: nextValue === "0" ? "workflow max turns disabled" : `workflow max turns set to ${nextValue}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
     case "runs": {
       const response = await deps.client.send(listWorkflowRunsRequest(sessionId, args[0] ?? null))
@@ -216,7 +217,7 @@ export async function executeWorkflowCommand(
         ok: true,
         message: `${action === "cancel" ? "cancelled" : "resumed"} workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
         data: payload,
-        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       }
     }
     case "node":

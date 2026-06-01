@@ -17,6 +17,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { attachShellSession } from "./shell-session-attachment.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
 import {
   formatCloudCollaborators,
   formatCloudMembers,
@@ -73,7 +74,7 @@ export async function executeCloudCommand(
         `level=${collaborationLevel}`,
       ].join("\n"),
       data: { cloud, local },
-      contextUpdates: { sessionId: local.session.id, agentId: local.session.focused_agent_id ?? undefined },
+      contextUpdates: { sessionId: local.session.id, agentId: sessionContextAgentId(local.session) },
     }
   }
   if (area === "invite" && action === "accept") {
@@ -101,7 +102,7 @@ export async function executeCloudCommand(
       contextUpdates: {
         sessionId: joined.session.id,
         ...(attachmentId ? { attachmentId } : {}),
-        agentId: joined.session.focused_agent_id ?? undefined,
+        agentId: sessionContextAgentId(joined.session),
         workspace: joined.session.workspace_id,
         worktree: joined.session.worktree_id,
       },

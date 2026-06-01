@@ -35,6 +35,7 @@ import {
   attachShellSession,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -84,7 +85,7 @@ export async function executeSessionCommand(
       const contextUpdates = {
         sessionId: session.id,
         ...(attachmentId ? { attachmentId } : {}),
-        agentId: session.focused_agent_id ?? undefined,
+        agentId: sessionContextAgentId(session),
         workspace: session.workspace_id,
         worktree: session.worktree_id,
       }
@@ -108,7 +109,7 @@ export async function executeSessionCommand(
       const contextUpdates = {
         sessionId: session.id,
         ...(attachmentId ? { attachmentId } : context.attachmentId ? { attachmentId: context.attachmentId } : {}),
-        agentId: session.focused_agent_id ?? undefined,
+        agentId: sessionContextAgentId(session),
         workspace: session.workspace_id,
         worktree: session.worktree_id,
       }
@@ -209,7 +210,7 @@ export async function executeSessionCommand(
         ok: true,
         message: formatSessionInvite(payload.invite.invite, payload.invite.invite_token),
         data: payload,
-        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       }
     }
     case "join": {
@@ -227,7 +228,7 @@ export async function executeSessionCommand(
         contextUpdates: {
           sessionId: payload.session.id,
           ...(attachmentId ? { attachmentId } : {}),
-          agentId: payload.session.focused_agent_id ?? undefined,
+          agentId: sessionContextAgentId(payload.session),
           workspace: payload.session.workspace_id,
           worktree: payload.session.worktree_id,
         },
@@ -244,7 +245,7 @@ export async function executeSessionCommand(
         ok: true,
         message: `revoked session invite ${payload.invite.invite_id}`,
         data: payload,
-        contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+        contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       }
     }
     default:

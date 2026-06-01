@@ -30,6 +30,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -64,7 +65,7 @@ export async function executeWorkflowNodeCommand(
       `added workflow node ${payload.node.id} for agent ${agent.agent.agent_ref}`,
       parsed.assignment,
       payload.node.id,
-      { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       payload,
     )
   }
@@ -74,7 +75,7 @@ export async function executeWorkflowNodeCommand(
     }
     const response = await deps.client.send(removeWorkflowNodeRequest(sessionId, workflowRef, target))
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeRemoved")
-    return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "instructions") {
     const instructionsAction = args[1]
@@ -126,12 +127,12 @@ export async function executeWorkflowNodeCommand(
           ok: true,
           message: `updated workflow node ${nodeId} instructions`,
           data: payload,
-          contextUpdates: { workflowId: resolvedPayload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+          contextUpdates: { workflowId: resolvedPayload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
         }
       }
       const response = await deps.client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflowRef, nodeId, instructions))
       const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeInstructionsUpdated")
-      return { ok: true, message: `updated workflow node ${payload.node.id} instructions`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+      return { ok: true, message: `updated workflow node ${payload.node.id} instructions`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
     }
     return { ok: false, message: "usage: workflow node instructions show|set [workflow-ref] <node-id> [file]" }
   }
@@ -179,7 +180,7 @@ export async function executeWorkflowNodeCommand(
     }
     const response = await deps.client.send(request)
     const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
-    return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "extensions") {
     const explicitWorkflowRef = args.length >= 3 ? args[1] : null
@@ -251,7 +252,7 @@ export async function executeWorkflowEdgeCommand(
     }
     const response = await deps.client.send(addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId, handoffSchemaRef))
     const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeAdded")
-    return { ok: true, message: `added workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `added workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "remove") {
     const explicitWorkflowRef = args.length >= 3 ? args[1] : null
@@ -262,7 +263,7 @@ export async function executeWorkflowEdgeCommand(
     }
     const response = await deps.client.send(removeWorkflowEdgeRequest(sessionId, workflowRef, edgeId))
     const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeRemoved")
-    return { ok: true, message: `removed workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `removed workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   return { ok: false, message: `${workflowEdgeAddUsage} | remove [workflow-ref] <edge-id>` }
 }
@@ -308,7 +309,7 @@ export async function executeWorkflowEndpointCommand(
     }
     const response = await deps.client.send(createWorkflowEndpointRequest(sessionId, workflowRef, entryNodeId, alias ?? null))
     const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointCreated")
-    return { ok: true, message: `created workflow endpoint ${payload.endpoint.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `created workflow endpoint ${payload.endpoint.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "alias") {
     const explicitWorkflowRef = args.length >= 4 ? args[1] : null
@@ -320,7 +321,7 @@ export async function executeWorkflowEndpointCommand(
     }
     const response = await deps.client.send(aliasWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, alias))
     const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointAliased")
-    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} aliased as ${payload.endpoint.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} aliased as ${payload.endpoint.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   if (action === "bind") {
     const explicitWorkflowRef = args.length >= 4 ? args[1] : null
@@ -332,7 +333,7 @@ export async function executeWorkflowEndpointCommand(
     }
     const response = await deps.client.send(bindWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, entryNodeId))
     const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointBound")
-    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined } }
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
   return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
 }

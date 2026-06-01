@@ -19,6 +19,7 @@ import {
   revokeWorkflowPublicationSenderRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
 import { writeWorkflowPublicationExportPackage } from "./shell-workflow-publication-export.js"
 import {
   formatWorkflowPublicationLabel,
@@ -90,7 +91,7 @@ export async function executeWorkflowPublicationCommand(
       ok: true,
       message: `disabled workflow publication ${payload.publication.id}`,
       data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
     }
   }
 
@@ -112,7 +113,7 @@ export async function executeWorkflowPublicationCommand(
       ok: true,
       message: `pair_code ${payload.pair_code.code.code_id}\n${payload.pair_code.pair_code}`,
       data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
     }
   }
 
@@ -134,7 +135,7 @@ export async function executeWorkflowPublicationCommand(
       ok: true,
       message: `sender ${payload.sender_credential.sender.sender_id}\n${payload.sender_credential.credential}`,
       data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
     }
   }
 
@@ -159,7 +160,7 @@ export async function executeWorkflowPublicationCommand(
       ok: true,
       message: `revoked workflow publication sender ${payload.sender.sender_id}`,
       data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined },
+      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
     }
   }
 
@@ -179,7 +180,7 @@ export async function executeWorkflowPublicationCommand(
       `created workflow publication ${formatWorkflowPublicationLabel(payload.publication)}`,
       undefined,
       payload.publication.id,
-      { sessionId: payload.session.id, agentId: payload.session.focused_agent_id ?? undefined, workflowId: payload.publication.workflow_id },
+      { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session), workflowId: payload.publication.workflow_id },
       payload,
     )
   }
