@@ -429,7 +429,35 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
               events: [{
                 kind: "home_extension.invoke.denied",
                 timestamp_ms: 1700000000000,
-                payload: { status: "denied", error: "worker mismatch", tool: { tool_name: "lookup" } },
+                payload: {
+                  home_user_id: "alice",
+                  caller_user_id: "bob",
+                  agent_id: "agent-1",
+                  lease_id: "lease-1",
+                  worker_kernel_id: "worker-1",
+                  worker_provider_run_id: "run-1",
+                  status: "denied",
+                  error: "worker mismatch",
+                  duration_ms: 24,
+                  result_bytes: 0,
+                  ok: false,
+                  args: { secret: "not rendered" },
+                  result: { body: "not rendered" },
+                  invocation: {
+                    invocation_id: "invoke-1",
+                    provider_tool_call_id: "call-1",
+                    attempt: 2,
+                    idempotency_key: "idem-1",
+                  },
+                  tool: {
+                    kind: "script",
+                    name: "lookup",
+                    tool_name: "lookup",
+                    safety: "read",
+                    timeout_sec: 30,
+                    version_hash: "hash-tool-1",
+                  },
+                },
               }],
             },
           }
@@ -456,7 +484,13 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.match(retryResult.message ?? "", /next: keep the home revoke in place; retry sync after the worker reconnects/)
   assert.equal(auditResult.ok, true)
   assert.match(auditResult.message ?? "", /home_extension\.invoke\.denied lookup denied/)
-  assert.match(auditResult.message ?? "", /next=refresh remote extension sync and verify the worker\/provider run is current/)
+  assert.match(auditResult.message ?? "", /actor: home=alice caller=bob agent=agent-1 lease=lease-1 worker=worker-1 run=run-1/)
+  assert.match(auditResult.message ?? "", /tool: script:lookup as=lookup safety=read timeout=30s hash=hash-tool-1/)
+  assert.match(auditResult.message ?? "", /invocation: invocation=invoke-1 call=call-1 attempt=2 idempotency=idem-1/)
+  assert.match(auditResult.message ?? "", /result: ok=false bytes=0 duration=24ms/)
+  assert.match(auditResult.message ?? "", /error: worker mismatch/)
+  assert.match(auditResult.message ?? "", /next: refresh remote extension sync and verify the worker\/provider run is still current before retrying/)
+  assert.doesNotMatch(auditResult.message ?? "", /not rendered/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
     { ListAgents: { session_id: "session-1" } },
