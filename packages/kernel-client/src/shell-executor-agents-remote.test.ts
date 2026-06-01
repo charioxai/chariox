@@ -282,7 +282,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   assert.match(result.message ?? "", /provider run: session=run-session, worker=run-1/)
   assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, display=headed, worktree=\/repo\/feature, agents=2\)/)
   assert.match(result.message ?? "", /slice provider accounts: codex=daily \(dev@example.com\)/)
-  assert.match(result.message ?? "", /extensions: 2 grants \(home-proxy\/passive-snapshot; mcp=1, script=1\)/)
+  assert.match(result.message ?? "", /extensions: 2 grants \(active tools home-proxy; mcp=1, script=1\)/)
   assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(result.message ?? "", /next=run \/extension sync-status agent-remote; run \/machine kernels slice-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
   assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)

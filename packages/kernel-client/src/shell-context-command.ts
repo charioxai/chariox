@@ -1,5 +1,6 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
+import { formatAgentExtensionPlacementSummary } from "./shell-agent-format.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -196,7 +197,7 @@ function formatContextExtensionSummary(agent: AgentInstance): string {
     .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
     .filter(Boolean)
     .join(", ")
-  const placement = agent.remote_execution ? "home-proxy/passive-snapshot" : "worker-local"
+  const placement = formatAgentExtensionPlacementSummary(agent)
   return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
 }
 

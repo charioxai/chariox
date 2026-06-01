@@ -253,8 +253,21 @@ function formatAgentExtensionSummary(agent: AgentInstance): string {
     .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
     .filter(Boolean)
     .join(", ")
-  const placement = agent.remote_execution ? "home-proxy/passive-snapshot" : "worker-local"
+  const placement = formatAgentExtensionPlacementSummary(agent)
   return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+}
+
+export function formatAgentExtensionPlacementSummary(agent: AgentInstance): string {
+  if (!agent.remote_execution) {
+    return "worker-local"
+  }
+  const grants = agent.extension_grants ?? []
+  const activeHomeProxy = grants.some((grant) => grant.kind !== "skill")
+  const passiveSkillSnapshot = grants.some((grant) => grant.kind === "skill")
+  return [
+    activeHomeProxy ? "active tools home-proxy" : null,
+    passiveSkillSnapshot ? "skills snapshot" : null,
+  ].filter(Boolean).join("; ") || "home-proxy"
 }
 
 function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
