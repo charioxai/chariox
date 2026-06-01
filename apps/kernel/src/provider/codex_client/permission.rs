@@ -1,6 +1,7 @@
 //! Codex request permission, sandbox, and collaboration policy mapping.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -42,19 +43,26 @@ pub(super) fn codex_permission_policy(
             }
         }
         ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
-            let mut config_overrides = BTreeMap::new();
-            config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
-            config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
             #[cfg(target_os = "macos")]
-            let (sandbox, sandbox_policy) =
-                ("danger-full-access", json!({ "type": "dangerFullAccess" }));
+            {
+                CodexPermissionPolicy {
+                    approval_policy: json!("never"),
+                    sandbox: "danger-full-access",
+                    sandbox_policy: json!({ "type": "dangerFullAccess" }),
+                    config_overrides: BTreeMap::new(),
+                }
+            }
             #[cfg(not(target_os = "macos"))]
-            let (sandbox, sandbox_policy) = ("read-only", json!({ "type": "readOnly" }));
-            CodexPermissionPolicy {
-                approval_policy: json!("never"),
-                sandbox,
-                sandbox_policy,
-                config_overrides,
+            {
+                let mut config_overrides = BTreeMap::new();
+                config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
+                config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
+                CodexPermissionPolicy {
+                    approval_policy: json!("never"),
+                    sandbox: "read-only",
+                    sandbox_policy: json!({ "type": "readOnly" }),
+                    config_overrides,
+                }
             }
         }
     }
@@ -94,7 +102,10 @@ pub(super) fn codex_collaboration_mode(
     }))
 }
 
-pub(super) fn workspace_live_sync_codex_permission_grant(requested_permissions: &Value) -> Value {
+pub(super) fn workspace_live_sync_codex_permission_grant(
+    requested_permissions: &Value,
+    protected_roots: &[PathBuf],
+) -> Value {
     let Some(requested) = requested_permissions.as_object() else {
         return json!({});
     };
@@ -107,9 +118,60 @@ pub(super) fn workspace_live_sync_codex_permission_grant(requested_permissions: 
         if let Some(read) = file_system.get("read") {
             granted_file_system.insert("read".to_string(), read.clone());
         }
+        if let Some(write) =
+            workspace_live_sync_allowed_writes(file_system.get("write"), protected_roots)
+        {
+            granted_file_system.insert("write".to_string(), write);
+        }
         if !granted_file_system.is_empty() {
             granted.insert("fileSystem".to_string(), Value::Object(granted_file_system));
         }
     }
     Value::Object(granted)
+}
+
+fn workspace_live_sync_allowed_writes(
+    requested_write: Option<&Value>,
+    protected_roots: &[PathBuf],
+) -> Option<Value> {
+    let writes = requested_write?.as_array()?;
+    let allowed = writes
+        .iter()
+        .filter(|entry| {
+            entry.as_str().is_some_and(|path| {
+                workspace_live_sync_write_is_outside_protected_roots(path, protected_roots)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    (!allowed.is_empty()).then(|| Value::Array(allowed))
+}
+
+fn workspace_live_sync_write_is_outside_protected_roots(
+    path: &str,
+    protected_roots: &[PathBuf],
+) -> bool {
+    let path = Path::new(path);
+    if protected_roots.is_empty() || !path.is_absolute() {
+        return false;
+    }
+    let normalized_path = normalize_path(path);
+    !protected_roots.iter().any(|root| {
+        let normalized_root = normalize_path(root);
+        normalized_path.starts_with(normalized_root)
+    })
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }

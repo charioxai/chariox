@@ -1,6 +1,7 @@
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
+use std::path::PathBuf;
 
 use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
@@ -45,6 +46,7 @@ pub struct CodexClient {
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<ArrobaMcpServerConfig>,
     write_access_mode: ProviderWriteAccessMode,
+    workspace_live_sync_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +70,7 @@ impl CodexClient {
             native_interaction_bridge: None,
             mcp_servers: Vec::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
+            workspace_live_sync_roots: Vec::new(),
         })
     }
 
@@ -106,6 +109,11 @@ impl CodexClient {
 
     pub fn with_write_access_mode(mut self, write_access_mode: ProviderWriteAccessMode) -> Self {
         self.write_access_mode = write_access_mode;
+        self
+    }
+
+    pub fn with_workspace_live_sync_roots(mut self, roots: &[PathBuf]) -> Self {
+        self.workspace_live_sync_roots = roots.to_vec();
         self
     }
 
@@ -150,15 +158,17 @@ mod tests {
         {
             assert_eq!(policy.sandbox, "read-only");
             assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+            assert_eq!(
+                policy.config_overrides.get("include_apply_patch_tool"),
+                Some(&json!(false))
+            );
+            assert_eq!(
+                policy.config_overrides.get("features.apply_patch_freeform"),
+                Some(&json!(false))
+            );
         }
-        assert_eq!(
-            policy.config_overrides.get("include_apply_patch_tool"),
-            Some(&json!(false))
-        );
-        assert_eq!(
-            policy.config_overrides.get("features.apply_patch_freeform"),
-            Some(&json!(false))
-        );
+        #[cfg(target_os = "macos")]
+        assert!(policy.config_overrides.is_empty());
     }
 
     #[test]
@@ -276,12 +286,15 @@ mod tests {
             },
             "fileSystem": {
                 "read": ["/tmp/input"],
-                "write": ["/tmp/output"]
+                "write": ["/repo/main/output"]
             }
         });
 
         assert_eq!(
-            workspace_live_sync_codex_permission_grant(&requested),
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")]
+            ),
             json!({
                 "network": {
                     "enabled": true
@@ -297,13 +310,41 @@ mod tests {
     fn workspace_live_sync_permission_grant_denies_write_only_request() {
         let requested = json!({
             "fileSystem": {
-                "write": ["/tmp/output"]
+                "write": ["/repo/main/output"]
             }
         });
 
         assert_eq!(
-            workspace_live_sync_codex_permission_grant(&requested),
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")]
+            ),
             json!({})
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_allows_writes_outside_protected_roots() {
+        let requested = json!({
+            "fileSystem": {
+                "write": [
+                    "/repo/main/src/lib.rs",
+                    "/repo/main/../main/src/config.rs",
+                    "/other-repo/src/lib.rs"
+                ]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")]
+            ),
+            json!({
+                "fileSystem": {
+                    "write": ["/other-repo/src/lib.rs"]
+                }
+            })
         );
     }
 
@@ -311,14 +352,15 @@ mod tests {
     fn workspace_live_sync_client_does_not_approve_codex_filesystem_writes() {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
-            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged);
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged)
+            .with_workspace_live_sync_roots(&[std::path::PathBuf::from("/repo/main")]);
         let message = JsonRpcMessage {
             id: Some(json!(1)),
             method: Some("item/permissions/requestApproval".to_string()),
             params: Some(json!({
                 "permissions": {
                     "fileSystem": {
-                        "write": ["/tmp/output"]
+                        "write": ["/repo/main/output"]
                     }
                 }
             })),

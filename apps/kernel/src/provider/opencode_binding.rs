@@ -64,10 +64,11 @@ pub(crate) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
-    let allow_native_bash = workspace_write_fence_active(run);
+    let allow_native_writes = workspace_write_fence_active(run);
     let session_permission = if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
-            allow_native_bash,
+            allow_native_writes,
+            run.permission_level(),
         ))
     } else {
         Some(opencode_permission_rules(run.permission_level()))
@@ -174,12 +175,16 @@ fn ensure_configured_mcp_servers_connected(
     Ok(())
 }
 
-fn opencode_workspace_live_sync_permission_rules(allow_native_bash: bool) -> serde_json::Value {
+fn opencode_workspace_live_sync_permission_rules(
+    allow_native_writes: bool,
+    permission_level: crate::provider::AgentPermissionLevel,
+) -> serde_json::Value {
+    let native_action = opencode_permission_action(permission_level);
     let mut rules = vec![
         serde_json::json!({
             "permission": "edit",
             "pattern": "*",
-            "action": "deny"
+            "action": if allow_native_writes { native_action } else { "deny" }
         }),
         serde_json::json!({
             "permission": "task",
@@ -187,7 +192,7 @@ fn opencode_workspace_live_sync_permission_rules(allow_native_bash: bool) -> ser
             "action": "deny"
         }),
     ];
-    if !allow_native_bash {
+    if !allow_native_writes {
         rules.insert(
             1,
             serde_json::json!({
@@ -203,10 +208,7 @@ fn opencode_workspace_live_sync_permission_rules(allow_native_bash: bool) -> ser
 fn opencode_permission_rules(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> serde_json::Value {
-    let action = match permission_level {
-        crate::provider::AgentPermissionLevel::Required => "ask",
-        crate::provider::AgentPermissionLevel::Yolo => "allow",
-    };
+    let action = opencode_permission_action(permission_level);
     serde_json::json!([
         {
             "permission": "edit",
@@ -224,6 +226,15 @@ fn opencode_permission_rules(
             "action": action
         }
     ])
+}
+
+fn opencode_permission_action(
+    permission_level: crate::provider::AgentPermissionLevel,
+) -> &'static str {
+    match permission_level {
+        crate::provider::AgentPermissionLevel::Required => "ask",
+        crate::provider::AgentPermissionLevel::Yolo => "allow",
+    }
 }
 
 pub(super) fn sync_opencode_run_selection_for_session(
@@ -310,7 +321,10 @@ mod tests {
     #[test]
     fn workspace_live_sync_permission_rules_block_direct_writes() {
         assert_eq!(
-            opencode_workspace_live_sync_permission_rules(false),
+            opencode_workspace_live_sync_permission_rules(
+                false,
+                crate::provider::AgentPermissionLevel::Yolo,
+            ),
             json!([
                 {
                     "permission": "edit",
@@ -332,14 +346,39 @@ mod tests {
     }
 
     #[test]
-    fn workspace_live_sync_permission_rules_allow_bash_when_workspace_is_fenced() {
+    fn workspace_live_sync_permission_rules_allow_native_writes_when_workspace_is_fenced() {
         assert_eq!(
-            opencode_workspace_live_sync_permission_rules(true),
+            opencode_workspace_live_sync_permission_rules(
+                true,
+                crate::provider::AgentPermissionLevel::Yolo,
+            ),
             json!([
                 {
                     "permission": "edit",
                     "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "task",
+                    "pattern": "*",
                     "action": "deny"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_rules_preserve_required_mode_for_fenced_native_edits() {
+        assert_eq!(
+            opencode_workspace_live_sync_permission_rules(
+                true,
+                crate::provider::AgentPermissionLevel::Required,
+            ),
+            json!([
+                {
+                    "permission": "edit",
+                    "pattern": "*",
+                    "action": "ask"
                 },
                 {
                     "permission": "task",
@@ -460,10 +499,11 @@ pub(crate) fn run_opencode_utility_prompt(
         .to_string();
     let client = OpenCodeClient::new(run.id(), &base_url)?;
     client.wait_until_healthy(Duration::from_secs(30))?;
-    let allow_native_bash = workspace_write_fence_active(run);
+    let allow_native_writes = workspace_write_fence_active(run);
     let session_permission = if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
-            allow_native_bash,
+            allow_native_writes,
+            run.permission_level(),
         ))
     } else {
         Some(opencode_permission_rules(run.permission_level()))

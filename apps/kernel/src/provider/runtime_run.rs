@@ -58,6 +58,8 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
     )]
     write_access_mode: ProviderWriteAccessMode,
+    #[serde(skip)]
+    workspace_live_sync_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -115,6 +117,7 @@ impl RuntimeProviderRun {
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
             write_access_mode: request.write_access_mode,
+            workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_control_capabilities(
@@ -177,6 +180,7 @@ impl RuntimeProviderRun {
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
+            workspace_live_sync_roots: Vec::new(),
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_control_capabilities(
@@ -320,6 +324,10 @@ impl RuntimeProviderRun {
 
     pub fn write_access_mode(&self) -> ProviderWriteAccessMode {
         self.write_access_mode
+    }
+
+    pub fn workspace_live_sync_roots(&self) -> &[PathBuf] {
+        &self.workspace_live_sync_roots
     }
 
     pub fn execution_mode(&self) -> AgentExecutionMode {
@@ -526,5 +534,33 @@ mod tests {
         };
         let run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
         assert_eq!(run.provider_session_id(), Some("open-session-1"));
+    }
+
+    #[test]
+    fn runtime_provider_run_keeps_workspace_live_sync_roots_internal() {
+        let roots = vec![std::path::PathBuf::from("/repo/main")];
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
+                .with_workspace_live_sync_managed()
+                .with_workspace_live_sync_roots(roots.clone());
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+
+        assert_eq!(run.workspace_live_sync_roots(), roots.as_slice());
+        assert!(!serde_json::to_value(&run)
+            .expect("run should serialize")
+            .as_object()
+            .expect("run should serialize to object")
+            .contains_key("workspace_live_sync_roots"));
     }
 }

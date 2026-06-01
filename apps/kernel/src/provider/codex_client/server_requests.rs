@@ -105,8 +105,10 @@ impl CodexClient {
                 "scope": "session",
             }),
             ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
-                let granted_permissions =
-                    workspace_live_sync_codex_permission_grant(&requested_permissions);
+                let granted_permissions = workspace_live_sync_codex_permission_grant(
+                    &requested_permissions,
+                    &self.workspace_live_sync_roots,
+                );
                 json!({
                     "permissions": granted_permissions,
                     "scope": "turn",

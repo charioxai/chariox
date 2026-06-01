@@ -15,7 +15,8 @@ pub(super) fn codex_client_for_run(
         .with_runtime_mcp_binding(run.runtime_mcp_server_url(), run.runtime_mcp_auth_token())
         .with_native_interaction_bridge(native_interaction_bridge)
         .with_mcp_servers(run.mcp_servers())
-        .with_write_access_mode(run.write_access_mode()))
+        .with_write_access_mode(run.write_access_mode())
+        .with_workspace_live_sync_roots(run.workspace_live_sync_roots()))
 }
 
 pub(super) fn normalize_codex_model(model: &str) -> Option<String> {
