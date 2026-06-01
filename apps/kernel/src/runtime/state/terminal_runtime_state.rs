@@ -61,9 +61,7 @@ impl KernelRuntimeState {
                             remote_execution.relay_url.clone(),
                             remote_execution.relay_token.clone(),
                         ) {
-                            relay_config.relay_url = Some(relay_url);
-                            relay_config.relay_token = Some(relay_token);
-                            relay_config.cloud_relay = None;
+                            relay_config.apply_remote_relay_override(relay_url, relay_token);
                         }
                         let response =
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(

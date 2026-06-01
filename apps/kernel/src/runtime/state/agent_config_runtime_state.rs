@@ -365,14 +365,11 @@ impl KernelRuntimeState {
             .agent_store
             .set_remote_extension_manifest_sync(agent.id(), Some(syncing_status.clone()));
         let mut config = self.config_snapshot().await;
-        if config.relay_url.is_none() {
-            config.relay_url = remote_execution.relay_url.clone();
-        }
-        if config.relay_token.is_none() {
-            config.relay_token = remote_execution.relay_token.clone();
-            if config.relay_token.is_some() {
-                config.cloud_relay = None;
-            }
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
             &config,
@@ -747,9 +744,7 @@ impl KernelRuntimeState {
                 remote_update.relay_url.clone(),
                 remote_update.relay_token.clone(),
             ) {
-                config.relay_url = Some(relay_url);
-                config.relay_token = Some(relay_token);
-                config.cloud_relay = None;
+                config.apply_remote_relay_override(relay_url, relay_token);
             }
             match tokio::time::timeout(
                 Duration::from_secs(5),

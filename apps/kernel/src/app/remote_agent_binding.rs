@@ -461,6 +461,9 @@ impl DaemonApp {
         let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
         let mut config = self.config.clone();
         if let Some(endpoint) = slice.relay_endpoint.as_ref() {
+            if !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url) {
+                return None;
+            }
             config.relay_url = Some(endpoint.url.clone());
             if endpoint.private {
                 config.relay_token = Some(crate::slice::local_docker_private_relay_token(&slice));
@@ -483,9 +486,7 @@ impl DaemonApp {
             remote_execution.relay_url.clone(),
             remote_execution.relay_token.clone(),
         ) {
-            config.relay_url = Some(relay_url);
-            config.relay_token = Some(relay_token);
-            config.cloud_relay = None;
+            config.apply_remote_relay_override(relay_url, relay_token);
         }
         config
     }
@@ -493,8 +494,30 @@ impl DaemonApp {
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::RemoteAgentBinding;
     use crate::app::DaemonApp;
-    use crate::config::DaemonConfig;
+    use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+
+    fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {
+        PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "user@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-1".to_string(),
+            account_slug: "acct".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: relay_url.to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: None,
+            client_alias: None,
+            machine_id: Some("machine-1".to_string()),
+            machine_alias: None,
+            machine_credential: Some("machine-secret".to_string()),
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: Some(42),
+        }
+    }
 
     #[test]
     fn slice_worker_kernel_refs_resolve_to_private_relay_config() {
@@ -588,6 +611,100 @@ mod tests {
             relay_config.relay_token.as_deref(),
             Some("home-relay-token")
         );
+        assert!(relay_config.cloud_relay.is_none());
+    }
+
+    #[test]
+    fn slice_worker_kernel_refs_use_home_cloud_relay_profile_for_hosted_shared_relay() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("short-lived-token".to_string());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: Some("http://127.0.0.1:6080".to_string()),
+                    provider_auth: Vec::new(),
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: "wss://relay.example.test".to_string(),
+                    private: false,
+                }),
+                43,
+            )
+            .expect("slice relay endpoint should update");
+
+        assert!(app
+            .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
+            .is_none());
+    }
+
+    #[test]
+    fn remote_execution_matching_home_cloud_relay_keeps_refreshable_profile() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("refreshable-token".to_string());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test/"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+
+        let relay_config = app.relay_config_for_remote_execution(&RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: Some("wss://relay.example.test".to_string()),
+            relay_token: Some("short-lived-token".to_string()),
+        });
+
+        assert_eq!(
+            relay_config.relay_token.as_deref(),
+            Some("refreshable-token")
+        );
+        assert!(relay_config.cloud_relay.is_some());
+    }
+
+    #[test]
+    fn remote_execution_different_relay_uses_binding_token() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("refreshable-token".to_string());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+
+        let relay_config = app.relay_config_for_remote_execution(&RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: Some("ws://127.0.0.1:54909".to_string()),
+            relay_token: Some("binding-token".to_string()),
+        });
+
+        assert_eq!(
+            relay_config.relay_url.as_deref(),
+            Some("ws://127.0.0.1:54909")
+        );
+        assert_eq!(relay_config.relay_token.as_deref(), Some("binding-token"));
         assert!(relay_config.cloud_relay.is_none());
     }
 }

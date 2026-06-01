@@ -80,6 +80,42 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
+    pub(crate) fn relay_url_uses_cloud_profile(&self, relay_url: &str) -> bool {
+        let relay_url = normalize_relay_url_for_match(relay_url);
+        self.cloud_relay
+            .as_ref()
+            .is_some_and(|profile| normalize_relay_url_for_match(&profile.relay_url) == relay_url)
+    }
+
+    pub(crate) fn apply_remote_relay_override(&mut self, relay_url: String, relay_token: String) {
+        if self.relay_url_uses_cloud_profile(&relay_url) {
+            return;
+        }
+        self.relay_url = Some(relay_url);
+        self.relay_token = Some(relay_token);
+        self.cloud_relay = None;
+    }
+
+    pub(crate) fn apply_missing_remote_relay_override(
+        &mut self,
+        relay_url: String,
+        relay_token: String,
+    ) {
+        if self.relay_url.is_some() && self.relay_token.is_some() {
+            return;
+        }
+        if self.relay_url_uses_cloud_profile(&relay_url) {
+            return;
+        }
+        if self.relay_url.is_none() {
+            self.relay_url = Some(relay_url);
+        }
+        if self.relay_token.is_none() {
+            self.relay_token = Some(relay_token);
+        }
+        self.cloud_relay = None;
+    }
+
     pub fn new(
         daemon_id: impl Into<String>,
         host_machine_id: impl Into<String>,
@@ -264,6 +300,10 @@ impl DaemonConfig {
     pub fn user_config_schema() -> Vec<UserConfigSchemaEntry> {
         user_config_schema::entries()
     }
+}
+
+fn normalize_relay_url_for_match(relay_url: &str) -> &str {
+    relay_url.trim().trim_end_matches('/')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,6 +610,33 @@ mod tests {
         assert_eq!(config.relay_url.as_deref(), Some("ws://127.0.0.1:47000"));
         assert_eq!(config.relay_token.as_deref(), Some("local-drill-token"));
         assert_eq!(config.cloud_relay, None);
+    }
+
+    #[test]
+    fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "user@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-1".to_string(),
+            account_slug: "account".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "wss://relay.example.test/".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: None,
+            client_alias: None,
+            machine_id: Some("machine-1".to_string()),
+            machine_alias: None,
+            machine_credential: Some("machine-secret".to_string()),
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: Some(42),
+        });
+
+        assert!(config.relay_url_uses_cloud_profile(" wss://relay.example.test "));
+        assert!(config.relay_url_uses_cloud_profile("wss://relay.example.test//"));
+        assert!(!config.relay_url_uses_cloud_profile("wss://other-relay.example.test"));
     }
 
     #[test]

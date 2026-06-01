@@ -151,9 +151,7 @@ fn remote_dispatch_relay_config(
     if let (Some(relay_url), Some(relay_token)) =
         (dispatch.relay_url.clone(), dispatch.relay_token.clone())
     {
-        config.relay_url = Some(relay_url);
-        config.relay_token = Some(relay_token);
-        config.cloud_relay = None;
+        config.apply_remote_relay_override(relay_url, relay_token);
     }
     config
 }
