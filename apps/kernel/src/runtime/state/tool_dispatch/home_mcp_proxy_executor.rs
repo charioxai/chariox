@@ -27,7 +27,10 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
-        if let Some(cached) = self.begin_home_extension_invocation(&metadata).await? {
+        if let Some(cached) = self
+            .begin_audited_home_extension_invocation(&context, &metadata, &tool)
+            .await?
+        {
             return Ok(cached);
         }
         self.append_home_extension_audit_event(

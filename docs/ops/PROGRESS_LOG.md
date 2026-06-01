@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-06-01
 
+### Home extension invocation replay audit
+
+- Added durable audit events for home-executed remote extension idempotent replays and duplicate non-idempotent rejection. Script/connector and MCP proxy paths now use the same audited invocation-admission helper, so silent replay/duplicate paths show up in `/extension audit` and web extension diagnostics.
+- Revalidated focused home-extension invocation tests and the full remote authorization module.
+
 ### Slice health issue attribution
 
 - Added daemon-health slice issue attribution for unhealthy slices and failed slice operations. `slice_lifecycle.issues` now carries slice id/name, status, last operation/status/error, sessions, agents, and worktree; CLI `/kernel health` and Cloud web Settings render the affected slice directly instead of only aggregate counts.

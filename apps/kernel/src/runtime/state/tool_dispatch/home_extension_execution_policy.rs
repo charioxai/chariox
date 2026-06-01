@@ -27,7 +27,10 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
-        if let Some(cached) = self.begin_home_extension_invocation(&metadata).await? {
+        if let Some(cached) = self
+            .begin_audited_home_extension_invocation(&context, &metadata, &tool)
+            .await?
+        {
             return serde_json::from_value(cached).map_err(|error| DaemonError::LocalTransport {
                 operation: "home extension invocation replay",
                 message: error.to_string(),
@@ -254,6 +257,35 @@ impl KernelRuntimeState {
         }
         invocations.insert(key, None);
         Ok(None)
+    }
+
+    pub(in crate::runtime::state::tool_dispatch) async fn begin_audited_home_extension_invocation(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+        tool: &crate::extension::RemoteExtensionTool,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        match self.begin_home_extension_invocation(metadata).await {
+            Ok(Some(cached)) => {
+                self.append_home_extension_audit_event(
+                    "home_extension.invoke.replayed",
+                    context,
+                    metadata,
+                    tool,
+                    Some("replayed"),
+                    None,
+                )
+                .await?;
+                Ok(Some(cached))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => {
+                let _ = self
+                    .append_home_extension_denied_event(context, metadata, tool, &error)
+                    .await;
+                Err(error)
+            }
+        }
     }
 
     pub(in crate::runtime::state::tool_dispatch) async fn complete_home_extension_invocation(
