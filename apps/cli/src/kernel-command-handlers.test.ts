@@ -97,9 +97,64 @@ test("kernel health formatter renders provider-run invariants", () => {
   const rendered = formatKernelHealth(health())
 
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
+  assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
+  assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 tracked_runs=0 identity_changed=0 invalid_runs=0/)
+  assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
   assert.match(rendered, /provider run bindings: ok/)
   assert.match(rendered, /projection invariants: ok/)
   assert.equal(kernelHealthIssueCount(health()), 0)
+})
+
+test("kernel health formatter reports workspace live sync and collision issues", () => {
+  const unhealthy = health({
+    workspace_coordination: {
+      active_worktree_claims: [
+        { workspace_id: "workspace-1", worktree_id: "/repo", session_ids: ["session-1"] },
+      ],
+      worktree_collisions: [
+        { workspace_id: "workspace-1", worktree_id: "/repo", session_ids: ["session-1", "session-2"] },
+      ],
+      active_operation_claims: [
+        {
+          claim_id: "claim-1",
+          workspace_id: "workspace-1",
+          worktree_id: "/repo",
+          session_id: "session-1",
+          attachment_id: null,
+          operation: "live_sync_apply",
+          mode: "write",
+        },
+      ],
+    },
+    workspace_live_sync: {
+      active_reservations: 2,
+      active_reservation_artifacts: 3,
+      workspace_identity: {
+        tracked_provider_runs: 4,
+        identity_changed_provider_runs: 1,
+        invalid_provider_runs: 2,
+        current_generation_total: 7,
+      },
+      external_changes: {
+        tracked_artifacts: 5,
+        externally_changed_artifacts: 1,
+        external_change_events: 6,
+        live_watcher_started: true,
+        live_watcher_scans: 8,
+        live_watcher_scan_errors: 1,
+      },
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 5)
+  assert.match(rendered, /workspace coordination: claims=1 collisions=1 active_ops=1/)
+  assert.match(rendered, /workspace live sync: reservations=2 artifacts=3 tracked_runs=4 identity_changed=1 invalid_runs=2/)
+  assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
+  assert.match(rendered, /workspace worktree collisions:/)
+  assert.match(rendered, /workspace=workspace-1 worktree=\/repo sessions=session-1,session-2/)
+  assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
+  assert.match(rendered, /workspace watcher scan errors: 1/)
 })
 
 test("kernel health command reports duplicate provider-run bindings", async () => {

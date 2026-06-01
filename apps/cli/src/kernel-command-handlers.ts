@@ -64,13 +64,21 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
     + health.projection_invariants.mismatches.length
+    + workspaceHealthIssueCount(health)
 }
 
 export function formatKernelHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
+  const workspaceCoordination = health.workspace_coordination
+  const liveSync = health.workspace_live_sync
+  const workspaceIdentity = liveSync.workspace_identity
+  const externalChanges = liveSync.external_changes
   const lines = [
     "kernel health",
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
+    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
+    `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
   if (providerRuns.duplicate_arroba_agent_bindings.length === 0) {
@@ -96,6 +104,21 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     }
   }
 
+  if (workspaceCoordination.worktree_collisions.length > 0) {
+    lines.push("workspace worktree collisions:")
+    for (const collision of workspaceCoordination.worktree_collisions) {
+      lines.push(`  workspace=${collision.workspace_id} worktree=${collision.worktree_id} sessions=${collision.session_ids.join(",")}`)
+    }
+  }
+
+  if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
+    lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
+  }
+
+  if (externalChanges.live_watcher_scan_errors > 0) {
+    lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
+  }
+
   if (health.projection_invariants.mismatches.length === 0) {
     lines.push(`projection invariants: ok (${health.projection_invariants.checked_sessions} session${health.projection_invariants.checked_sessions === 1 ? "" : "s"}, ${health.projection_invariants.checked_agents} agent${health.projection_invariants.checked_agents === 1 ? "" : "s"})`)
   } else {
@@ -106,4 +129,11 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   }
 
   return lines.join("\n")
+}
+
+function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
+  return health.workspace_coordination.worktree_collisions.length
+    + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
+    + health.workspace_live_sync.workspace_identity.invalid_provider_runs
+    + health.workspace_live_sync.external_changes.live_watcher_scan_errors
 }
