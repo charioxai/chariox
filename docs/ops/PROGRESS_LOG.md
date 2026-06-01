@@ -2,6 +2,14 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-06-01
+
+### Workspace Live Sync outside-root writes
+
+- Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.
+- Fixed OpenCode managed Workspace Live Sync request shaping so native edit/write/apply_patch stay disabled while `bash` is explicitly enabled when the Arroba macOS write fence is active. This lets OpenCode modify repositories outside the synced root without allowing direct native writes inside the synced root.
+- Extended the local/remote Workspace Live Sync permission drill to initialize the synced workspace as its own Git repo, create a separate Git repo outside it, fail fast on provider launch/provider errors, and require the managed agent to write the outside repo directly. Codex and OpenCode Zen passed this drill locally on 2026-06-01.
+
 ## 2026-05-31
 
 ### Slice operation diagnostics

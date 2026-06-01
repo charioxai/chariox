@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { chmod, copyFile, mkdir, rm, stat, readFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, rm, stat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -128,19 +128,22 @@ async function run(command, args, options = {}) {
   })
 }
 
+async function initGitRepo(dir, label) {
+  const result = await run('git', ['init', '-q'], { cwd: dir })
+  if (result.code !== 0) {
+    throw new Error(`${label} git init failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  }
+}
+
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
   const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
-  const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
-  if (!cliReady) {
-    const result = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
-    if (result.code !== 0) throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
-  }
-  if (!kernelReady) {
-    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
-    if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  }
+  const cliBuild = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
+  if (cliBuild.code !== 0) throw new Error(`cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
+  const kernelBuild = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  if (kernelBuild.code !== 0) throw new Error(`kernel build failed\n${kernelBuild.stdout}\n${kernelBuild.stderr}`)
+  await stat(cliDist)
+  await stat(kernelBinary)
   return { cliDist, kernelBinary }
 }
 
@@ -242,7 +245,39 @@ async function pumpTerminalOutput(client, sessionId, attachmentId) {
   await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
 }
 
-async function waitForSessionInteraction(client, sessionId, attachmentId, agentId, containsText, timeoutMs, pollMs) {
+async function readProviderLaunchFailure(rootDir) {
+  const historyDir = path.join(rootDir, 'history')
+  let names = []
+  try {
+    names = await readdir(historyDir)
+  } catch {
+    return null
+  }
+  for (const name of names.filter((entry) => entry.endsWith('.jsonl'))) {
+    let content = ''
+    try {
+      content = await readFile(path.join(historyDir, name), 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        const text = String(entry.text ?? '')
+        if (entry.kind === 'notice' && text.includes('failed before it became ready')) {
+          return text
+        }
+        if (entry.kind === 'provider_error') {
+          return text || 'provider reported an error'
+        }
+      } catch {}
+    }
+  }
+  return null
+}
+
+async function waitForSessionInteraction(client, sessionId, attachmentId, agentId, containsText, timeoutMs, pollMs, failureProbe = null) {
   const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   let session = null
@@ -254,12 +289,14 @@ async function waitForSessionInteraction(client, sessionId, attachmentId, agentI
     const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && String(entry.message ?? '').includes(containsText))
       ?? (session.active_interactions ?? []).find((entry) => String(entry.message ?? '').includes(containsText))
     if (interaction) return { session, interaction }
+    const failure = failureProbe ? await failureProbe() : null
+    if (failure) throw new Error(failure)
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
-async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs) {
+async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await pumpTerminalOutput(client, sessionId, attachmentId)
@@ -267,6 +304,8 @@ async function waitForFileContent(client, sessionId, attachmentId, filePath, exp
       const content = await readFile(filePath, 'utf8')
       if (content.trim() === expectedContent) return content
     } catch {}
+    const failure = failureProbe ? await failureProbe() : null
+    if (failure) throw new Error(failure)
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for file ${filePath}`)
@@ -291,6 +330,7 @@ async function main() {
   const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
   const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
+  const outsideRepo = path.join(rootDir, 'outside-repo')
   const home = path.join(rootDir, 'home')
   const automationSocket = path.join(os.tmpdir(), `amiop-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
@@ -316,7 +356,10 @@ async function main() {
 
   try {
     await mkdir(workspace, { recursive: true })
+    await mkdir(outsideRepo, { recursive: true })
     await mkdir(home, { recursive: true })
+    await initGitRepo(workspace, 'workspace')
+    await initGitRepo(outsideRepo, 'outside repo')
     if (options.afterFixtureCommand) {
       const result = await run('/bin/sh', ['-lc', options.afterFixtureCommand])
       if (result.code !== 0) {
@@ -409,6 +452,7 @@ async function main() {
     const targetFileName = `${provider}-workspace-live-sync-permission.txt`
     const targetFilePath = path.join(workspace, targetFileName)
     const expectedContent = `workspace-live-sync-${provider}`
+    const launchFailureProbe = () => readProviderLaunchFailure(rootDir)
     await client.send(submitPromptRequest(
       sessionId,
       attachmentId,
@@ -428,13 +472,31 @@ async function main() {
       `Allow writing \`${targetFileName}\` through Arroba workspace live sync?`,
       options.timeoutMs,
       options.pollMs,
+      launchFailureProbe,
     )
     requireCondition(pending.interaction.kind === 'permission', 'workspace live sync interaction kind mismatch', pending)
     log('answering-workspace-live-sync-interaction', { provider, interactionId: pending.interaction.id })
     await client.send(respondToInteractionRequest(sessionId, pending.interaction.id, 'allow'))
 
-    await waitForFileContent(client, sessionId, attachmentId, targetFilePath, expectedContent, options.timeoutMs, options.pollMs)
+    await waitForFileContent(client, sessionId, attachmentId, targetFilePath, expectedContent, options.timeoutMs, options.pollMs, launchFailureProbe)
     log('workspace-live-sync-permission-passed', { provider, targetFilePath })
+
+    const outsideFilePath = path.join(outsideRepo, `${provider}-outside-repo-direct-write.txt`)
+    const outsideExpectedContent = `outside-repo-direct-write-${provider}`
+    await client.send(submitPromptRequest(
+      sessionId,
+      attachmentId,
+      agentId,
+      [
+        `Invoke your provider-native bash/shell tool, not Arroba workspace live sync tools, to create the absolute file ${outsideFilePath}.`,
+        `The file content must be exactly ${outsideExpectedContent}.`,
+        'This path is a separate Git repository outside the live-synced workspace and should be edited normally.',
+        'Do not only print a command; execute it through the provider-native tool.',
+        'After the write succeeds, reply with exactly OUTSIDE_REPO_DIRECT_WRITE_DONE.',
+      ].join(' '),
+    ))
+    await waitForFileContent(client, sessionId, attachmentId, outsideFilePath, outsideExpectedContent, options.timeoutMs, options.pollMs, launchFailureProbe)
+    log('outside-repo-direct-write-passed', { provider, outsideFilePath })
 
     succeeded = true
   } finally {

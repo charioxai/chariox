@@ -615,7 +615,7 @@ The kernel owns Workspace Live Sync for Arroba-launched provider sessions. The g
 
 Workspace Live Sync has two coordinated modes:
 
-- **managed**: supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native shell/edit paths are denied for managed sessions.
+- **managed**: supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native writes are denied inside synced roots, while repositories outside those roots remain editable through normal provider-native paths when Arroba has an active write fence for the provider process.
 - **tracked**: provider-native file writes are allowed, but the kernel snapshots allowed workspace files during an Arroba-managed turn, computes changed-file diffs at turn end, and fans those changes out to attached Workspace Live Sync targets.
 
 macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under selected protected roots only: the canonical selected worktree Git root plus explicitly attached local workspace-link roots. Provider state/cache/temp writes and writes to unrelated sibling repositories outside those roots remain allowed. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native shell may be enabled only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.

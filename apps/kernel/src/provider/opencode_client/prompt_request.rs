@@ -65,9 +65,7 @@ impl OpenCodeClient {
                 ("multiedit".to_string(), json!(false)),
                 ("task".to_string(), json!(false)),
             ]);
-            if !allow_native_bash {
-                tools.insert("bash".to_string(), json!(false));
-            }
+            tools.insert("bash".to_string(), json!(allow_native_bash));
             body["tools"] = serde_json::Value::Object(tools);
         }
 

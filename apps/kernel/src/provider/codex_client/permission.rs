@@ -45,10 +45,15 @@ pub(super) fn codex_permission_policy(
             let mut config_overrides = BTreeMap::new();
             config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
             config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
+            #[cfg(target_os = "macos")]
+            let (sandbox, sandbox_policy) =
+                ("danger-full-access", json!({ "type": "dangerFullAccess" }));
+            #[cfg(not(target_os = "macos"))]
+            let (sandbox, sandbox_policy) = ("read-only", json!({ "type": "readOnly" }));
             CodexPermissionPolicy {
                 approval_policy: json!("never"),
-                sandbox: "read-only",
-                sandbox_policy: json!({ "type": "readOnly" }),
+                sandbox,
+                sandbox_policy,
                 config_overrides,
             }
         }

@@ -413,6 +413,80 @@ mod tests {
     }
 
     #[test]
+    fn workspace_live_sync_prompt_disables_native_writes_but_allows_fenced_bash() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("read timeout should be set");
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let size = stream.read(&mut buf).expect("request should read");
+                request.extend_from_slice(&buf[..size]);
+                let request_text = String::from_utf8_lossy(&request);
+                let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .expect("request should include content length");
+                if body.len() >= content_length {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            let (_, body) = request_text
+                .split_once("\r\n\r\n")
+                .expect("request should include body");
+            let body: serde_json::Value =
+                serde_json::from_str(body).expect("request body should be JSON");
+            assert_eq!(
+                body.get("tools"),
+                Some(&serde_json::json!({
+                    "edit": false,
+                    "write": false,
+                    "apply_patch": false,
+                    "multiedit": false,
+                    "task": false,
+                    "bash": true,
+                }))
+            );
+            let response =
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+        });
+
+        let client =
+            OpenCodeClient::new("provider-run-1", format!("http://127.0.0.1:{port}")).unwrap();
+        client
+            .submit_prompt(
+                "session-1",
+                "message-1",
+                "write outside the synced root",
+                &[],
+                None,
+                Some("opencode/gpt-5.4"),
+                None,
+                AgentExecutionMode::Build,
+                true,
+                true,
+            )
+            .expect("prompt should be accepted");
+        server.join().expect("server thread should join");
+    }
+
+    #[test]
     fn preserves_first_sse_payload_when_headers_and_body_arrive_together() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
         let port = listener

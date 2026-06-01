@@ -133,7 +133,7 @@ mod tests {
     };
 
     #[test]
-    fn workspace_live_sync_permission_policy_uses_read_only_sandbox() {
+    fn workspace_live_sync_permission_policy_uses_platform_fenced_sandbox() {
         let policy = codex_permission_policy(
             ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
             AgentExecutionMode::Build,
@@ -141,8 +141,16 @@ mod tests {
         );
 
         assert_eq!(policy.approval_policy, json!("never"));
-        assert_eq!(policy.sandbox, "read-only");
-        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(policy.sandbox, "danger-full-access");
+            assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(policy.sandbox, "read-only");
+            assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+        }
         assert_eq!(
             policy.config_overrides.get("include_apply_patch_tool"),
             Some(&json!(false))
