@@ -8,7 +8,11 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 import { formatSliceProviderAccounts, formatSliceScope } from "./slice-format.js"
-import { hasActiveHomeProxyExtensionGrants } from "@arroba/kernel-client/extension-grant-placement"
+import {
+  formatExtensionGrantPlacement,
+  formatExtensionGrantPlacementSummary,
+  hasActiveHomeProxyExtensionGrants,
+} from "@arroba/kernel-client/extension-grant-placement"
 import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
@@ -328,29 +332,14 @@ function formatAgentInspectExtensionSummary(agent: AgentInstance): string {
   if (grants.length === 0) {
     return "none"
   }
-  const counts = grants.reduce<Record<string, number>>((acc, grant) => {
-    acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
-    return acc
-  }, {})
-  const byKind = ["mcp", "skill", "script", "connector"]
-    .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
-    .filter(Boolean)
-    .join(", ")
-  const placement = formatAgentExtensionPlacementSummary(agent)
-  return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+  return formatExtensionGrantPlacementSummary(grants, {
+    remote: Boolean(agent.remote_execution),
+    countSeparator: "=",
+  })
 }
 
 function formatAgentExtensionPlacementSummary(agent: AgentInstance): string {
-  if (!agent.remote_execution) {
-    return "worker-local"
-  }
-  const grants = agent.extension_grants ?? []
-  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(grants)
-  const passiveSkillSnapshot = grants.some((grant) => grant.kind === "skill")
-  return [
-    activeHomeProxy ? "active tools home-proxy" : null,
-    passiveSkillSnapshot ? "skills snapshot" : null,
-  ].filter(Boolean).join("; ") || "home-proxy"
+  return formatExtensionGrantPlacement(agent.extension_grants, Boolean(agent.remote_execution))
 }
 
 function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {

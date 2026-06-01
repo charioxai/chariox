@@ -1,6 +1,8 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
+  formatExtensionGrantPlacement,
+  formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
@@ -92,7 +94,8 @@ function formatAgentListPlacement(agent: AgentInstance, slice: SliceRecord | nul
 
 function formatAgentListGrantCount(agent: AgentInstance): string {
   const grants = agent.extension_grants?.length ?? 0
-  const count = `${grants} grant${grants === 1 ? "" : "s"}`
+  const grantList = agent.extension_grants ?? []
+  const count = `${grantList.length} grant${grantList.length === 1 ? "" : "s"}`
   return grants > 0 ? `${count} (${formatAgentExtensionPlacementSummary(agent)})` : count
 }
 
@@ -248,29 +251,14 @@ function formatAgentExtensionSummary(agent: AgentInstance): string {
   if (grants.length === 0) {
     return "none"
   }
-  const counts = grants.reduce<Record<string, number>>((acc, grant) => {
-    acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
-    return acc
-  }, {})
-  const byKind = ["mcp", "skill", "script", "connector"]
-    .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
-    .filter(Boolean)
-    .join(", ")
-  const placement = formatAgentExtensionPlacementSummary(agent)
-  return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+  return formatExtensionGrantPlacementSummary(grants, {
+    remote: Boolean(agent.remote_execution),
+    countSeparator: "=",
+  })
 }
 
 export function formatAgentExtensionPlacementSummary(agent: AgentInstance): string {
-  if (!agent.remote_execution) {
-    return "worker-local"
-  }
-  const grants = agent.extension_grants ?? []
-  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(grants)
-  const passiveSkillSnapshot = grants.some((grant) => grant.kind === "skill")
-  return [
-    activeHomeProxy ? "active tools home-proxy" : null,
-    passiveSkillSnapshot ? "skills snapshot" : null,
-  ].filter(Boolean).join("; ") || "home-proxy"
+  return formatExtensionGrantPlacement(agent.extension_grants, Boolean(agent.remote_execution))
 }
 
 function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {

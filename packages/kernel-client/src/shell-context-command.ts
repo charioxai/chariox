@@ -1,8 +1,10 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
-import { formatAgentExtensionPlacementSummary } from "./shell-agent-format.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
-import { hasActiveHomeProxyExtensionGrants } from "./extension-grant-placement.js"
+import {
+  formatExtensionGrantPlacementSummary,
+  hasActiveHomeProxyExtensionGrants,
+} from "./extension-grant-placement.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -191,16 +193,10 @@ function formatContextExtensionSummary(agent: AgentInstance): string {
   if (grants.length === 0) {
     return "none"
   }
-  const counts = grants.reduce<Record<string, number>>((acc, grant) => {
-    acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
-    return acc
-  }, {})
-  const byKind = ["mcp", "skill", "script", "connector"]
-    .map((kind) => counts[kind] ? `${kind}=${counts[kind]}` : null)
-    .filter(Boolean)
-    .join(", ")
-  const placement = formatAgentExtensionPlacementSummary(agent)
-  return `${grants.length} grant${grants.length === 1 ? "" : "s"} (${placement}${byKind ? `; ${byKind}` : ""})`
+  return formatExtensionGrantPlacementSummary(grants, {
+    remote: Boolean(agent.remote_execution),
+    countSeparator: "=",
+  })
 }
 
 function formatContextRemoteExtensionSync(agent: AgentInstance): string {
