@@ -305,4 +305,60 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn workspace_live_sync_protected_roots_do_not_include_sibling_repos() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-live-sync-root-scope-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let selected = base.join("selected");
+        let selected_child = selected.join("src");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&selected_child).expect("selected repo fixture should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling repo fixture should exist");
+        run_git_init(&selected);
+        run_git_init(&sibling);
+        let session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            selected_child.to_string_lossy().to_string(),
+            "machine-1",
+            "daemon-1",
+        );
+
+        let roots = workspace_live_sync_protected_roots(
+            &session,
+            Some(selected_child.as_path()),
+            "machine-1",
+            "daemon-1",
+        );
+
+        let canonical_selected = selected
+            .canonicalize()
+            .expect("selected repo should canonicalize");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(roots, vec![canonical_selected]);
+    }
+
+    fn run_git_init(path: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .arg("-b")
+            .arg("main")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run");
+        assert!(
+            status.success(),
+            "git init should succeed in {}",
+            path.display()
+        );
+    }
 }
