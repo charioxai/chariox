@@ -149,6 +149,13 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     }
   }
 
+  if (workspaceCoordination.active_operation_claims.length > 0) {
+    lines.push("workspace active operations:")
+    for (const claim of workspaceCoordination.active_operation_claims) {
+      lines.push(`  ${claim.mode} ${claim.operation} workspace=${claim.workspace_id} worktree=${claim.worktree_id} session=${claim.session_id}${claim.attachment_id ? ` attachment=${claim.attachment_id}` : ""}`)
+    }
+  }
+
   if (workspaceIdentity.identity_changed_provider_runs > 0 || workspaceIdentity.invalid_provider_runs > 0) {
     lines.push(`workspace identity issues: changed=${workspaceIdentity.identity_changed_provider_runs} invalid=${workspaceIdentity.invalid_provider_runs}`)
   }

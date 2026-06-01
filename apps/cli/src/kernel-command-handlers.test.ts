@@ -226,6 +226,8 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /workspace watcher: tracked=5 external_changes=1 events=6 scans=8 scan_errors=1 started=yes/)
   assert.match(rendered, /workspace worktree collisions:/)
   assert.match(rendered, /workspace=workspace-1 worktree=\/repo sessions=session-1,session-2/)
+  assert.match(rendered, /workspace active operations:/)
+  assert.match(rendered, /write live_sync_apply workspace=workspace-1 worktree=\/repo session=session-1/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /workspace watcher scan errors: 1/)
 })
