@@ -90,7 +90,7 @@ test("waiting room activation creates and attaches sessions with launch defaults
     "updateSlice:slice-1",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review",
+    "flash:info:created session Review in /worktree · slice slice-1 · workspace live sync config default",
   ])
 })
 
@@ -122,7 +122,28 @@ test("waiting room activation creates and starts new headed slices before sessio
     "updateSlice:slice-created",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review",
+    "flash:info:created session Review in /worktree · slice slice-created · workspace live sync config default",
+  ])
+})
+
+test("waiting room activation reports explicit created-session live sync mode", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "high",
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch },
+    sessionOverrides: { workspace_live_sync_mode: "tracked" },
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.calls.slice(-3), [
+    "createSession",
+    "attachBinding",
+    "flash:info:created session Review in /worktree · workspace live sync tracked",
   ])
 })
 
@@ -146,7 +167,7 @@ test("waiting room prompt bootstrap creates from launch defaults without using f
     "connectKernel",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review",
+    "flash:info:created session Review in /worktree · workspace live sync config default",
   ])
   assert.deepEqual(harness.attachedSessions, [{
     sessionId: "created-session",
@@ -217,6 +238,7 @@ function createHarness(options: {
   createSessionDecision?: WaitingRoomCreateSessionDecision
   accountProfile?: string | null
   createError?: Error
+  sessionOverrides?: Partial<RuntimeSession>
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -276,7 +298,7 @@ function createHarness(options: {
         throw options.createError
       }
       createdLaunches.push({ workspacePath, worktreePath, launch })
-      return runtimeSession("created-session", "Review")
+      return runtimeSession("created-session", "Review", options.sessionOverrides)
     },
     createSlice: async (slice) => {
       calls.push("createSlice")
@@ -324,7 +346,7 @@ function createHarness(options: {
   }
 }
 
-function runtimeSession(id: string, alias: string | null): RuntimeSession {
+function runtimeSession(id: string, alias: string | null, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id,
     alias,
@@ -356,6 +378,7 @@ function runtimeSession(id: string, alias: string | null): RuntimeSession {
       values: {},
       updated_by_attachment_id: null,
     },
+    ...overrides,
   }
 }
 

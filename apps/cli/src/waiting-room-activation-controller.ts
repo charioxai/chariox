@@ -205,7 +205,7 @@ export function createWaitingRoomActivationController(
       },
     )
     await deps.attachBinding(session, true, launch)
-    deps.flashFooter(`created session ${session.alias ?? session.id}`, "info")
+    deps.flashFooter(createdSessionFooter(session, sliceRef), "info")
     return session
   }
 
@@ -248,4 +248,25 @@ function defaultSliceName(worktreePath: string): string {
   const leaf = worktreePath.split("/").filter(Boolean).pop() || "workspace"
   const suffix = Date.now().toString(36).slice(-5)
   return `${leaf}-slice-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, "-")
+}
+
+function createdSessionFooter(
+  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+  sliceRef: string | null,
+): string {
+  const label = session.alias ?? session.id
+  const worktree = session.worktree_id ? ` in ${session.worktree_id}` : ""
+  const slice = sliceRef ? ` · slice ${sliceRef}` : ""
+  return `created session ${label}${worktree}${slice} · workspace live sync ${createdSessionLiveSyncMode(session)}`
+}
+
+function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {
+  const mode = session.workspace_live_sync_mode
+  if (mode === "managed" || mode === "tracked") {
+    return mode
+  }
+  if (mode === "unrestricted") {
+    return "off"
+  }
+  return "config default"
 }
