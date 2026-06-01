@@ -126,7 +126,11 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push("  next: refresh the terminal session to receive a fresh projection snapshot")
   }
 
-  if (sliceLifecycle.unhealthy_slices > 0 || sliceLifecycle.failed_operations > 0) {
+  if (
+    sliceLifecycle.issues.length > 0
+    || sliceLifecycle.unhealthy_slices > 0
+    || sliceLifecycle.failed_operations > 0
+  ) {
     lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
     for (const issue of sliceLifecycle.issues) {
       const operation = issue.last_operation ? ` op=${issue.last_operation}` : ""

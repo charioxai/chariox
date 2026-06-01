@@ -282,6 +282,42 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /next: run \/slice doctor for the affected slice/)
 })
 
+test("kernel health formatter renders lifecycle issues without failed counters", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 1,
+      running_slices: 0,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 1,
+      unhealthy_slices: 0,
+      attached_agents: 1,
+      failed_operations: 0,
+      in_progress_operations: 0,
+      issues: [{
+        slice_id: "slice-1",
+        name: "dev",
+        status: "stopped",
+        last_operation: null,
+        last_operation_status: null,
+        last_error: null,
+        session_ids: ["session-1"],
+        agent_ids: ["agent-1"],
+        worktree_id: "/repo",
+      }],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /slice lifecycle issues: unhealthy=0 failed_ops=0/)
+  assert.match(rendered, /slice=dev \(slice-1\) status=stopped worktree=\/repo agents=agent-1/)
+  assert.match(rendered, /next: run \/slice doctor for the affected slice/)
+})
+
 test("kernel health formatter reports slice provider auth issues", () => {
   const unhealthy = health({
     slice_lifecycle: {
