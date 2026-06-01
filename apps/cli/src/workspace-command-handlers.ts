@@ -5,6 +5,11 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
+  parseWorkspaceLiveSyncModeCommand,
+  workspaceLiveSyncModeProtocolValue,
+  type WorkspaceLiveSyncModeProtocolValue,
+} from "@arroba/kernel-client/workspace-live-sync-mode"
+import {
   prepareLocalGitWorktree,
   suggestNamedWorktreePath,
   worktreeAliasConfigPath,
@@ -39,7 +44,7 @@ export type WorkspaceCommandHandlerDeps = {
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
   setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
-  setWorkspaceLiveSyncMode?: (sessionId: string, mode: "managed" | "tracked" | "unrestricted") => Promise<unknown>
+  setWorkspaceLiveSyncMode?: (sessionId: string, mode: WorkspaceLiveSyncModeProtocolValue) => Promise<unknown>
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
 }
@@ -122,7 +127,7 @@ async function handleWorkspaceSyncCommand(
     return
   }
   if (action === "enable") {
-    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "managed")
     if (!mode || mode === "off" || args.length > 1 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
@@ -136,7 +141,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync off|managed|tracked", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, action === "off" ? "unrestricted" : action)
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(action))
     deps.flashFooter(action === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${action}`, "info")
     return
   }
@@ -150,12 +155,12 @@ async function handleWorkspaceSyncCommand(
     return
   }
   if (action === "mode") {
-    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
     if (!mode || args.length !== 1 || !deps.setWorkspaceLiveSyncMode) {
       deps.flashFooter("usage: /workspace sync mode off|managed|tracked", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode === "off" ? "unrestricted" : mode)
+    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(mode))
     deps.flashFooter(mode === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${mode}`, "info")
     return
   }
@@ -167,11 +172,6 @@ async function handleWorkspaceSyncCommand(
     return
   }
   deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|link", "error")
-}
-
-function normalizeWorkspaceLiveSyncMode(value: string): "off" | "managed" | "tracked" | null {
-  if (value === "off" || value === "managed" || value === "tracked") return value
-  return null
 }
 
 export async function handleWorktreeSlashCommand(

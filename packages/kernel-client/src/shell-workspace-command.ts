@@ -21,6 +21,9 @@ import {
   formatWorkspaceLinkDetails,
   formatWorkspaceLinks,
 } from "./shell-workspace-format.js"
+import {
+  parseWorkspaceLiveSyncModeCommand,
+} from "./workspace-live-sync-mode.js"
 
 type ShellWorkspaceCommandDeps = {
   client: {
@@ -163,7 +166,7 @@ async function executeWorkspaceSyncCommand(
     }
   }
   if (action === "enable") {
-    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "managed")
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "managed")
     if (!mode || args.length > 1) {
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
@@ -192,7 +195,7 @@ async function executeWorkspaceSyncCommand(
     return { ok: true, message: "current session workspace live sync disabled", data: response }
   }
   if (action === "mode") {
-    const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
     if (!mode || args.length !== 1) {
       return { ok: false, message: "usage: workspace sync mode off|managed|tracked" }
     }
@@ -229,10 +232,4 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
-}
-
-function normalizeWorkspaceLiveSyncMode(value: string): "off" | "managed" | "tracked" | null {
-  if (value === "off") return value
-  if (value === "managed" || value === "tracked") return value
-  return null
 }

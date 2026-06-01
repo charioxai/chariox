@@ -14,7 +14,8 @@
     "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-core": "./dist/shell-core.js",
     "./shell-executor": "./dist/shell-executor.js",
-    "./shell-script": "./dist/shell-script.js"
+    "./shell-script": "./dist/shell-script.js",
+    "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
