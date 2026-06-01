@@ -11,6 +11,7 @@
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
+    "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-core": "./dist/shell-core.js",
     "./shell-executor": "./dist/shell-executor.js",
     "./shell-script": "./dist/shell-script.js"

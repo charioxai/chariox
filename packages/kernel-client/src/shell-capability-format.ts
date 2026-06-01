@@ -205,7 +205,7 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
 function formatHomeExtensionAuditInvocation(value: unknown): string {
   const invocation = typeof value === "object" && value ? value as Record<string, unknown> : {}
   const parts = [
-    fieldPart("invocation", invocation.invocation_id),
+    fieldPart("id", invocation.invocation_id),
     fieldPart("call", invocation.provider_tool_call_id),
     fieldPart("attempt", invocation.attempt),
     fieldPart("idempotency", invocation.idempotency_key),
@@ -252,7 +252,7 @@ function remoteExtensionSyncNextAction(status?: RemoteExtensionManifestSyncStatu
     return "keep the home revoke in place; retry sync after the worker reconnects"
   }
   if (status.state === "failed" || status.state === "stale") {
-    return "check worker connectivity, then run extension sync-retry for this agent"
+    return "check worker connectivity, then run /extension sync-retry for this agent"
   }
   return null
 }
