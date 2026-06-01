@@ -632,6 +632,69 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "CreateSession"])
 })
 
+test("executeShellCommand reuses only slices scoped to the session worktree", async () => {
+  const session = makeSession({ id: "session-2", worktree_id: "/repo/qa", focused_agent_id: "agent-1" })
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListSlices" in request) {
+      return {
+        SlicesListed: {
+          slices: [{
+            id: "slice-qa",
+            name: "qa",
+            status: "stopped",
+            workspace_id: "/repo",
+            worktree_id: "/repo/qa",
+          }],
+        },
+      }
+    }
+    if ("StartSlice" in request) {
+      return { SliceStarted: { slice: { id: "slice-qa" } } }
+    }
+    if ("CreateSession" in request) {
+      return { SessionCreated: { session } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice qa"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["ListSlices", "StartSlice", "CreateSession"])
+  assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-qa" } })
+  assert.deepEqual(requests[2], { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: "slice-qa" } })
+})
+
+test("executeShellCommand rejects slices from another worktree", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListSlices: null })
+    return {
+      SlicesListed: {
+        slices: [{
+          id: "slice-main",
+          name: "main",
+          status: "running",
+          workspace_id: "/repo",
+          worktree_id: "/repo/main",
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  await assert.rejects(
+    () => executeShellCommand(parseShellCommand("session new --dir qa --slice main"), context, {
+      client: fake.client,
+      resolveExistingDirectory: async () => "/repo/qa",
+    }),
+    /slice main is scoped to worktree \/repo\/main, not \/repo\/qa/,
+  )
+})
+
 test("executeShellCommand creates manually managed slices scoped to the current worktree", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
