@@ -447,6 +447,7 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.equal(grantsResult.ok, true)
   assert.match(grantsResult.message ?? "", /home-proxy/)
   assert.match(grantsResult.message ?? "", /remote extension sync: failed, pending revoke, relay offline/)
+  assert.match(grantsResult.message ?? "", /next: keep the home revoke in place; retry sync after the worker reconnects/)
   assert.equal(statusResult.ok, true)
   assert.match(statusResult.message ?? "", /worker kernel: worker-1/)
   assert.match(statusResult.message ?? "", /next: keep the home revoke in place; retry sync after the worker reconnects/)

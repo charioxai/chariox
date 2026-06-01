@@ -67,6 +67,22 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
     formatAgentCapabilityGrants(makeAgent(), "skill"),
     "agent-1 has no skill grants.",
   )
+  assert.equal(
+    formatAgentCapabilityGrants(makeAgent({
+      remote_execution: {
+        worker_kernel_id: "worker-1",
+        worker_machine_id: "machine-1",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      remote_extension_manifest_sync: {
+        state: "stale",
+        last_error: "worker offline",
+      },
+      extension_grants: [{ kind: "script", name: "lookup", environment: "python" }],
+    }), "script"),
+    "agent-1 script grants:\n- lookup (home-proxy, env=python)\n\nremote extension sync: stale, worker offline\nnext: check worker connectivity, then run /extension sync-retry for this agent",
+  )
 })
 
 test("formatHomeExtensionAuditEvents renders diagnostic context without payload bodies", () => {

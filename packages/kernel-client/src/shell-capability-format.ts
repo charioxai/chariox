@@ -84,9 +84,7 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
   const placement = agent.remote_execution
     ? kind === "skill" ? "skill snapshot" : "home-proxy"
     : "worker-local"
-  const sync = agent.remote_execution
-    ? `\n\nremote extension sync: ${formatRemoteExtensionSyncStatusLine(agent.remote_extension_manifest_sync)}`
-    : ""
+  const sync = formatGrantRemoteExtensionSyncBlock(agent)
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
     const parts = [
       placement,
@@ -97,6 +95,15 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
     const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : ""
     return `- ${grant.name}${suffix}`
   }).join("\n")}${sync}`
+}
+
+function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
+  if (!agent.remote_execution) return ""
+  const status = agent.remote_extension_manifest_sync
+  const lines = [`remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`]
+  const nextAction = remoteExtensionSyncNextAction(status)
+  if (nextAction) lines.push(`next: ${nextAction}`)
+  return `\n\n${lines.join("\n")}`
 }
 
 export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
