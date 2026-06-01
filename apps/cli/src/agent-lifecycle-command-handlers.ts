@@ -334,16 +334,27 @@ function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {
   }
   const sync = agent.remote_extension_manifest_sync
   if (!sync) {
-    return "pending"
+    return `pending, next=${formatAgentRemoteExtensionSyncNextAction(agent)}`
   }
-  return [
+  const details = [
     sync.state,
     sync.pending_revoke ? "pending revoke" : null,
     sync.manifest_hash ? `hash=${sync.manifest_hash.slice(0, 12)}` : null,
     sync.last_error ? `error=${sync.last_error}` : null,
     sync.last_synced_at_ms ? `synced=${formatTimestamp(sync.last_synced_at_ms)}` : null,
     sync.last_attempted_at_ms ? `attempted=${formatTimestamp(sync.last_attempted_at_ms)}` : null,
-  ].filter(Boolean).join(", ")
+  ].filter(Boolean)
+  if (sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error) {
+    details.push(`next=${formatAgentRemoteExtensionSyncNextAction(agent)}`)
+  }
+  return details.join(", ")
+}
+
+function formatAgentRemoteExtensionSyncNextAction(agent: AgentInstance): string {
+  const worker = agent.remote_execution?.worker_machine_id
+    ? `; run /machine kernels ${agent.remote_execution.worker_machine_id}`
+    : ""
+  return `run /extension sync-status ${agent.agent_ref}${worker}; use /extension sync-retry ${agent.agent_ref} after worker connectivity is healthy`
 }
 
 function formatAgentInspectSubstitutes(agent: AgentInstance): string {

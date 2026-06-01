@@ -131,6 +131,7 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(summary, /next=run \/extension sync-status agent-remote; run \/machine kernels slice-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 
