@@ -1,4 +1,5 @@
 import type { DaemonHealthProjection } from "./kernel-types.js"
+import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
   return health.provider_runs.duplicate_arroba_agent_bindings.length
@@ -224,8 +225,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
     const firstIssue = remoteExtensionSync.issues[0]
     const target = firstAgent ?? "<agent>"
-    const worker = firstIssue?.worker_machine_id ? `; run /machine kernels ${firstIssue.worker_machine_id}` : ""
-    lines.push(`  next: run /extension sync-status ${target}${worker}; use /extension sync-retry ${target} after worker connectivity is healthy`)
+    const nextAction = remoteExtensionSyncNextAction(firstIssue
+      ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
+      : null, target, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${target}`
+    lines.push(`  next: ${nextAction}`)
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {

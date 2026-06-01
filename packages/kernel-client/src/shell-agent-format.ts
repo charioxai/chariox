@@ -1,4 +1,5 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
+import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
 export type ShellAgentProviderRunContext = {
   activeProviderRunId?: string | null
@@ -104,10 +105,11 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
 }
 
 function formatAgentListRemoteExtensionSyncAction(agent: AgentInstance): string {
-  const worker = agent.remote_execution?.worker_machine_id
-    ? `; /machine kernels ${agent.remote_execution.worker_machine_id}`
-    : ""
-  return `/extension sync-status ${agent.agent_ref}${worker}; /extension sync-retry ${agent.agent_ref}`
+  return remoteExtensionSyncNextAction(
+    agent.remote_extension_manifest_sync,
+    agent.agent_ref,
+    agent.remote_execution?.worker_machine_id,
+  ) ?? `run /extension sync-status ${agent.agent_ref}`
 }
 
 export function formatAgentInspectSummary(
@@ -294,10 +296,11 @@ function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
 }
 
 function formatAgentRemoteExtensionSyncNextAction(agent: AgentInstance): string {
-  const worker = agent.remote_execution?.worker_machine_id
-    ? `; run /machine kernels ${agent.remote_execution.worker_machine_id}`
-    : ""
-  return `run /extension sync-status ${agent.agent_ref}${worker}; use /extension sync-retry ${agent.agent_ref} after worker connectivity is healthy`
+  return remoteExtensionSyncNextAction(
+    agent.remote_extension_manifest_sync,
+    agent.agent_ref,
+    agent.remote_execution?.worker_machine_id,
+  ) ?? `run /extension sync-status ${agent.agent_ref}`
 }
 
 function formatAgentSubstitutesInline(agent: AgentInstance): string {

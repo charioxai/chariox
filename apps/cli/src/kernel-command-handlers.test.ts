@@ -434,7 +434,7 @@ test("kernel health formatter reports remote extension sync issues", () => {
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /agent=agent-failed \(agent-failed\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 worker_run=worker-run-1 state=failed pending_revoke=yes hash=hash-failed worktree=\/repo grants=connector:status-api: relay offline/)
-  assert.match(rendered, /next: run \/extension sync-status agent-failed; run \/machine kernels worker-machine; use \/extension sync-retry agent-failed after worker connectivity is healthy/)
+  assert.match(rendered, /next: keep the home revoke in place; run \/extension sync-status agent-failed; run \/machine kernels worker-machine if the revoke stays pending; use \/extension sync-retry agent-failed after the worker reconnects/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {

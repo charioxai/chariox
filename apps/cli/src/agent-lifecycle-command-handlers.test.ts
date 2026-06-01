@@ -45,7 +45,7 @@ test("agent list summary renders aliases and pluralization", () => {
       agent({ agent_ref: "agent-a", alias: "builder" }),
       remoteAgent,
     ]),
-    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants (active tools home-proxy); manifest stale abcdef12 pending revoke error worker offline next /extension sync-status agent-b; /machine kernels machine-worker; /extension sync-retry agent-b]",
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants (active tools home-proxy); manifest stale abcdef12 pending revoke error worker offline next keep the home revoke in place; run /extension sync-status agent-b; run /machine kernels machine-worker if the revoke stays pending; use /extension sync-retry agent-b after the worker reconnects]",
   )
   assert.match(
     formatAgentListSummary([remoteAgent], [slice({
@@ -133,7 +133,7 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(summary, /next=run \/extension sync-status agent-remote; run \/machine kernels slice-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
+  assert.match(summary, /next=keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 

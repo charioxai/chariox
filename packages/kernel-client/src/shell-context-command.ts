@@ -1,6 +1,7 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
 import { formatAgentExtensionPlacementSummary } from "./shell-agent-format.js"
+import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   parseExecutionMode,
@@ -205,11 +206,9 @@ function formatContextRemoteExtensionSync(agent: AgentInstance): string {
   if (!agent.remote_execution) {
     return "not applicable"
   }
-  const worker = agent.remote_execution.worker_machine_id
-    ? `; run /machine kernels ${agent.remote_execution.worker_machine_id}`
-    : ""
-  const action = `run /extension sync-status ${agent.agent_ref}${worker}; use /extension sync-retry ${agent.agent_ref} after worker connectivity is healthy`
   const sync = agent.remote_extension_manifest_sync
+  const action = remoteExtensionSyncNextAction(sync, agent.agent_ref, agent.remote_execution.worker_machine_id)
+    ?? `run /extension sync-status ${agent.agent_ref}`
   if (!sync) {
     return `pending; next=${action}`
   }
