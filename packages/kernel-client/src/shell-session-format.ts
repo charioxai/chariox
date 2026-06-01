@@ -18,10 +18,16 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
       const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
       const location = basename(session.worktree_id) || session.worktree_id
       const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
+      const home = formatSessionHomeKernel(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${current}`
     }),
   ].join("\n")
+}
+
+function formatSessionHomeKernel(session: RuntimeSession): string {
+  const host = session.host_daemon_id?.trim() || session.host_machine_id?.trim()
+  return host ? ` - home ${host}` : ""
 }
 
 export function formatSessionMembers(members: SessionMember[], invites: SessionInvite[]): string {

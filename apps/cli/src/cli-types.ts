@@ -109,6 +109,8 @@ export type RuntimeSession = {
   workspace_id: string
   worktree_id: string
   owner_user_id?: string
+  host_machine_id?: string | null
+  host_daemon_id?: string | null
   members?: SessionMember[]
   invites?: SessionInvite[]
   workspace_label?: string | null

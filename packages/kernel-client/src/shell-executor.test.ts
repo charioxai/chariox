@@ -61,6 +61,8 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
       return {
         SessionState: {
           session: makeSession({
+            host_daemon_id: "home-kernel-1",
+            host_machine_id: "home-machine-1",
             prompt_states: {
               "agent-1": {
                 active_prompt: {
@@ -87,12 +89,44 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /workspace: \/repo/)
   assert.match(contextResult.message ?? "", /worktree: \/repo\/worktree/)
   assert.match(contextResult.message ?? "", /session: session-1/)
+  assert.match(contextResult.message ?? "", /home kernel: home-kernel-1/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /workflow: workflow-1/)
   assert.match(contextResult.message ?? "", /provider: codex/)
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
   assert.equal(fake.requests.length, 1)
+})
+
+test("executeShellCommand lists sessions with home kernel ownership", async () => {
+  const sessions = [
+    makeSession({
+      id: "session-1",
+      alias: "main",
+      host_daemon_id: "home-kernel-1",
+      host_machine_id: "home-machine-1",
+      attachment_ids: ["attachment-1"],
+      worktree_id: "/repo/main",
+    }),
+    makeSession({
+      id: "session-2",
+      alias: null,
+      host_machine_id: "home-machine-2",
+      attachment_ids: [],
+      worktree_id: "/repo/feature",
+      status: "Parked",
+    }),
+  ]
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { ListSessions: null })
+    return { SessionsListed: { sessions } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/main", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("session list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1 current/)
+  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2/)
 })
 
 test("executeShellCommand submits prompt without waiting", async () => {

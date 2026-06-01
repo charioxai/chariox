@@ -51,6 +51,7 @@ function formatShellContext(context: ShellContext, session: RuntimeSession | nul
     `workspace: ${context.workspace}`,
     `worktree: ${context.worktree}`,
     `session: ${context.sessionId ?? "-"}`,
+    `home kernel: ${session?.host_daemon_id?.trim() || session?.host_machine_id?.trim() || "-"}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
     `mode: ${currentAgent ? `${effectiveAgentMode} (agent${currentAgent.execution_mode_override ? "-override" : "-session"})` : sessionMode}`,

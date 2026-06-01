@@ -20,6 +20,9 @@ export type SessionListEntry = {
   alias?: string | null
   workspace_id?: string
   worktree_id: string
+  host_machine_id?: string | null
+  host_daemon_id?: string | null
+  kernel_id?: string | null
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
@@ -57,10 +60,16 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const location = path.basename(session.worktree_id) || session.worktree_id
       const attachmentCount = session.attachment_ids?.length ?? session.connected_cli_count ?? 0
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
+      const home = formatSessionHomeKernel(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${current}`
     }),
   ].join("\n")
+}
+
+function formatSessionHomeKernel(session: SessionListEntry): string {
+  const host = session.host_daemon_id?.trim() || session.kernel_id?.trim() || session.host_machine_id?.trim()
+  return host ? ` - home ${host}` : ""
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
