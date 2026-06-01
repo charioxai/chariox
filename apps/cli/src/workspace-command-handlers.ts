@@ -305,6 +305,7 @@ function formatWorkspaceLinkDetails(link: WorkspaceLinkDefinition): string {
 }
 
 function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string {
+  const next = workspaceLiveSyncNextAction(status)
   return [
     `Workspace live sync: ${status.mode} footer=${status.footer_state}`,
     "Scope: selected workspace/worktree only; other repositories are unrestricted",
@@ -312,6 +313,7 @@ function formatWorkspaceLiveSyncStatus(status: WorkspaceLiveSyncStatus): string 
     `Targets: ${status.targets.length}`,
     `Conflicts: ${status.conflicts.length}`,
     `Ignore: ${status.ignore.ignore_file ?? "none"}`,
+    next ? `Next: ${next}` : "",
     status.ignore.rules.length > 0 ? `Rules: ${status.ignore.rules.join(", ")}` : "",
     status.ignore.force_excludes.length > 0 ? `Force excludes: ${status.ignore.force_excludes.join(", ")}` : "",
     formatWorkspaceLiveSyncTargets(status),
@@ -328,7 +330,11 @@ function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string
     return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
   })
   const lines = groups.concat(targets)
-  return lines.length === 0 ? "No workspace live sync targets." : lines.join("\n")
+  if (lines.length === 0) {
+    return "No workspace live sync targets.\nNext: link another repo or worktree with /workspace sync link <name-or-id> [repo-root]"
+  }
+  const next = workspaceLiveSyncNextAction(status)
+  return next ? `${lines.join("\n")}\nNext: ${next}` : lines.join("\n")
 }
 
 function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): string {
@@ -338,6 +344,25 @@ function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): stri
   return status.conflicts.map((conflict) => (
     `- ${conflict.path} source=${conflict.source_agent_id} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`
   )).join("\n")
+}
+
+function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {
+  if (status.conflicts.length > 0 || status.footer_state === "conflict") {
+    return "inspect /workspace sync conflicts, ask an agent to reconcile, then rerun /workspace sync status"
+  }
+  if (status.mode === "unrestricted" || status.footer_state === "off") {
+    return "enable with /workspace sync managed, or use /workspace sync tracked for turn-end fanout"
+  }
+  if (status.targets.length === 0) {
+    return "link another repo or worktree with /workspace sync link <name-or-id> [repo-root]"
+  }
+  if (status.sync_groups.some((group) => group.degraded_targets > 0) || status.targets.some((target) => target.status === "degraded")) {
+    return "inspect /workspace sync targets and reconnect or repair degraded target kernels"
+  }
+  if (status.footer_state === "syncing") {
+    return "wait for sync to settle, or inspect /workspace sync targets"
+  }
+  return ""
 }
 
 async function attachWorkspaceLink(
