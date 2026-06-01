@@ -240,12 +240,22 @@ function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): 
 function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
   const sync = agent.remote_extension_manifest_sync
   if (!sync) {
-    return ""
+    return agent.remote_execution ? `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}` : ""
   }
   const hash = sync.manifest_hash ? ` ${sync.manifest_hash.slice(0, 8)}` : ""
   const revoke = sync.pending_revoke ? " pending revoke" : ""
   const error = sync.last_error ? ` error ${sync.last_error}` : ""
-  return `manifest ${sync.state}${hash}${revoke}${error}`
+  const action = sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error
+    ? ` next ${formatAgentListRemoteExtensionSyncAction(agent)}`
+    : ""
+  return `manifest ${sync.state}${hash}${revoke}${error}${action}`
+}
+
+function formatAgentListRemoteExtensionSyncAction(agent: AgentInstance): string {
+  const worker = agent.remote_execution?.worker_machine_id
+    ? `; /machine kernels ${agent.remote_execution.worker_machine_id}`
+    : ""
+  return `/extension sync-status ${agent.agent_ref}${worker}; /extension sync-retry ${agent.agent_ref}`
 }
 
 function formatAgentGrantCount(agent: AgentInstance): string {

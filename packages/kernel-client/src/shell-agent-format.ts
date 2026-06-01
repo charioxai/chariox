@@ -90,12 +90,22 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
   }
   const status = agent.remote_extension_manifest_sync
   if (!status) {
-    return "manifest pending"
+    return `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}`
   }
   const hash = status.manifest_hash ? ` ${status.manifest_hash.slice(0, 8)}` : ""
   const revoke = status.pending_revoke ? " pending revoke" : ""
   const error = status.last_error ? ` error ${status.last_error}` : ""
-  return `manifest ${status.state}${hash}${revoke}${error}`
+  const action = status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error
+    ? ` next ${formatAgentListRemoteExtensionSyncAction(agent)}`
+    : ""
+  return `manifest ${status.state}${hash}${revoke}${error}${action}`
+}
+
+function formatAgentListRemoteExtensionSyncAction(agent: AgentInstance): string {
+  const worker = agent.remote_execution?.worker_machine_id
+    ? `; /machine kernels ${agent.remote_execution.worker_machine_id}`
+    : ""
+  return `/extension sync-status ${agent.agent_ref}${worker}; /extension sync-retry ${agent.agent_ref}`
 }
 
 export function formatAgentInspectSummary(
