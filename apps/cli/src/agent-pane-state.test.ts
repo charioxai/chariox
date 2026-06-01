@@ -130,6 +130,31 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
   assert.equal(result.visibleCursor, null)
 })
 
+test("refreshAgentPaneState ignores stale focused agent ids", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }, { id: "agent-b" }],
+      focused_agent_id: "stale-agent",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {},
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (agentId) => ({
+      entries: [{ role: "assistant", text: `${agentId} history` }],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join("\n"),
+  })
+
+  assert.equal(result.visibleAgentId, "agent-a")
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["agent-a history"])
+})
+
 test("refreshAgentPaneState can preserve expanded turn ids during refresh", async () => {
   const result = await refreshAgentPaneState({
     session: {

@@ -127,7 +127,7 @@ export async function refreshAgentPaneState<
   const expandedTurnIdsByAgent: Record<string, number[]> = {}
   const visibleAgentId = options.resolveVisibleAgentId(
     options.session.agents,
-    options.session.focused_agent_id ?? options.session.agents[0]?.id ?? null,
+    focusedAgentIdForAgentPaneSession(options.session),
   )
   let visibleEntries: TEntry[] = []
   let visibleCursor: TCursor | null = null
@@ -188,4 +188,14 @@ export async function refreshAgentPaneState<
     visibleEntries,
     visibleCursor,
   }
+}
+
+function focusedAgentIdForAgentPaneSession<TAgent extends { id: string }>(
+  session: AgentPaneSession<TAgent>,
+): string | null {
+  const focusedAgentId = session.focused_agent_id
+  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
+    return focusedAgentId
+  }
+  return session.agents[0]?.id ?? null
 }

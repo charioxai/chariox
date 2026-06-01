@@ -5,6 +5,7 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import { focusedAgentIdForSession } from "./session-state.js"
 import {
   appendWorkspaceShellEntry,
   workspaceShellCommandText,
@@ -28,7 +29,7 @@ export function deriveWorkspaceShellContextForSession(
     worktree: session.worktree_id || previous.worktree,
     sessionId: session.id,
     attachmentId: attachmentId ?? previous.attachmentId,
-    agentId: session.focused_agent_id ?? session.agents[0]?.id ?? previous.agentId,
+    agentId: focusedAgentIdForSession(session) ?? previous.agentId,
   }
 }
 

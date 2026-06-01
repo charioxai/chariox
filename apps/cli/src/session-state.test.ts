@@ -98,6 +98,17 @@ test("runtime session projections derive focus, interactions, provider run, and 
   })
 })
 
+test("focusedAgentIdForSession falls back when focused id is not in the session", () => {
+  assert.equal(focusedAgentIdForSession(session({
+    focused_agent_id: "stale-agent",
+    agents: [agent("agent-a"), agent("agent-b")],
+  })), "agent-a")
+  assert.equal(focusedAgentIdForSession(session({
+    focused_agent_id: "stale-agent",
+    agents: [],
+  })), null)
+})
+
 test("deriveSessionTransitionState preserves active agent labels and clears idle ones", () => {
   const currentSession = session({
     focused_agent_id: "agent-a",

@@ -131,7 +131,11 @@ export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
 }
 
 export function focusedAgentIdForSession(session: RuntimeSession): string | null {
-  return session.focused_agent_id ?? session.agents[0]?.id ?? null
+  const focusedAgentId = session.focused_agent_id
+  if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
+    return focusedAgentId
+  }
+  return session.agents[0]?.id ?? null
 }
 
 export function activeInteractionForAgent(

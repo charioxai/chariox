@@ -58,6 +58,22 @@ test("deriveWorkspaceShellContextForSession syncs attached session context witho
   assert.equal(next.effort, previous.effort)
 })
 
+test("deriveWorkspaceShellContextForSession ignores stale focused agent ids", () => {
+  const previous = createDefaultShellContext({
+    workspace: "old-workspace",
+    worktree: "old-worktree",
+    agentId: "old-agent",
+  })
+
+  const next = deriveWorkspaceShellContextForSession(previous, session({
+    id: "s2",
+    focused_agent_id: "stale-agent",
+    agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
+  }), "attachment-2")
+
+  assert.equal(next.agentId, "agent-1")
+})
+
 test("submitWorkspaceShellCommand records shell output and refreshes selected workflow", async () => {
   const initialContext = createDefaultShellContext({ sessionId: "s1" })
   const nextContext = { ...initialContext, workflowId: "wf2" }
