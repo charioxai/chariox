@@ -12,8 +12,8 @@ import { makeSession } from "./command-actions-test-support.js"
 function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthProjection {
   return {
     metadata: { projection_version: 1, last_event_id: 7, generated_at_ms: 100 },
-    session_command_lanes: [],
-    agent_command_lanes: [],
+    session_command_lanes: [{ lane_id: "session-1", queue_limit: 128, queued_commands: 1 }],
+    agent_command_lanes: [{ lane_id: "agent-1", queue_limit: 128, queued_commands: 2 }],
     workflow_command_lanes: [],
     provider_runtime_lanes: [],
     provider_run_actor: { enqueued_commands: 3, enqueue_rejections: 0 },
@@ -140,6 +140,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
 test("kernel health formatter renders provider-run invariants", () => {
   const rendered = formatKernelHealth(health())
 
+  assert.match(rendered, /command lanes: session=1\/1 agent=1\/2 workflow=0\/0 provider=0\/0 saturated=0/)
   assert.match(rendered, /process: pid=1234 rss=128.0MiB peak_rss=256.0MiB/)
   assert.match(rendered, /provider catalog: cached=no expired=no age=unknown ttl=5.00s/)
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
@@ -156,6 +157,23 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /provider run bindings: ok/)
   assert.match(rendered, /projection invariants: ok/)
   assert.equal(kernelHealthIssueCount(health()), 0)
+})
+
+test("kernel health formatter reports saturated command lanes", () => {
+  const unhealthy = health({
+    session_command_lanes: [{ lane_id: "session-1", queue_limit: 2, queued_commands: 2 }],
+    agent_command_lanes: [{ lane_id: "agent-1", queue_limit: 128, queued_commands: 3 }],
+    workflow_command_lanes: [{ lane_id: "workflow-session-1", queue_limit: 1, queued_commands: 1 }],
+    provider_runtime_lanes: [{ lane_id: "provider-run-1", queue_limit: 1, queued_commands: 0 }],
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 2)
+  assert.match(rendered, /command lanes: session=1\/2 agent=1\/3 workflow=1\/1 provider=1\/0 saturated=2/)
+  assert.match(rendered, /command lane saturation: 2 lanes at capacity/)
+  assert.match(rendered, /session lane=session-1 queued=2\/2/)
+  assert.match(rendered, /workflow lane=workflow-session-1 queued=1\/1/)
+  assert.match(rendered, /next: wait for active operations to drain/)
 })
 
 test("kernel health formatter reports provider-run actor backpressure", () => {

@@ -74,6 +74,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + terminalStreamHealthIssueCount(health)
     + capabilityHealthIssueCount(health)
     + providerRunActorHealthIssueCount(health)
+    + commandLaneHealthIssueCount(health)
 }
 
 export function formatKernelHealth(health: DaemonHealthProjection): string {
@@ -92,8 +93,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const liveSyncManagedMode = liveSync.managed_mode
   const workspaceIdentity = liveSync.workspace_identity
   const externalChanges = liveSync.external_changes
+  const commandLanes = commandLaneHealthSummary(health)
   const lines = [
     "kernel health",
+    `command lanes: session=${commandLanes.session.lanes}/${commandLanes.session.queued} agent=${commandLanes.agent.lanes}/${commandLanes.agent.queued} workflow=${commandLanes.workflow.lanes}/${commandLanes.workflow.queued} provider=${commandLanes.provider.lanes}/${commandLanes.provider.queued} saturated=${commandLanes.saturated}`,
     `process: pid=${process.process_id} rss=${formatBytes(process.current_resident_set_bytes ?? null)} peak_rss=${formatBytes(process.peak_resident_set_bytes ?? null)}`,
     `provider catalog: cached=${providerCatalog.cached ? "yes" : "no"} expired=${providerCatalog.expired ? "yes" : "no"} age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`,
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
@@ -154,6 +157,17 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   if (providerRunActor.enqueue_rejections > 0) {
     lines.push(`provider run actor rejected ${providerRunActor.enqueue_rejections} command${providerRunActor.enqueue_rejections === 1 ? "" : "s"}`)
     lines.push("  next: wait for provider-run command queues to drain; inspect duplicate/stuck provider runs if rejections continue")
+  }
+
+  if (commandLanes.saturated > 0) {
+    lines.push(`command lane saturation: ${commandLanes.saturated} lane${commandLanes.saturated === 1 ? "" : "s"} at capacity`)
+    for (const lane of commandLanes.saturatedLanes.slice(0, 8)) {
+      lines.push(`  ${lane.kind} lane=${lane.laneId} queued=${lane.queued}/${lane.limit}`)
+    }
+    if (commandLanes.saturatedLanes.length > 8) {
+      lines.push(`  ${commandLanes.saturatedLanes.length - 8} more saturated lane${commandLanes.saturatedLanes.length - 8 === 1 ? "" : "s"}`)
+    }
+    lines.push("  next: wait for active operations to drain; inspect stuck sessions/agents if saturation persists")
   }
 
   if (capability.rejected_jobs > 0 || capability.join_errors > 0) {
@@ -349,6 +363,72 @@ function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
 
 function providerRunActorHealthIssueCount(health: DaemonHealthProjection): number {
   return health.provider_run_actor.enqueue_rejections
+}
+
+function commandLaneHealthIssueCount(health: DaemonHealthProjection): number {
+  return commandLaneHealthSummary(health).saturated
+}
+
+function commandLaneHealthSummary(health: DaemonHealthProjection): {
+  session: CommandLaneKindSummary
+  agent: CommandLaneKindSummary
+  workflow: CommandLaneKindSummary
+  provider: CommandLaneKindSummary
+  saturated: number
+  saturatedLanes: CommandLaneIssue[]
+} {
+  const session = summarizeCommandLanes("session", health.session_command_lanes)
+  const agent = summarizeCommandLanes("agent", health.agent_command_lanes)
+  const workflow = summarizeCommandLanes("workflow", health.workflow_command_lanes)
+  const provider = summarizeCommandLanes("provider", health.provider_runtime_lanes)
+  const saturatedLanes = [
+    ...session.saturatedLanes,
+    ...agent.saturatedLanes,
+    ...workflow.saturatedLanes,
+    ...provider.saturatedLanes,
+  ]
+  return {
+    session,
+    agent,
+    workflow,
+    provider,
+    saturated: saturatedLanes.length,
+    saturatedLanes,
+  }
+}
+
+type CommandLaneKind = "session" | "agent" | "workflow" | "provider"
+
+type CommandLaneKindSummary = {
+  lanes: number
+  queued: number
+  saturatedLanes: CommandLaneIssue[]
+}
+
+type CommandLaneIssue = {
+  kind: CommandLaneKind
+  laneId: string
+  queued: number
+  limit: number
+}
+
+function summarizeCommandLanes(
+  kind: CommandLaneKind,
+  lanes: readonly { lane_id: string; queue_limit: number; queued_commands: number }[],
+): CommandLaneKindSummary {
+  const saturatedLanes = lanes
+    .filter((lane) => lane.queue_limit > 0 && lane.queued_commands >= lane.queue_limit)
+    .map((lane) => ({
+      kind,
+      laneId: lane.lane_id,
+      queued: lane.queued_commands,
+      limit: lane.queue_limit,
+    }))
+  return {
+    lanes: lanes.length,
+    queued: lanes.reduce((sum, lane) => sum + lane.queued_commands, 0),
+    saturatedLanes,
+  }
 }
 
 function formatBytes(bytes: number | null): string {
