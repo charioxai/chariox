@@ -24,6 +24,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added daemon-health Workspace Live Sync external-change attribution for tracked artifacts changed outside Arroba after their last managed observation. `workspace_live_sync.external_changes.issues` now names the artifact key, provider run when still tracked, workspace fingerprint, root, and path; CLI `/kernel health` and Cloud web Settings render the affected file directly.
 - Bumped the local daemon protocol to 93 and revalidated external-change health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
 
+### Remote execution placement issue attribution
+
+- Added daemon-health remote execution attribution for malformed remote-agent bindings and actively working remote agents missing an active worker provider-run id. `remote_execution.issues` names the session, agent, worker kernel/machine, lease, leased agent, state, processing flag, worktree, and details; CLI `/kernel health` and Cloud web Settings render the affected remote/slice agent directly.
+- Bumped the local daemon protocol to 94 and revalidated remote execution health, daemon health, protocol shapes/version conformance, kernel-client/CLI health formatting, Cloud web health projection, Settings rendering, OSS/Cloud builds, lint, and diff checks.
+
 ### Workspace Live Sync outside-root writes
 
 - Tightened the Codex managed Workspace Live Sync launch policy on macOS so Codex uses full filesystem mode while Arroba's macOS seatbelt fence denies writes only under the selected live-sync roots. This keeps managed sync authoritative for the synced repo/worktree while allowing provider-native edits in other repositories outside the synced roots. Non-macOS Codex managed runs remain read-only until an equivalent provider-independent write fence exists there.

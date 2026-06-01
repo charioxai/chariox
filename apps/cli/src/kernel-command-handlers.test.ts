@@ -79,6 +79,13 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       in_progress_operations: 0,
       issues: [],
     },
+    remote_execution: {
+      remote_agents: 0,
+      active_remote_agents: 0,
+      missing_active_worker_runs: 0,
+      malformed_bindings: 0,
+      issues: [],
+    },
     remote_extension_sync: {
       remote_agents: 0,
       home_proxy_agents: 0,
@@ -136,6 +143,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0/)
+  assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
@@ -177,6 +185,41 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=unhealthy op=start op_status=failed worktree=\/repo agents=agent-1,agent-2: worker kernel discovery timed out/)
   assert.match(rendered, /next: run \/slice doctor for the affected slice/)
+})
+
+test("kernel health formatter reports remote execution issues", () => {
+  const unhealthy = health({
+    remote_execution: {
+      remote_agents: 2,
+      active_remote_agents: 1,
+      missing_active_worker_runs: 1,
+      malformed_bindings: 1,
+      issues: [
+        {
+          kind: "missing_active_worker_provider_run",
+          session_id: "session-1",
+          agent_id: "agent-remote",
+          agent_ref: "agent-remote",
+          worker_kernel_id: "worker-kernel",
+          worker_machine_id: "worker-machine",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+          active_worker_provider_run_id: null,
+          state: "working",
+          is_processing: true,
+          worktree_id: "/repo",
+          details: "active remote agent has no active worker provider run id",
+        },
+      ],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /remote execution: remote_agents=2 active=1 missing_worker_runs=1 malformed=1/)
+  assert.match(rendered, /remote execution issues: missing_worker_runs=1 malformed=1/)
+  assert.match(rendered, /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run worktree=\/repo: active remote agent has no active worker provider run id/)
+  assert.match(rendered, /next: inspect the agent placement; reconnect or relaunch/)
 })
 
 test("kernel health formatter reports remote extension sync issues", () => {

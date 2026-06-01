@@ -67,6 +67,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.projection_invariants.mismatches.length
     + workspaceHealthIssueCount(health)
     + sliceLifecycleIssueCount(health)
+    + remoteExecutionIssueCount(health)
     + remoteExtensionSyncIssueCount(health)
     + transportHealthIssueCount(health)
     + terminalStreamHealthIssueCount(health)
@@ -80,6 +81,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const transport = health.transport
   const terminalStream = health.terminal_stream
   const sliceLifecycle = health.slice_lifecycle
+  const remoteExecution = health.remote_execution
   const remoteExtensionSync = health.remote_extension_sync
   const workspaceCoordination = health.workspace_coordination
   const liveSync = health.workspace_live_sync
@@ -94,6 +96,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
     `terminal stream: pending_output=${terminalStream.pending_output_records} pending_notices=${terminalStream.pending_notice_records} pending_completions=${terminalStream.pending_completion_records} trimmed_recipients=${terminalStream.trimmed_pending_output_recipients} limit=${terminalStream.pending_output_record_limit_per_attachment}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations}`,
+    `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
@@ -163,6 +166,16 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${error}`)
     }
     lines.push("  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice")
+  }
+
+  if (remoteExecutionIssueCount(health) > 0) {
+    lines.push(`remote execution issues: missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`)
+    for (const issue of remoteExecution.issues) {
+      const workerRun = issue.active_worker_provider_run_id ? ` worker_run=${issue.active_worker_provider_run_id}` : ""
+      const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
+      lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state} processing=${issue.is_processing ? "yes" : "no"} kind=${issue.kind}${worktree}: ${issue.details}`)
+    }
+    lines.push("  next: inspect the agent placement; reconnect or relaunch the remote/slice worker before sending more prompts")
   }
 
   if (remoteExtensionSyncIssueCount(health) > 0) {
@@ -266,6 +279,12 @@ function sliceLifecycleIssueCount(health: DaemonHealthProjection): number {
   return health.slice_lifecycle.issues.length > 0
     ? health.slice_lifecycle.issues.length
     : health.slice_lifecycle.unhealthy_slices + health.slice_lifecycle.failed_operations
+}
+
+function remoteExecutionIssueCount(health: DaemonHealthProjection): number {
+  return health.remote_execution.issues.length > 0
+    ? health.remote_execution.issues.length
+    : health.remote_execution.missing_active_worker_runs + health.remote_execution.malformed_bindings
 }
 
 function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {

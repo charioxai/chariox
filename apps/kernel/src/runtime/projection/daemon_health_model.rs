@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::ProjectionMetadata;
-use crate::agent::AgentInstance;
+use crate::agent::{AgentInstance, AgentState};
 use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
@@ -298,6 +298,118 @@ pub struct RemoteExtensionSyncIssue {
     pub worktree_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RemoteExecutionHealthSnapshot {
+    pub remote_agents: usize,
+    pub active_remote_agents: usize,
+    pub missing_active_worker_runs: usize,
+    pub malformed_bindings: usize,
+    pub issues: Vec<RemoteExecutionIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExecutionIssue {
+    pub kind: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub agent_ref: String,
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+    pub active_worker_provider_run_id: Option<String>,
+    pub state: String,
+    pub is_processing: bool,
+    pub worktree_id: Option<String>,
+    pub details: String,
+}
+
+impl RemoteExecutionHealthSnapshot {
+    pub(crate) fn from_agents(agents: &[AgentInstance]) -> Self {
+        let mut snapshot = Self::default();
+        for agent in agents {
+            let Some(remote_execution) = agent.remote_execution() else {
+                continue;
+            };
+            snapshot.remote_agents += 1;
+
+            let active = agent.is_processing() || agent.state() == AgentState::Working;
+            if active {
+                snapshot.active_remote_agents += 1;
+            }
+
+            let mut malformed_fields = Vec::new();
+            if remote_execution.worker_kernel_id.is_empty() {
+                malformed_fields.push("worker_kernel_id");
+            }
+            if remote_execution.worker_machine_id.is_empty() {
+                malformed_fields.push("worker_machine_id");
+            }
+            if remote_execution.execution_lease_id.is_empty() {
+                malformed_fields.push("execution_lease_id");
+            }
+            if remote_execution.leased_agent_id.is_empty() {
+                malformed_fields.push("leased_agent_id");
+            }
+            if !malformed_fields.is_empty() {
+                snapshot.malformed_bindings += 1;
+                snapshot.issues.push(remote_execution_issue(
+                    agent,
+                    remote_execution,
+                    "malformed_binding",
+                    format!(
+                        "remote execution binding is missing {}",
+                        malformed_fields.join(", ")
+                    ),
+                ));
+            }
+
+            if active && remote_execution.active_worker_provider_run_id.is_none() {
+                snapshot.missing_active_worker_runs += 1;
+                snapshot.issues.push(remote_execution_issue(
+                    agent,
+                    remote_execution,
+                    "missing_active_worker_provider_run",
+                    "active remote agent has no active worker provider run id".to_string(),
+                ));
+            }
+        }
+        snapshot
+    }
+}
+
+fn remote_execution_issue(
+    agent: &AgentInstance,
+    remote_execution: &crate::agent::RemoteAgentBinding,
+    kind: &str,
+    details: String,
+) -> RemoteExecutionIssue {
+    RemoteExecutionIssue {
+        kind: kind.to_string(),
+        session_id: agent.session_id().to_string(),
+        agent_id: agent.id().to_string(),
+        agent_ref: agent.agent_ref().to_string(),
+        worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+        worker_machine_id: remote_execution.worker_machine_id.clone(),
+        execution_lease_id: remote_execution.execution_lease_id.clone(),
+        leased_agent_id: remote_execution.leased_agent_id.clone(),
+        active_worker_provider_run_id: remote_execution.active_worker_provider_run_id.clone(),
+        state: agent_state_key(agent.state()).to_string(),
+        is_processing: agent.is_processing(),
+        worktree_id: agent.worktree_id().map(ToString::to_string),
+        details,
+    }
+}
+
+fn agent_state_key(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Idle => "idle",
+        AgentState::Working => "working",
+        AgentState::Focused => "focused",
+        AgentState::Error => "error",
+    }
+}
+
 impl RemoteExtensionSyncHealthSnapshot {
     pub(crate) fn from_agents(agents: &[AgentInstance]) -> Self {
         let mut snapshot = Self::default();
@@ -416,6 +528,7 @@ pub struct DaemonHealthProjection {
     pub transport: super::TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
     pub slice_lifecycle: SliceLifecycleHealthSnapshot,
+    pub remote_execution: RemoteExecutionHealthSnapshot,
     pub remote_extension_sync: RemoteExtensionSyncHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
@@ -439,6 +552,7 @@ impl DaemonHealthProjection {
         transport: super::TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
         slice_lifecycle: SliceLifecycleHealthSnapshot,
+        remote_execution: RemoteExecutionHealthSnapshot,
         remote_extension_sync: RemoteExtensionSyncHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
         workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
@@ -467,6 +581,7 @@ impl DaemonHealthProjection {
             transport,
             terminal_stream,
             slice_lifecycle,
+            remote_execution,
             remote_extension_sync,
             workspace_coordination,
             workspace_live_sync,
@@ -481,13 +596,13 @@ mod tests {
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
-        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
+        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, RemoteExecutionHealthSnapshot,
         RemoteExtensionSyncHealthSnapshot, RemoteExtensionSyncIssue,
         SessionProjectionHealthSnapshot, SliceLifecycleHealthSnapshot, SliceLifecycleIssue,
         WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
         WorkspaceLiveSyncManagedModeHealthSnapshot, WorktreeClaimSnapshot,
     };
-    use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
+    use crate::agent::{AgentInstance, AgentState, GridPosition, RemoteAgentBinding};
     use crate::extension::{
         ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncState,
         RemoteExtensionManifestSyncStatus,
@@ -616,6 +731,27 @@ mod tests {
                     session_ids: vec!["session-1".to_string()],
                     agent_ids: vec!["agent-1".to_string(), "agent-2".to_string()],
                     worktree_id: Some("/repo".to_string()),
+                }],
+            },
+            RemoteExecutionHealthSnapshot {
+                remote_agents: 4,
+                active_remote_agents: 1,
+                missing_active_worker_runs: 1,
+                malformed_bindings: 0,
+                issues: vec![super::RemoteExecutionIssue {
+                    kind: "missing_active_worker_provider_run".to_string(),
+                    session_id: "session-1".to_string(),
+                    agent_id: "agent-remote".to_string(),
+                    agent_ref: "agent-remote".to_string(),
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    state: "working".to_string(),
+                    is_processing: true,
+                    worktree_id: Some("/repo".to_string()),
+                    details: "active remote agent has no active worker provider run id".to_string(),
                 }],
             },
             RemoteExtensionSyncHealthSnapshot {
@@ -779,6 +915,13 @@ mod tests {
             Some("worker kernel discovery timed out")
         );
         assert_eq!(projection.remote_extension_sync.remote_agents, 4);
+        assert_eq!(projection.remote_execution.remote_agents, 4);
+        assert_eq!(projection.remote_execution.active_remote_agents, 1);
+        assert_eq!(projection.remote_execution.missing_active_worker_runs, 1);
+        assert_eq!(
+            projection.remote_execution.issues[0].kind,
+            "missing_active_worker_provider_run"
+        );
         assert_eq!(projection.remote_extension_sync.home_proxy_agents, 3);
         assert_eq!(projection.remote_extension_sync.home_proxy_grants, 5);
         assert_eq!(projection.remote_extension_sync.manifest_missing_agents, 1);
@@ -963,6 +1106,57 @@ mod tests {
             snapshot.issues[0].active_worker_provider_run_id.as_deref(),
             Some("worker-run-1")
         );
+    }
+
+    #[test]
+    fn remote_execution_health_reports_active_agent_without_worker_run() {
+        let mut healthy_idle = remote_agent("agent-idle");
+        healthy_idle.set_remote_execution_active_worker_provider_run_id(None);
+
+        let mut missing_run = remote_agent("agent-working");
+        missing_run.set_remote_execution_active_worker_provider_run_id(None);
+        missing_run.set_state(AgentState::Working);
+        missing_run.set_processing(true);
+
+        let mut malformed = remote_agent("agent-malformed");
+        malformed.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: String::new(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: String::new(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            active_worker_provider_run_id: Some("worker-run-1".to_string()),
+            relay_url: None,
+            relay_token: None,
+        }));
+
+        let snapshot = RemoteExecutionHealthSnapshot::from_agents(&[
+            healthy_idle,
+            missing_run,
+            malformed,
+            local_agent("agent-local"),
+        ]);
+
+        assert_eq!(snapshot.remote_agents, 3);
+        assert_eq!(snapshot.active_remote_agents, 1);
+        assert_eq!(snapshot.missing_active_worker_runs, 1);
+        assert_eq!(snapshot.malformed_bindings, 1);
+        assert_eq!(
+            snapshot
+                .issues
+                .iter()
+                .map(|issue| (issue.agent_id.as_str(), issue.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("agent-working", "missing_active_worker_provider_run"),
+                ("agent-malformed", "malformed_binding"),
+            ]
+        );
+        assert!(snapshot.issues[0].is_processing);
+        assert_eq!(snapshot.issues[0].state, "working");
+        assert_eq!(snapshot.issues[0].worktree_id.as_deref(), Some("/repo"));
+        assert!(snapshot.issues[1]
+            .details
+            .contains("worker_kernel_id, execution_lease_id"));
     }
 
     fn local_agent(id: &str) -> AgentInstance {

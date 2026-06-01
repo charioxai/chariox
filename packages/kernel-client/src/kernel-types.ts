@@ -532,6 +532,30 @@ export type RemoteExtensionSyncIssue = {
   worktree_id?: string | null
 }
 
+export type RemoteExecutionHealthSnapshot = {
+  remote_agents: number
+  active_remote_agents: number
+  missing_active_worker_runs: number
+  malformed_bindings: number
+  issues: RemoteExecutionIssue[]
+}
+
+export type RemoteExecutionIssue = {
+  kind: string
+  session_id: string
+  agent_id: string
+  agent_ref: string
+  worker_kernel_id: string
+  worker_machine_id: string
+  execution_lease_id: string
+  leased_agent_id: string
+  active_worker_provider_run_id?: string | null
+  state: string
+  is_processing: boolean
+  worktree_id?: string | null
+  details: string
+}
+
 export type ProjectionInvariantMismatch = {
   kind: string
   session_id: string
@@ -565,6 +589,7 @@ export type DaemonHealthProjection = {
   transport: TransportHealthSnapshot
   terminal_stream: TerminalStreamHealthSnapshot
   slice_lifecycle: SliceLifecycleHealthSnapshot
+  remote_execution: RemoteExecutionHealthSnapshot
   remote_extension_sync: RemoteExtensionSyncHealthSnapshot
   workspace_coordination: WorkspaceCoordinationHealthSnapshot
   workspace_live_sync: WorkspaceLiveSyncHealthSnapshot
@@ -1230,7 +1255,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 93
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 94
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

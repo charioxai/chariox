@@ -6,8 +6,8 @@ use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::CapabilityExecutorHealthStore;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonHealthProjection, ProviderCatalogProjectionStore,
-    ProviderRunProjectionStore, RemoteExtensionSyncHealthSnapshot, SessionStateProjectionStore,
-    SliceLifecycleHealthSnapshot, TransportHealthStore,
+    ProviderRunProjectionStore, RemoteExecutionHealthSnapshot, RemoteExtensionSyncHealthSnapshot,
+    SessionStateProjectionStore, SliceLifecycleHealthSnapshot, TransportHealthStore,
 };
 use crate::runtime::session_actor::SessionRuntime;
 use crate::runtime::state::KernelRuntimeState;
@@ -35,6 +35,7 @@ pub(crate) struct DaemonHealthProjectionInput<'a> {
 pub(crate) async fn build_daemon_health_projection(
     input: DaemonHealthProjectionInput<'_>,
 ) -> DaemonHealthProjection {
+    let agents = input.runtime_state.list_agents();
     DaemonHealthProjection::new(
         input.last_event_id,
         input.session_runtime.queue_snapshots().await,
@@ -59,7 +60,8 @@ pub(crate) async fn build_daemon_health_projection(
         ),
         input.terminal_health.snapshot(),
         SliceLifecycleHealthSnapshot::from_slices(&input.runtime_state.list_slices()),
-        RemoteExtensionSyncHealthSnapshot::from_agents(&input.runtime_state.list_agents()),
+        RemoteExecutionHealthSnapshot::from_agents(&agents),
+        RemoteExtensionSyncHealthSnapshot::from_agents(&agents),
         input
             .session_projection
             .workspace_coordination_snapshot(input.workspace_coordinator.active_claims()),
