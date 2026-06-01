@@ -433,7 +433,8 @@ function sliceProviderAuthNextAction(slice: SliceRecord): string {
   }
   if ((slice.provider_auth ?? []).length === 0) {
     const provider = formatSliceProviderActionTarget(slice.providers ?? [])
-    return `import or login provider accounts${provider} with /slice auth import ${formatSliceLabel(slice)} <provider> or /slice auth login ${formatSliceLabel(slice)} <provider>`
+    const commandProvider = sliceProviderCommandArg(slice.providers ?? [])
+    return `import or login provider accounts${provider} with /slice auth import ${formatSliceLabel(slice)} ${commandProvider} or /slice auth login ${formatSliceLabel(slice)} ${commandProvider}`
   }
   const staleProviders = (slice.provider_auth ?? [])
     .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
@@ -454,6 +455,11 @@ function sliceProviderAuthHealthy(slice: SliceRecord): boolean {
 function formatSliceProviderActionTarget(providers: readonly string[]): string {
   const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
   return unique.length > 0 ? ` for ${unique.join(",")}` : ""
+}
+
+function sliceProviderCommandArg(providers: readonly string[]): string {
+  const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  return unique.length === 1 ? unique[0]! : "<provider>"
 }
 
 async function setSliceRunning(

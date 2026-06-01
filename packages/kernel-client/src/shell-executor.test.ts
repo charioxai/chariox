@@ -965,7 +965,7 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
   assert.match(result.message ?? "", /providers=codex auth=-/)
-  assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a <provider> or \/slice auth login linux-a <provider>/)
+  assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex or \/slice auth login linux-a codex/)
   assert.equal(doctor.ok, false)
   assert.match(doctor.message ?? "", /fail provider accounts: none/)
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
