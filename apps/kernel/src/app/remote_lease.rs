@@ -163,10 +163,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mut sessions = session_store.write();
             self.app.attachments.attach(
                 &mut sessions,
-                AttachRequest::new(
+                AttachRequest::for_user(
                     session.id(),
                     format!("leased-agent:{}", lease.home_agent_id),
                     ClientCapabilityLevel::MessageTransport,
+                    lease.owner_user_id.clone(),
                 ),
             )?
         };
