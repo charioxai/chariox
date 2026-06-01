@@ -262,4 +262,37 @@ mod tests {
             .expect_err("write claim should conflict with readers");
         assert!(conflict.to_string().contains("workspace claim conflict"));
     }
+
+    #[test]
+    fn write_claims_do_not_block_other_worktrees_or_workspaces() {
+        let coordinator = WorkspaceCoordinator::default();
+        let _synced_repo_claim = coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "synced-worktree",
+                "session-1",
+                None,
+                "workspace_live_sync_apply",
+            )
+            .expect("synced worktree claim should acquire");
+
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "other-worktree",
+                "session-2",
+                None,
+                "file_edit",
+            )
+            .expect("unrelated worktree should not be blocked");
+        coordinator
+            .acquire_worktree_write_claim(
+                "other-workspace",
+                "synced-worktree",
+                "session-3",
+                None,
+                "file_edit",
+            )
+            .expect("same worktree id in another workspace should not be blocked");
+    }
 }
