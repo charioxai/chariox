@@ -1,7 +1,8 @@
 import type { RuntimeSession, SliceRecord } from "./cli-types.js"
-import type {
-  BackendProviderId,
-  ProviderCatalog,
+import {
+  BACKEND_PROVIDER_IDS,
+  type BackendProviderId,
+  type ProviderCatalog,
 } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
@@ -266,6 +267,13 @@ export function createWaitingRoomActivationController(
     if (!sliceHasProviderAuth(prepared, provider)) {
       throw new Error(`slice ${prepared.name ?? prepared.id} is missing ${provider} auth; run /slice auth import ${prepared.id} all or /slice auth login ${prepared.id} ${provider}`)
     }
+    const missingProviders = missingSliceAuthProviders(prepared)
+    if (missingProviders.length > 0) {
+      deps.warn("slice auth import incomplete", {
+        slice: prepared.id,
+        missingProviders: missingProviders.join(","),
+      })
+    }
     return prepared
   }
 
@@ -303,6 +311,10 @@ function sliceHasProviderAuth(slice: SliceRecord, provider: BackendProviderId): 
     }
     return entry.provider === provider
   })
+}
+
+function missingSliceAuthProviders(slice: SliceRecord): BackendProviderId[] {
+  return BACKEND_PROVIDER_IDS.filter((provider) => !sliceHasProviderAuth(slice, provider))
 }
 
 function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {

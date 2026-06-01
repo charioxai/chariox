@@ -130,6 +130,39 @@ test("waiting room activation creates and starts new headed slices before sessio
   ])
 })
 
+test("waiting room activation warns when slice auth import is partial but selected provider is ready", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "codex",
+    model: "gpt-5.4",
+    effort: "high",
+    sliceRef: "slice-1",
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch },
+    importedProviderAuth: [{ provider: "codex", state: "configured" }],
+  })
+
+  await harness.controller.activate()
+
+  assert.equal(harness.createdLaunches[0]?.launch.sliceRef, "slice-1")
+  assert.deepEqual(harness.warnings, [{
+    message: "slice auth import incomplete",
+    fields: {
+      slice: "slice-1",
+      missingProviders: "opencode,claude",
+    },
+  }])
+  assert.deepEqual(harness.calls.slice(-6), [
+    "importAuth:slice-1:all",
+    "updateSlice:slice-1",
+    "warn",
+    "createSession",
+    "attachBinding",
+    "flash:info:created session Review in /worktree · slice slice-1 · screen http://127.0.0.1:45503/vnc.html · workspace live sync config default",
+  ])
+})
+
 test("waiting room activation blocks slice launches when selected provider auth is missing", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "claude",

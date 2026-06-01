@@ -165,10 +165,34 @@ pub fn run_local_docker_slice_action(
 }
 
 fn ensure_local_docker_runtime_ready() -> Result<(), DaemonError> {
-    if docker_info_ready() {
-        return Ok(());
+    ensure_local_docker_runtime_ready_with(&mut SystemLocalDockerRuntimeProbe)
+}
+
+trait LocalDockerRuntimeProbe {
+    fn is_macos(&self) -> bool;
+    fn docker_info_ready(&mut self) -> bool;
+    fn command_exists(&mut self, command: &str) -> bool;
+    fn start_colima(&mut self) -> Result<(), DaemonError>;
+    fn use_colima_context(&mut self);
+    fn docker_context_hint(&mut self) -> String;
+}
+
+struct SystemLocalDockerRuntimeProbe;
+
+impl LocalDockerRuntimeProbe for SystemLocalDockerRuntimeProbe {
+    fn is_macos(&self) -> bool {
+        cfg!(target_os = "macos")
     }
-    if cfg!(target_os = "macos") && command_exists("colima") {
+
+    fn docker_info_ready(&mut self) -> bool {
+        docker_info_ready()
+    }
+
+    fn command_exists(&mut self, command: &str) -> bool {
+        command_exists(command)
+    }
+
+    fn start_colima(&mut self) -> Result<(), DaemonError> {
         let start_output = Command::new("colima")
             .arg("start")
             .output()
@@ -186,20 +210,40 @@ fn ensure_local_docker_runtime_ready() -> Result<(), DaemonError> {
                 ),
             });
         }
+        Ok(())
+    }
+
+    fn use_colima_context(&mut self) {
         let _ = Command::new("docker")
             .args(["context", "use", "colima"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        if docker_info_ready() {
+    }
+
+    fn docker_context_hint(&mut self) -> String {
+        docker_context_hint()
+    }
+}
+
+fn ensure_local_docker_runtime_ready_with(
+    probe: &mut impl LocalDockerRuntimeProbe,
+) -> Result<(), DaemonError> {
+    if probe.docker_info_ready() {
+        return Ok(());
+    }
+    if probe.is_macos() && probe.command_exists("colima") {
+        probe.start_colima()?;
+        probe.use_colima_context();
+        if probe.docker_info_ready() {
             return Ok(());
         }
     }
     Err(DaemonError::LocalTransport {
         operation: "slice.local_docker",
         message: format!(
-            "docker is not running or not reachable for local Docker slices; {}",
-            docker_context_hint()
+            "docker is not running or not reachable for local Docker slices; {}; start Docker Desktop or Colima, or set a reachable Docker context",
+            probe.docker_context_hint()
         ),
     })
 }
@@ -227,16 +271,26 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn docker_context_hint() -> String {
+    let docker_host = std::env::var("DOCKER_HOST")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
     match Command::new("docker").args(["context", "show"]).output() {
         Ok(output) if output.status.success() => {
             let context = compact_command_output(&output);
-            if context.is_empty() {
+            let context = if context.is_empty() {
                 "docker context is unavailable".to_string()
             } else {
                 format!("current docker context is `{context}`")
+            };
+            match docker_host {
+                Some(host) => format!("{context}; DOCKER_HOST is `{host}`"),
+                None => context,
             }
         }
-        _ => "check that Docker or Colima is installed and available on PATH".to_string(),
+        _ => match docker_host {
+            Some(host) => format!("DOCKER_HOST is `{host}`"),
+            None => "check that Docker or Colima is installed and available on PATH".to_string(),
+        },
     }
 }
 
@@ -805,6 +859,142 @@ mod tests {
             screen_width: 1280,
             screen_height: 800,
         }
+    }
+
+    #[derive(Default)]
+    struct FakeDockerRuntimeProbe {
+        is_macos: bool,
+        colima_exists: bool,
+        docker_ready: std::collections::VecDeque<bool>,
+        colima_start_error: Option<String>,
+        context_hint: String,
+        colima_start_count: usize,
+        use_colima_context_count: usize,
+    }
+
+    impl FakeDockerRuntimeProbe {
+        fn new(docker_ready: impl IntoIterator<Item = bool>) -> Self {
+            Self {
+                docker_ready: docker_ready.into_iter().collect(),
+                context_hint: "current docker context is `colima`".to_string(),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl LocalDockerRuntimeProbe for FakeDockerRuntimeProbe {
+        fn is_macos(&self) -> bool {
+            self.is_macos
+        }
+
+        fn docker_info_ready(&mut self) -> bool {
+            self.docker_ready.pop_front().unwrap_or(false)
+        }
+
+        fn command_exists(&mut self, command: &str) -> bool {
+            command == "colima" && self.colima_exists
+        }
+
+        fn start_colima(&mut self) -> Result<(), DaemonError> {
+            self.colima_start_count += 1;
+            if let Some(message) = self.colima_start_error.as_deref() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: message.to_string(),
+                });
+            }
+            Ok(())
+        }
+
+        fn use_colima_context(&mut self) {
+            self.use_colima_context_count += 1;
+        }
+
+        fn docker_context_hint(&mut self) -> String {
+            self.context_hint.clone()
+        }
+    }
+
+    fn transport_error_message(error: DaemonError) -> String {
+        match error {
+            DaemonError::LocalTransport { message, .. } => message,
+            other => panic!("expected local transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_docker_runtime_ready_returns_when_docker_is_already_available() {
+        let mut probe = FakeDockerRuntimeProbe::new([true]);
+
+        ensure_local_docker_runtime_ready_with(&mut probe)
+            .expect("docker should already be available");
+
+        assert_eq!(probe.colima_start_count, 0);
+        assert_eq!(probe.use_colima_context_count, 0);
+    }
+
+    #[test]
+    fn local_docker_runtime_ready_starts_colima_on_macos() {
+        let mut probe = FakeDockerRuntimeProbe::new([false, true]);
+        probe.is_macos = true;
+        probe.colima_exists = true;
+
+        ensure_local_docker_runtime_ready_with(&mut probe)
+            .expect("colima start should make docker available");
+
+        assert_eq!(probe.colima_start_count, 1);
+        assert_eq!(probe.use_colima_context_count, 1);
+    }
+
+    #[test]
+    fn local_docker_runtime_ready_reports_missing_colima_on_macos() {
+        let mut probe = FakeDockerRuntimeProbe::new([false]);
+        probe.is_macos = true;
+        probe.context_hint = "current docker context is `desktop-linux`".to_string();
+
+        let message = transport_error_message(
+            ensure_local_docker_runtime_ready_with(&mut probe)
+                .expect_err("docker should still be unavailable"),
+        );
+
+        assert!(message.contains("docker is not running or not reachable"));
+        assert!(message.contains("current docker context is `desktop-linux`"));
+        assert!(message.contains("start Docker Desktop or Colima"));
+        assert_eq!(probe.colima_start_count, 0);
+    }
+
+    #[test]
+    fn local_docker_runtime_ready_reports_docker_still_unavailable_after_colima_start() {
+        let mut probe = FakeDockerRuntimeProbe::new([false, false]);
+        probe.is_macos = true;
+        probe.colima_exists = true;
+
+        let message = transport_error_message(
+            ensure_local_docker_runtime_ready_with(&mut probe)
+                .expect_err("docker should still be unavailable"),
+        );
+
+        assert!(message.contains("docker is not running or not reachable"));
+        assert!(message.contains("current docker context is `colima`"));
+        assert_eq!(probe.colima_start_count, 1);
+        assert_eq!(probe.use_colima_context_count, 1);
+    }
+
+    #[test]
+    fn local_docker_runtime_ready_reports_colima_start_failure() {
+        let mut probe = FakeDockerRuntimeProbe::new([false]);
+        probe.is_macos = true;
+        probe.colima_exists = true;
+        probe.colima_start_error = Some("Colima failed to start: boom".to_string());
+
+        let message = transport_error_message(
+            ensure_local_docker_runtime_ready_with(&mut probe)
+                .expect_err("colima start should fail"),
+        );
+
+        assert!(message.contains("Colima failed to start"));
+        assert_eq!(probe.colima_start_count, 1);
+        assert_eq!(probe.use_colima_context_count, 0);
     }
 
     #[test]
