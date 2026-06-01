@@ -45,7 +45,7 @@ test("agent list summary renders aliases and pluralization", () => {
       agent({ agent_ref: "agent-a", alias: "builder" }),
       remoteAgent,
     ]),
-    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants; manifest stale abcdef12 pending revoke error worker offline next /extension sync-status agent-b; /machine kernels machine-worker; /extension sync-retry agent-b]",
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker run run-worker; 2 grants (active tools home-proxy); manifest stale abcdef12 pending revoke error worker offline next /extension sync-status agent-b; /machine kernels machine-worker; /extension sync-retry agent-b]",
   )
   assert.match(
     formatAgentListSummary([remoteAgent], [slice({

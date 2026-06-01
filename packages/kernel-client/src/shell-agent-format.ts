@@ -82,7 +82,8 @@ function formatAgentListPlacement(agent: AgentInstance, slice: SliceRecord | nul
 
 function formatAgentListGrantCount(agent: AgentInstance): string {
   const grants = agent.extension_grants?.length ?? 0
-  return `${grants} grant${grants === 1 ? "" : "s"}`
+  const count = `${grants} grant${grants === 1 ? "" : "s"}`
+  return grants > 0 ? `${count} (${formatAgentExtensionPlacementSummary(agent)})` : count
 }
 
 function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null {
