@@ -170,6 +170,7 @@ mod tests {
             provider: "codex".to_string(),
             process_label: process_id.to_string(),
             pid: None,
+            resident_set_bytes: None,
             endpoint_mode: AgentEndpointMode::Managed,
             status: ProviderProcessStatus::Active,
             started_at_ms: 1,

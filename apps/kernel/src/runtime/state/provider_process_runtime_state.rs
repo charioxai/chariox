@@ -201,6 +201,9 @@ impl KernelRuntimeState {
                 teardown_blockers,
             ) {
                 process.pid = tracked.pid;
+                process.resident_set_bytes = tracked
+                    .pid
+                    .and_then(crate::runtime::process_health::resident_set_bytes_for_pid);
                 process.process_label = tracked.process_label.clone();
                 process.endpoint_mode = tracked.endpoint_mode;
                 process.started_at_ms = tracked.started_at_ms;

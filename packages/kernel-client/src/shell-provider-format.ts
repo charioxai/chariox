@@ -26,6 +26,21 @@ export function formatProviderProcesses(processes: ProviderProcessInfo[]): strin
   }
   return processes.map((process) => {
     const blockers = process.teardown_blockers.length > 0 ? ` blockers=${process.teardown_blockers.join(",")}` : ""
-    return `${process.process_id} ${process.provider} ${process.process_label} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers}`
+    return `${process.process_id} ${process.provider} ${process.process_label} pid=${process.pid ?? "-"} rss=${formatBytes(process.resident_set_bytes ?? null)} status=${process.status} safe=${String(process.teardown_safe)} sessions=${process.owner_session_ids.join(",") || "-"}${blockers}`
   }).join("\n")
+}
+
+function formatBytes(bytes: number | null): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    return "unknown"
+  }
+  const units = ["B", "KiB", "MiB", "GiB"]
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const formatted = unitIndex === 0 ? `${Math.round(value)}` : value >= 10 ? value.toFixed(1) : value.toFixed(2)
+  return `${formatted}${units[unitIndex]}`
 }

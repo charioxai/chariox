@@ -252,6 +252,7 @@ test("provider processes command lists and tears down safe daemon-tracked proces
           provider: "codex",
           process_label: "codex:gpt-5.4",
           pid: 4321,
+          resident_set_bytes: 134217728,
           endpoint_mode: "managed",
           status: "idle",
           started_at_ms: 1,
@@ -274,6 +275,7 @@ test("provider processes command lists and tears down safe daemon-tracked proces
           provider: "codex",
           process_label: "codex:gpt-5.4",
           pid: 4321,
+          resident_set_bytes: 134217728,
           endpoint_mode: "managed",
           status: "idle",
           started_at_ms: 1,
@@ -329,14 +331,14 @@ test("provider processes command lists and tears down safe daemon-tracked proces
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes codex", value: "processes codex" })
   assert.equal(listedProvider, "codex")
   assert.equal(flashedMessage, "listed 1 provider process(es)")
-  assert.match(notice, /codex:shared-token provider=codex pid=4321 status=idle mode=managed safe=true/)
+  assert.match(notice, /codex:shared-token provider=codex pid=4321 rss=128.0MiB status=idle mode=managed safe=true/)
   assert.match(notice, /provider sessions: thread-1/)
   assert.match(notice, /owner runs: provider-run-1/)
 
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes teardown codex", value: "processes teardown codex" })
   assert.equal(tornDownProvider, "codex")
   assert.equal(flashedMessage, "tore down 1 provider process(es)")
-  assert.match(notice, /codex:shared-token provider=codex pid=4321 status=idle mode=managed safe=true/)
+  assert.match(notice, /codex:shared-token provider=codex pid=4321 rss=128.0MiB status=idle mode=managed safe=true/)
 })
 
 test("provider processes teardown reports blocked daemon-tracked processes", async () => {
@@ -348,6 +350,7 @@ test("provider processes teardown reports blocked daemon-tracked processes", asy
     provider: "codex",
     process_label: "codex:gpt-5.4",
     pid: 5555,
+    resident_set_bytes: 67108864,
     endpoint_mode: "managed",
     status: "active",
     started_at_ms: 1,

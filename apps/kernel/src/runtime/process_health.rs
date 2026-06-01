@@ -13,19 +13,19 @@ impl KernelProcessHealthSnapshot {
     pub(crate) fn current() -> Self {
         Self {
             process_id: std::process::id(),
-            current_resident_set_bytes: current_resident_set_bytes(),
+            current_resident_set_bytes: resident_set_bytes_for_pid(std::process::id()),
             peak_resident_set_bytes: peak_resident_set_bytes(),
         }
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn current_resident_set_bytes() -> Option<u64> {
+pub(crate) fn resident_set_bytes_for_pid(pid: u32) -> Option<u64> {
     let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
     let result = unsafe {
         libc::proc_pidinfo(
-            std::process::id() as libc::c_int,
+            pid as libc::c_int,
             libc::PROC_PIDTASKINFO,
             0,
             info.as_mut_ptr().cast(),
@@ -40,8 +40,8 @@ fn current_resident_set_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn current_resident_set_bytes() -> Option<u64> {
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+pub(crate) fn resident_set_bytes_for_pid(pid: u32) -> Option<u64> {
+    let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
     let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if resident_pages == 0 || page_size <= 0 {
@@ -51,7 +51,7 @@ fn current_resident_set_bytes() -> Option<u64> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
-fn current_resident_set_bytes() -> Option<u64> {
+pub(crate) fn resident_set_bytes_for_pid(_pid: u32) -> Option<u64> {
     None
 }
 
@@ -87,7 +87,7 @@ fn rusage_maxrss_to_bytes(max_rss: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::KernelProcessHealthSnapshot;
+    use super::{resident_set_bytes_for_pid, KernelProcessHealthSnapshot};
 
     #[test]
     fn kernel_process_health_reports_current_pid() {
@@ -96,5 +96,7 @@ mod tests {
         assert_eq!(snapshot.process_id, std::process::id());
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
         assert!(snapshot.current_resident_set_bytes.is_some());
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
+        assert!(resident_set_bytes_for_pid(std::process::id()).is_some());
     }
 }

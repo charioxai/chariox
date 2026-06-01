@@ -29,6 +29,8 @@ test("executeShellCommand manages provider auth and processes", async () => {
     process_id: "process-1",
     provider: "codex",
     process_label: "codex-agent",
+    pid: 4321,
+    resident_set_bytes: 134217728,
     endpoint_mode: "managed",
     status: "idle",
     started_at_ms: 0,
@@ -71,7 +73,7 @@ test("executeShellCommand manages provider auth and processes", async () => {
   assert.equal(reauth.ok, true)
   assert.match(reauth.message ?? "", /codex reauth started/)
   assert.equal(list.ok, true)
-  assert.match(list.message ?? "", /process-1 codex/)
+  assert.match(list.message ?? "", /process-1 codex codex-agent pid=4321 rss=128.0MiB/)
   assert.equal(teardown.ok, true)
   assert.match(teardown.message ?? "", /tore down 1 provider process/)
   assert.deepEqual(requests, [

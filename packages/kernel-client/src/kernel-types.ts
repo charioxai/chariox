@@ -1272,7 +1272,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 95
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 96
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
@@ -1313,6 +1313,7 @@ export type ProviderProcessInfo = {
   provider: string
   process_label: string
   pid?: number | null
+  resident_set_bytes?: number | null
   endpoint_mode: string
   status: "active" | "idle"
   started_at_ms: number

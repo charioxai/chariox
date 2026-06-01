@@ -169,7 +169,7 @@ test("waiting room cycles slices for new sessions", () => {
   state = moveWaitingRoomFocus(state, [], -1, { slices })
   state = cycleWaitingRoomValue(state, [], catalog, 1, undefined, { slices })
   assert.equal(waitingRoomChoice(state, [], catalog, { slices }).sliceRef, "slice-1")
-  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "linux-dev (0 agents)")
+  assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing)")
 })
 
 test("waiting room renders indented sections and only previews the last two active sessions", () => {
@@ -431,7 +431,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
   assert.equal(state.focus, "remote-kernel")
   rows = waitingRoomRows(state, [], catalog, remote)
   const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-inactive")
-  assert.equal(kernelRow?.value, "inactive opencode")
+  assert.equal(kernelRow?.value, "inactive opencode · next: enable remote leases or choose another worker")
   assert.equal(kernelRow?.selectable, true)
   assert.equal(kernelRow?.focused, true)
 })

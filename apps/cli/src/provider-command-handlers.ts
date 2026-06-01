@@ -64,7 +64,7 @@ export async function handleProviderSlashCommand(
 
 function formatProviderProcessNotice(process: ProviderProcessInfo): string {
   const lines = [
-    `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
+    `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} rss=${formatBytes(process.resident_set_bytes ?? null)} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
     `  provider sessions: ${process.provider_session_ids.join(",") || "-"}`,
     `  owner runs: ${process.owner_provider_run_ids.join(",") || "-"}`,
     `  owner sessions: ${process.owner_session_ids.join(",") || "-"}`,
@@ -75,6 +75,21 @@ function formatProviderProcessNotice(process: ProviderProcessInfo): string {
     lines.push(`  blockers: ${process.teardown_blockers.join("; ")}`)
   }
   return lines.join("\n")
+}
+
+function formatBytes(bytes: number | null): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    return "unknown"
+  }
+  const units = ["B", "KiB", "MiB", "GiB"]
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const formatted = unitIndex === 0 ? `${Math.round(value)}` : value >= 10 ? value.toFixed(1) : value.toFixed(2)
+  return `${formatted}${units[unitIndex]}`
 }
 
 async function showProviderStatus(

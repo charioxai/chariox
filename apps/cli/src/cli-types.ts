@@ -690,6 +690,7 @@ export type ProviderProcessInfo = {
   provider: string
   process_label: string
   pid?: number | null
+  resident_set_bytes?: number | null
   endpoint_mode: string
   status: "active" | "idle"
   started_at_ms: number

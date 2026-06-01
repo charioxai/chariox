@@ -21,6 +21,8 @@ pub struct ProviderProcessInfo {
     pub process_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_set_bytes: Option<u64>,
     pub endpoint_mode: AgentEndpointMode,
     pub status: ProviderProcessStatus,
     pub started_at_ms: u64,
@@ -102,6 +104,7 @@ impl ProviderProcessInfo {
             provider: first.provider().to_string(),
             process_label: first.process_label().to_string(),
             pid: None,
+            resident_set_bytes: None,
             endpoint_mode: first.endpoint_mode(),
             status,
             started_at_ms,
