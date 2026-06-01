@@ -17,7 +17,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
     workflow_command_lanes: [],
     provider_runtime_lanes: [],
     provider_run_actor: { enqueued_commands: 0, enqueue_rejections: 0 },
-    process: { process_id: 1234, peak_resident_set_bytes: 268435456 },
+    process: { process_id: 1234, current_resident_set_bytes: 134217728, peak_resident_set_bytes: 268435456 },
     capability_executor: {
       max_concurrent_jobs: 64,
       available_permits: 64,
@@ -125,7 +125,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
 test("kernel health formatter renders provider-run invariants", () => {
   const rendered = formatKernelHealth(health())
 
-  assert.match(rendered, /process: pid=1234 peak_rss=256.0MiB/)
+  assert.match(rendered, /process: pid=1234 rss=128.0MiB peak_rss=256.0MiB/)
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)

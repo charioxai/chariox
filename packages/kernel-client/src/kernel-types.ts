@@ -497,6 +497,7 @@ export type DaemonHealthProjection = {
   provider_run_actor: ProviderRunActorHealthSnapshot
   process: {
     process_id: number
+    current_resident_set_bytes?: number | null
     peak_resident_set_bytes?: number | null
   }
   capability_executor: CapabilityExecutorHealthSnapshot
@@ -1172,7 +1173,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 87
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 88
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

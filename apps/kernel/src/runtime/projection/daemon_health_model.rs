@@ -372,6 +372,7 @@ mod tests {
             },
             KernelProcessHealthSnapshot {
                 process_id: 42,
+                current_resident_set_bytes: Some(64 * 1024 * 1024),
                 peak_resident_set_bytes: Some(128 * 1024 * 1024),
             },
             CapabilityExecutorHealthSnapshot {
@@ -531,6 +532,10 @@ mod tests {
         assert_eq!(projection.provider_run_actor.enqueued_commands, 5);
         assert_eq!(projection.provider_run_actor.enqueue_rejections, 1);
         assert_eq!(projection.process.process_id, 42);
+        assert_eq!(
+            projection.process.current_resident_set_bytes,
+            Some(64 * 1024 * 1024)
+        );
         assert_eq!(
             projection.process.peak_resident_set_bytes,
             Some(128 * 1024 * 1024)

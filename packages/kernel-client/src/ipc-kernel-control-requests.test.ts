@@ -14,7 +14,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     workflow_command_lanes: [],
     provider_runtime_lanes: [],
     provider_run_actor: { enqueued_commands: 1, enqueue_rejections: 0 },
-    process: { process_id: 1234, peak_resident_set_bytes: 268435456 },
+    process: { process_id: 1234, current_resident_set_bytes: 134217728, peak_resident_set_bytes: 268435456 },
     capability_executor: {
       max_concurrent_jobs: 64,
       available_permits: 63,
@@ -133,6 +133,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.managed_mode.write_fence_supported, true)
   assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
+  assert.equal(response.DaemonHealth.projection.process.current_resident_set_bytes, 134217728)
   assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
   assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)
   assert.equal(response.DaemonHealth.projection.remote_extension_sync.home_proxy_agents, 1)
