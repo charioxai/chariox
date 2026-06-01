@@ -77,6 +77,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       attached_agents: 0,
       failed_operations: 0,
       in_progress_operations: 0,
+      issues: [],
     },
     remote_extension_sync: {
       remote_agents: 0,
@@ -153,13 +154,25 @@ test("kernel health formatter reports slice lifecycle issues", () => {
       attached_agents: 2,
       failed_operations: 1,
       in_progress_operations: 1,
+      issues: [{
+        slice_id: "slice-1",
+        name: "dev",
+        status: "unhealthy",
+        last_operation: "start",
+        last_operation_status: "failed",
+        last_error: "worker kernel discovery timed out",
+        session_ids: ["session-1"],
+        agent_ids: ["agent-1", "agent-2"],
+        worktree_id: "/repo",
+      }],
     },
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 2)
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
+  assert.match(rendered, /slice=dev \(slice-1\) status=unhealthy op=start op_status=failed worktree=\/repo agents=agent-1,agent-2: worker kernel discovery timed out/)
   assert.match(rendered, /next: run \/slice doctor for the affected slice/)
 })
 

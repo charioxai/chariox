@@ -74,6 +74,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
       attached_agents: 1,
       failed_operations: 0,
       in_progress_operations: 0,
+      issues: [],
     },
     remote_extension_sync: {
       remote_agents: 2,

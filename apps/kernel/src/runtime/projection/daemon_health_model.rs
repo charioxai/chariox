@@ -183,6 +183,20 @@ pub struct SliceLifecycleHealthSnapshot {
     pub attached_agents: usize,
     pub failed_operations: usize,
     pub in_progress_operations: usize,
+    pub issues: Vec<SliceLifecycleIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceLifecycleIssue {
+    pub slice_id: String,
+    pub name: String,
+    pub status: String,
+    pub last_operation: Option<String>,
+    pub last_operation_status: Option<String>,
+    pub last_error: Option<String>,
+    pub session_ids: Vec<String>,
+    pub agent_ids: Vec<String>,
+    pub worktree_id: Option<String>,
 }
 
 impl SliceLifecycleHealthSnapshot {
@@ -205,8 +219,47 @@ impl SliceLifecycleHealthSnapshot {
                 Some(SliceOperationStatus::InProgress) => snapshot.in_progress_operations += 1,
                 _ => {}
             }
+            if slice.status == SliceStatus::Unhealthy
+                || slice.last_operation_status == Some(SliceOperationStatus::Failed)
+            {
+                snapshot.issues.push(SliceLifecycleIssue {
+                    slice_id: slice.id.clone(),
+                    name: slice.name.clone(),
+                    status: slice_status_key(&slice.status).to_string(),
+                    last_operation: slice.last_operation.clone(),
+                    last_operation_status: slice
+                        .last_operation_status
+                        .as_ref()
+                        .map(slice_operation_status_key)
+                        .map(ToString::to_string),
+                    last_error: slice.last_error.clone(),
+                    session_ids: slice.session_ids.clone(),
+                    agent_ids: slice.agent_ids.clone(),
+                    worktree_id: slice.worktree_id.clone(),
+                });
+            }
         }
         snapshot
+    }
+}
+
+fn slice_status_key(status: &SliceStatus) -> &'static str {
+    match status {
+        SliceStatus::Stopped => "stopped",
+        SliceStatus::Starting => "starting",
+        SliceStatus::Stopping => "stopping",
+        SliceStatus::Running => "running",
+        SliceStatus::Unhealthy => "unhealthy",
+    }
+}
+
+fn slice_operation_status_key(status: &SliceOperationStatus) -> &'static str {
+    match status {
+        SliceOperationStatus::Accepted => "accepted",
+        SliceOperationStatus::InProgress => "in_progress",
+        SliceOperationStatus::Completed => "completed",
+        SliceOperationStatus::Failed => "failed",
+        SliceOperationStatus::Reconciled => "reconciled",
     }
 }
 
@@ -345,7 +398,7 @@ mod tests {
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
         ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
         RemoteExtensionSyncHealthSnapshot, SessionProjectionHealthSnapshot,
-        SliceLifecycleHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        SliceLifecycleHealthSnapshot, SliceLifecycleIssue, WorkspaceCoordinationHealthSnapshot,
         WorkspaceLiveSyncHealthSnapshot, WorkspaceLiveSyncManagedModeHealthSnapshot,
         WorktreeClaimSnapshot,
     };
@@ -357,6 +410,7 @@ mod tests {
     use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::runtime::process_health::KernelProcessHealthSnapshot;
     use crate::runtime::projection::TransportHealthSnapshot;
+    use crate::slice::SliceRecord;
     use crate::terminal::TerminalStreamHealthSnapshot;
 
     #[test]
@@ -467,6 +521,17 @@ mod tests {
                 attached_agents: 3,
                 failed_operations: 1,
                 in_progress_operations: 2,
+                issues: vec![SliceLifecycleIssue {
+                    slice_id: "slice-1".to_string(),
+                    name: "dev".to_string(),
+                    status: "unhealthy".to_string(),
+                    last_operation: Some("start".to_string()),
+                    last_operation_status: Some("failed".to_string()),
+                    last_error: Some("worker kernel discovery timed out".to_string()),
+                    session_ids: vec!["session-1".to_string()],
+                    agent_ids: vec!["agent-1".to_string(), "agent-2".to_string()],
+                    worktree_id: Some("/repo".to_string()),
+                }],
             },
             RemoteExtensionSyncHealthSnapshot {
                 remote_agents: 4,
@@ -590,6 +655,11 @@ mod tests {
         assert_eq!(projection.slice_lifecycle.attached_agents, 3);
         assert_eq!(projection.slice_lifecycle.failed_operations, 1);
         assert_eq!(projection.slice_lifecycle.in_progress_operations, 2);
+        assert_eq!(projection.slice_lifecycle.issues.len(), 1);
+        assert_eq!(
+            projection.slice_lifecycle.issues[0].last_error.as_deref(),
+            Some("worker kernel discovery timed out")
+        );
         assert_eq!(projection.remote_extension_sync.remote_agents, 4);
         assert_eq!(projection.remote_extension_sync.home_proxy_agents, 3);
         assert_eq!(projection.remote_extension_sync.home_proxy_grants, 5);
@@ -648,6 +718,45 @@ mod tests {
         );
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
+    }
+
+    #[test]
+    fn slice_lifecycle_health_identifies_unhealthy_and_failed_slices() {
+        let snapshot = SliceLifecycleHealthSnapshot::from_slices(&[
+            slice_record(
+                "slice-ok",
+                "dev-ok",
+                crate::slice::SliceStatus::Running,
+                None,
+                None,
+            ),
+            slice_record(
+                "slice-bad",
+                "dev-bad",
+                crate::slice::SliceStatus::Unhealthy,
+                Some(crate::slice::SliceOperationStatus::Failed),
+                Some("worker kernel discovery timed out"),
+            ),
+        ]);
+
+        assert_eq!(snapshot.total_slices, 2);
+        assert_eq!(snapshot.running_slices, 1);
+        assert_eq!(snapshot.unhealthy_slices, 1);
+        assert_eq!(snapshot.failed_operations, 1);
+        assert_eq!(snapshot.issues.len(), 1);
+        let issue = &snapshot.issues[0];
+        assert_eq!(issue.slice_id, "slice-bad");
+        assert_eq!(issue.name, "dev-bad");
+        assert_eq!(issue.status, "unhealthy");
+        assert_eq!(issue.last_operation.as_deref(), Some("start"));
+        assert_eq!(issue.last_operation_status.as_deref(), Some("failed"));
+        assert_eq!(
+            issue.last_error.as_deref(),
+            Some("worker kernel discovery timed out")
+        );
+        assert_eq!(issue.session_ids, vec!["session-1"]);
+        assert_eq!(issue.agent_ids, vec!["agent-1"]);
+        assert_eq!(issue.worktree_id.as_deref(), Some("/repo"));
     }
 
     #[test]
@@ -724,5 +833,44 @@ mod tests {
             relay_token: None,
         }));
         agent
+    }
+
+    fn slice_record(
+        id: &str,
+        name: &str,
+        status: crate::slice::SliceStatus,
+        operation_status: Option<crate::slice::SliceOperationStatus>,
+        last_error: Option<&str>,
+    ) -> SliceRecord {
+        SliceRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            owner_kernel_id: "kernel-home".to_string(),
+            owner_machine_id: "machine-home".to_string(),
+            session_id: Some("session-1".to_string()),
+            session_ids: vec!["session-1".to_string()],
+            agent_ids: vec!["agent-1".to_string()],
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headless,
+            status,
+            last_operation: operation_status.as_ref().map(|_| "start".to_string()),
+            last_operation_status: operation_status,
+            last_error: last_error.map(ToString::to_string),
+            last_operation_at_ms: Some(100),
+            workspace_id: Some("/repo".to_string()),
+            worktree_id: Some("/repo".to_string()),
+            workspace_mount: Some("/workspace".to_string()),
+            worker_kernel_ref: format!("slice:{id}"),
+            worker_kernel_id: Some("kernel-slice".to_string()),
+            worker_machine_id: Some("machine-slice".to_string()),
+            relay_endpoint: None,
+            local_docker_ports: None,
+            providers: vec!["codex".to_string()],
+            provider_auth: Vec::new(),
+            display_endpoint: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        }
     }
 }

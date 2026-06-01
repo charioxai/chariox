@@ -461,6 +461,19 @@ export type SliceLifecycleHealthSnapshot = {
   attached_agents: number
   failed_operations: number
   in_progress_operations: number
+  issues: SliceLifecycleIssue[]
+}
+
+export type SliceLifecycleIssue = {
+  slice_id: string
+  name: string
+  status: string
+  last_operation?: string | null
+  last_operation_status?: string | null
+  last_error?: string | null
+  session_ids: string[]
+  agent_ids: string[]
+  worktree_id?: string | null
 }
 
 export type RemoteExtensionSyncHealthSnapshot = {
@@ -1174,7 +1187,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 89
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 90
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

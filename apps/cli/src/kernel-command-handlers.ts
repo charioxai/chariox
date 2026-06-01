@@ -154,6 +154,14 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   if (sliceLifecycle.unhealthy_slices > 0 || sliceLifecycle.failed_operations > 0) {
     lines.push(`slice lifecycle issues: unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations}`)
+    for (const issue of sliceLifecycle.issues) {
+      const operation = issue.last_operation ? ` op=${issue.last_operation}` : ""
+      const operationStatus = issue.last_operation_status ? ` op_status=${issue.last_operation_status}` : ""
+      const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
+      const agents = issue.agent_ids.length > 0 ? ` agents=${issue.agent_ids.join(",")}` : ""
+      const error = issue.last_error ? `: ${issue.last_error}` : ""
+      lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${error}`)
+    }
     lines.push("  next: run /slice doctor for the affected slice, then inspect logs or restart/delete the slice")
   }
 
@@ -226,7 +234,9 @@ function terminalStreamHealthIssueCount(health: DaemonHealthProjection): number 
 }
 
 function sliceLifecycleIssueCount(health: DaemonHealthProjection): number {
-  return health.slice_lifecycle.unhealthy_slices + health.slice_lifecycle.failed_operations
+  return health.slice_lifecycle.issues.length > 0
+    ? health.slice_lifecycle.issues.length
+    : health.slice_lifecycle.unhealthy_slices + health.slice_lifecycle.failed_operations
 }
 
 function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
