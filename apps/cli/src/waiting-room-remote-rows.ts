@@ -203,6 +203,7 @@ function waitingRoomMachineLeaseSummary(machine: WaitingRoomRemoteMachine, kerne
 }
 
 function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[] = []): string {
+  const machineLabel = waitingRoomRemoteMachineLabel(machine)
   if (machine.online === false) {
     return "connect or restart the remote kernel"
   }
@@ -213,22 +214,35 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
     return "start a kernel on this machine"
   }
   if ((machine.available_providers ?? []).length === 0) {
-    return "configure provider CLIs"
+    return `configure provider CLIs on ${machineLabel}`
   }
   if (kernels.length > 0 && kernels.every((kernel) => kernel.accepting_remote_leases === false)) {
-    return "enable remote leases on a kernel or choose another worker"
+    const [firstKernel] = kernels
+    const kernelLabel = kernels.length === 1 && firstKernel
+      ? waitingRoomRemoteKernelLabel(firstKernel)
+      : "one of this machine's kernels"
+    return `enable remote leases on ${kernelLabel} or choose another worker`
   }
   return ""
 }
 
 function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): string {
+  const kernelLabel = waitingRoomRemoteKernelLabel(kernel)
   if (kernel.accepting_remote_leases === false) {
-    return "enable remote leases or choose another worker"
+    return `enable remote leases on ${kernelLabel} or choose another worker`
   }
   if ((kernel.available_providers ?? []).length === 0) {
-    return "configure provider CLIs"
+    return `configure provider CLIs on ${kernelLabel}`
   }
   return ""
+}
+
+function waitingRoomRemoteMachineLabel(machine: WaitingRoomRemoteMachine): string {
+  return machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+}
+
+function waitingRoomRemoteKernelLabel(kernel: WaitingRoomRemoteKernel): string {
+  return kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
 }
 
 function waitingRoomLoadingText(frame = 0) {

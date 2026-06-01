@@ -431,7 +431,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
   assert.equal(state.focus, "remote-kernel")
   rows = waitingRoomRows(state, [], catalog, remote)
   const kernelRow = rows.find((row) => row.id === "remote-kernel:kernel-inactive")
-  assert.equal(kernelRow?.value, "inactive opencode · next: enable remote leases or choose another worker")
+  assert.equal(kernelRow?.value, "inactive opencode · next: enable remote leases on inactive-kernel or choose another worker")
   assert.equal(kernelRow?.selectable, true)
   assert.equal(kernelRow?.focused, true)
 })

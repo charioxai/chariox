@@ -71,6 +71,7 @@ function formatAcceptingRemoteLeases(value: boolean | undefined): string {
 }
 
 function remoteMachineNextAction(machine: RemoteMachineRecord): string {
+  const machineLabel = formatRemoteMachineLabel(machine)
   if (machine.online === false) {
     return "connect or restart the remote kernel on this machine"
   }
@@ -81,19 +82,24 @@ function remoteMachineNextAction(machine: RemoteMachineRecord): string {
     return "start a kernel on this machine"
   }
   if ((machine.available_providers ?? []).length === 0) {
-    return "configure provider CLIs on the worker"
+    return `configure provider CLIs on ${machineLabel}`
   }
   return ""
 }
 
 function remoteKernelNextAction(kernel: RelayKernelPresence): string {
+  const kernelLabel = remoteKernelLabel(kernel)
   if (kernel.accepting_remote_leases === false) {
-    return "enable remote leases or choose another worker"
+    return `enable remote leases on ${kernelLabel} or choose another worker`
   }
   if ((kernel.available_providers ?? []).length === 0) {
-    return "configure provider CLIs on this kernel"
+    return `configure provider CLIs on ${kernelLabel}`
   }
   return ""
+}
+
+function remoteKernelLabel(kernel: RelayKernelPresence): string {
+  return kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
 }
 
 export function formatRelayStatus(status: RelayStatus): string {

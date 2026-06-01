@@ -817,7 +817,7 @@ test("executeShellCommand lists remote kernels with recovery hints", async () =>
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /mini-kernel id=kernel-1/)
   assert.match(result.message ?? "", /accepting_remote_leases=false/)
-  assert.match(result.message ?? "", /next: enable remote leases or choose another worker/)
+  assert.match(result.message ?? "", /next: enable remote leases on mini-kernel or choose another worker/)
 })
 
 test("executeShellCommand renders unknown remote lease state without a false recovery hint", async () => {

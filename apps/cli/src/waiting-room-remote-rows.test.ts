@@ -82,7 +82,7 @@ test("waiting room remote rows render machine and kernel inventory", () => {
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.title, "builder-kernel @ builder")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.value, "ready codex,opencode")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.focused, true)
-  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "inactive no providers · next: enable remote leases or choose another worker")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "inactive no providers · next: enable remote leases on cold-kernel or choose another worker")
 })
 
 test("waiting room remote rows warn when machine kernels reject leases", () => {
@@ -111,7 +111,7 @@ test("waiting room remote rows warn when machine kernels reject leases", () => {
     24,
   )
 
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · accepting=0/1 leased=0 · next: enable remote leases on a kernel or choose another worker")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · accepting=0/1 leased=0 · next: enable remote leases on kernel-1 or choose another worker")
 })
 
 test("waiting room remote helpers classify deletable and attachable inventory", () => {
