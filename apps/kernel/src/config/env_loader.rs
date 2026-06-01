@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use super::identity::load_or_create_runtime_identity;
 use super::{
     default_os_name, load_user_config_from_path,
-    persisted_daemon::{load_cli_cloud_relay_profile, load_persisted_relay_config},
+    persisted_daemon::{
+        load_cli_cloud_relay_profile, load_persisted_relay_config, PersistedCloudRelayProfile,
+    },
     DaemonConfig,
 };
 
@@ -24,6 +26,7 @@ impl DaemonConfig {
         let persisted_cloud_relay = persisted_config
             .as_ref()
             .and_then(|config| config.cloud_relay.clone());
+        let env_cloud_relay = load_env_cloud_relay_profile();
         let cli_cloud_relay = if persisted_cloud_relay.is_none() {
             load_cli_cloud_relay_profile()
         } else {
@@ -112,9 +115,11 @@ impl DaemonConfig {
                     .and_then(|config| config.relay_token)
             }),
             cloud_relay: if env_relay_configured {
-                None
+                env_cloud_relay
             } else {
-                persisted_cloud_relay.or(cli_cloud_relay)
+                env_cloud_relay
+                    .or(persisted_cloud_relay)
+                    .or(cli_cloud_relay)
             },
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
@@ -142,4 +147,13 @@ impl DaemonConfig {
                 .unwrap_or_else(|_| "unknown".to_string()),
         }
     }
+}
+
+fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
+    let payload = env::var("ARROBA_CLOUD_RELAY_CONFIG_JSON").ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
+    let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
+    serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)
+        .ok()
+        .map(PersistedCloudRelayProfile::canonicalized)
 }

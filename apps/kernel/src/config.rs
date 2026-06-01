@@ -521,12 +521,14 @@ mod tests {
         let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
         let old_relay_url = env::var_os("ARROBA_RELAY_URL");
         let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         unsafe {
             env::set_var("HOME", &temp_home);
             env::remove_var("XDG_CONFIG_HOME");
             env::remove_var("XDG_STATE_HOME");
             env::set_var("ARROBA_RELAY_URL", "ws://127.0.0.1:47000");
             env::set_var("ARROBA_RELAY_TOKEN", "local-drill-token");
+            env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         }
         let daemon_config_path = DaemonConfig::default_daemon_config_path();
         if let Some(parent) = daemon_config_path.parent() {
@@ -561,12 +563,77 @@ mod tests {
             restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
             restore_env_var("ARROBA_RELAY_URL", old_relay_url);
             restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+            restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
         }
         let _ = fs::remove_dir_all(temp_home);
 
         assert_eq!(config.relay_url.as_deref(), Some("ws://127.0.0.1:47000"));
         assert_eq!(config.relay_token.as_deref(), Some("local-drill-token"));
         assert_eq!(config.cloud_relay, None);
+    }
+
+    #[test]
+    fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
+        let _guard = env_test_guard().lock().expect("env test guard poisoned");
+        let temp_home = std::env::temp_dir().join(format!(
+            "arroba-config-env-cloud-relay-test-{}",
+            generate_identity_suffix()
+        ));
+        let old_home = env::var_os("HOME");
+        let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+        let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+        let old_relay_url = env::var_os("ARROBA_RELAY_URL");
+        let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+        unsafe {
+            env::set_var("HOME", &temp_home);
+            env::remove_var("XDG_CONFIG_HOME");
+            env::remove_var("XDG_STATE_HOME");
+            env::set_var("ARROBA_RELAY_URL", "wss://195.201.123.115.sslip.io");
+            env::set_var("ARROBA_RELAY_TOKEN", "runtime-token");
+            env::set_var(
+                "ARROBA_CLOUD_RELAY_CONFIG_JSON",
+                r#"{
+                  "cloud_relay": {
+                    "api_url": "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+                    "email": "worker@example.com",
+                    "account_id": "account-1",
+                    "user_id": "user-1",
+                    "account_slug": "account",
+                    "realm_id": "realm-1",
+                    "relay_url": "ws://195.201.123.115:43130",
+                    "issuer_id": "arroba-cloud-staging",
+                    "machine_id": "machine-1",
+                    "machine_credential": "machine-credential",
+                    "token_expires_at_ms": 1
+                  }
+                }"#,
+            );
+        }
+
+        let config = DaemonConfig::load_from_env();
+
+        unsafe {
+            restore_env_var("HOME", old_home);
+            restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+            restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+            restore_env_var("ARROBA_RELAY_URL", old_relay_url);
+            restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+            restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
+        }
+        let _ = fs::remove_dir_all(temp_home);
+
+        assert_eq!(
+            config.relay_url.as_deref(),
+            Some("wss://195.201.123.115.sslip.io")
+        );
+        assert_eq!(config.relay_token.as_deref(), Some("runtime-token"));
+        let profile = config
+            .cloud_relay
+            .expect("env cloud profile should be loaded with env relay config");
+        assert_eq!(profile.account_id, "account-1");
+        assert_eq!(profile.machine_id.as_deref(), Some("machine-1"));
+        assert_eq!(profile.relay_url, HOSTED_STAGING_RELAY_URL);
     }
 
     #[test]
@@ -581,12 +648,14 @@ mod tests {
         let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
         let old_relay_url = env::var_os("ARROBA_RELAY_URL");
         let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         unsafe {
             env::set_var("HOME", &temp_home);
             env::remove_var("XDG_CONFIG_HOME");
             env::remove_var("XDG_STATE_HOME");
             env::remove_var("ARROBA_RELAY_URL");
             env::remove_var("ARROBA_RELAY_TOKEN");
+            env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         }
         let preferences_path = temp_home.join(".arroba").join("config.json");
         fs::create_dir_all(preferences_path.parent().expect("preferences parent"))
@@ -622,6 +691,7 @@ mod tests {
             restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
             restore_env_var("ARROBA_RELAY_URL", old_relay_url);
             restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+            restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
         }
         let _ = fs::remove_dir_all(temp_home);
 
@@ -651,12 +721,14 @@ mod tests {
         let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
         let old_relay_url = env::var_os("ARROBA_RELAY_URL");
         let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
+        let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         unsafe {
             env::set_var("HOME", &temp_home);
             env::remove_var("XDG_CONFIG_HOME");
             env::remove_var("XDG_STATE_HOME");
             env::remove_var("ARROBA_RELAY_URL");
             env::remove_var("ARROBA_RELAY_TOKEN");
+            env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
         }
         let daemon_config_path = DaemonConfig::default_daemon_config_path();
         fs::create_dir_all(daemon_config_path.parent().expect("daemon config parent"))
@@ -707,6 +779,7 @@ mod tests {
             restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
             restore_env_var("ARROBA_RELAY_URL", old_relay_url);
             restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
+            restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
         }
         let _ = fs::remove_dir_all(temp_home);
 

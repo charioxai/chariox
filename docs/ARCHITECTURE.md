@@ -442,6 +442,7 @@ Current architectural interpretation:
 - the CLI should always open the waiting room first; local sessions remain available even when relay is not configured or disconnected
 - relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
 - `/relay use <ws-url>` may read the token from `ARROBA_RELAY_TOKEN`; passing the token as a visible slash-command argument remains supported for self-hosted/manual testing but should not be the preferred documented path for shared terminals or screenshots
+- worker processes may receive `ARROBA_CLOUD_RELAY_CONFIG_JSON` only when the launcher intentionally delegates Cloud relay refresh authority to that worker; the normal env relay URL/token path remains scoped runtime relay configuration and must not imply access to home-owned Cloud credentials
 - the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
 - waiting-room remote machine/kernel discovery must be projection-backed, not request-backed: the kernel refreshes relay presence in the background and publishes a daemon-owned remote-inventory projection; CLI/web waiting-room reads consume that projection and must not synchronously open new relay metadata sockets on the user-facing read path
