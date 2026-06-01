@@ -6,8 +6,8 @@ use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::CapabilityExecutorHealthStore;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonHealthProjection, ProviderCatalogProjectionStore,
-    ProviderRunProjectionStore, SessionStateProjectionStore, SliceLifecycleHealthSnapshot,
-    TransportHealthStore,
+    ProviderRunProjectionStore, RemoteExtensionSyncHealthSnapshot, SessionStateProjectionStore,
+    SliceLifecycleHealthSnapshot, TransportHealthStore,
 };
 use crate::runtime::session_actor::SessionRuntime;
 use crate::runtime::state::KernelRuntimeState;
@@ -59,6 +59,7 @@ pub(crate) async fn build_daemon_health_projection(
         ),
         input.terminal_health.snapshot(),
         SliceLifecycleHealthSnapshot::from_slices(&input.runtime_state.list_slices()),
+        RemoteExtensionSyncHealthSnapshot::from_agents(&input.runtime_state.list_agents()),
         input
             .session_projection
             .workspace_coordination_snapshot(input.workspace_coordinator.active_claims()),

@@ -52,6 +52,10 @@ impl KernelRuntimeState {
         self.owned.config_projection.snapshot()
     }
 
+    pub(crate) fn list_agents(&self) -> Vec<crate::agent::AgentInstance> {
+        self.owned.agent_store.list_agents()
+    }
+
     pub(crate) async fn workspace_live_sync_health_snapshot(
         &self,
     ) -> crate::runtime::projection::WorkspaceLiveSyncHealthSnapshot {

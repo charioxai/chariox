@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::ProjectionMetadata;
+use crate::agent::AgentInstance;
+use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
@@ -186,6 +188,57 @@ impl SliceLifecycleHealthSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RemoteExtensionSyncHealthSnapshot {
+    pub remote_agents: usize,
+    pub home_proxy_agents: usize,
+    pub home_proxy_grants: usize,
+    pub manifest_missing_agents: usize,
+    pub synced_agents: usize,
+    pub syncing_agents: usize,
+    pub pending_agents: usize,
+    pub failed_agents: usize,
+    pub stale_agents: usize,
+    pub pending_revoke_agents: usize,
+}
+
+impl RemoteExtensionSyncHealthSnapshot {
+    pub(crate) fn from_agents(agents: &[AgentInstance]) -> Self {
+        let mut snapshot = Self::default();
+        for agent in agents {
+            if agent.remote_execution().is_none() {
+                continue;
+            }
+            snapshot.remote_agents += 1;
+            let home_proxy_grants = agent
+                .extension_grants()
+                .iter()
+                .filter(|grant| grant.kind != ExtensionKind::Skill)
+                .count();
+            if home_proxy_grants == 0 {
+                continue;
+            }
+            snapshot.home_proxy_agents += 1;
+            snapshot.home_proxy_grants += home_proxy_grants;
+            let Some(status) = agent.remote_extension_manifest_sync() else {
+                snapshot.manifest_missing_agents += 1;
+                continue;
+            };
+            match status.state {
+                RemoteExtensionManifestSyncState::Synced => snapshot.synced_agents += 1,
+                RemoteExtensionManifestSyncState::Syncing => snapshot.syncing_agents += 1,
+                RemoteExtensionManifestSyncState::Pending => snapshot.pending_agents += 1,
+                RemoteExtensionManifestSyncState::Failed => snapshot.failed_agents += 1,
+                RemoteExtensionManifestSyncState::Stale => snapshot.stale_agents += 1,
+            }
+            if status.pending_revoke.unwrap_or(false) {
+                snapshot.pending_revoke_agents += 1;
+            }
+        }
+        snapshot
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonHealthProjection {
     pub metadata: ProjectionMetadata,
@@ -203,6 +256,7 @@ pub struct DaemonHealthProjection {
     pub transport: super::TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
     pub slice_lifecycle: SliceLifecycleHealthSnapshot,
+    pub remote_extension_sync: RemoteExtensionSyncHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
@@ -225,6 +279,7 @@ impl DaemonHealthProjection {
         transport: super::TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
         slice_lifecycle: SliceLifecycleHealthSnapshot,
+        remote_extension_sync: RemoteExtensionSyncHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
         workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
         projection_invariants: ProjectionInvariantHealthSnapshot,
@@ -252,6 +307,7 @@ impl DaemonHealthProjection {
             transport,
             terminal_stream,
             slice_lifecycle,
+            remote_extension_sync,
             workspace_coordination,
             workspace_live_sync,
             projection_invariants,
@@ -265,9 +321,15 @@ mod tests {
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
-        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, SessionProjectionHealthSnapshot,
+        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
+        RemoteExtensionSyncHealthSnapshot, SessionProjectionHealthSnapshot,
         SliceLifecycleHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
         WorkspaceLiveSyncHealthSnapshot, WorktreeClaimSnapshot,
+    };
+    use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
+    use crate::extension::{
+        ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncState,
+        RemoteExtensionManifestSyncStatus,
     };
     use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::runtime::process_health::KernelProcessHealthSnapshot;
@@ -374,6 +436,18 @@ mod tests {
                 failed_operations: 1,
                 in_progress_operations: 2,
             },
+            RemoteExtensionSyncHealthSnapshot {
+                remote_agents: 4,
+                home_proxy_agents: 3,
+                home_proxy_grants: 5,
+                manifest_missing_agents: 1,
+                synced_agents: 1,
+                syncing_agents: 0,
+                pending_agents: 0,
+                failed_agents: 1,
+                stale_agents: 0,
+                pending_revoke_agents: 1,
+            },
             WorkspaceCoordinationHealthSnapshot {
                 active_worktree_claims: vec![WorktreeClaimSnapshot {
                     workspace_id: "workspace-1".to_string(),
@@ -468,6 +542,12 @@ mod tests {
         assert_eq!(projection.slice_lifecycle.attached_agents, 3);
         assert_eq!(projection.slice_lifecycle.failed_operations, 1);
         assert_eq!(projection.slice_lifecycle.in_progress_operations, 2);
+        assert_eq!(projection.remote_extension_sync.remote_agents, 4);
+        assert_eq!(projection.remote_extension_sync.home_proxy_agents, 3);
+        assert_eq!(projection.remote_extension_sync.home_proxy_grants, 5);
+        assert_eq!(projection.remote_extension_sync.manifest_missing_agents, 1);
+        assert_eq!(projection.remote_extension_sync.failed_agents, 1);
+        assert_eq!(projection.remote_extension_sync.pending_revoke_agents, 1);
         assert_eq!(
             projection.workspace_coordination.worktree_collisions.len(),
             1
@@ -506,5 +586,81 @@ mod tests {
         );
         assert_eq!(projection.projection_invariants.checked_agents, 3);
         assert!(projection.projection_invariants.mismatches.is_empty());
+    }
+
+    #[test]
+    fn remote_extension_sync_health_counts_only_home_proxy_grants() {
+        let mut synced = remote_agent("agent-synced");
+        synced.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, "filesystem"));
+        synced.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, "review"));
+        synced.set_remote_extension_manifest_sync(Some(RemoteExtensionManifestSyncStatus::synced(
+            "hash-synced".to_string(),
+        )));
+
+        let mut failed = remote_agent("agent-failed");
+        failed.grant_extension(ExtensionGrant::new(ExtensionKind::Connector, "status-api"));
+        failed.set_remote_extension_manifest_sync(Some(
+            RemoteExtensionManifestSyncStatus::pending("hash-failed".to_string(), true)
+                .failed("relay offline"),
+        ));
+
+        let mut stale = remote_agent("agent-stale");
+        stale.grant_extension(ExtensionGrant::new(ExtensionKind::Script, "release"));
+        stale.set_remote_extension_manifest_sync(Some(RemoteExtensionManifestSyncStatus {
+            state: RemoteExtensionManifestSyncState::Stale,
+            manifest_hash: Some("hash-stale".to_string()),
+            last_attempted_at_ms: None,
+            last_synced_at_ms: None,
+            last_error: Some("worker behind".to_string()),
+            pending_revoke: None,
+        }));
+
+        let mut missing = remote_agent("agent-missing");
+        missing.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, "github"));
+
+        let mut skill_only = remote_agent("agent-skill");
+        skill_only.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, "docs"));
+
+        let local = local_agent("agent-local");
+        let snapshot = RemoteExtensionSyncHealthSnapshot::from_agents(&[
+            synced, failed, stale, missing, skill_only, local,
+        ]);
+
+        assert_eq!(snapshot.remote_agents, 5);
+        assert_eq!(snapshot.home_proxy_agents, 4);
+        assert_eq!(snapshot.home_proxy_grants, 4);
+        assert_eq!(snapshot.synced_agents, 1);
+        assert_eq!(snapshot.failed_agents, 1);
+        assert_eq!(snapshot.stale_agents, 1);
+        assert_eq!(snapshot.manifest_missing_agents, 1);
+        assert_eq!(snapshot.pending_revoke_agents, 1);
+    }
+
+    fn local_agent(id: &str) -> AgentInstance {
+        AgentInstance::new(
+            id,
+            id,
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    fn remote_agent(id: &str) -> AgentInstance {
+        let mut agent = local_agent(id);
+        agent.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+        }));
+        agent
     }
 }

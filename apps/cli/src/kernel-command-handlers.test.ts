@@ -77,6 +77,18 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       failed_operations: 0,
       in_progress_operations: 0,
     },
+    remote_extension_sync: {
+      remote_agents: 0,
+      home_proxy_agents: 0,
+      home_proxy_grants: 0,
+      manifest_missing_agents: 0,
+      synced_agents: 0,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+    },
     workspace_coordination: {
       active_worktree_claims: [],
       worktree_collisions: [],
@@ -114,6 +126,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0/)
+  assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
@@ -141,6 +154,28 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 2)
   assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
+})
+
+test("kernel health formatter reports remote extension sync issues", () => {
+  const unhealthy = health({
+    remote_extension_sync: {
+      remote_agents: 4,
+      home_proxy_agents: 3,
+      home_proxy_grants: 5,
+      manifest_missing_agents: 1,
+      synced_agents: 1,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 1,
+      stale_agents: 1,
+      pending_revoke_agents: 1,
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 3)
+  assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
+  assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {

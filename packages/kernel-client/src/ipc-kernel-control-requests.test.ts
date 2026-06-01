@@ -74,6 +74,18 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
       failed_operations: 0,
       in_progress_operations: 0,
     },
+    remote_extension_sync: {
+      remote_agents: 2,
+      home_proxy_agents: 1,
+      home_proxy_grants: 2,
+      manifest_missing_agents: 0,
+      synced_agents: 1,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+    },
     workspace_coordination: {
       active_worktree_claims: [
         { workspace_id: "workspace-1", worktree_id: "/repo", session_ids: ["session-1"] },
@@ -117,5 +129,6 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
   assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
   assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
   assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)
+  assert.equal(response.DaemonHealth.projection.remote_extension_sync.home_proxy_agents, 1)
   assert.equal(response.DaemonHealth.projection.workspace_coordination.active_operation_claims[0]?.mode, "write")
 })

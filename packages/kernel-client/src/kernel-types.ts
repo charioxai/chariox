@@ -455,6 +455,19 @@ export type SliceLifecycleHealthSnapshot = {
   in_progress_operations: number
 }
 
+export type RemoteExtensionSyncHealthSnapshot = {
+  remote_agents: number
+  home_proxy_agents: number
+  home_proxy_grants: number
+  manifest_missing_agents: number
+  synced_agents: number
+  syncing_agents: number
+  pending_agents: number
+  failed_agents: number
+  stale_agents: number
+  pending_revoke_agents: number
+}
+
 export type ProjectionInvariantMismatch = {
   kind: string
   session_id: string
@@ -487,6 +500,7 @@ export type DaemonHealthProjection = {
   transport: TransportHealthSnapshot
   terminal_stream: TerminalStreamHealthSnapshot
   slice_lifecycle: SliceLifecycleHealthSnapshot
+  remote_extension_sync: RemoteExtensionSyncHealthSnapshot
   workspace_coordination: WorkspaceCoordinationHealthSnapshot
   workspace_live_sync: WorkspaceLiveSyncHealthSnapshot
   projection_invariants: ProjectionInvariantHealthSnapshot
@@ -1151,7 +1165,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 83
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 84
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 
