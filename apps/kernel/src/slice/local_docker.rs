@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
@@ -81,6 +81,12 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
+    if matches!(
+        action,
+        LocalDockerSliceAction::Provision | LocalDockerSliceAction::ImportProviderAuth
+    ) {
+        ensure_local_docker_runtime_ready()?;
+    }
     if action == LocalDockerSliceAction::Provision {
         ensure_local_docker_slice_ports_available(record)?;
     }
@@ -156,6 +162,102 @@ pub fn run_local_docker_slice_action(
             command_log_preview(&log_path)
         ),
     })
+}
+
+fn ensure_local_docker_runtime_ready() -> Result<(), DaemonError> {
+    if docker_info_ready() {
+        return Ok(());
+    }
+    if cfg!(target_os = "macos") && command_exists("colima") {
+        let start_output = Command::new("colima")
+            .arg("start")
+            .output()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.local_docker",
+                message: format!("failed to start Colima for local Docker slices: {error}"),
+            })?;
+        if !start_output.status.success() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.local_docker",
+                message: format!(
+                    "Colima failed to start for local Docker slices with status {}: {}",
+                    start_output.status,
+                    compact_command_output(&start_output)
+                ),
+            });
+        }
+        let _ = Command::new("docker")
+            .args(["context", "use", "colima"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if docker_info_ready() {
+            return Ok(());
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: format!(
+            "docker is not running or not reachable for local Docker slices; {}",
+            docker_context_hint()
+        ),
+    })
+}
+
+fn docker_info_ready() -> bool {
+    match Command::new("docker")
+        .arg("info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn command_exists(command: &str) -> bool {
+    match Command::new("sh")
+        .args(["-lc", &format!("command -v {command} >/dev/null 2>&1")])
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn docker_context_hint() -> String {
+    match Command::new("docker").args(["context", "show"]).output() {
+        Ok(output) if output.status.success() => {
+            let context = compact_command_output(&output);
+            if context.is_empty() {
+                "docker context is unavailable".to_string()
+            } else {
+                format!("current docker context is `{context}`")
+            }
+        }
+        _ => "check that Docker or Colima is installed and available on PATH".to_string(),
+    }
+}
+
+fn compact_command_output(output: &Output) -> String {
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let compact = combined
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preview = compact.chars().take(500).collect::<String>();
+    if preview.len() < compact.len() {
+        format!("{preview}...")
+    } else {
+        compact
+    }
 }
 
 pub fn start_local_docker_slice_provider_login(

@@ -279,6 +279,52 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
 }
 
 #[test]
+fn leased_projection_forwards_provider_output_without_terminal_recipient() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+        .expect("leased prompt should submit");
+    match outcome {
+        PromptSubmissionOutcome::Started { .. } => {}
+        other => panic!("unexpected prompt submission outcome: {other:?}"),
+    }
+    app.fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        TerminalOutputKind::ProviderOutput,
+        Some("assistant-1".to_string()),
+        Vec::new(),
+        b"remote output from hidden worker",
+    );
+
+    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("projection should drain leased output")
+        .expect("projection should be emitted");
+    let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+    assert_eq!(output_chunks.len(), 1);
+    assert_eq!(output_chunks[0].bytes, b"remote output from hidden worker");
+}
+
+#[test]
 fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

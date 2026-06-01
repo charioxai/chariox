@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
@@ -87,11 +87,12 @@ test("waiting room activation creates and attaches sessions with launch defaults
     createdSession: true,
     launch,
   }])
-  assert.deepEqual(harness.calls.slice(-4), [
+  assert.deepEqual(harness.calls.slice(-5), [
+    "importAuth:slice-1:all",
     "updateSlice:slice-1",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · slice slice-1 · workspace live sync config default",
+    "flash:info:created session Review in /worktree · slice slice-1 · screen http://127.0.0.1:45503/vnc.html · workspace live sync config default",
   ])
 })
 
@@ -116,14 +117,39 @@ test("waiting room activation creates and starts new headed slices before sessio
     workspaceMount: "/worktree",
   }])
   assert.equal(harness.createdLaunches[0]?.launch.sliceRef, "slice-created")
-  assert.deepEqual(harness.calls.slice(-7), [
+  assert.deepEqual(harness.calls.slice(-9), [
     "createSlice",
     "updateSlice:slice-created",
     "startSlice:slice-created",
     "updateSlice:slice-created",
+    "importAuth:slice-created:all",
+    "updateSlice:slice-created",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · slice slice-created · workspace live sync config default",
+    "flash:info:created session Review in /worktree · slice slice-created · screen http://127.0.0.1:45503/vnc.html · workspace live sync config default",
+  ])
+})
+
+test("waiting room activation blocks slice launches when selected provider auth is missing", async () => {
+  const launch: WaitingRoomLaunchConfig = {
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    effort: "high",
+    sliceRef: "slice-1",
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch },
+    importedProviderAuth: [{ provider: "codex", state: "configured" }],
+  })
+
+  await harness.controller.activate()
+
+  assert.equal(harness.createdLaunches.length, 0)
+  assert.deepEqual(harness.calls.slice(-3), [
+    "updateSlice:slice-1",
+    "warn",
+    "flash:error:slice slice-1 is missing claude auth; run /slice auth import slice-1 all or /slice auth login slice-1 claude",
   ])
 })
 
@@ -242,6 +268,7 @@ function createHarness(options: {
   accountProfile?: string | null
   createError?: Error
   sessionOverrides?: Partial<RuntimeSession>
+  importedProviderAuth?: SliceRecord["provider_auth"]
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -317,6 +344,20 @@ function createHarness(options: {
       calls.push(`startSlice:${sliceRef}`)
       return sliceRecord(sliceRef, "headed")
     },
+    importSliceProviderAuth: async (sliceRef, provider) => {
+      calls.push(`importAuth:${sliceRef}:${provider}`)
+      return {
+        slice: sliceRecord(sliceRef, "headed", {
+          provider_auth: options.importedProviderAuth ?? [
+            { provider: "opencode", state: "configured" },
+            { provider: "codex", state: "configured" },
+            { provider: "claude", state: "configured" },
+          ],
+        }),
+        provider,
+        status: "imported",
+      }
+    },
     updateSlices: (slice) => {
       calls.push(`updateSlice:${slice.id}`)
     },
@@ -385,7 +426,11 @@ function runtimeSession(id: string, alias: string | null, overrides: Partial<Run
   }
 }
 
-function sliceRecord(id: string, displayMode: "headless" | "headed") {
+function sliceRecord(
+  id: string,
+  displayMode: "headless" | "headed",
+  overrides: Partial<SliceRecord> = {},
+): SliceRecord {
   return {
     id,
     name: id,
@@ -403,9 +448,16 @@ function sliceRecord(id: string, displayMode: "headless" | "headed") {
     worker_machine_id: `machine-${id}`,
     providers: [],
     provider_auth: [],
-    display_endpoint: null,
+    display_endpoint: displayMode === "headed" ? {
+      slice_id: id,
+      kind: "novnc" as const,
+      url: "http://127.0.0.1:45503/vnc.html",
+      access: "local" as const,
+      capabilities: [],
+    } : null,
     created_at_ms: 0,
     updated_at_ms: 0,
+    ...overrides,
   }
 }
 

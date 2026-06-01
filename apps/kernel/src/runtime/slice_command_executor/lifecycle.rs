@@ -8,6 +8,8 @@ use crate::local::{
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
+use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summaries};
+
 pub(super) async fn execute_list_slices_request(
     runtime_state: &KernelRuntimeState,
     _request: ListSlicesRequest,
@@ -115,8 +117,106 @@ pub(super) async fn execute_start_slice_request(
         }
     };
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
+    let slice = import_all_provider_auth_for_started_slice(
+        runtime_state,
+        config_projection,
+        &request.slice_ref,
+        slice,
+    )
+    .await;
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
+}
+
+async fn import_all_provider_auth_for_started_slice(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    slice_ref: &str,
+    slice: crate::slice::SliceRecord,
+) -> crate::slice::SliceRecord {
+    if slice.backend != crate::slice::SliceBackendKind::LocalDocker {
+        return slice;
+    }
+    runtime_state
+        .record_slice_audit_event(&slice, "auth.import_all", "accepted", Some("all"), None)
+        .ok();
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let import_result = tokio::task::spawn_blocking(move || {
+        crate::slice::run_local_docker_slice_action(
+            &task_slice,
+            crate::slice::LocalDockerSliceAction::ImportProviderAuth,
+            None,
+            Some("all"),
+            &docker_options,
+        )
+    })
+    .await;
+    match import_result {
+        Ok(Ok(())) => {
+            let imported_provider_auth = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
+                .map(|summaries| scoped_provider_auth_summaries("all", summaries))
+                .unwrap_or_default();
+            let provider_auth = merge_scoped_provider_auth(
+                slice.provider_auth.clone(),
+                "all",
+                imported_provider_auth,
+            );
+            match runtime_state.set_slice_provider_auth(slice_ref, provider_auth) {
+                Ok(updated) => {
+                    runtime_state
+                        .record_slice_audit_event(
+                            &updated,
+                            "auth.import_all",
+                            "completed",
+                            Some("all"),
+                            None,
+                        )
+                        .ok();
+                    updated
+                }
+                Err(error) => {
+                    runtime_state
+                        .record_slice_audit_event(
+                            &slice,
+                            "auth.import_all",
+                            "failed",
+                            Some("all"),
+                            Some(&error.to_string()),
+                        )
+                        .ok();
+                    slice
+                }
+            }
+        }
+        Ok(Err(error)) => {
+            runtime_state
+                .record_slice_audit_event(
+                    &slice,
+                    "auth.import_all",
+                    "failed",
+                    Some("all"),
+                    Some(&error.to_string()),
+                )
+                .ok();
+            slice
+        }
+        Err(error) => {
+            runtime_state
+                .record_slice_audit_event(
+                    &slice,
+                    "auth.import_all",
+                    "failed",
+                    Some("all"),
+                    Some(&format!("slice auth import task failed: {error}")),
+                )
+                .ok();
+            slice
+        }
+    }
 }
 
 pub(super) async fn execute_stop_slice_request(

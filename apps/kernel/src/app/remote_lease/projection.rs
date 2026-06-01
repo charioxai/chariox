@@ -2,7 +2,7 @@ use crate::app::provider_output;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
-use crate::terminal::TerminalOutputKind;
+use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
 };
@@ -32,20 +32,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
-        if pump_output {
-            let _ = provider_output::pump_terminal_output_for_attachment(
-                self.app,
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )?;
-        }
-        let output_chunks = self
-            .app
-            .terminal
-            .drain_output_records(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )
+        let mut output_chunks = self
+            .drain_leased_output_records(&leased_agent, provider_run_id, pump_output)?
             .into_iter()
             .filter(|record| record.provider_run_id == provider_run_id)
             .map(|record| RelayProjectedOutputChunk {
@@ -85,6 +73,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         let mut prompts = Vec::new();
+        let mut projected_ids_to_record = Vec::new();
         if let Ok(backing_session) = self
             .app
             .sessions
@@ -94,28 +83,62 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &backing_session,
                 Some(&leased_agent.backing_agent_id),
             )?;
-            for entry in history_entries
-                .into_iter()
-                .filter(|entry| entry.kind == SessionHistoryEntryKind::UserPrompt)
-            {
-                let prompt_id = format!(
-                    "history:{}:{}:{}",
-                    entry
-                        .source_attachment_id
-                        .as_deref()
-                        .unwrap_or(&leased_agent.backing_attachment_id),
-                    entry.timestamp_ms,
-                    stable_prompt_hash(&entry.text)
-                );
-                if !leased_agent
-                    .projected_prompt_ids
-                    .iter()
-                    .any(|id| id == &prompt_id)
-                {
-                    prompts.push(RelayProjectedPrompt {
-                        prompt_id,
-                        text: entry.text,
-                    });
+            for entry in history_entries {
+                if entry.kind == SessionHistoryEntryKind::UserPrompt {
+                    let prompt_id = format!(
+                        "history:{}:{}:{}",
+                        entry
+                            .source_attachment_id
+                            .as_deref()
+                            .unwrap_or(&leased_agent.backing_attachment_id),
+                        entry.timestamp_ms,
+                        stable_prompt_hash(&entry.text)
+                    );
+                    if !leased_agent
+                        .projected_prompt_ids
+                        .iter()
+                        .any(|id| id == &prompt_id)
+                    {
+                        projected_ids_to_record.push(prompt_id.clone());
+                        prompts.push(RelayProjectedPrompt {
+                            prompt_id,
+                            text: entry.text,
+                        });
+                    }
+                    continue;
+                }
+
+                if entry.provider_run_id.as_deref() == Some(provider_run_id) {
+                    let Some(kind) = terminal_output_kind_from_history(entry.kind) else {
+                        continue;
+                    };
+                    let output_id = format!(
+                        "history-output:{provider_run_id}:{}:{}:{}:{}",
+                        entry.timestamp_ms,
+                        history_kind_key(entry.kind),
+                        entry.merge_key.as_deref().unwrap_or(""),
+                        stable_prompt_hash(&entry.text)
+                    );
+                    if leased_agent
+                        .projected_prompt_ids
+                        .iter()
+                        .any(|id| id == &output_id)
+                    {
+                        continue;
+                    }
+                    let chunk = RelayProjectedOutputChunk {
+                        kind,
+                        merge_key: entry.merge_key.clone(),
+                        bytes: entry.text.as_bytes().to_vec(),
+                    };
+                    projected_ids_to_record.push(output_id);
+                    if !output_chunks.iter().any(|existing| {
+                        existing.kind == chunk.kind
+                            && existing.merge_key == chunk.merge_key
+                            && existing.bytes == chunk.bytes
+                    }) {
+                        output_chunks.push(chunk);
+                    }
                 }
             }
         }
@@ -129,6 +152,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .iter()
                 .any(|id| id == prompt.id())
             {
+                projected_ids_to_record.push(prompt.id().to_string());
                 prompts.push(RelayProjectedPrompt {
                     prompt_id: prompt.id().to_string(),
                     text: prompt.prompt().to_string(),
@@ -140,15 +164,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .projected_completion_provider_run_ids
             .iter()
             .any(|id| id == provider_run_id);
-        if !prompts.is_empty() {
+        if !projected_ids_to_record.is_empty() {
             if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-                for prompt in &prompts {
+                for projected_id in projected_ids_to_record {
                     if !agent
                         .projected_prompt_ids
                         .iter()
-                        .any(|id| id == &prompt.prompt_id)
+                        .any(|id| id == &projected_id)
                     {
-                        agent.projected_prompt_ids.push(prompt.prompt_id.clone());
+                        agent.projected_prompt_ids.push(projected_id);
                     }
                 }
             }
@@ -204,6 +228,52 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    fn drain_leased_output_records(
+        &mut self,
+        leased_agent: &crate::execution_lease::LeasedAgent,
+        provider_run_id: &str,
+        pump_output: bool,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        let mut records = if pump_output {
+            provider_output::ProviderOutputPump::new(self.app).pump_provider_output(
+                provider_output::ProviderOutputPumpRequest {
+                    session_id: &leased_agent.backing_session_id,
+                    provider_run_id,
+                    recipient_attachment_ids: vec![leased_agent.backing_attachment_id.clone()],
+                    initial_liveness_already_checked: false,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+
+        for record in self
+            .app
+            .terminal
+            .output_records()
+            .into_iter()
+            .filter(|record| {
+                record.session_id == leased_agent.backing_session_id
+                    && record.provider_run_id == provider_run_id
+                    && record.pending_recipient_attachment_ids.is_empty()
+            })
+        {
+            if !records.iter().any(|existing| existing == &record) {
+                records.push(record);
+            }
+        }
+
+        for record in self.app.terminal.drain_output_records(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_attachment_id,
+        ) {
+            if !records.iter().any(|existing| existing == &record) {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
     pub(crate) fn pump_leased_runtime_projections(
         &mut self,
     ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
@@ -227,16 +297,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             else {
                 continue;
             };
-            let _ = provider_output::ProviderOutputPump::new(self.app).pump_provider_output(
-                provider_output::ProviderOutputPumpRequest {
-                    session_id: &leased_agent.backing_session_id,
-                    provider_run_id: &provider_run_id,
-                    recipient_attachment_ids: vec![leased_agent.backing_attachment_id.clone()],
-                    initial_liveness_already_checked: false,
-                },
-            )?;
             if let Some(event) =
-                self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
+                self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, true)?
             {
                 events.push(event);
             }
@@ -487,4 +549,27 @@ fn stable_prompt_hash(text: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     hasher.finish()
+}
+
+fn terminal_output_kind_from_history(kind: SessionHistoryEntryKind) -> Option<TerminalOutputKind> {
+    match kind {
+        SessionHistoryEntryKind::ProviderOutput => Some(TerminalOutputKind::ProviderOutput),
+        SessionHistoryEntryKind::ProviderReasoning => Some(TerminalOutputKind::ProviderReasoning),
+        SessionHistoryEntryKind::ProviderTool => Some(TerminalOutputKind::ProviderTool),
+        SessionHistoryEntryKind::ProviderError => Some(TerminalOutputKind::ProviderError),
+        SessionHistoryEntryKind::ProviderStatus => Some(TerminalOutputKind::ProviderStatus),
+        SessionHistoryEntryKind::UserPrompt | SessionHistoryEntryKind::Notice => None,
+    }
+}
+
+fn history_kind_key(kind: SessionHistoryEntryKind) -> &'static str {
+    match kind {
+        SessionHistoryEntryKind::UserPrompt => "user_prompt",
+        SessionHistoryEntryKind::ProviderOutput => "provider_output",
+        SessionHistoryEntryKind::ProviderReasoning => "provider_reasoning",
+        SessionHistoryEntryKind::ProviderTool => "provider_tool",
+        SessionHistoryEntryKind::ProviderError => "provider_error",
+        SessionHistoryEntryKind::ProviderStatus => "provider_status",
+        SessionHistoryEntryKind::Notice => "notice",
+    }
 }

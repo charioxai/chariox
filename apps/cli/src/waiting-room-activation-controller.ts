@@ -55,6 +55,7 @@ export type WaitingRoomActivationControllerDeps = {
     workspaceMount: string
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
+  importSliceProviderAuth?: (sliceRef: string, provider: string) => Promise<{ slice: SliceRecord; provider: string; status: string }>
   updateSlices?: (slice: SliceRecord) => void
   attachBinding: (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
@@ -190,7 +191,8 @@ export function createWaitingRoomActivationController(
   }
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
-    const sliceRef = await prepareSliceForLaunch(launch)
+    const slice = await prepareSliceForLaunch(launch)
+    const sliceRef = slice?.id ?? null
     const session = await deps.createSession(
       deps.getWorkspaceTarget(),
       deps.getWorktreeTarget(),
@@ -206,17 +208,21 @@ export function createWaitingRoomActivationController(
       },
     )
     await deps.attachBinding(session, true, launch)
-    deps.flashFooter(createdSessionFooter(session, sliceRef), "info")
+    deps.flashFooter(createdSessionFooter(session, slice), "info")
     return session
   }
 
-  const prepareSliceForLaunch = async (launch: WaitingRoomLaunchConfig): Promise<string | null> => {
+  const prepareSliceForLaunch = async (launch: WaitingRoomLaunchConfig): Promise<SliceRecord | null> => {
     if (launch.sliceRef) {
+      let slice: SliceRecord | null = null
       if (deps.startSlice) {
-        const slice = await deps.startSlice(launch.sliceRef)
+        slice = await deps.startSlice(launch.sliceRef)
         deps.updateSlices?.(slice)
       }
-      return launch.sliceRef
+      if (slice) {
+        return await prepareSliceProviderAuth(slice, launch.provider)
+      }
+      return { id: launch.sliceRef } as SliceRecord
     }
     if (!launch.sliceCreate) {
       return null
@@ -236,7 +242,31 @@ export function createWaitingRoomActivationController(
     deps.updateSlices?.(slice)
     const started = await deps.startSlice(slice.id)
     deps.updateSlices?.(started)
-    return started.id
+    return await prepareSliceProviderAuth(started, launch.provider)
+  }
+
+  const prepareSliceProviderAuth = async (
+    slice: SliceRecord,
+    provider: BackendProviderId,
+  ): Promise<SliceRecord> => {
+    let prepared = slice
+    if (deps.importSliceProviderAuth) {
+      try {
+        const result = await deps.importSliceProviderAuth(slice.id, "all")
+        prepared = result.slice
+        deps.updateSlices?.(prepared)
+      } catch (error) {
+        deps.warn("slice auth import failed", {
+          slice: slice.id,
+          provider: "all",
+          error: deps.formatError(error),
+        })
+      }
+    }
+    if (!sliceHasProviderAuth(prepared, provider)) {
+      throw new Error(`slice ${prepared.name ?? prepared.id} is missing ${provider} auth; run /slice auth import ${prepared.id} all or /slice auth login ${prepared.id} ${provider}`)
+    }
+    return prepared
   }
 
   return {
@@ -253,12 +283,26 @@ function defaultSliceName(worktreePath: string): string {
 
 function createdSessionFooter(
   session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
-  sliceRef: string | null,
+  sliceRecord: SliceRecord | null,
 ): string {
   const label = session.alias ?? session.id
   const worktree = session.worktree_id ? ` in ${session.worktree_id}` : ""
-  const slice = sliceRef ? ` · slice ${sliceRef}` : ""
-  return `created session ${label}${worktree}${slice} · workspace live sync ${createdSessionLiveSyncMode(session)}`
+  const slice = sliceRecord ? ` · slice ${sliceRecord.id}` : ""
+  const screen = sliceRecord?.display_endpoint?.url ? ` · screen ${sliceRecord.display_endpoint.url}` : ""
+  return `created session ${label}${worktree}${slice}${screen} · workspace live sync ${createdSessionLiveSyncMode(session)}`
+}
+
+function sliceHasProviderAuth(slice: SliceRecord, provider: BackendProviderId): boolean {
+  const auth = slice.provider_auth ?? []
+  return auth.some((entry) => {
+    if (entry.state !== "configured" && entry.state !== "authenticated") {
+      return false
+    }
+    if (provider === "opencode") {
+      return entry.provider === "opencode" || entry.provider.startsWith("opencode:")
+    }
+    return entry.provider === provider
+  })
 }
 
 function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {

@@ -101,6 +101,7 @@ function outlineBlobEntry(
   turnId: number,
   id: number,
 ): TranscriptEntry {
+  const blobCollapsed = shouldCollapseOutlineBlob(blob)
   return {
     id,
     role: roleForHistoryKind(blob.kind),
@@ -108,7 +109,7 @@ function outlineBlobEntry(
     sourceText: "",
     turnId,
     blobCollapsible: true,
-    blobCollapsed: true,
+    blobCollapsed,
     blobTitle: blob.title,
     blobSummary: blob.summary,
     historyBlobId: blob.blob_id,
@@ -119,6 +120,13 @@ function outlineBlobEntry(
     historyFragmentEnd: blob.total_chars,
     historyTotalChars: blob.total_chars,
   }
+}
+
+function shouldCollapseOutlineBlob(blob: SessionHistoryOutlineBlob): boolean {
+  if (blob.kind !== "notice" && blob.kind !== "provider_error") {
+    return true
+  }
+  return !/(401|unauthorized|missing bearer|not logged in|authentication|auth failed|provider error)/i.test(blob.summary)
 }
 
 function roleForHistoryKind(kind: SessionHistoryOutlineBlob["kind"]): TranscriptEntry["role"] {

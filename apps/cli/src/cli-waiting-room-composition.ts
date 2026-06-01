@@ -22,6 +22,7 @@ import {
 import {
   createSlice,
   deleteSlice,
+  importSliceProviderAuth,
   startSlice,
 } from "./slice-api.js"
 import { applyTheme } from "./theme.js"
@@ -221,6 +222,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       workspaceMount: options.workspaceMount,
     }),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
+    importSliceProviderAuth: (sliceRef, provider) => importSliceProviderAuth(deps.client, sliceRef, provider),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [
         slice,
