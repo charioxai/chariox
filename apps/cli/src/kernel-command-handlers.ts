@@ -73,11 +73,13 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + transportHealthIssueCount(health)
     + terminalStreamHealthIssueCount(health)
     + capabilityHealthIssueCount(health)
+    + providerRunActorHealthIssueCount(health)
 }
 
 export function formatKernelHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
   const providerCatalog = health.provider_catalog
+  const providerRunActor = health.provider_run_actor
   const process = health.process
   const capability = health.capability_executor
   const transport = health.transport
@@ -95,6 +97,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `process: pid=${process.process_id} rss=${formatBytes(process.current_resident_set_bytes ?? null)} peak_rss=${formatBytes(process.peak_resident_set_bytes ?? null)}`,
     `provider catalog: cached=${providerCatalog.cached ? "yes" : "no"} expired=${providerCatalog.expired ? "yes" : "no"} age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`,
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `provider run actor: enqueued=${providerRunActor.enqueued_commands} rejected=${providerRunActor.enqueue_rejections}`,
     `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
     `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
     `terminal stream: pending_output=${terminalStream.pending_output_records} pending_notices=${terminalStream.pending_notice_records} pending_completions=${terminalStream.pending_completion_records} trimmed_recipients=${terminalStream.trimmed_pending_output_recipients} limit=${terminalStream.pending_output_record_limit_per_attachment}`,
@@ -146,6 +149,11 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
     }
     lines.push("  next: inspect the session and relaunch the affected agent to restore one active run pointer")
+  }
+
+  if (providerRunActor.enqueue_rejections > 0) {
+    lines.push(`provider run actor rejected ${providerRunActor.enqueue_rejections} command${providerRunActor.enqueue_rejections === 1 ? "" : "s"}`)
+    lines.push("  next: wait for provider-run command queues to drain; inspect duplicate/stuck provider runs if rejections continue")
   }
 
   if (capability.rejected_jobs > 0 || capability.join_errors > 0) {
@@ -337,6 +345,10 @@ function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
   return health.capability_executor.rejected_jobs + health.capability_executor.join_errors
+}
+
+function providerRunActorHealthIssueCount(health: DaemonHealthProjection): number {
+  return health.provider_run_actor.enqueue_rejections
 }
 
 function formatBytes(bytes: number | null): string {
