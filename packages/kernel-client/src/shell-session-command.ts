@@ -36,6 +36,7 @@ import {
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
+import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -279,8 +280,7 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
 function formatCreatedSessionWorkspaceLiveSync(session: RuntimeSession): string {
   const mode = session.workspace_live_sync_mode
   if (!mode || mode === "unrestricted") {
-    const inherited = mode ? "off" : "config default"
-    return `workspace live sync: ${inherited}; use \`workspace sync managed\`, \`workspace sync tracked\`, or \`workspace sync off\` to change`
+    return `workspace live sync: ${formatWorkspaceLiveSyncModeLabel(mode)}; use \`workspace sync managed\`, \`workspace sync tracked\`, or \`workspace sync off\` to change`
   }
-  return `workspace live sync: ${mode} (selected workspace/worktree only; other repositories unrestricted); use \`workspace sync off\` to disable`
+  return `workspace live sync: ${formatWorkspaceLiveSyncModeLabel(mode)}; use \`workspace sync off\` to disable`
 }

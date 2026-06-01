@@ -3,6 +3,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "../cli-types.js"
+import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
 export type NativeTuiRuntimeBannerInput = {
   readonly surface: string
@@ -24,7 +25,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  home kernel:    ${formatHomeKernel(input.session)}`,
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent)}`,
-    `  live sync:      ${formatWorkspaceLiveSyncMode(input.session.workspace_live_sync_mode)}`,
+    `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
     ...(input.run ? [`  provider run:   ${input.run.id}`] : []),
     ...(input.providerLines ?? []),
@@ -56,12 +57,6 @@ function formatHomeKernel(session: RuntimeSession): string {
   const machine = session.host_machine_id?.trim()
   if (daemon && machine) return `${daemon}@${machine}`
   return daemon || machine || "-"
-}
-
-function formatWorkspaceLiveSyncMode(mode: RuntimeSession["workspace_live_sync_mode"]): string {
-  if (!mode) return "config default"
-  if (mode === "unrestricted") return "off"
-  return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
 }
 
 function formatAgentPlacement(agent: AgentInstance): string {

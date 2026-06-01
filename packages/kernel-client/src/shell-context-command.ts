@@ -8,6 +8,7 @@ import {
   parseExecutionMode,
   parsePermissionLevel,
 } from "./shell-agent-policy.js"
+import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
 type ShellContextCommandDeps = {
   client: {
@@ -86,7 +87,7 @@ function formatShellContext(
     `session: ${context.sessionId ?? "-"}`,
     `home kernel: ${formatContextHomeKernel(session)}`,
     `session owner: ${session?.owner_user_id?.trim() || "-"}`,
-    `workspace live sync: ${formatContextWorkspaceLiveSyncMode(session)}`,
+    `workspace live sync: ${formatWorkspaceLiveSyncModeLabel(session?.workspace_live_sync_mode)}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
     ...(currentAgent ? [
@@ -130,17 +131,6 @@ function findCurrentAgent(context: ShellContext, session: RuntimeSession | null)
   return session?.agents.find((agent) => (
     agent.id === context.agentId || agent.agent_ref === context.agentId || agent.alias === context.agentId
   )) ?? null
-}
-
-function formatContextWorkspaceLiveSyncMode(session: RuntimeSession | null): string {
-  const mode = session?.workspace_live_sync_mode
-  if (!mode) {
-    return "config default"
-  }
-  if (mode === "unrestricted") {
-    return "off"
-  }
-  return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
 }
 
 function formatContextAgentPlacement(

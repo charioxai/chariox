@@ -17,6 +17,7 @@ import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
 } from "./waiting-room-types.js"
+import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
 export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
@@ -262,12 +263,5 @@ function createdSessionFooter(
 }
 
 function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {
-  const mode = session.workspace_live_sync_mode
-  if (mode === "managed" || mode === "tracked") {
-    return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
-  }
-  if (mode === "unrestricted") {
-    return "off"
-  }
-  return "config default"
+  return formatWorkspaceLiveSyncModeLabel(session.workspace_live_sync_mode)
 }

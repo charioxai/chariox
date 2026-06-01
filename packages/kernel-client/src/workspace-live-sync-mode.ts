@@ -1,6 +1,7 @@
 export type WorkspaceLiveSyncModeCommandInput = "off" | "managed" | "tracked"
 export type WorkspaceLiveSyncModeInput = WorkspaceLiveSyncModeCommandInput | "unrestricted"
 export type WorkspaceLiveSyncModeProtocolValue = "managed" | "tracked" | "unrestricted"
+export type WorkspaceLiveSyncModeLabelInput = WorkspaceLiveSyncModeProtocolValue | null | undefined
 
 export function parseWorkspaceLiveSyncModeCommand(value: string): WorkspaceLiveSyncModeCommandInput | null {
   if (value === "off" || value === "managed" || value === "tracked") return value
@@ -11,4 +12,14 @@ export function workspaceLiveSyncModeProtocolValue(
   mode: WorkspaceLiveSyncModeInput,
 ): WorkspaceLiveSyncModeProtocolValue {
   return mode === "off" ? "unrestricted" : mode
+}
+
+export function formatWorkspaceLiveSyncModeLabel(mode: WorkspaceLiveSyncModeLabelInput): string {
+  if (mode === "managed" || mode === "tracked") {
+    return `${mode} (selected workspace/worktree only; other repositories unrestricted)`
+  }
+  if (mode === "unrestricted") {
+    return "off"
+  }
+  return "config default"
 }
