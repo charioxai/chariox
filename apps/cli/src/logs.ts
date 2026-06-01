@@ -1,5 +1,7 @@
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
+import { mkdirSync, writeFileSync } from "node:fs"
+import path from "node:path"
 
 import { defaultLogDir, formatLogRecord, readAllLogRecords, readLogTail, seedLogOffsets, type LogLevel, type LogRecord } from "./logging.js"
 
@@ -12,14 +14,20 @@ type LogViewerOptions = {
   clientId?: string
   level?: LogLevel
   limit: number
+  bundleDir?: string
 }
 
 export async function runLogViewer(args: string[]) {
   const options = parseLogViewerArgs(args)
   const logDir = defaultLogDir()
-  const matching = readAllLogRecords(logDir)
-    .filter((record) => recordMatches(record, options))
-    .slice(-options.limit)
+  const matching = matchingLogRecords(logDir, options)
+
+  if (options.bundleDir) {
+    const bundle = writeLogBundle(logDir, options.bundleDir, options, matching)
+    process.stdout.write(`wrote Arroba log bundle: ${bundle.bundleDir}\n`)
+    process.stdout.write(`records: ${bundle.recordCount}\n`)
+    return
+  }
 
   for (const record of matching) {
     process.stdout.write(`${formatLogRecord(record)}\n`)
@@ -41,7 +49,7 @@ export async function runLogViewer(args: string[]) {
   }
 }
 
-function parseLogViewerArgs(args: string[]): LogViewerOptions {
+export function parseLogViewerArgs(args: string[]): LogViewerOptions {
   const options: LogViewerOptions = {
     follow: false,
     limit: 200,
@@ -83,6 +91,9 @@ function parseLogViewerArgs(args: string[]): LogViewerOptions {
       case "--limit":
         options.limit = Number.parseInt(next(), 10) || 200
         break
+      case "--bundle":
+        options.bundleDir = next()
+        break
       case "--help":
       case "-h":
         printLogUsage()
@@ -92,10 +103,56 @@ function parseLogViewerArgs(args: string[]): LogViewerOptions {
     }
   }
 
+  if (options.follow && options.bundleDir) {
+    throw new Error("logs --bundle cannot be combined with --follow")
+  }
+
   return options
 }
 
-function recordMatches(record: LogRecord, options: LogViewerOptions) {
+export function matchingLogRecords(logDir: string, options: Pick<LogViewerOptions, "component" | "processKind" | "sessionId" | "providerRunId" | "clientId" | "level" | "limit">) {
+  return readAllLogRecords(logDir)
+    .filter((record) => recordMatches(record, options))
+    .slice(-options.limit)
+}
+
+export function writeLogBundle(
+  logDir: string,
+  bundleDir: string,
+  options: Pick<LogViewerOptions, "component" | "processKind" | "sessionId" | "providerRunId" | "clientId" | "level" | "limit">,
+  records: readonly LogRecord[],
+) {
+  const resolvedBundleDir = path.resolve(bundleDir)
+  mkdirSync(resolvedBundleDir, { recursive: true })
+  const manifest = {
+    schema: "arroba.log_bundle.v1",
+    created_at_ms: Date.now(),
+    log_root: logDir,
+    filters: {
+      process_kind: options.processKind ?? null,
+      component: options.component ?? null,
+      session_id: options.sessionId ?? null,
+      provider_run_id: options.providerRunId ?? null,
+      client_id: options.clientId ?? null,
+      level: options.level ?? null,
+      limit: options.limit,
+    },
+    record_count: records.length,
+    files: ["logs.ndjson"],
+  }
+  writeFileSync(path.join(resolvedBundleDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+  writeFileSync(
+    path.join(resolvedBundleDir, "logs.ndjson"),
+    records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""),
+    "utf8",
+  )
+  return {
+    bundleDir: resolvedBundleDir,
+    recordCount: records.length,
+  }
+}
+
+function recordMatches(record: LogRecord, options: Pick<LogViewerOptions, "component" | "processKind" | "sessionId" | "providerRunId" | "clientId" | "level">) {
   if (options.component && record.component !== options.component) {
     return false
   }
@@ -119,6 +176,6 @@ function recordMatches(record: LogRecord, options: LogViewerOptions) {
 
 export function printLogUsage() {
   process.stdout.write(
-    "usage: arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n",
+    "usage: arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]\n",
   )
 }

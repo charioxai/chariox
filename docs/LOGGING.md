@@ -191,6 +191,17 @@ arroba-cli logs --process-kind daemon --level error
 arroba-cli logs --provider-run provider-run-3 --follow
 ```
 
+Export a local debug bundle for one session or provider run:
+
+```bash
+arroba-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/arroba-session-1-logs
+```
+
+The bundle directory contains:
+
+- `manifest.json`: filters, source log root, record count, and bundle schema.
+- `logs.ndjson`: matching raw structured log records in timestamp order.
+
 Supported filters today:
 
 - `--follow`
@@ -201,6 +212,7 @@ Supported filters today:
 - `--client-id`
 - `--level`
 - `--limit`
+- `--bundle`
 
 If you are launching through Cargo:
 
@@ -278,7 +290,6 @@ If more visibility is needed, extend the shared logger and document the new fiel
 
 ## 11. Current Limitations
 
-- The built-in log viewer is intentionally simple and local-first.
-- There is not yet a session-scoped debug-bundle export command.
+- The built-in log viewer and bundle export are intentionally simple and local-first.
 - Server and future provider-helper processes are not yet on the shared logger.
 - Prompt/provider content capture is intentionally conservative and not yet exposed as a separate opt-in mode.

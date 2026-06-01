@@ -103,13 +103,13 @@ Current state: `ARROBA_LOG_DIR` overrides the default; otherwise Arroba uses `XD
   - server process
   - future provider-side helper processes when Arroba launches them directly
 Current state: daemon, TypeScript CLI launcher, TypeScript CLI, and server are on the shared logger; provider-side helper processes remain pending.
-- [ ] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
+- [x] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
 - [x] Define default privacy policy for logs:
   - metadata/error logs by default
   - prompt/output content capture only with explicit opt-in or debug mode
 - [x] Document log location, rotation/retention policy, and env vars for local debugging.
 - [x] Add an early built-in local log viewer command.
-Current state: `arroba-cli logs` can filter/follow the shared NDJSON logs by process kind, component, session, provider run, client, and level.
+Current state: `arroba-cli logs` can filter/follow the shared NDJSON logs by process kind, component, session, provider run, client, and level. `arroba-cli logs --bundle <dir>` exports the filtered raw NDJSON plus a manifest for local support/debug handoff.
 
 ## 4.4 TypeScript CLI Hardening
 

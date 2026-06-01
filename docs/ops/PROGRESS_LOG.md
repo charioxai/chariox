@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-06-01
 
+### Local runtime debug bundle export
+
+- Added `arroba-cli logs --bundle <dir>` to export filtered local structured logs plus a manifest for a session/provider-run support handoff. The command reuses the existing process-kind/component/session/provider-run/client/level filters and refuses `--follow` so bundles are finite artifacts.
+- Updated logging docs and closed the M3 log-collection checklist item for local multi-process session/provider-run bundles.
+
 ### Home extension invocation replay audit
 
 - Added durable audit events for home-executed remote extension idempotent replays and duplicate non-idempotent rejection. Script/connector and MCP proxy paths now use the same audited invocation-admission helper, so silent replay/duplicate paths show up in `/extension audit` and web extension diagnostics.
