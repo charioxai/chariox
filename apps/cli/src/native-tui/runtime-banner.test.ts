@@ -44,7 +44,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)
   assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
-  assert.match(banner, /extensions:     mcp=filesystem \(home-proxy\); skill=review \(skill snapshot\)/)
+  assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)

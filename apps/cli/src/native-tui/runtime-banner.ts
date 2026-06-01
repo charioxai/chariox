@@ -3,6 +3,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "../cli-types.js"
+import { formatExtensionGrantPlacement } from "@arroba/kernel-client/extension-grant-placement"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
 export type NativeTuiRuntimeBannerInput = {
@@ -36,8 +37,9 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
 
 function formatGrantedExtensions(agent: AgentInstance, mcps: readonly string[], skills: readonly string[]): string {
   if (mcps.length === 0 && skills.length === 0) return "none"
-  const activePlacement = agent.remote_execution ? "home-proxy" : "worker-local"
-  const skillPlacement = agent.remote_execution ? "skill snapshot" : "worker-local"
+  const remote = Boolean(agent.remote_execution)
+  const activePlacement = formatExtensionGrantPlacement([{ kind: "mcp" }], remote)
+  const skillPlacement = formatExtensionGrantPlacement([{ kind: "skill" }], remote)
   return [
     mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
     skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,

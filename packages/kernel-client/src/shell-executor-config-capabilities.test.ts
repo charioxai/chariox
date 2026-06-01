@@ -519,7 +519,7 @@ test("executeShellCommand treats remote skill snapshots as passive for sync diag
   const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
 
   assert.equal(grantsResult.ok, true)
-  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skill snapshot\)/)
+  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skills snapshot\)/)
   assert.doesNotMatch(grantsResult.message ?? "", /remote extension sync:/)
   assert.equal(statusResult.ok, true)
   assert.match(statusResult.message ?? "", /agent-1 has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected\./)

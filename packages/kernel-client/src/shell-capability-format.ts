@@ -10,6 +10,7 @@ import type {
   SkillImportOutcome,
 } from "./kernel-types.js"
 import {
+  formatExtensionGrantPlacement,
   hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
@@ -90,9 +91,7 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
   if (grants.length === 0) {
     return `${agentLabel} has no ${label} grants.`
   }
-  const placement = agent.remote_execution
-    ? kind === "skill" ? "skill snapshot" : "home-proxy"
-    : "worker-local"
+  const placement = formatExtensionGrantPlacement([{ kind }], Boolean(agent.remote_execution))
   const sync = formatGrantRemoteExtensionSyncBlock(agent)
   return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
     const parts = [
