@@ -466,7 +466,11 @@ async function setSliceRunning(
     deps.flashFooter(`slice ${action} is unavailable in this build`, "error")
     return
   }
-  const slice = await handler(await explicitOrFocusedSliceRef(deps, sliceRef))
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
+  if (action === "stop" && await rejectSliceLifecycleWithAttachedAgents(deps, action, resolvedRef)) {
+    return
+  }
+  const slice = await handler(resolvedRef)
   deps.flashFooter(`${action === "start" ? "started" : "stopped"} slice ${formatSliceLabel(slice)}`, "info")
 }
 
@@ -482,8 +486,47 @@ async function deleteSlice(
     deps.flashFooter("usage: /slice delete <slice-ref>", "error")
     return
   }
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "delete", sliceRef)) {
+    return
+  }
   const slice = await deps.deleteSlice(sliceRef)
   deps.flashFooter(`deleted slice ${formatSliceLabel(slice)}`, "info")
+}
+
+async function rejectSliceLifecycleWithAttachedAgents(
+  deps: SliceCommandHandlerDeps,
+  action: "stop" | "delete",
+  sliceRef: string,
+): Promise<boolean> {
+  const slice = await loadSliceForLifecycleGuard(deps, sliceRef)
+  const attachedAgents = attachedAgentRefs(slice)
+  if (attachedAgents.length === 0) {
+    return false
+  }
+  const label = slice ? formatSliceLabel(slice) : sliceRef
+  deps.flashFooter(
+    `cannot ${action} slice ${label}; move or end attached agents first: ${attachedAgents.join(",")}`,
+    "error",
+  )
+  return true
+}
+
+async function loadSliceForLifecycleGuard(
+  deps: SliceCommandHandlerDeps,
+  sliceRef: string,
+): Promise<SliceRecord | null> {
+  if (deps.getSlice) {
+    return deps.getSlice(sliceRef)
+  }
+  if (!deps.listSlices) {
+    return null
+  }
+  const slices = await deps.listSlices()
+  return slices.find((slice) => slice.id === sliceRef || slice.name === sliceRef) ?? null
+}
+
+function attachedAgentRefs(slice: SliceRecord | null): string[] {
+  return [...(slice?.agent_ids ?? [])].map((agent) => agent.trim()).filter(Boolean)
 }
 
 async function openSliceScreen(

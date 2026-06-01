@@ -327,6 +327,38 @@ test("slice command auth alias sets and clears provider aliases", async () => {
   assert.equal(harness.footers.at(-1)?.message, "slice auth alias codex: cleared")
 })
 
+test("slice command stop blocks slices with attached agents", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      agent_ids: ["agent-build", "agent-review"],
+    })],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("stop", "linux-dev"))
+
+  assert.deepEqual(harness.stoppedSlices, [])
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+  assert.equal(harness.footers.at(-1)?.message, "cannot stop slice linux-dev; move or end attached agents first: agent-build,agent-review")
+})
+
+test("slice command delete blocks slices with attached agents", async () => {
+  const harness = sliceHarness({
+    slices: [slice({
+      id: "slice-1",
+      name: "linux-dev",
+      agent_ids: ["agent-build"],
+    })],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("delete", "slice-1"))
+
+  assert.deepEqual(harness.deletedSlices, [])
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+  assert.equal(harness.footers.at(-1)?.message, "cannot delete slice linux-dev; move or end attached agents first: agent-build")
+})
+
 function command(...args: string[]) {
   return { kind: "slice" as const, args, raw: `/slice ${args.join(" ")}` }
 }
@@ -345,6 +377,8 @@ function sliceHarness(options: {
   const removedAuth: Array<{ sliceRef: string; provider: string }> = []
   const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
   const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
+  const stoppedSlices: string[] = []
+  const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
@@ -371,8 +405,14 @@ function sliceHarness(options: {
     },
     getSlice: async (sliceRef) => slices.find((entry) => entry.id === sliceRef || entry.name === sliceRef) ?? slice({ id: sliceRef, name: sliceRef }),
     startSlice: async (sliceRef) => slice({ id: sliceRef, name: sliceRef, status: "running" }),
-    stopSlice: async (sliceRef) => slice({ id: sliceRef, name: sliceRef, status: "stopped" }),
-    deleteSlice: async (sliceRef) => slice({ id: sliceRef, name: sliceRef }),
+    stopSlice: async (sliceRef) => {
+      stoppedSlices.push(sliceRef)
+      return slice({ id: sliceRef, name: sliceRef, status: "stopped" })
+    },
+    deleteSlice: async (sliceRef) => {
+      deletedSlices.push(sliceRef)
+      return slice({ id: sliceRef, name: sliceRef })
+    },
     importSliceProviderAuth: async (sliceRef, provider) => {
       importedAuth.push({ sliceRef, provider })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "imported" }
@@ -416,7 +456,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, logRequests }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
