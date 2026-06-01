@@ -128,7 +128,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
-    deps.flashFooter(`workspace live sync enabled: ${mode}`, "info")
+    deps.flashFooter(`current session workspace live sync enabled: ${mode}`, "info")
     return
   }
   if (action === "off" || action === "managed" || action === "tracked") {
@@ -137,7 +137,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, action === "off" ? "unrestricted" : action)
-    deps.flashFooter(action === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${action}`, "info")
+    deps.flashFooter(action === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${action}`, "info")
     return
   }
   if (action === "disable") {
@@ -146,7 +146,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, "unrestricted")
-    deps.flashFooter("workspace live sync disabled", "info")
+    deps.flashFooter("current session workspace live sync disabled", "info")
     return
   }
   if (action === "mode") {
@@ -156,7 +156,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode === "off" ? "unrestricted" : mode)
-    deps.flashFooter(mode === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${mode}`, "info")
+    deps.flashFooter(mode === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${mode}`, "info")
     return
   }
   if (action === "link") {

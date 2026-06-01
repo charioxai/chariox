@@ -171,7 +171,7 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
-    return { ok: true, message: `workspace live sync enabled: ${mode}`, data: response }
+    return { ok: true, message: `current session workspace live sync enabled: ${mode}`, data: response }
   }
   if (action === "off" || action === "managed" || action === "tracked") {
     if (args.length > 0) {
@@ -180,7 +180,7 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, action))
     return {
       ok: true,
-      message: action === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${action}`,
+      message: action === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${action}`,
       data: response,
     }
   }
@@ -189,7 +189,7 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync disable" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, "unrestricted"))
-    return { ok: true, message: "workspace live sync disabled", data: response }
+    return { ok: true, message: "current session workspace live sync disabled", data: response }
   }
   if (action === "mode") {
     const mode = normalizeWorkspaceLiveSyncMode(args[0] ?? "")
@@ -199,7 +199,7 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
     return {
       ok: true,
-      message: mode === "off" ? "workspace live sync disabled" : `workspace live sync mode set to ${mode}`,
+      message: mode === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${mode}`,
       data: response,
     }
   }

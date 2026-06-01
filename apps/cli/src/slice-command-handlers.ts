@@ -122,7 +122,7 @@ function formatSliceLabel(slice: SliceRecord): string {
 function formatSlice(slice: SliceRecord): string {
   const display = slice.display_endpoint?.url ? ` screen=${slice.display_endpoint.url}` : ""
   const providers = (slice.providers ?? []).join(",") || "-"
-  const auth = (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "-"
+  const auth = (slice.provider_auth ?? []).map((entry) => formatSliceProviderAuth(entry)).join(",") || "-"
   const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
   const worktree = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
@@ -397,7 +397,7 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("sessions", true, `${slice.session_ids?.length ?? 0} attached`),
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
-    doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map(formatSliceProviderAuth).join(",") || "none"),
+    doctorCheck("provider accounts", true, (slice.provider_auth ?? []).map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)} (${slice.id})`, ...checks].join("\n")
 }

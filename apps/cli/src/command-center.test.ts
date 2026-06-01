@@ -73,6 +73,7 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync disable"), true)
   assert.equal(values.has("/workspace sync mode "), true)
   assert.equal(values.has("/workspace sync link "), true)
+  assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked workspace live sync for the current session")
 
   const modeItems = buildCommandCenterItems("/workspace sync mode ", {
     providerCatalog: fallbackProviderCatalog(),
