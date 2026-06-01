@@ -180,11 +180,16 @@ fn opencode_workspace_live_sync_permission_rules(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> serde_json::Value {
     let native_action = opencode_permission_action(permission_level);
-    let mut rules = vec![
+    let rules = vec![
         serde_json::json!({
             "permission": "edit",
             "pattern": "*",
             "action": if allow_native_writes { native_action } else { "deny" }
+        }),
+        serde_json::json!({
+            "permission": "bash",
+            "pattern": "*",
+            "action": native_action
         }),
         serde_json::json!({
             "permission": "task",
@@ -192,16 +197,6 @@ fn opencode_workspace_live_sync_permission_rules(
             "action": "deny"
         }),
     ];
-    if !allow_native_writes {
-        rules.insert(
-            1,
-            serde_json::json!({
-                "permission": "bash",
-                "pattern": "*",
-                "action": "deny"
-            }),
-        );
-    }
     serde_json::Value::Array(rules)
 }
 
@@ -334,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_live_sync_permission_rules_block_direct_writes() {
+    fn workspace_live_sync_permission_rules_block_direct_edit_but_keep_bash_available() {
         assert_eq!(
             opencode_workspace_live_sync_permission_rules(
                 false,
@@ -349,7 +344,7 @@ mod tests {
                 {
                     "permission": "bash",
                     "pattern": "*",
-                    "action": "deny"
+                    "action": "allow"
                 },
                 {
                     "permission": "task",
@@ -374,6 +369,11 @@ mod tests {
                     "action": "allow"
                 },
                 {
+                    "permission": "bash",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
                     "permission": "task",
                     "pattern": "*",
                     "action": "deny"
@@ -392,6 +392,11 @@ mod tests {
             json!([
                 {
                     "permission": "edit",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "bash",
                     "pattern": "*",
                     "action": "ask"
                 },
