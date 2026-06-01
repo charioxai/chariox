@@ -203,7 +203,8 @@ Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough 
 Current enforcement mechanisms:
 
 - Codex workspace live sync runs use the provider read-only sandbox for new threads and turns, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
-- OpenCode workspace live sync runs deny native edit/write/apply-patch/task paths. Native `bash` is allowed only when Arroba's process-level workspace write fence is active, leaving coordinated file writes available only through Arroba workspace live sync tools.
+- OpenCode managed workspace live sync runs rely on Arroba's process-level workspace write fence to deny native writes under protected synced roots. When that fence is active, native OpenCode tools may remain available for reads and for writes outside protected roots; coordinated file writes inside synced roots still go through Arroba workspace live sync tools. If the fence is unavailable, managed OpenCode runs fall back to denying native write/task paths rather than claiming partial enforcement.
+- OpenCode tracked workspace live sync keeps native tools available and observes changed files at turn end; it does not block writes or perform collision checks before the provider writes.
 - OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
 
 Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
@@ -215,7 +216,7 @@ Status: implemented for Arroba-launched local provider runs on macOS. Linux and 
 The workspace live sync hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
 
 - Arroba-managed provider processes may read the real workspace and run native read/inspection tools.
-- Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under the coordinated worktree.
+- Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under protected synced roots.
 - Arroba runtime MCP workspace live sync remains the only write path into the real workspace.
 - Provider-native write/edit/patch tools remain disabled or hidden where the provider supports that, but those controls are defense in depth rather than the root guarantee.
 - Native shell can be allowed only when the Arroba workspace write fence is active for that provider process.
@@ -224,18 +225,18 @@ The macOS implementation uses a provider-neutral `WorkspaceWriteFence` launch la
 
 ```text
 (version 1)
-(deny file-write* (subpath "<canonical-real-worktree-path>"))
+(deny file-write* (subpath "<canonical-protected-root-path>"))
 (allow default)
 ```
 
-The worktree path must be canonicalized before profile generation, because macOS commonly aliases `/tmp` to `/private/tmp`. The sandbox profile must deny writes to the canonical worktree path and allow writes elsewhere so providers can continue using their own state, cache, logs, auth, and temp directories outside the coordinated workspace.
+Each protected root path must be canonicalized before profile generation, because macOS commonly aliases `/tmp` to `/private/tmp`. The sandbox profile must deny writes to the canonical selected worktree Git root plus explicitly attached workspace-link roots, while allowing writes elsewhere so providers can continue using their own state, cache, logs, auth, temp directories, and unrelated repositories outside the coordinated workspace.
 
 Arroba-owned launch behavior:
 
 - All workspace live sync provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
 - Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, native command/file-change approval denial, and filesystem-write permission-grant filtering as second layers. This is required because Codex app-server can request additional permissions for native shell work.
-- OpenCode keeps native edit/write/apply-patch/task disabled, but `bash` is enabled only when the process-level write fence is active.
-- Provider runs without an active write fence cannot enable native shell for workspace live sync sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
+- OpenCode managed runs may keep native tools available only when the process-level write fence is active; without the fence, native write/task paths are denied.
+- Provider runs without an active write fence cannot enable native shell/write paths for managed workspace live sync sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
 - External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee workspace live sync for provider processes it launches and fences.
 
 Implemented slices:
@@ -245,7 +246,7 @@ Implemented slices:
 3. Threaded the coordinated worktree root into provider launch planning so the fence denies the exact canonical path.
 4. Applied the fence to Arroba-launched Codex and OpenCode workspace live sync provider processes.
 5. Removed external Codex/OpenCode endpoint override/reuse from managed provider launch planning.
-6. Re-enabled OpenCode `bash` only when the fence is active; OpenCode native edit/write/apply-patch/task stay denied.
+6. Re-enabled OpenCode native tools when the fence is active so writes outside protected roots remain normal while synced roots stay protected.
 7. Kept Codex provider-native sandboxing enabled after the Arroba fence is active.
 8. Hardened Codex app-server permission approvals so workspace live sync runs preserve network and direct-read permission requests but never grant filesystem write upgrades.
 
@@ -377,7 +378,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: opaque Workspace Live Sync reads/writes/deletes/moves use base64 payloads where content crosses process boundaries and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque operations preserve exact bytes.
 - Landed: provider launch contract for managed workspace live sync writes.
 - Landed: Codex managed workspace live sync enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
-- Landed: OpenCode managed workspace live sync enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
+- Landed: OpenCode managed workspace live sync enforcement creates coordinated sessions behind the Arroba write fence when available, so native tools can still write outside protected roots while direct writes under synced roots are denied. If the fence is unavailable, OpenCode managed mode denies native write/task paths instead of exposing an unenforced coordinated run. It skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
 - Landed: workspace identity monitor boundary with identity-generation tracking and workspace live sync rejection after workspace identity invalidation.
 - Landed: unsupported provider-mode rejection at launch when managed workspace live sync is requested but the adapter cannot enforce write blocking.
 - Landed: workspace live sync health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
