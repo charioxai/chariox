@@ -502,6 +502,30 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   ])
 })
 
+test("executeShellCommand makes pending remote extension sync retryable", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    remote_extension_manifest_sync: {
+      state: "pending",
+      manifest_hash: "pending-hash",
+    },
+    extension_grants: [{ kind: "script", name: "lookup", environment: "py" }],
+  })
+  const fake = fakeClient(() => ({ AgentsListed: { agents: [agent] } }))
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
+
+  assert.equal(statusResult.ok, true)
+  assert.match(statusResult.message ?? "", /agent-1 remote extension sync: pending/)
+  assert.match(statusResult.message ?? "", /manifest hash: pending-hash/)
+  assert.match(statusResult.message ?? "", /next: wait for the worker manifest update; run \/extension sync-status agent-1; run \/machine kernels machine-1 if it does not settle; use \/extension sync-retry agent-1 after worker connectivity is healthy/)
+})
+
 test("executeShellCommand manages script environments and script extensions", async () => {
   const environment = { name: "py", runtime: { type: "python", python: "/usr/bin/python3" } }
   const script = {

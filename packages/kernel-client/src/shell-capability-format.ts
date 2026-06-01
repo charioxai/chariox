@@ -270,8 +270,8 @@ function remoteExtensionSyncNextAction(
 ): string | null {
   if (!status || status.state === "pending" || status.state === "syncing") {
     return workerMachineId
-      ? `wait for the worker manifest update; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if it does not settle`
-      : `wait for the worker manifest update; run /extension sync-status ${agentRef} if it does not settle`
+      ? `wait for the worker manifest update; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `wait for the worker manifest update; run /extension sync-status ${agentRef} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   if (status.pending_revoke) {
     return workerMachineId
