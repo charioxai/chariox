@@ -282,7 +282,7 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=unhealthy op=start op_status=failed worktree=\/repo agents=agent-1,agent-2: worker kernel discovery timed out/)
-  assert.match(rendered, /next: run \/slice doctor for the affected slice/)
+  assert.match(rendered, /next: run \/slice doctor slice-1, then inspect logs or restart\/delete the slice/)
 })
 
 test("kernel health formatter renders lifecycle issues without failed counters", () => {
@@ -318,7 +318,7 @@ test("kernel health formatter renders lifecycle issues without failed counters",
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slice lifecycle issues: unhealthy=0 failed_ops=0/)
   assert.match(rendered, /slice=dev \(slice-1\) status=stopped worktree=\/repo agents=agent-1: stopped with attached agents/)
-  assert.match(rendered, /next: run \/slice start for stopped slices or move attached agents to a running slice/)
+  assert.match(rendered, /next: run \/slice start slice-1 for stopped slices or move attached agents to a running slice/)
 })
 
 test("kernel health formatter reports slice provider auth issues", () => {
@@ -356,7 +356,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
-  assert.match(rendered, /next: run \/slice doctor/)
+  assert.match(rendered, /next: run \/slice doctor slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex/)
 })
 
 test("kernel health formatter reports remote execution issues", () => {
