@@ -51,6 +51,7 @@
     "multi-user-workflow:drill": "node scripts/live-multi-user-workflow-drill.mjs",
     "multi-user-cli-workflow:drill": "pnpm run build && node scripts/live-multi-user-cli-workflow-drill.mjs",
     "multi-user-freeform-relay:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-relay-freeform-multi-user-drill.mjs",
+    "history-outline:tui-drill": "pnpm run build && node scripts/history-outline-tui-drill.mjs",
     "outline:drills": "pnpm run build && node scripts/workflow-outline-drills.mjs",
     "lint": "pnpm --filter @arroba/kernel-client run build && pnpm --filter @arroba/tool-display run build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",

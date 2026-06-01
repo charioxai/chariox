@@ -46,16 +46,52 @@ async fn performance_drill_session_history_outline() {
     let response_bytes = serde_json::to_vec(&response)
         .expect("outline response should serialize")
         .len();
-    let (returned_turns, returned_blobs) = match &response {
-        crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } => (
-            agents.iter().map(|agent| agent.turns.len()).sum::<usize>(),
-            agents
-                .iter()
-                .flat_map(|agent| agent.turns.iter())
-                .map(|turn| turn.blobs.len())
-                .sum::<usize>(),
-        ),
-        _ => (0, 0),
+    let (returned_turns, returned_blobs, first_blob) = match &response {
+        crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } => {
+            let first_blob = agents.iter().find_map(|agent| {
+                agent.turns.iter().find_map(|turn| {
+                    turn.blobs
+                        .first()
+                        .map(|blob| (agent.agent_id.clone(), blob.blob_id.clone()))
+                })
+            });
+            (
+                agents.iter().map(|agent| agent.turns.len()).sum::<usize>(),
+                agents
+                    .iter()
+                    .flat_map(|agent| agent.turns.iter())
+                    .map(|turn| turn.blobs.len())
+                    .sum::<usize>(),
+                first_blob,
+            )
+        }
+        _ => (0, 0, None),
+    };
+    let blob_started = std::time::Instant::now();
+    let blob_response = first_blob
+        .map(|(agent_id, blob_id)| async {
+            crate::runtime::history_requests::execute_session_history_blob_content_request(
+                operational_history.clone(),
+                crate::local::GetSessionHistoryBlobContentRequest {
+                    session_id: session.id().to_string(),
+                    agent_id,
+                    blob_id,
+                },
+            )
+            .await
+            .expect("blob content should load")
+        })
+        .expect("outline should include a blob")
+        .await;
+    let blob_expand_ms = blob_started.elapsed().as_secs_f64() * 1000.0;
+    let blob_response_bytes = serde_json::to_vec(&blob_response)
+        .expect("blob response should serialize")
+        .len();
+    let blob_entry_count = match &blob_response {
+        crate::local::LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } => {
+            entries.len()
+        }
+        _ => 0,
     };
 
     let metrics = serde_json::json!({
@@ -70,6 +106,9 @@ async fn performance_drill_session_history_outline() {
         "outline_turns": returned_turns,
         "outline_blobs": returned_blobs,
         "total_response_bytes": response_bytes,
+        "blob_expand_ms": blob_expand_ms,
+        "blob_response_bytes": blob_response_bytes,
+        "blob_entry_count": blob_entry_count,
     });
     println!(
         "HISTORY_OUTLINE_METRICS {}",
