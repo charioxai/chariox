@@ -108,6 +108,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionHistory(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::GetSessionHistoryOutline(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionHistoryBlobContent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetPromptInputHistory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

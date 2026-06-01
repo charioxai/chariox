@@ -11,6 +11,60 @@ pub struct GetSessionHistoryRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionHistoryOutlineRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_prompt_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionHistoryBlobContentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub blob_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineAgent {
+    pub agent_id: String,
+    pub turns: Vec<SessionHistoryOutlineTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<SessionHistoryOutlineCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineCursor {
+    pub before_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineTurn {
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    pub started_at_ms: u64,
+    pub user_prompt: SessionHistoryPageEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<SessionHistoryPageEntry>,
+    pub blobs: Vec<SessionHistoryOutlineBlob>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineBlob {
+    pub blob_id: String,
+    pub kind: SessionHistoryEntryKind,
+    pub title: String,
+    pub summary: String,
+    pub sequence_start: u64,
+    pub sequence_end: u64,
+    pub entry_count: usize,
+    pub total_chars: usize,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptInputHistoryEntryKind {
     Prompt,

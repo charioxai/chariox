@@ -11,6 +11,7 @@ use crate::runtime::history_requests::{
     execute_prompt_input_history_request as execute_prompt_input_history,
     execute_query_recall_request as execute_query_recall,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
+    execute_session_history_blob_content_request, execute_session_history_outline_request,
     execute_session_history_request_from_session, knn_semantic_recall_search,
     recall_query_from_request, recall_query_from_search_request,
     semantic_recall_utility_input_from_search_request,
@@ -74,6 +75,14 @@ pub(crate) async fn execute_history_request(
                 request,
             )
             .await
+        }
+        LocalDaemonRequest::GetSessionHistoryOutline(request) => {
+            let _ = runtime_state.session_snapshot(&request.session_id).await?;
+            execute_session_history_outline_request(operational_history_store, request).await
+        }
+        LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
+            let _ = runtime_state.session_snapshot(&request.session_id).await?;
+            execute_session_history_blob_content_request(operational_history_store, request).await
         }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             execute_prompt_input_history_request(operational_history_store, request).await

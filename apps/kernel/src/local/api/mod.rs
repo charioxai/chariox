@@ -13,7 +13,7 @@ use crate::config::{ArrobaUserConfig, UserCredentialConfig};
 use crate::connector::{
     ArrobaConnectorAdapterDefinition, ArrobaConnectorDefinition, ConnectorExecution,
 };
-use crate::history::HistoryEvent;
+use crate::history::{HistoryEvent, SessionHistoryEntryKind};
 use crate::mcp::{ArrobaMcpServerConfig, McpImportOutcome};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,

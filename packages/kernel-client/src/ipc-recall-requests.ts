@@ -23,6 +23,34 @@ export function getSessionHistoryRequest(
   }
 }
 
+export function getSessionHistoryOutlineRequest(
+  sessionId: string,
+  agentIds?: readonly string[] | null,
+  latestPromptCount?: number | null,
+) {
+  return {
+    GetSessionHistoryOutline: {
+      session_id: sessionId,
+      agent_ids: agentIds ? [...agentIds] : null,
+      latest_prompt_count: latestPromptCount ?? null,
+    },
+  }
+}
+
+export function getSessionHistoryBlobContentRequest(
+  sessionId: string,
+  agentId: string,
+  blobId: string,
+) {
+  return {
+    GetSessionHistoryBlobContent: {
+      session_id: sessionId,
+      agent_id: agentId,
+      blob_id: blobId,
+    },
+  }
+}
+
 export function getPromptInputHistoryRequest(
   sessionId: string,
   afterSequence?: number | null,

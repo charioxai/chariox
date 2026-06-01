@@ -5,6 +5,141 @@ use crate::error::DaemonError;
 use super::{HistoryEvent, OperationalHistoryStore, SessionHistoryEntry};
 
 impl OperationalHistoryStore {
+    pub fn list_session_history_agent_ids(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT agent_id
+                 FROM history_events
+                 WHERE session_id = ?1 AND agent_id IS NOT NULL
+                 ORDER BY agent_id ASC",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare operational history agent list",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement.query(params![session_id]).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load operational history agent list",
+                message: error.to_string(),
+            }
+        })?;
+        let mut agent_ids = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read operational history agent list",
+                message: error.to_string(),
+            })?
+        {
+            agent_ids.push(row.get::<_, String>(0).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "read operational history agent id",
+                    message: error.to_string(),
+                }
+            })?);
+        }
+        Ok(agent_ids)
+    }
+
+    pub fn load_latest_user_prompt_events(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json
+                 FROM history_events
+                 WHERE session_id = ?1 AND agent_id = ?2 AND kind = 'user_prompt'
+                 ORDER BY sequence DESC
+                 LIMIT ?3",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare latest user prompt history load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, agent_id, limit.max(1) as i64])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load latest user prompt history events",
+                message: error.to_string(),
+            })?;
+        let mut events = read_history_events_from_rows(session_id, &mut rows)?;
+        events.reverse();
+        Ok(events)
+    }
+
+    pub fn load_session_events_for_agent_sequence_range(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        sequence_start: u64,
+        sequence_end: u64,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json
+                 FROM history_events
+                 WHERE session_id = ?1
+                   AND agent_id = ?2
+                   AND sequence >= ?3
+                   AND sequence <= ?4
+                 ORDER BY sequence ASC",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare operational history range load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![
+                session_id,
+                agent_id,
+                sequence_start as i64,
+                sequence_end as i64
+            ])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load operational history range events",
+                message: error.to_string(),
+            })?;
+        read_history_events_from_rows(session_id, &mut rows)
+    }
+
     pub fn load_session_events(
         &self,
         session_id: &str,
@@ -41,32 +176,7 @@ impl OperationalHistoryStore {
             operation: "load operational history events",
             message: error.to_string(),
         })?;
-        let mut events = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session_id.to_string()),
-                operation: "read operational history event",
-                message: error.to_string(),
-            })?
-        {
-            let event_json =
-                row.get::<_, String>(0)
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: Some(session_id.to_string()),
-                        operation: "read operational history event",
-                        message: error.to_string(),
-                    })?;
-            let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
-                DaemonError::SessionHistoryFailed {
-                    session_id: Some(session_id.to_string()),
-                    operation: "decode operational history event",
-                    message: error.to_string(),
-                }
-            })?;
-            events.push(event);
-        }
-        Ok(events)
+        read_history_events_from_rows(session_id, &mut rows)
     }
 
     pub fn load_session_history_entries(
@@ -131,4 +241,36 @@ impl OperationalHistoryStore {
                 }),
             })
     }
+}
+
+fn read_history_events_from_rows(
+    session_id: &str,
+    rows: &mut rusqlite::Rows<'_>,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    let mut events = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session_id.to_string()),
+            operation: "read operational history event",
+            message: error.to_string(),
+        })?
+    {
+        let event_json =
+            row.get::<_, String>(0)
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "read operational history event",
+                    message: error.to_string(),
+                })?;
+        let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "decode operational history event",
+                message: error.to_string(),
+            }
+        })?;
+        events.push(event);
+    }
+    Ok(events)
 }
