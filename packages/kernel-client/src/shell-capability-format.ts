@@ -216,12 +216,13 @@ function formatHomeExtensionAuditInvocation(value: unknown): string {
 function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
   const status = typeof payload.status === "string" ? payload.status : ""
   const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
+  const agentRef = auditAgentRef(payload)
   if (status === "replayed" || kind.includes(".replayed")) {
     return "cached idempotent result was returned; no retry needed"
   }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
-      return "refresh remote extension sync and verify the worker/provider run is still current before retrying"
+      return `run /extension sync-status ${agentRef} and verify the worker/provider run is still current before retrying`
     }
     return "verify the home grant, safety limit, and caller authority before retrying"
   }
@@ -235,6 +236,16 @@ function homeExtensionAuditNextAction(kind: string, payload: Record<string, unkn
     return "inspect the home-side tool configuration and logs, then retry"
   }
   return ""
+}
+
+function auditAgentRef(payload: Record<string, unknown>): string {
+  for (const key of ["agent_ref", "agent_id", "home_agent_id"]) {
+    const value = payload[key]
+    if (typeof value === "string" && value.trim()) {
+      return value.trim()
+    }
+  }
+  return "<agent>"
 }
 
 function formatRemoteExtensionSyncStatusLine(status?: RemoteExtensionManifestSyncStatus | null): string {

@@ -492,7 +492,7 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.match(auditResult.message ?? "", /invocation: id=invoke-1 call=call-1 attempt=2 idempotency=idem-1/)
   assert.match(auditResult.message ?? "", /result: ok=false bytes=0 duration=24ms/)
   assert.match(auditResult.message ?? "", /error: worker mismatch/)
-  assert.match(auditResult.message ?? "", /next: refresh remote extension sync and verify the worker\/provider run is still current before retrying/)
+  assert.match(auditResult.message ?? "", /next: run \/extension sync-status agent-1 and verify the worker\/provider run is still current before retrying/)
   assert.doesNotMatch(auditResult.message ?? "", /not rendered/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
