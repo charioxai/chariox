@@ -1334,9 +1334,15 @@ test("executeShellCommand treats unsupported slice auth responses as failures", 
   const removed = await executeShellCommand(parseShellCommand("slice auth remove linux-a codex"), context, { client: fake.client })
 
   assert.equal(imported.ok, false)
-  assert.match(imported.message ?? "", /auth import codex: not_implemented/)
+  assert.match(
+    imported.message ?? "",
+    /auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-a codex, open \/slice screen linux-a to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
+  )
   assert.equal(removed.ok, false)
-  assert.match(removed.message ?? "", /auth remove codex: not_implemented/)
+  assert.match(
+    removed.message ?? "",
+    /auth remove codex is unavailable on this kernel\. Next action: open \/slice screen linux-a to remove the provider account inside the slice, or update\/restart the worker kernel if auth removal should be available\./,
+  )
 })
 
 test("executeShellCommand resolves focused agent slice by attached agent id", async () => {

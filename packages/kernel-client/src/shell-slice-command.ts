@@ -147,7 +147,7 @@ export async function executeSliceCommand(
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
         return {
           ok: payload.status === "imported",
-          message: `slice ${formatSliceLabel(payload.slice)} auth import ${payload.provider}: ${payload.status}`,
+          message: formatSliceProviderAuthCommandResult("import", payload.slice, payload.provider, payload.status),
           data: payload,
         }
       }
@@ -161,7 +161,7 @@ export async function executeSliceCommand(
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
         return {
           ok: payload.status === "removed",
-          message: `slice ${formatSliceLabel(payload.slice)} auth remove ${payload.provider}: ${payload.status}`,
+          message: formatSliceProviderAuthCommandResult("remove", payload.slice, payload.provider, payload.status),
           data: payload,
         }
       }
@@ -260,6 +260,26 @@ function formatSliceLoginMessage(
     login.user_code ? `code=${login.user_code}` : "",
     login.message,
   ].filter(Boolean).join("\n")
+}
+
+function formatSliceProviderAuthCommandResult(
+  action: "import" | "remove",
+  slice: SliceRecord,
+  provider: string,
+  status: string,
+): string {
+  const label = formatSliceLabel(slice)
+  const sliceRef = slice.name || slice.id
+  if ((action === "import" && status === "imported") || (action === "remove" && status === "removed")) {
+    return `slice ${label} auth ${action} ${provider}: ${status}`
+  }
+  if (status === "not_implemented") {
+    const fallback = action === "import"
+      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
+      : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
+    return `slice ${label} auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
+  }
+  return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
 }
 
 function resourceResult(
