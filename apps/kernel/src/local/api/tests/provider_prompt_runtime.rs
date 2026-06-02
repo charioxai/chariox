@@ -113,6 +113,39 @@ fn app_submit_prompt_rejects_agent_from_another_session() {
 }
 
 #[test]
+fn app_prompt_settlement_rejects_agent_from_another_session() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (_first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .expect("second session should be created");
+
+    let complete_error = app
+        .complete_active_prompt(second_session.id(), first_agent.id(), None)
+        .expect_err("prompt completion should reject an agent outside the requested session");
+    assert!(matches!(
+        complete_error,
+        DaemonError::AgentNotInSession {
+            session_id,
+            agent_id,
+        } if session_id == second_session.id() && agent_id == first_agent.id()
+    ));
+
+    let cancel_error = crate::app::KernelAgentService::new(&mut app)
+        .cancel_active_prompt_internal(second_session.id(), first_agent.id(), None)
+        .expect_err("prompt cancellation should reject an agent outside the requested session");
+    assert!(matches!(
+        cancel_error,
+        DaemonError::AgentNotInSession {
+            session_id,
+            agent_id,
+        } if session_id == second_session.id() && agent_id == first_agent.id()
+    ));
+}
+
+#[test]
 fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness

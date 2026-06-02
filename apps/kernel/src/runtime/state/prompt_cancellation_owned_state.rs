@@ -9,6 +9,13 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         let session = self.session_store.get_session(session_id)?;
         let cancelled = self
             .prompt_state_owner
@@ -33,6 +40,13 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         let session = self.session_store.get_session(session_id)?;
         let prompt = self
             .prompt_state_owner
@@ -162,6 +176,12 @@ impl KernelRuntimeOwnedState {
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: target_agent_id.to_string(),
+            });
+        }
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }

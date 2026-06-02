@@ -14,6 +14,12 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         if agent.remote_execution().is_some() {
             return Ok(None);
         }
@@ -86,6 +92,12 @@ impl KernelRuntimeOwnedState {
         next_queued_prompt: &crate::session::PromptQueueItem,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let target_agent = self.agent_store.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }

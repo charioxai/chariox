@@ -74,6 +74,12 @@ impl<'a> KernelAgentService<'a> {
         next_queued_prompt: Option<&PromptQueueItem>,
     ) -> Result<KernelPromptCompletionAdmission, DaemonError> {
         let target_agent = self.app.agents.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         let next_queued_prompt = next_queued_prompt.cloned();
         if let Some(remote_execution) = target_agent.remote_execution().cloned() {
             return Ok(KernelPromptCompletionAdmission::Remote {

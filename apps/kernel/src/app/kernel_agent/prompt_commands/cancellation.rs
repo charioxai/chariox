@@ -40,6 +40,13 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         attachment_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
+        let target_agent = self.app.agents.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         let active_prompt = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
@@ -52,7 +59,6 @@ impl<'a> KernelAgentService<'a> {
                 started_next: None,
             });
         }
-        let target_agent = self.app.agents.get_agent(agent_id)?;
         if let Some(remote_execution) = target_agent.remote_execution().cloned() {
             return self.cancel_remote_active_prompt(
                 session_id,
