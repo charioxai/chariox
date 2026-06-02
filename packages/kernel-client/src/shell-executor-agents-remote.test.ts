@@ -920,7 +920,9 @@ test("executeShellCommand lists remote kernels with recovery hints", async () =>
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("machine kernels machine-1"), context, { client: fake.client })
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /machine machine-1 worker readiness: 0\/1 ready, 1 blocked/)
   assert.match(result.message ?? "", /mini-kernel id=kernel-1/)
+  assert.match(result.message ?? "", /readiness=blocked/)
   assert.match(result.message ?? "", /accepting_remote_leases=false/)
   assert.match(result.message ?? "", /next: enable remote leases on mini-kernel or choose another worker/)
 })
@@ -947,6 +949,8 @@ test("executeShellCommand renders unknown remote lease state without a false rec
   const result = await executeShellCommand(parseShellCommand("machine kernels machine-1"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /machine machine-1 worker readiness: 0\/1 ready, 1 unknown/)
+  assert.match(result.message ?? "", /readiness=unknown/)
   assert.match(result.message ?? "", /accepting_remote_leases=unknown/)
   assert.doesNotMatch(result.message ?? "", /enable remote leases/)
 })

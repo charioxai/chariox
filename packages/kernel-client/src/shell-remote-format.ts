@@ -56,14 +56,18 @@ export function formatPairingJoin(pairing: PairingJoinRecord): string {
 
 export function formatRemoteKernels(kernels: RelayKernelPresence[], kernelRef: string): string {
   if (kernels.length === 0) {
-    return `no live kernels found for machine ${kernelRef}`
+    return `no live kernels found for machine ${kernelRef}; next: reconnect that machine or choose another worker`
   }
-  return kernels.map((kernel) => {
-    const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
-    const providers = (kernel.available_providers ?? []).join(",") || "-"
-    const next = remoteKernelNextAction(kernel)
-    return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${providers} accepting_remote_leases=${formatAcceptingRemoteLeases(kernel.accepting_remote_leases)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
-  }).join("\n")
+  return [
+    formatRemoteKernelSummary(kernels, kernelRef),
+    ...kernels.map((kernel) => {
+      const name = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
+      const providers = (kernel.available_providers ?? []).join(",") || "-"
+      const next = remoteKernelNextAction(kernel)
+      const readiness = remoteKernelReadiness(kernel)
+      return `${name} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} readiness=${readiness} providers=${providers} accepting_remote_leases=${formatAcceptingRemoteLeases(kernel.accepting_remote_leases)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}${next ? ` next: ${next}` : ""}`
+    }),
+  ].join("\n")
 }
 
 function formatAcceptingRemoteLeases(value: boolean | undefined): string {
@@ -96,6 +100,32 @@ function remoteKernelNextAction(kernel: RelayKernelPresence): string {
     return `configure provider CLIs on ${kernelLabel}`
   }
   return ""
+}
+
+function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: string): string {
+  const counts = kernels.reduce<Record<ReturnType<typeof remoteKernelReadiness>, number>>((acc, kernel) => {
+    const readiness = remoteKernelReadiness(kernel)
+    acc[readiness] += 1
+    return acc
+  }, { ready: 0, blocked: 0, "needs-provider": 0, unknown: 0 })
+  const total = kernels.length
+  const parts = [`${counts.ready}/${total} ready`]
+  if (counts["needs-provider"] > 0) parts.push(`${counts["needs-provider"]} needs provider`)
+  if (counts.blocked > 0) parts.push(`${counts.blocked} blocked`)
+  if (counts.unknown > 0) parts.push(`${counts.unknown} unknown`)
+  const next = counts.ready > 0
+    ? "spawn a remote agent with a ready worker kernel"
+    : "fix the listed kernel readiness issue or choose another machine"
+  return `machine ${kernelRef} worker readiness: ${parts.join(", ")}; next: ${next}`
+}
+
+function remoteKernelReadiness(kernel: RelayKernelPresence): "ready" | "blocked" | "needs-provider" | "unknown" {
+  if (kernel.accepting_remote_leases === false) return "blocked"
+  if ((kernel.available_providers ?? []).length === 0) {
+    return kernel.accepting_remote_leases === undefined ? "unknown" : "needs-provider"
+  }
+  if (kernel.accepting_remote_leases === undefined) return "unknown"
+  return "ready"
 }
 
 function remoteKernelLabel(kernel: RelayKernelPresence): string {
