@@ -296,6 +296,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push("  next: refresh the session; restart the kernel if the invariant mismatch persists")
   }
 
+  if (kernelHealthIssueCount(health) > 0) {
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+  }
+
   return lines.join("\n")
 }
 

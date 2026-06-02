@@ -156,6 +156,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
   assert.match(rendered, /provider run invariants: ok/)
   assert.match(rendered, /projection invariants: ok/)
+  assert.doesNotMatch(rendered, /support bundle:/)
   assert.equal(kernelHealthIssueCount(health()), 0)
 })
 
@@ -606,6 +607,7 @@ test("kernel health formatter reports transport terminal and capability issues",
   assert.match(rendered, /next: reconnect stale clients/)
   assert.match(rendered, /terminal stream trimmed pending output for 2 recipients/)
   assert.match(rendered, /next: refresh the terminal session/)
+  assert.match(rendered, /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
 })
 
 test("kernel health command reports duplicate provider-run bindings", async () => {
@@ -640,6 +642,7 @@ test("kernel health command reports duplicate provider-run bindings", async () =
   assert.match(notices.at(-1) ?? "", /duplicate Arroba provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
   assert.match(notices.at(-1) ?? "", /next: inspect agent agent-1 and stop duplicate provider runs/)
+  assert.match(notices.at(-1) ?? "", /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
