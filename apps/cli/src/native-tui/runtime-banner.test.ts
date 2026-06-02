@@ -39,7 +39,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
 
   assert.match(banner, /^\[arroba codex native-tui\]/)
   assert.match(banner, /arroba session: session-1 \(Review\)/)
-  assert.match(banner, /arroba agent:   agent-1 \(builder\)/)
+  assert.match(banner, /arroba agent:   A1 \(builder\) \[id=agent-1\]/)
   assert.match(banner, /home kernel:    home-kernel@home-machine/)
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)
   assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)

@@ -75,7 +75,10 @@ function formatSession(session: RuntimeSession): string {
 }
 
 function formatAgent(agent: AgentInstance): string {
-  return `${agent.id}${agent.alias ? ` (${agent.alias})` : ""}`
+  const label = agent.agent_ref || agent.id
+  const alias = agent.alias ? ` (${agent.alias})` : ""
+  const id = agent.id && agent.id !== label ? ` [id=${agent.id}]` : ""
+  return `${label}${alias}${id}`
 }
 
 function formatHomeKernel(session: RuntimeSession): string {
