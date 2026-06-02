@@ -4,6 +4,7 @@ import type {
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import type { RecallEvent } from "@arroba/kernel-client"
 import {
   formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
@@ -45,6 +46,7 @@ export type WorkspaceCommandHandlerDeps = {
   detachWorkspaceLink?: (linkRef: string, repoRoot?: string | null) => Promise<WorkspaceLinkPayload & { detached: unknown[] }>
   getWorkspaceLiveSyncStatus?: () => Promise<WorkspaceLiveSyncStatus>
   setWorkspaceLiveSyncStatus?: (status: WorkspaceLiveSyncStatus | null) => void
+  listWorkspaceLiveSyncAudit?: (sessionId: string, limit?: number | null) => Promise<RecallEvent[]>
   setWorkspaceLiveSyncMode?: (sessionId: string, mode: WorkspaceLiveSyncModeProtocolValue) => Promise<unknown>
   setUserConfigValue?: (path: string, value: string) => Promise<unknown>
   unsetUserConfigValue?: (path: string) => Promise<unknown>
@@ -127,6 +129,16 @@ async function handleWorkspaceSyncCommand(
     deps.flashFooter("workspace live sync ignore rules", "info")
     return
   }
+  if (action === "audit") {
+    if (!deps.listWorkspaceLiveSyncAudit) {
+      deps.flashFooter("workspace live sync audit is not available", "error")
+      return
+    }
+    const events = await deps.listWorkspaceLiveSyncAudit(deps.sessionState().id, readNumberOption(args, "--limit"))
+    deps.appendNotice(formatWorkspaceLiveSyncAudit(events))
+    deps.flashFooter(`workspace live sync audit: ${events.length}`, "info")
+    return
+  }
   if (action === "enable") {
     const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "managed")
     if (!mode || mode === "off" || args.length > 1 || !deps.setWorkspaceLiveSyncMode) {
@@ -172,7 +184,7 @@ async function handleWorkspaceSyncCommand(
     })
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|off|managed|tracked|link", "error")
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|audit|off|managed|tracked|link", "error")
 }
 
 export async function handleWorktreeSlashCommand(
@@ -346,6 +358,56 @@ function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): stri
   return status.conflicts.map((conflict) => (
     `- ${conflict.path} source=${conflict.source_agent_id} target=${conflict.target_user_id}:${conflict.target_repo_root} next=${conflict.next_action}`
   )).join("\n")
+}
+
+export function formatWorkspaceLiveSyncAudit(events: readonly RecallEvent[]): string {
+  if (events.length === 0) {
+    return "No workspace live sync audit events.\nNext: change mode with /workspace sync off|managed|tracked, then rerun /workspace sync audit"
+  }
+  return [
+    `Workspace live sync audit: ${events.length}`,
+    ...events.map(formatWorkspaceLiveSyncAuditEvent),
+    "Next: use /workspace sync status for current health, /workspace sync conflicts for unresolved fanout conflicts",
+  ].join("\n")
+}
+
+function formatWorkspaceLiveSyncAuditEvent(event: RecallEvent): string {
+  const metadata = event.metadata ?? {}
+  const timestamp = Number.isFinite(event.timestamp_ms)
+    ? new Date(event.timestamp_ms).toISOString()
+    : "unknown-time"
+  const previousMode = metadataString(metadata.previous_mode) ?? "config-default"
+  const mode = metadataString(metadata.mode) ?? "unknown"
+  const caller = metadataString(metadata.caller_user_id) ?? "unknown-user"
+  const source = metadataString(metadata.command_source) ?? "unknown-source"
+  const callerKind = metadataString(metadata.caller_kind)
+  const client = metadataString(metadata.client_id)
+  const machine = metadataString(metadata.machine_id)
+  const scope = metadataString(metadata.scope) ?? "selected_workspace_worktree"
+  const otherRepos = metadataString(metadata.other_repositories) ?? "unrestricted"
+  return [
+    `- ${timestamp} ${previousMode} -> ${mode} by ${caller} via ${source}`,
+    `  scope=${scope}; other_repositories=${otherRepos}`,
+    [
+      callerKind ? `caller=${callerKind}` : null,
+      client ? `client=${client}` : null,
+      machine ? `machine=${machine}` : null,
+      event.worktree_path ? `worktree=${event.worktree_path}` : null,
+    ].filter(Boolean).join(" "),
+  ].filter(Boolean).join("\n")
+}
+
+function metadataString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function readNumberOption(args: string[], flag: string): number | null {
+  const index = args.indexOf(flag)
+  if (index === -1) return null
+  const value = args[index + 1]
+  if (!value || value.startsWith("--")) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
 function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {

@@ -359,6 +359,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "workspace-sync-targets", label: "sync targets", description: "List workspace live sync targets", value: "/workspace sync targets" },
       { id: "workspace-sync-conflicts", label: "sync conflicts", description: "List workspace live sync conflicts", value: "/workspace sync conflicts" },
       { id: "workspace-sync-ignore", label: "sync ignore", description: "Show workspace live sync ignore rules", value: "/workspace sync ignore" },
+      { id: "workspace-sync-audit", label: "sync audit", description: "Show workspace live sync mode audit events", value: "/workspace sync audit" },
       { id: "workspace-sync-off", label: "sync off", description: "Disable live sync for this session; other repositories stay unrestricted", value: "/workspace sync off" },
       { id: "workspace-sync-managed", label: "sync managed", description: "Use managed live sync for this session's selected workspace/worktree; other repositories stay unrestricted", value: "/workspace sync managed" },
       { id: "workspace-sync-tracked", label: "sync tracked", description: "Use tracked turn-end live sync for this session's selected workspace/worktree; other repositories stay unrestricted", value: "/workspace sync tracked" },

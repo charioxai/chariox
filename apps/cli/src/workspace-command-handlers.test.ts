@@ -6,6 +6,7 @@ import type {
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
+import type { RecallEvent } from "@arroba/kernel-client"
 import { parseSlashCommand } from "./commands.js"
 import {
   handleWorkspaceSlashCommand,
@@ -56,10 +57,37 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   const footers: string[] = []
   const modeUpdates: string[] = []
   const statusUpdates: string[] = []
+  const auditCalls: string[] = []
+  const auditEvents: RecallEvent[] = [{
+    event_id: "event-1",
+    sequence: 12,
+    timestamp_ms: Date.parse("2026-06-02T12:00:00.000Z"),
+    workspace_id: "workspace-1",
+    session_id: "session-1",
+    worktree_path: "/repo/main",
+    kind: "workspace_live_sync_mode_changed",
+    role: "system",
+    content: "Workspace live sync mode changed to tracked.",
+    metadata: {
+      caller_user_id: "user-1",
+      previous_mode: "managed",
+      mode: "tracked",
+      command_source: "Local",
+      caller_kind: "Client",
+      client_id: "cli-1",
+      machine_id: "machine-1",
+      scope: "selected_workspace_worktree",
+      other_repositories: "unrestricted",
+    },
+  }]
   const deps = workspaceDeps({
     getWorkspaceLiveSyncStatus: async () => status,
     setWorkspaceLiveSyncStatus: (nextStatus) => {
       if (nextStatus) statusUpdates.push(nextStatus.footer_state)
+    },
+    listWorkspaceLiveSyncAudit: async (sessionId, limit) => {
+      auditCalls.push(`${sessionId}:${limit ?? "default"}`)
+      return auditEvents
     },
     setWorkspaceLiveSyncMode: async (sessionId, mode) => {
       modeUpdates.push(`${sessionId}:${mode}`)
@@ -72,6 +100,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync targets")
   await runWorkspace(deps, "/workspace sync conflicts")
   await runWorkspace(deps, "/workspace sync ignore")
+  await runWorkspace(deps, "/workspace sync audit --limit 3")
   await runWorkspace(deps, "/workspace sync mode tracked")
   await runWorkspace(deps, "/workspace sync enable managed")
   await runWorkspace(deps, "/workspace sync enable tracked")
@@ -91,7 +120,13 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[3] ?? "", /rule ignored\/\*\*/)
   assert.match(notices[3] ?? "", /rule \*\.secret/)
   assert.match(notices[3] ?? "", /force-exclude \.git\/\*\*/)
+  assert.match(notices[4] ?? "", /Workspace live sync audit: 1/)
+  assert.match(notices[4] ?? "", /2026-06-02T12:00:00.000Z managed -> tracked by user-1 via Local/)
+  assert.match(notices[4] ?? "", /scope=selected_workspace_worktree; other_repositories=unrestricted/)
+  assert.match(notices[4] ?? "", /caller=Client client=cli-1 machine=machine-1 worktree=\/repo\/main/)
+  assert.match(notices[4] ?? "", /Next: use \/workspace sync status/)
   assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
+  assert.deepEqual(auditCalls, ["session-1:3"])
   assert.deepEqual(modeUpdates, [
     "session-1:tracked",
     "session-1:managed",
@@ -111,6 +146,22 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[0] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.doesNotMatch(notices[0] ?? "", /No workspace live sync targets/)
   assert.equal(statusUpdates.length, 5)
+})
+
+test("workspace sync audit renders empty state", async () => {
+  const notices: string[] = []
+  const footers: string[] = []
+  const deps = workspaceDeps({
+    listWorkspaceLiveSyncAudit: async () => [],
+    appendNotice: (message) => notices.push(message),
+    flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
+  })
+
+  await runWorkspace(deps, "/workspace sync audit")
+
+  assert.match(notices[0] ?? "", /No workspace live sync audit events/)
+  assert.match(notices[0] ?? "", /Next: change mode with \/workspace sync off\|managed\|tracked/)
+  assert.equal(footers[0], "info:workspace live sync audit: 0")
 })
 
 test("workspace sync slash commands use off managed tracked mode names", async () => {

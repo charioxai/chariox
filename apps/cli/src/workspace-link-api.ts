@@ -3,6 +3,7 @@ import type {
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
+import type { RecallEvent } from "@arroba/kernel-client"
 import type { LocalIpcClient } from "./ipc.js"
 import {
   attachWorkspaceLinkRequest,
@@ -10,6 +11,7 @@ import {
   detachWorkspaceLinkRequest,
   getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
+  queryRecallRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -75,4 +77,17 @@ export async function getWorkspaceLiveSyncStatus(
 ): Promise<WorkspaceLiveSyncStatus> {
   const response = await client.send<Record<string, unknown>>(getWorkspaceLiveSyncStatusRequest(sessionId))
   return expectVariant<{ status: WorkspaceLiveSyncStatus }>(response, "WorkspaceLiveSyncStatus").status
+}
+
+export async function listWorkspaceLiveSyncAudit(
+  client: LocalIpcClient,
+  sessionId: string,
+  limit?: number | null,
+): Promise<RecallEvent[]> {
+  const response = await client.send<Record<string, unknown>>(queryRecallRequest({
+    session_id: sessionId,
+    kind: "workspace_live_sync_mode_changed",
+    limit: limit ?? 20,
+  }))
+  return expectVariant<{ events: RecallEvent[] }>(response, "RecallEvents").events
 }

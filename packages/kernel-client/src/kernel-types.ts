@@ -1505,6 +1505,7 @@ export type RecallEventKind =
   | "git_worktree_dirty"
   | "git_worktree_clean"
   | "git_push_detected"
+  | "workspace_live_sync_mode_changed"
   | "prompt_input"
 
 export type RecallEventRole = "user" | "assistant" | "tool" | "system"
