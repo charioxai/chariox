@@ -154,6 +154,45 @@ test("formatToolDisplay distinguishes home-proxy tool calls", () => {
   assert.equal(display.collapsed.title, "home-proxy · home_lookup · COMPLETED")
 })
 
+test("formatToolDisplay distinguishes worker-local tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-worker-1",
+    tool: "worker_lookup",
+    placement: "worker-local",
+    authority: "worker",
+    execution_location: "worker",
+    status: "completed",
+    input: { query: "status" },
+    output: "ok",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*worker_lookup\*\* · WORKER-LOCAL · COMPLETED/)
+  assert.equal(display.title, "worker-local · worker_lookup")
+  assert.equal(display.collapsed.title, "worker-local · worker_lookup · COMPLETED")
+})
+
+test("formatToolDisplay distinguishes skill snapshot tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-skill-1",
+    tool: "skill_context",
+    placement: "skill snapshot",
+    authority: "home",
+    execution_location: "none",
+    status: "completed",
+    text: "loaded",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*skill_context\*\* · SKILL SNAPSHOT · COMPLETED/)
+  assert.equal(display.title, "skill snapshot · skill_context")
+  assert.equal(display.collapsed.title, "skill snapshot · skill_context · COMPLETED")
+})
+
 test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {
   assert.equal(
     formatToolTranscriptUpdate({

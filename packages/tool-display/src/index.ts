@@ -177,15 +177,20 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
 }
 
 function toolDisplayTitleWithPlacement(title: string, placement: unknown) {
-  return isHomeProxyPlacement(placement) ? `home-proxy · ${title}` : title
+  const label = toolPlacementLabel(placement)
+  return label ? `${label} · ${title}` : title
 }
 
 function formatToolPlacementBadge(placement: unknown) {
-  return isHomeProxyPlacement(placement) ? " · HOME-PROXY" : ""
+  const label = toolPlacementLabel(placement)
+  return label ? ` · ${label.toUpperCase()}` : ""
 }
 
-function isHomeProxyPlacement(placement: unknown) {
-  return placement === "home-proxy"
+function toolPlacementLabel(placement: unknown) {
+  if (placement === "home-proxy" || placement === "worker-local" || placement === "skill snapshot") {
+    return placement
+  }
+  return null
 }
 
 function summarizeToolDisplay(update: ToolTranscriptUpdate, patchFiles: ApplyPatchFile[], markdown: string) {
