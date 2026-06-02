@@ -33,3 +33,9 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
   }
   return []
 }
+
+export function remoteWorkerProviderRunRecoveryAction(agentRef?: string | null, workerMachineId?: string | null): string {
+  const agent = agentRef?.trim() || "<agent>"
+  const worker = workerMachineId?.trim()
+  return `run /agent inspect ${agent}${worker ? `; run /machine kernels ${worker}` : ""}; reconnect or relaunch the remote/slice worker`
+}

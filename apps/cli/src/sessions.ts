@@ -1,5 +1,7 @@
 import path from "node:path"
 
+import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
+
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
 export const ARROBA_ASCII_ART = [
@@ -90,7 +92,7 @@ export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "work
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
   return (session.activity?.missing_worker_provider_run_count ?? 0) > 0
-    ? " - next run /kernel health"
+    ? ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}; run /kernel health`
     : ""
 }
 

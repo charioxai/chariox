@@ -8,6 +8,7 @@ import type {
   SessionInvite,
   SessionMember,
 } from "./kernel-types.js"
+import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 
 export function formatSessionList(sessions: RuntimeSession[], currentSessionId?: string): string {
   if (sessions.length === 0) {
@@ -38,8 +39,12 @@ function formatSessionRemoteRuntime(session: RuntimeSession): string {
   const workerRunGaps = remoteAgents.filter(remoteAgentHasWorkerRunGap)
   const remote = ` - remote ${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`
   if (workerRunGaps.length === 0) return remote
-  const target = workerRunGaps[0]?.agent_ref || workerRunGaps[0]?.id || "<agent>"
-  return `${remote}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"} - next run /agent inspect ${target}; /kernel health`
+  const target = workerRunGaps[0]
+  const next = remoteWorkerProviderRunRecoveryAction(
+    target?.agent_ref || target?.id,
+    target?.remote_execution?.worker_machine_id,
+  )
+  return `${remote}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"} - next ${next}`
 }
 
 function remoteAgentHasWorkerRunGap(agent: AgentInstance): boolean {

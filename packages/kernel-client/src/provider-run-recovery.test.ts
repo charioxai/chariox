@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { providerRunRecoveryActions } from "./provider-run-recovery.js"
+import {
+  providerRunRecoveryActions,
+  remoteWorkerProviderRunRecoveryAction,
+} from "./provider-run-recovery.js"
 
 test("providerRunRecoveryActions reports mismatched session provider runs", () => {
   assert.deepEqual(providerRunRecoveryActions({
@@ -45,4 +48,15 @@ test("providerRunRecoveryActions stays quiet for healthy local and remote runs",
       },
     },
   }), [])
+})
+
+test("remoteWorkerProviderRunRecoveryAction formats specific and fallback actions", () => {
+  assert.equal(
+    remoteWorkerProviderRunRecoveryAction("A1", "hetzner"),
+    "run /agent inspect A1; run /machine kernels hetzner; reconnect or relaunch the remote/slice worker",
+  )
+  assert.equal(
+    remoteWorkerProviderRunRecoveryAction(null, null),
+    "run /agent inspect <agent>; reconnect or relaunch the remote/slice worker",
+  )
 })

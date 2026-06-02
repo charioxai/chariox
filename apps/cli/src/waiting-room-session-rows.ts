@@ -1,3 +1,5 @@
+import { remoteWorkerProviderRunRecoveryAction } from "@arroba/kernel-client/provider-run-recovery"
+
 import { formatSessionHomeLabel, formatSessionLiveSyncLabel, type SessionListEntry } from "./sessions.js"
 import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
@@ -215,7 +217,7 @@ function formatWaitingRoomSessionStatus(session: SessionListEntry) {
 
 function formatWaitingRoomSessionNext(session: SessionListEntry) {
   const missingWorkerRuns = session.activity?.missing_worker_provider_run_count ?? 0
-  return missingWorkerRuns > 0 ? "run /kernel health" : "-"
+  return missingWorkerRuns > 0 ? remoteWorkerProviderRunRecoveryAction(null, null) : "-"
 }
 
 function sessionHasActiveWork(session: SessionListEntry) {
