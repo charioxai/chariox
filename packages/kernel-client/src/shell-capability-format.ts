@@ -16,6 +16,9 @@ import {
   hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
+import {
+  homeExtensionAuditRecoveryAction,
+} from "./home-extension-audit-policy.js"
 
 export type RemoteExtensionSyncNextActionStatus = {
   state?: string | null
@@ -236,7 +239,7 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     ].filter(Boolean)
     if (result.length > 0) rows.push(`  result: ${result.join(" ")}`)
     if (typeof payload.error === "string" && payload.error) rows.push(`  error: ${payload.error}`)
-    const next = homeExtensionAuditNextAction(String(event.kind ?? ""), payload)
+    const next = homeExtensionAuditRecoveryAction(String(event.kind ?? ""), payload)
     if (next) rows.push(`  next: ${next}`)
     return rows.join("\n")
   }).join("\n")
@@ -251,41 +254,6 @@ function formatHomeExtensionAuditInvocation(value: unknown): string {
     fieldPart("idempotency", invocation.idempotency_key),
   ].filter(Boolean)
   return parts.join(" ")
-}
-
-function homeExtensionAuditNextAction(kind: string, payload: Record<string, unknown>): string {
-  const status = typeof payload.status === "string" ? payload.status : ""
-  const error = typeof payload.error === "string" ? payload.error.toLowerCase() : ""
-  const agentRef = auditAgentRef(payload)
-  if (status === "replayed" || kind.includes(".replayed")) {
-    return "cached idempotent result was returned; no retry needed"
-  }
-  if (status === "denied" || kind.includes(".denied")) {
-    if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
-      return `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
-    }
-    return "verify the home grant, safety limit, and caller authority before retrying"
-  }
-  if (status === "timeout" || kind.includes(".timeout")) {
-    return "split the tool work or increase the home extension timeout before retrying"
-  }
-  if (status === "cancelled" || kind.includes(".cancel")) {
-    return "retry only if the provider turn still needs this tool result"
-  }
-  if (status === "failed" || kind.includes(".failed")) {
-    return "inspect the home-side tool configuration and logs, then retry"
-  }
-  return ""
-}
-
-function auditAgentRef(payload: Record<string, unknown>): string {
-  for (const key of ["agent_ref", "agent_id", "home_agent_id"]) {
-    const value = payload[key]
-    if (typeof value === "string" && value.trim()) {
-      return value.trim()
-    }
-  }
-  return "<agent>"
 }
 
 export function formatRemoteExtensionSyncStatusLine(

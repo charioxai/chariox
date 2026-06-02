@@ -5,6 +5,10 @@ import {
   formatRemoteExtensionSyncStatusLine,
   remoteExtensionSyncNextAction,
 } from "./shell-capability-format.js"
+import {
+  homeExtensionAuditAgentRef,
+  homeExtensionAuditRecoveryAction,
+} from "./home-extension-audit-policy.js"
 
 test("remote extension sync formatter renders status and recovery consistently", () => {
   assert.equal(
@@ -33,4 +37,35 @@ test("remote extension sync formatter renders status and recovery consistently",
     }),
     "synced, hash=abcdef123456",
   )
+})
+
+test("home extension audit policy gives binding-specific recovery for worker denials", () => {
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
+    status: "denied",
+    error: "worker mismatch",
+    agent_ref: "agent-ref-1",
+  }), "run /extension sync-status agent-ref-1; inspect /agent inspect agent-ref-1; retry only after the worker lease and provider run match the current home grant")
+})
+
+test("home extension audit policy handles terminal invocation outcomes", () => {
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.replayed", {
+    status: "replayed",
+  }), "cached idempotent result was returned; no retry needed")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.timeout", {
+    status: "timeout",
+  }), "split the tool work or increase the home extension timeout before retrying")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.cancelled", {
+    status: "cancelled",
+  }), "retry only if the provider turn still needs this tool result")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.failed", {
+    status: "failed",
+  }), "inspect the home-side tool configuration and logs, then retry")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.grant.created", {}), null)
+})
+
+test("home extension audit policy resolves stable agent references", () => {
+  assert.equal(homeExtensionAuditAgentRef({ agent_ref: " agent-ref-1 " }), "agent-ref-1")
+  assert.equal(homeExtensionAuditAgentRef({ agent_id: "agent-1" }), "agent-1")
+  assert.equal(homeExtensionAuditAgentRef({ home_agent_id: "home-agent-1" }), "home-agent-1")
+  assert.equal(homeExtensionAuditAgentRef({}), "<agent>")
 })
