@@ -146,7 +146,7 @@ test("waiting room remote rows distinguish provider and unknown readiness", () =
 
   assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "2 kernels no providers · ready=0/2 needs-provider=1 unknown=1 leased=0 · next: configure provider CLIs on Worker")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-provider")?.value, "needs-provider no providers · next: configure provider CLIs on provider-kernel")
-  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-unknown")?.value, "unknown no providers · next: configure provider CLIs on unknown-kernel")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-unknown")?.value, "unknown no providers · next: refresh unknown-kernel readiness or reconnect that worker before launching remote agents")
 })
 
 test("waiting room remote helpers classify deletable and attachable inventory", () => {

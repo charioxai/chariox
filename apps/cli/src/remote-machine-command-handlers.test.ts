@@ -19,7 +19,7 @@ test("remote machine command renders recovery hints", async () => {
   assert.equal(harness.footers.at(1)?.message, "listed 1 live kernel(s) for machine-1")
 })
 
-test("remote machine command renders unknown lease state without a false recovery hint", async () => {
+test("remote machine command renders unknown lease state with refresh recovery", async () => {
   const harness = remoteMachineHarness({
     accepting_remote_leases: undefined,
     available_providers: ["codex"],
@@ -30,6 +30,21 @@ test("remote machine command renders unknown lease state without a false recover
   assert.match(harness.notices.at(0) ?? "", /accepting_remote_leases=unknown/)
   assert.match(harness.notices.at(0) ?? "", /readiness=unknown/)
   assert.doesNotMatch(harness.notices.at(0) ?? "", /enable remote leases/)
+  assert.match(harness.notices.at(0) ?? "", /next: refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+})
+
+test("remote machine command prioritizes unknown readiness over empty providers", async () => {
+  const harness = remoteMachineHarness({
+    accepting_remote_leases: undefined,
+    available_providers: [],
+  })
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+
+  assert.match(harness.notices.at(0) ?? "", /readiness=unknown/)
+  assert.match(harness.notices.at(0) ?? "", /providers=-/)
+  assert.match(harness.notices.at(0) ?? "", /next: refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.doesNotMatch(harness.notices.at(0) ?? "", /configure provider CLIs/)
 })
 
 function command(...args: string[]) {

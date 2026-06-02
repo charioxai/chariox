@@ -240,10 +240,14 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
 
 function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): string {
   const kernelLabel = waitingRoomRemoteKernelLabel(kernel)
-  if (kernel.accepting_remote_leases === false) {
+  const readiness = remoteKernelReadiness(kernel)
+  if (readiness === "blocked") {
     return `enable remote leases on ${kernelLabel} or choose another worker`
   }
-  if ((kernel.available_providers ?? []).length === 0) {
+  if (readiness === "unknown") {
+    return `refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+  }
+  if (readiness === "needs-provider") {
     return `configure provider CLIs on ${kernelLabel}`
   }
   return ""
