@@ -34,7 +34,8 @@ test("command center dynamic items project provider, model, variant, and view ch
 
   assert.equal(buildProviderItems("/provider cla", providerNode)[0]?.value, "claude")
   assert.equal(buildProviderItems("/provider proc", providerNode).some((item) => item.value === "/provider processes "), true)
-  assert.equal(buildProviderItems("/provider teardown", providerNode).some((item) => item.value === "/provider processes teardown "), true)
+  const teardownItem = buildProviderItems("/provider teardown", providerNode).find((item) => item.value === "/provider processes teardown ")
+  assert.equal(teardownItem?.description, "Tear down safe daemon-tracked provider processes for one provider")
   assert.equal(buildModelItems("/model gpt", context)[0]?.kind, "model")
   assert.equal(buildVariantItems("/variant med", context)[0]?.value, "medium")
   assert.equal(buildViewItems("/view spl")[0]?.value, "/view split")

@@ -390,7 +390,7 @@ export const COMMAND_TREE: CommandNode[] = [
       {
         id: "provider-processes",
         label: "processes",
-        description: "List daemon-tracked provider processes or safely tear them down",
+        description: "List daemon-tracked provider processes; teardown requires a provider",
         value: "/provider processes ",
       },
     ],

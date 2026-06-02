@@ -147,7 +147,7 @@ export function buildProviderItems(input: string, providerNode: CommandNode) {
     {
       id: "provider-processes-teardown",
       label: "teardown",
-      description: "Tear down safe daemon-tracked provider processes owned by you",
+      description: "Tear down safe daemon-tracked provider processes for one provider",
       kind: "command",
       value: "/provider processes teardown ",
     },
