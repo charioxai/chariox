@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::hash::{DefaultHasher, Hash, Hasher};
-#[cfg(target_os = "macos")]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -183,7 +182,6 @@ fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_roots: &[Path
     hasher.finish()
 }
 
-#[cfg(target_os = "macos")]
 fn macos_seatbelt_profile(canonical_roots: &[PathBuf]) -> String {
     let mut profile = "(version 1)\n".to_string();
     for root in canonical_roots {
@@ -196,7 +194,6 @@ fn macos_seatbelt_profile(canonical_roots: &[PathBuf]) -> String {
     profile
 }
 
-#[cfg(target_os = "macos")]
 fn seatbelt_string(path: &Path) -> String {
     let mut escaped = String::new();
     for ch in path.display().to_string().chars() {
@@ -212,7 +209,6 @@ fn seatbelt_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    #[cfg(target_os = "macos")]
     use std::path::PathBuf;
 
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
@@ -332,7 +328,6 @@ mod tests {
         assert!(wrapped.process_label.ends_with(":fenced"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn macos_profile_denies_each_protected_root_only() {
         let profile = super::macos_seatbelt_profile(&[
@@ -343,6 +338,15 @@ mod tests {
         assert!(profile.contains("(deny file-write* (subpath \"/repo/selected\"))"));
         assert!(profile.contains("(deny file-write* (subpath \"/repo/attached\"))"));
         assert!(!profile.contains("(subpath \"/repo\")"));
+        assert!(profile.ends_with("(allow default)\n"));
+    }
+
+    #[test]
+    fn macos_profile_escapes_protected_roots() {
+        let profile = super::macos_seatbelt_profile(&[PathBuf::from("/repo/quoted \"root\"")]);
+
+        assert!(profile.contains("(deny file-write* (subpath \"/repo/quoted \\\"root\\\"\"))"));
+        assert!(profile.ends_with("(allow default)\n"));
     }
 
     #[cfg(target_os = "macos")]
