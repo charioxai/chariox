@@ -188,10 +188,10 @@ test("config command renders kernel mutation effects", async () => {
   ])
   assert.deepEqual(flashes, [
     "listed 1 config key",
-    "workspace live sync set to off",
-    "workspace live sync set to tracked",
-    "workspace live sync set to off",
-    "workspace live sync set to managed",
+    "default workspace live sync for new sessions disabled; other repositories remain unrestricted",
+    "default workspace live sync for new sessions set to tracked (selected workspace/worktree only; other repositories unrestricted)",
+    "default workspace live sync for new sessions disabled; other repositories remain unrestricted",
+    "default workspace live sync for new sessions set to managed (selected workspace/worktree only; other repositories unrestricted)",
     "usage: /config workspace-live-sync off|managed|tracked",
   ])
 })

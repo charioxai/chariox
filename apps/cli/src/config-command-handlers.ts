@@ -4,6 +4,9 @@ import type {
   UserConfigSchemaEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import {
+  formatWorkspaceLiveSyncDefaultModeChangeMessage,
+} from "@arroba/kernel-client/workspace-live-sync-mode"
 
 type FooterTone = "info" | "error"
 
@@ -173,7 +176,7 @@ async function setWorkspaceLiveSyncMode(
   }
   const payload = await deps.setUserConfigValue("providers.workspace_live_sync", mode)
   appendUserConfigEffects(deps, payload)
-  deps.flashFooter(`workspace live sync set to ${mode}`, "info")
+  deps.flashFooter(formatWorkspaceLiveSyncDefaultModeChangeMessage(mode), "info")
 }
 
 function normalizeWorkspaceLiveSyncPolicy(value: string): "off" | "managed" | "tracked" | null {

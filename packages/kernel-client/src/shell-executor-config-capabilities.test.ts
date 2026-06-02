@@ -172,11 +172,11 @@ test("executeShellCommand mutates user config", async () => {
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
   assert.equal(offWorkspaceLiveSyncResult.ok, true)
-  assert.match(offWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to off/)
+  assert.match(offWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
   assert.equal(managedWorkspaceLiveSyncResult.ok, true)
-  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to managed/)
+  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions set to managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.equal(defaultWorkspaceLiveSyncResult.ok, true)
-  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /workspace live sync set to off/)
+  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },

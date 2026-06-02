@@ -36,3 +36,10 @@ export function formatWorkspaceLiveSyncModeChangeMessage(
     ? `current session workspace live sync enabled: ${label}`
     : `current session workspace live sync set to ${label}`
 }
+
+export function formatWorkspaceLiveSyncDefaultModeChangeMessage(mode: WorkspaceLiveSyncModeInput): string {
+  if (mode === "off" || mode === "unrestricted") {
+    return "default workspace live sync for new sessions disabled; other repositories remain unrestricted"
+  }
+  return `default workspace live sync for new sessions set to ${formatWorkspaceLiveSyncModeLabel(mode)}`
+}

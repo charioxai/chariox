@@ -20,6 +20,9 @@ import {
   configMutationMessage,
   formatConfigSchemaKeys,
 } from "./shell-config-format.js"
+import {
+  formatWorkspaceLiveSyncDefaultModeChangeMessage,
+} from "./workspace-live-sync-mode.js"
 
 type ShellConfigCommandDeps = {
   client: {
@@ -87,7 +90,7 @@ export async function executeConfigCommand(
     const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
-      message: configMutationMessage(`workspace live sync set to ${mode}`, payload),
+      message: configMutationMessage(formatWorkspaceLiveSyncDefaultModeChangeMessage(mode), payload),
       data: payload,
     }
   }
