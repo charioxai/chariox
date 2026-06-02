@@ -59,7 +59,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
     process.exit = previousExit
   }
 
-  assert.match(output, /\/kernel health\s+show runtime health and provider-run invariants/)
+  assert.match(output, /\/kernel health\s+show runtime health, remote readiness, and invariants/)
   assert.match(output, /\/kernel remote-runtime\s+show remote agents, slices, home-proxy, and live sync readiness/)
   assert.equal(output.match(/\/kernel health/g)?.length, 1)
   assert.equal(output.match(/\/kernel remote-runtime/g)?.length, 1)

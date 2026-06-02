@@ -60,7 +60,7 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Show runtime health and provider-run invariants")
+  assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Show runtime health, remote readiness, and invariants")
   assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show remote agents, slices, home-proxy, and live sync readiness")
 })
 

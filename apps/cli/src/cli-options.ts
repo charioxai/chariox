@@ -232,7 +232,7 @@ function printUsage() {
     "  /agent list           list all agents in the session",
     "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",
-    "  /kernel health        show runtime health and provider-run invariants",
+    "  /kernel health        show runtime health, remote readiness, and invariants",
     "  /kernel remote-runtime show remote agents, slices, home-proxy, and live sync readiness",
     "  /kernel debug-bundle [label] export attached-session logs on the kernel machine",
     "  /machine list         list approved, pending, and offline remote machines",
