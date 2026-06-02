@@ -248,10 +248,11 @@ fn local_request_api_manages_session_workspace_links() {
                 .contains("Workspace live sync link `shared-repo`")
         })
         .expect("workspace link attach should emit an enrollment notice");
-    assert!(enrollment_notice
-        .message
-        .contains("Recommended mode: managed"));
+    assert!(enrollment_notice.message.contains(
+        "Mode choice: managed requires provider write fencing; tracked syncs at turn end"
+    ));
     assert!(enrollment_notice.message.contains("workspace sync managed"));
+    assert!(enrollment_notice.message.contains("workspace sync tracked"));
 
     let status = match harness
         .dispatch(LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
