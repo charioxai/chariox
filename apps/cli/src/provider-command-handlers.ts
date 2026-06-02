@@ -79,19 +79,20 @@ function formatProviderProcessNotice(process: ProviderProcessInfo): string {
 }
 
 function providerProcessNextAction(process: ProviderProcessInfo): string {
+  const teardown = `run /provider processes teardown ${process.provider}`
   if (process.teardown_safe) {
-    return `run /provider processes teardown ${process.provider} to stop only safe daemon-tracked processes owned by you`
+    return `${teardown} to stop only safe daemon-tracked processes owned by you`
   }
   if (process.attached_session_ids.length > 0) {
-    return `detach or finish attached sessions ${process.attached_session_ids.join(",")} before teardown`
+    return `detach or finish attached sessions ${process.attached_session_ids.join(",")}; then ${teardown}`
   }
   if (process.active_workflow_run_ids.length > 0) {
-    return `stop or finish workflow runs ${process.active_workflow_run_ids.join(",")} before teardown`
+    return `stop or finish workflow runs ${process.active_workflow_run_ids.join(",")}; then ${teardown}`
   }
   if (process.teardown_blockers.length > 0) {
-    return `resolve blockers: ${process.teardown_blockers.join("; ")}`
+    return `resolve blockers: ${process.teardown_blockers.join("; ")}; then ${teardown}`
   }
-  return "inspect the owning session before teardown"
+  return `inspect the owning session before teardown; then ${teardown}`
 }
 
 function formatBytes(bytes: number | null): string {

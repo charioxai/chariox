@@ -438,5 +438,5 @@ test("provider processes teardown reports blocked daemon-tracked processes", asy
   assert.equal(flashedMessage, "no safe provider processes to tear down")
   assert.match(notices[0]!, /blocked provider processes:/)
   assert.match(notices[0]!, /blockers: attached sessions: session-1/)
-  assert.match(notices[0]!, /next: detach or finish attached sessions session-1 before teardown/)
+  assert.match(notices[0]!, /next: detach or finish attached sessions session-1; then run \/provider processes teardown codex/)
 })
