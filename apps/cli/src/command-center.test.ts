@@ -64,6 +64,20 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
   assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show remote agents, slices, home-proxy, and live sync readiness")
 })
 
+test("buildCommandCenterItems surfaces local provider catalog fallback in selection rows", () => {
+  const context = {
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }
+
+  assert.match(buildCommandCenterItems("/provider codex", context)[0]?.description ?? "", /local provider list/)
+  assert.match(buildCommandCenterItems("/model gpt", context)[0]?.description ?? "", /local provider list/)
+})
+
 test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   const items = buildCommandCenterItems("/workspace sync", {
     providerCatalog: fallbackProviderCatalog(),

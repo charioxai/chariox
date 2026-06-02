@@ -33,7 +33,7 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
   }
 
   if (normalized.startsWith("/provider ")) {
-    return buildProviderItems(normalized, COMMAND_TREE.find((node) => node.id === "provider")!)
+    return buildProviderItems(normalized, COMMAND_TREE.find((node) => node.id === "provider")!, context)
   }
 
   if (normalized.startsWith("/model ")) {

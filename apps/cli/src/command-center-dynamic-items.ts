@@ -1,4 +1,9 @@
-import { backendProviderLabel, catalogModelOptions, type BackendProviderId } from "./provider-catalog.js"
+import {
+  backendProviderLabel,
+  catalogModelOptions,
+  providerCatalogIsLocalFallback,
+  type BackendProviderId,
+} from "./provider-catalog.js"
 import {
   type ProviderCommandCatalogs,
   providerCommandCatalogIsLocalFallback,
@@ -88,28 +93,29 @@ export function buildProviderNamespaceItems(
   )
 }
 
-export function buildProviderItems(input: string, providerNode: CommandNode) {
+export function buildProviderItems(input: string, providerNode: CommandNode, context: CommandCenterDynamicContext) {
   const query = input.slice("/provider ".length).trim().toLowerCase()
+  const localFallback = providerCatalogIsLocalFallback(context.providerCatalog)
   return filterCommandCenterItems([
     mapNodeToItem(providerNode),
     {
       id: "provider-opencode",
       label: "OpenCode",
-      description: "Use the OpenCode backend",
+      description: providerSelectionDescription("OpenCode", localFallback),
       kind: "provider",
       value: "opencode",
     },
     {
       id: "provider-codex",
       label: "Codex",
-      description: "Use the Codex backend",
+      description: providerSelectionDescription("Codex", localFallback),
       kind: "provider",
       value: "codex",
     },
     {
       id: "provider-claude",
       label: backendProviderLabel("claude"),
-      description: "Use the Claude Code backend",
+      description: providerSelectionDescription("Claude Code", localFallback),
       kind: "provider",
       value: "claude",
     },
@@ -160,11 +166,12 @@ export function buildProviderItems(input: string, providerNode: CommandNode) {
 
 export function buildModelItems(input: string, context: CommandCenterDynamicContext) {
   const query = input.slice("/model ".length).trim().toLowerCase()
+  const localFallback = providerCatalogIsLocalFallback(context.providerCatalog)
   return filterCommandCenterItems(
     catalogModelOptions(context.providerCatalog, context.currentProvider).map((option) => ({
       id: `model-${option.id}`,
       label: `${option.providerName} ${option.label}`,
-      description: option.id === context.currentModel ? "current model" : option.id,
+      description: modelSelectionDescription(option.id, option.id === context.currentModel, localFallback),
       kind: "model" as const,
       value: option.id,
     })),
@@ -215,4 +222,13 @@ function emptyProviderCommandCatalog(provider: BackendProviderId) {
     discovery: "none" as const,
     commands: [],
   }
+}
+
+function providerSelectionDescription(providerName: string, localFallback: boolean) {
+  return localFallback ? `Use the ${providerName} backend; local provider list` : `Use the ${providerName} backend`
+}
+
+function modelSelectionDescription(modelId: string, current: boolean, localFallback: boolean) {
+  const base = current ? "current model" : modelId
+  return localFallback ? `${base}; local provider list` : base
 }

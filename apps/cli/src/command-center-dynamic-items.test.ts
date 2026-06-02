@@ -39,13 +39,26 @@ test("command center dynamic items project provider, model, variant, and view ch
     currentVariant: "high",
   }
 
-  assert.equal(buildProviderItems("/provider cla", providerNode)[0]?.value, "claude")
-  assert.equal(buildProviderItems("/provider proc", providerNode).some((item) => item.value === "/provider processes "), true)
-  const teardownItem = buildProviderItems("/provider teardown", providerNode).find((item) => item.value === "/provider processes teardown ")
+  assert.equal(buildProviderItems("/provider cla", providerNode, context)[0]?.value, "claude")
+  assert.equal(buildProviderItems("/provider proc", providerNode, context).some((item) => item.value === "/provider processes "), true)
+  const teardownItem = buildProviderItems("/provider teardown", providerNode, context).find((item) => item.value === "/provider processes teardown ")
   assert.equal(teardownItem?.description, "Tear down safe daemon-tracked provider processes for one provider")
   assert.equal(buildModelItems("/model gpt", context)[0]?.kind, "model")
   assert.equal(buildVariantItems("/variant med", context)[0]?.value, "medium")
   assert.equal(buildViewItems("/view spl")[0]?.value, "/view split")
+})
+
+test("command center marks provider and model choices from local fallback provider catalog", () => {
+  const providerNode = COMMAND_TREE.find((node) => node.id === "provider")!
+  const context = {
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+    currentProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }
+
+  assert.match(buildProviderItems("/provider codex", providerNode, context)[0]?.description ?? "", /local provider list/)
+  assert.match(buildModelItems("/model gpt", context)[0]?.description ?? "", /local provider list/)
 })
 
 function withCodexCommand(): ProviderCommandCatalogs {
