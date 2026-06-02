@@ -48,7 +48,12 @@ function remoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
 }
 
 function remoteRuntimeSettlingAttentionCount(health: DaemonHealthProjection): number {
-  return health.remote_extension_sync.stale_agents
+  const sliceOperations = Math.max(
+    health.slice_lifecycle.starting_slices + health.slice_lifecycle.stopping_slices,
+    health.slice_lifecycle.in_progress_operations,
+  )
+  return sliceOperations
+    + health.remote_extension_sync.stale_agents
     + health.remote_extension_sync.pending_agents
     + health.remote_extension_sync.syncing_agents
     + health.workspace_live_sync.external_changes.live_watcher_scan_errors
@@ -300,6 +305,16 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push("  next: run /slice doctor <slice>; inspect /slice audit <slice>; use /slice auth login <slice> <provider> or /slice auth import <slice> <provider> before sending prompts to slice-backed agents")
   }
 
+  if (
+    sliceLifecycle.issues.length === 0
+    && sliceLifecycle.unhealthy_slices === 0
+    && sliceLifecycle.failed_operations === 0
+    && (sliceLifecycle.starting_slices > 0 || sliceLifecycle.stopping_slices > 0 || sliceLifecycle.in_progress_operations > 0)
+  ) {
+    lines.push(`slice operations settling: starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} in_progress=${sliceLifecycle.in_progress_operations}`)
+    lines.push("  next: wait for the slice operation to finish; run /slice doctor <slice> and inspect /slice logs <slice> if it does not settle")
+  }
+
   if (remoteExecutionIssueCount(health) > 0) {
     lines.push(`remote execution issues: missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`)
     const affectedAgents = new Set<string>()
@@ -407,10 +422,13 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     : `attention missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`
   const slices = sliceLifecycle.unhealthy_slices === 0
     && sliceLifecycle.failed_operations === 0
+    && sliceLifecycle.starting_slices === 0
+    && sliceLifecycle.stopping_slices === 0
+    && sliceLifecycle.in_progress_operations === 0
     && sliceLifecycle.provider_auth_missing_slices === 0
     && sliceLifecycle.provider_auth_unconfigured_slices === 0
     ? "ok"
-    : `attention unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`
+    : `attention starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} in_progress=${sliceLifecycle.in_progress_operations} unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`
   const manifests = remoteExtensionSync.manifest_missing_agents === 0
     && remoteExtensionSync.failed_agents === 0
     && remoteExtensionSync.pending_revoke_agents === 0

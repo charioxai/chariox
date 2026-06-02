@@ -363,7 +363,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   const rendered = formatKernelHealth(unhealthy)
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
-  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=attention unhealthy=0 failed_ops=0 auth_missing=1 auth_unconfigured=1; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=attention starting=0 stopping=0 in_progress=0 unhealthy=0 failed_ops=0 auth_missing=1 auth_unconfigured=1; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
   assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex before sending prompts to agents in that slice/)
@@ -775,6 +775,39 @@ test("kernel remote-runtime formatter counts only remote runtime blockers", () =
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
   assert.match(rendered, /remote runtime readiness: ok/)
   assert.doesNotMatch(rendered, /duplicate Arroba provider run bindings/)
+})
+
+test("kernel remote-runtime formatter reports slice operations as degraded attention", () => {
+  const settling = health({
+    slice_lifecycle: {
+      total_slices: 2,
+      running_slices: 1,
+      starting_slices: 1,
+      stopping_slices: 1,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 2,
+      failed_operations: 0,
+      in_progress_operations: 2,
+      issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelRemoteRuntimeHealth(settling)
+
+  assert.equal(kernelRemoteRuntimeIssueCount(settling), 0)
+  assert.deepEqual(kernelRemoteRuntimeReadiness(settling), {
+    state: "degraded",
+    issueCount: 0,
+    attentionCount: 2,
+  })
+  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=attention starting=1 stopping=1 in_progress=2 unhealthy=0 failed_ops=0 auth_missing=0 auth_unconfigured=0; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /slice operations settling: starting=1 stopping=1 in_progress=2/)
+  assert.match(rendered, /next: wait for the slice operation to finish; run \/slice doctor <slice> and inspect \/slice logs <slice> if it does not settle/)
+  assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
+  assert.doesNotMatch(rendered, /support bundle:/)
 })
 
 test("kernel remote-runtime formatter reports settling manifests as degraded attention", async () => {
