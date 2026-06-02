@@ -143,14 +143,17 @@ export function formatAgentListSummary(
   agents: AgentInstance[],
   slices: readonly SliceRecord[] = [],
   providerRunContext: AgentProviderRunContext = {},
+  sessionContext: AgentSessionContext = {},
 ): string {
+  const prefix = formatAgentListSessionContext(sessionContext)
   if (agents.length === 0) {
-    return "no agents in session"
+    return prefix ? `${prefix}\nno agents in session` : "no agents in session"
   }
   const agentList = agents
     .map((agent) => formatAgentListEntry(agent, slices, providerRunContext))
     .join(", ")
-  return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+  const summary = `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+  return prefix ? `${prefix}\n${summary}` : summary
 }
 
 export function formatAgentInspectSummary(
@@ -197,6 +200,18 @@ export function formatAgentInspectSummary(
 function formatHomeKernel(context: AgentSessionContext): string {
   const homeKernel = context.homeKernelId || "<unknown>"
   return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
+}
+
+function formatAgentListSessionContext(context: AgentSessionContext): string | null {
+  if (!context.homeKernelId && !context.homeMachineId && !context.ownerUserId && !context.workspaceLiveSyncMode) {
+    return null
+  }
+  const parts = [
+    `home kernel ${formatHomeKernel(context)}`,
+    context.ownerUserId ? `owner ${context.ownerUserId}` : null,
+    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}`,
+  ].filter(Boolean)
+  return `session runtime: ${parts.join("; ")}`
 }
 
 function formatAgentListEntry(

@@ -71,10 +71,21 @@ export async function handleAgentSlashCommand(
       const session = deps.sessionState()
       const providerRun = deps.providerRunState()
       const slices = deps.listSlices ? await deps.listSlices().catch(() => []) : []
-      deps.flashFooter(formatAgentListSummary(session.agents, slices, {
+      deps.appendNotice(formatAgentListSummary(session.agents, slices, {
         activeProviderRunId: session.active_provider_run_id,
         activeProviderRunAgentId: providerRun?.agent_instance_id ?? null,
-      }), "info")
+      }, {
+        homeKernelId: session.host_daemon_id ?? null,
+        homeMachineId: session.host_machine_id ?? null,
+        ownerUserId: session.owner_user_id ?? null,
+        workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
+      }))
+      deps.flashFooter(
+        session.agents.length === 0
+          ? "no agents in session"
+          : `showing ${session.agents.length} agent${session.agents.length === 1 ? "" : "s"}`,
+        "info",
+      )
       return
     }
     case "inspect":

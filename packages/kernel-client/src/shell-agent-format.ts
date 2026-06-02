@@ -33,14 +33,29 @@ export function formatAgentListSummary(
   agents: AgentInstance[],
   slices: readonly SliceRecord[] = [],
   providerRunContext: ShellAgentProviderRunContext = {},
+  sessionContext: ShellAgentSessionContext = {},
 ): string {
+  const prefix = formatAgentListSessionContext(sessionContext)
   if (agents.length === 0) {
-    return "no agents in session"
+    return prefix ? `${prefix}\nno agents in session` : "no agents in session"
   }
   const agentList = agents
     .map((agent) => formatAgentListEntry(agent, sliceForRemoteAgent(agent, slices), providerRunContext))
     .join(", ")
-  return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+  const summary = `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
+  return prefix ? `${prefix}\n${summary}` : summary
+}
+
+function formatAgentListSessionContext(context: ShellAgentSessionContext): string | null {
+  if (!context.homeKernelId && !context.homeMachineId && !context.ownerUserId && !context.workspaceLiveSyncMode) {
+    return null
+  }
+  const parts = [
+    `home kernel ${formatHomeKernel(context)}`,
+    context.ownerUserId ? `owner ${context.ownerUserId}` : null,
+    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}`,
+  ].filter(Boolean)
+  return `session runtime: ${parts.join("; ")}`
 }
 
 function formatAgentListEntry(

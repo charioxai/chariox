@@ -58,6 +58,15 @@ test("agent list summary renders aliases and pluralization", () => {
     })]),
     /agent-b \[Working; codex\/gpt-5.4; worktree \/repo\/feature; slice devbox run run-worker;/,
   )
+  assert.match(
+    formatAgentListSummary([remoteAgent], [], {}, {
+      homeKernelId: "home-kernel",
+      homeMachineId: "home-machine",
+      ownerUserId: "user-1",
+      workspaceLiveSyncMode: "tracked",
+    }),
+    /^session runtime: home kernel home-kernel@home-machine; owner user-1; live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\)\n1 agent:/,
+  )
 })
 
 test("agent inspect summary renders placement, grants, manifest, and substitutes", () => {

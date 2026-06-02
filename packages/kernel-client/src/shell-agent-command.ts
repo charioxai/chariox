@@ -69,7 +69,12 @@ export async function executeAgentCommand(
       const providerRunContext = await activeProviderRunContext(deps, session)
       return {
         ok: true,
-        message: formatAgentListSummary(agents, slices, providerRunContext),
+        message: formatAgentListSummary(agents, slices, providerRunContext, {
+          homeKernelId: session.host_daemon_id ?? null,
+          homeMachineId: session.host_machine_id ?? null,
+          ownerUserId: session.owner_user_id ?? null,
+          workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
+        }),
         data: { agents, slices, session, providerRunContext },
       }
     }

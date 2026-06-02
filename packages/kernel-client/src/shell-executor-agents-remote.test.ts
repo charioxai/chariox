@@ -28,11 +28,18 @@ test("executeShellCommand lists agents for current session", async () => {
   const agents = [makeAgent(), makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" })]
   const fake = fakeClient((request) => {
     assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
-    return { SessionState: { session: makeSession({ agents }) } }
+    return { SessionState: { session: makeSession({
+      agents,
+      host_daemon_id: "home-kernel",
+      host_machine_id: "home-machine",
+      owner_user_id: "user-1",
+      workspace_live_sync_mode: "tracked",
+    }) } }
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /^session runtime: home kernel home-kernel@home-machine; owner user-1; live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /2 agents/)
   assert.match(result.message ?? "", /agent-1 \[Idle; opencode/)
   assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle; opencode/)
