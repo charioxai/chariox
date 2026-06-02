@@ -96,6 +96,7 @@ function formatShellContext(
     ...(currentAgent ? [
       `agent placement: ${formatContextAgentPlacement(currentAgent, slices, sliceLookupError)}`,
       `provider run: ${formatContextProviderRun(currentAgent, session, activeProviderRun, providerRunLookupError)}`,
+      ...formatContextProviderRunNextAction(currentAgent, session, activeProviderRun),
       `extensions: ${formatContextExtensionSummary(currentAgent)}`,
       `extension runtime: ${formatExtensionGrantRuntimeDetail(currentAgent.extension_grants, Boolean(currentAgent.remote_execution))}`,
       ...formatContextRemoteExtensionSyncLines(currentAgent),
@@ -188,6 +189,28 @@ function formatContextProviderRun(
     sessionRunId ? `session=${sessionRunId}` : null,
     workerRunId ? `worker=${workerRunId}` : null,
   ].filter(Boolean).join(", ")
+}
+
+function formatContextProviderRunNextAction(
+  agent: AgentInstance,
+  session: RuntimeSession | null,
+  activeProviderRun: RuntimeProviderRun | null,
+): string[] {
+  const sessionRunId = session?.active_provider_run_id?.trim()
+  const sessionRunAgentId = activeProviderRun?.agent_instance_id?.trim()
+  const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
+  if (sessionRunId && (!sessionRunAgentId || sessionRunAgentId !== agent.id)) {
+    return [
+      `provider run next: run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
+    ]
+  }
+  if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
+    const worker = agent.remote_execution.worker_machine_id?.trim() || "<worker-machine>"
+    return [
+      `provider run next: run /kernel health and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker if no active worker run appears`,
+    ]
+  }
+  return []
 }
 
 function formatContextExtensionSummary(agent: AgentInstance): string {

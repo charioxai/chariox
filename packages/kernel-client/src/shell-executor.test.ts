@@ -378,6 +378,51 @@ test("executeShellCommand does not infer provider run ownership from focused age
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent: agent-1/)
   assert.match(result.message ?? "", /provider run: session=session-run-2 owned_by=agent-2/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to agent-1/)
+})
+
+test("executeShellCommand context reports missing active remote worker provider run", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-remote",
+  })
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    state: "Working",
+    is_processing: true,
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "hetzner",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            focused_agent_id: "agent-remote",
+            agents: [agent],
+          }),
+        },
+      }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent placement: remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(result.message ?? "", /provider run: none/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
 })
 
 test("executeShellCommand lists sessions with home kernel ownership", async () => {
