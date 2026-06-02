@@ -307,7 +307,7 @@ export function formatAgentExtensionPlacementSummary(agent: AgentInstance): stri
 
 function formatAgentRemoteExtensionSyncLines(agent: AgentInstance): string[] {
   if (!agent.remote_execution) {
-    return ["remote extension sync: not applicable"]
+    return ["remote extension sync: not applicable (worker-local agent; no home-proxy manifest)"]
   }
   const status = agent.remote_extension_manifest_sync
   if (!status) {

@@ -208,7 +208,7 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /placement: worker-local/)
   assert.match(result.message ?? "", /provider run: session=run-session/)
   assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
-  assert.match(result.message ?? "", /remote extension sync: not applicable/)
+  assert.match(result.message ?? "", /remote extension sync: not applicable \(worker-local agent; no home-proxy manifest\)/)
 })
 
 test("executeShellCommand inspects remote skill-only agents without manifest pending", async () => {

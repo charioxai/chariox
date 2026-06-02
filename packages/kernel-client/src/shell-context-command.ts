@@ -219,7 +219,7 @@ function formatContextExtensionSummary(agent: AgentInstance): string {
 
 function formatContextRemoteExtensionSyncLines(agent: AgentInstance): string[] {
   if (!agent.remote_execution) {
-    return ["remote extension sync: not applicable"]
+    return ["remote extension sync: not applicable (worker-local agent; no home-proxy manifest)"]
   }
   const sync = agent.remote_extension_manifest_sync
   if (!sync && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
