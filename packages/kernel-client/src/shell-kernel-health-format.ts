@@ -273,7 +273,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push(
       hasStoppedSliceWithAgents
         ? `  next: run /slice start${sliceTarget} for stopped slices or move attached agents to a running slice`
-        : `  next: run /slice doctor${sliceTarget}, then inspect logs or restart/delete the slice`,
+        : `  next: run /slice doctor${sliceTarget}, inspect /slice logs${sliceTarget}, and check /slice audit${sliceTarget} before restarting or deleting the slice`,
     )
   }
 
@@ -291,10 +291,10 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     const firstIssue = sliceLifecycle.provider_auth_issues[0]
     const sliceRef = firstIssue?.slice_id ?? "<slice>"
     const provider = firstIssue?.provider ?? "<provider>"
-    lines.push(`  next: run /slice doctor ${sliceRef}; use /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider} before sending more provider prompts`)
+    lines.push(`  next: run /slice doctor ${sliceRef}; inspect /slice audit ${sliceRef}; use /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider} before sending more provider prompts`)
   } else if (sliceLifecycle.provider_auth_missing_slices > 0 || sliceLifecycle.provider_auth_unconfigured_slices > 0) {
     lines.push(`slice provider auth issues: missing=${sliceLifecycle.provider_auth_missing_slices} unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`)
-    lines.push("  next: run /slice doctor <slice>; use /slice auth login <slice> <provider> or /slice auth import <slice> <provider> before sending more provider prompts")
+    lines.push("  next: run /slice doctor <slice>; inspect /slice audit <slice>; use /slice auth login <slice> <provider> or /slice auth import <slice> <provider> before sending more provider prompts")
   }
 
   if (remoteExecutionIssueCount(health) > 0) {

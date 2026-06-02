@@ -1133,7 +1133,7 @@ test("executeShellCommand renders slice doctor diagnostics", async () => {
   assert.match(result.message ?? "", /ok agents: 1 attached/)
   assert.match(result.message ?? "", /ok provider CLIs: codex/)
   assert.match(result.message ?? "", /ok provider accounts: codex:daily \(dev@example.com\)\/org=Team\/plan=pro/)
-  assert.match(result.message ?? "", /next: inspect slice logs/)
+  assert.match(result.message ?? "", /next: inspect slice logs and audit/)
 })
 
 test("executeShellCommand does not infer shared slice relay authority", async () => {

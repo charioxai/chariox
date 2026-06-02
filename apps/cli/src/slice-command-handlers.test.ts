@@ -207,7 +207,7 @@ test("slice command doctor renders health checks", async () => {
   assert.match(harness.notices.at(-1) ?? "", /fail display: headed/)
   assert.match(harness.notices.at(-1) ?? "", /ok relay: none/)
   assert.match(harness.notices.at(-1) ?? "", /ok agents: 1 attached/)
-  assert.match(harness.notices.at(-1) ?? "", /next: inspect slice logs/)
+  assert.match(harness.notices.at(-1) ?? "", /next: inspect slice logs and \/slice audit/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 

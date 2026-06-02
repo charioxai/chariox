@@ -289,7 +289,7 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /slices: total=3 running=1 starting=0 stopping=1 stopped=0 unhealthy=1 agents=2 failed_ops=1 in_progress_ops=1/)
   assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=unhealthy op=start op_status=failed worktree=\/repo agents=agent-1,agent-2: worker kernel discovery timed out/)
-  assert.match(rendered, /next: run \/slice doctor slice-1, then inspect logs or restart\/delete the slice/)
+  assert.match(rendered, /next: run \/slice doctor slice-1, inspect \/slice logs slice-1, and check \/slice audit slice-1 before restarting or deleting the slice/)
 })
 
 test("kernel health formatter renders lifecycle issues without failed counters", () => {
@@ -363,7 +363,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
-  assert.match(rendered, /next: run \/slice doctor slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex/)
+  assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex/)
 })
 
 test("kernel health formatter reports remote execution issues", () => {

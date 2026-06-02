@@ -396,12 +396,12 @@ function sliceDoctorNextActions(slice: SliceRecord): string[] {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
   const next = sliceNextAction(slice)
   const actions = [
-    slice.status === "unhealthy" ? "inspect slice logs, then try slice start or recreate the slice" : null,
+    slice.status === "unhealthy" ? "inspect slice logs and audit, then try slice start or recreate the slice" : null,
     slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
     slice.status === "running" && !slice.relay_endpoint?.url ? "check relay connectivity and restart the slice if the relay endpoint stays missing" : null,
     scope === "missing" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
     slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
-    slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+    slice.last_operation_status === "failed" ? "inspect slice logs and audit, then retry the failed operation after fixing the reported error" : null,
     next,
   ].filter((action): action is string => Boolean(action))
   const unique = [...new Set(actions)]
@@ -410,7 +410,7 @@ function sliceDoctorNextActions(slice: SliceRecord): string[] {
 
 function sliceNextAction(slice: SliceRecord): string | null {
   if (slice.status === "unhealthy") {
-    return "inspect logs, then start or delete/recreate the slice"
+    return "inspect logs and audit, then start or delete/recreate the slice"
   }
   if (slice.status === "running" && !slice.relay_endpoint?.url) {
     return "check relay connectivity or restart the slice"
@@ -419,7 +419,7 @@ function sliceNextAction(slice: SliceRecord): string | null {
     return "start the slice screen service or recreate as headless if a display is not needed"
   }
   if (slice.last_operation_status === "failed") {
-    return "open logs and retry the failed operation after fixing the error"
+    return "open logs and audit, then retry the failed operation after fixing the error"
   }
   if ((slice.providers ?? []).length === 0) {
     return "configure provider CLIs inside the slice before spawning agents there"

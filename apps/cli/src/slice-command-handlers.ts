@@ -504,12 +504,12 @@ function doctorCheck(name: string, ok: boolean, detail: string): string {
 function sliceDoctorNextActions(slice: SliceRecord): string[] {
   const scope = formatSliceScope(slice)
   const actions = [
-    slice.status === "unhealthy" ? "inspect slice logs, then try /slice start or recreate the slice" : null,
+    slice.status === "unhealthy" ? "inspect slice logs and /slice audit, then try /slice start or recreate the slice" : null,
     slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
     slice.status === "running" && !slice.relay_endpoint?.url ? "check relay connectivity and restart the slice if the relay endpoint stays missing" : null,
     scope === "-" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
     slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
-    slice.last_operation_status === "failed" ? "inspect slice logs and retry the failed operation after fixing the reported error" : null,
+    slice.last_operation_status === "failed" ? "inspect slice logs and /slice audit, then retry the failed operation after fixing the reported error" : null,
     sliceProviderAuthNextAction(slice),
   ].filter((action): action is string => Boolean(action))
   return actions.length > 0 ? [`next: ${actions.join("; ")}`] : []
