@@ -341,6 +341,14 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     message: "press Enter to show slice linux-dev",
   })
   assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "live-sync" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+  }), {
+    action: "info",
+    message: "Use left/right to choose off, managed, or tracked before starting the session. Live sync applies only to the selected workspace/worktree; other repositories stay unrestricted.",
+  })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
     state: waitingRoomState({ focus: "add-terminal" }),
     workspacePath: "/workspace",
     worktreePath: "/workspace",

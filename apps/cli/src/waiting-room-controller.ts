@@ -333,7 +333,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
     case "live-sync":
       return {
         action: "info",
-        message: "Use left/right to choose off, managed, or tracked before starting the session. Live sync applies only to the selected workspace/worktree.",
+        message: "Use left/right to choose off, managed, or tracked before starting the session. Live sync applies only to the selected workspace/worktree; other repositories stay unrestricted.",
       }
     case "collaborators":
       return {
