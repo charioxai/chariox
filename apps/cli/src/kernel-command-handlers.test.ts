@@ -431,17 +431,34 @@ test("kernel health formatter reports remote extension sync issues", () => {
           home_proxy_grants: ["connector:status-api"],
           worktree_id: "/repo",
         },
+        {
+          session_id: "session-1",
+          agent_id: "agent-missing",
+          agent_ref: "agent-missing",
+          worker_kernel_id: "worker-kernel",
+          worker_machine_id: "worker-machine",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-2",
+          active_worker_provider_run_id: null,
+          state: "missing",
+          manifest_hash: null,
+          last_error: null,
+          pending_revoke: false,
+          home_proxy_grants: ["mcp:github"],
+          worktree_id: "/repo",
+        },
       ],
     },
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.equal(kernelHealthIssueCount(unhealthy), 2)
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only/)
   assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /agent=agent-failed \(agent-failed\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 worker_run=worker-run-1 state=failed pending_revoke=yes hash=hash-failed worktree=\/repo grants=connector:status-api: relay offline/)
   assert.match(rendered, /next: keep the home revoke in place; run \/extension sync-status agent-failed; run \/machine kernels worker-machine if the revoke stays pending; use \/extension sync-retry agent-failed after the worker reconnects/)
+  assert.match(rendered, /agent=agent-missing \(agent-missing\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-2 state=missing worktree=\/repo grants=mcp:github/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {
