@@ -371,12 +371,13 @@ impl DaemonApp {
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::{AgentInstance, GridPosition};
+    use crate::agent::{AgentInstance, CreateAgentRequest, GridPosition};
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::{
         DaemonConfig, UserCredentialConfig, UserCredentialInjectionConfig,
         UserCredentialSourceConfig, UserCredentialUse,
     };
+    use crate::error::DaemonError;
     use crate::provider::{LaunchProviderRequest, ProviderResumeState, ProviderRunState};
     use crate::session::{CreateSessionRequest, SessionAgentDefaults};
 
@@ -605,6 +606,169 @@ mod tests {
             .list_provider_processes(None)
             .expect("provider processes should list")
             .is_empty());
+    }
+
+    #[test]
+    fn provider_launch_replaces_existing_arroba_run_for_target_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let second_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("agent-b")
+                    .with_worktree("worktree-1"),
+            )
+            .expect("second agent should spawn");
+
+        let first_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(first_agent.id()),
+            )
+            .expect("first agent provider run should launch");
+        let second_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "opus",
+                )
+                .with_agent_id(second_agent.id()),
+            )
+            .expect("second agent provider run should launch");
+        assert_eq!(
+            app.providers()
+                .get_run(first_run.id())
+                .expect("first run should still exist")
+                .state(),
+            ProviderRunState::Parked,
+            "launching a different agent may park the previous session-active run"
+        );
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should resolve")
+                .active_provider_run_id(),
+            Some(second_run.id())
+        );
+
+        let replacement = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "haiku",
+                )
+                .with_agent_id(first_agent.id()),
+            )
+            .expect("replacement provider run should launch");
+
+        assert_eq!(
+            app.providers()
+                .get_run(first_run.id())
+                .expect("first run should remain addressable")
+                .state(),
+            ProviderRunState::Ended,
+            "normal Arroba relaunch should not leave a second non-ended run for the same agent"
+        );
+        assert_eq!(replacement.state(), ProviderRunState::Running);
+        assert_eq!(replacement.agent_instance_id(), Some(first_agent.id()));
+        let non_ended_first_agent_runs = app
+            .providers()
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session.id()
+                    && run.agent_instance_id() == Some(first_agent.id())
+                    && run.state() != ProviderRunState::Ended
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            non_ended_first_agent_runs
+                .iter()
+                .map(|run| run.id())
+                .collect::<Vec<_>>(),
+            vec![replacement.id()]
+        );
+    }
+
+    #[test]
+    fn provider_launch_rejects_replacing_target_agent_with_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("client should attach");
+
+        let active_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "in-flight prompt\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+        let error = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "haiku",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect_err("same-agent relaunch should reject while a prompt is active");
+
+        assert!(matches!(
+            error,
+            DaemonError::InvalidProviderRunState {
+                provider_run_id,
+                state: ProviderRunState::Running,
+                operation: "replace agent provider run",
+            } if provider_run_id == active_run.id()
+        ));
+        assert_eq!(
+            app.providers()
+                .get_run(active_run.id())
+                .expect("active run should remain addressable")
+                .state(),
+            ProviderRunState::Running
+        );
     }
 
     #[test]
