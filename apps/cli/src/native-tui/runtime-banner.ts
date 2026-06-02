@@ -4,7 +4,10 @@ import type {
   RuntimeSession,
   SliceRecord,
 } from "../cli-types.js"
-import { formatExtensionGrantPlacement } from "@arroba/kernel-client/extension-grant-placement"
+import {
+  formatExtensionGrantPlacement,
+  formatExtensionGrantRuntimeDetail,
+} from "@arroba/kernel-client/extension-grant-placement"
 import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatSliceProviderAccounts, formatSliceScope } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
@@ -35,12 +38,28 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
     `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
+    `  ext runtime:    ${formatExtensionGrantRuntimeDetail(nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? []), Boolean(input.agent.remote_execution))}`,
     ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? []),
     ...(input.run ? [`  provider run:   ${input.run.id}`] : []),
     ...(input.providerLines ?? []),
     ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
     "",
   ].join("\n")
+}
+
+function nativeBannerExtensionGrants(
+  agent: AgentInstance,
+  mcps: readonly string[],
+  skills: readonly string[],
+): readonly { readonly kind: string }[] {
+  const grants = [...(agent.extension_grants ?? [])]
+  if (mcps.length > 0 && !grants.some((grant) => grant.kind === "mcp")) {
+    grants.push({ kind: "mcp", name: "__native_banner_mcp__" })
+  }
+  if (skills.length > 0 && !grants.some((grant) => grant.kind === "skill")) {
+    grants.push({ kind: "skill", name: "__native_banner_skill__" })
+  }
+  return grants
 }
 
 function formatGrantedExtensions(agent: AgentInstance, mcps: readonly string[], skills: readonly string[]): string {
