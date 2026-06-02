@@ -18,8 +18,20 @@ import {
 
 export type RemoteExtensionSyncNextActionStatus = {
   state?: string | null
+  manifest_hash?: string | null
+  last_error?: string | null
   pending_revoke?: boolean | null
 } | null | undefined
+
+export type RemoteExtensionSyncStatusLineOptions = {
+  readonly unknownLabel?: string
+  readonly includeHash?: boolean
+  readonly hashPrefix?: "hash=" | ""
+  readonly errorPrefix?: "error=" | ""
+  readonly includeNext?: boolean
+  readonly agentRef?: string
+  readonly workerMachineId?: string | null
+}
 
 export function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
   if (mcps.length === 0) {
@@ -273,11 +285,27 @@ function auditAgentRef(payload: Record<string, unknown>): string {
   return "<agent>"
 }
 
-function formatRemoteExtensionSyncStatusLine(status?: RemoteExtensionManifestSyncStatus | null): string {
-  if (!status) return "pending"
-  const revoke = status.pending_revoke ? ", pending revoke" : ""
-  const error = status.last_error ? `, ${status.last_error}` : ""
-  return `${status.state}${revoke}${error}`
+export function formatRemoteExtensionSyncStatusLine(
+  status: RemoteExtensionSyncNextActionStatus,
+  options: RemoteExtensionSyncStatusLineOptions = {},
+): string {
+  const unknownLabel = options.unknownLabel ?? "pending"
+  const includeHash = options.includeHash ?? false
+  if (!status) {
+    const parts = [unknownLabel]
+    const next = remoteExtensionSyncStatusNext(status, options)
+    if (next) parts.push(`next=${next}`)
+    return parts.join(", ")
+  }
+  const parts = [
+    status.state ?? unknownLabel,
+    status.pending_revoke ? "pending revoke" : null,
+    includeHash && status.manifest_hash ? `${options.hashPrefix ?? "hash="}${status.manifest_hash.slice(0, 12)}` : null,
+    status.last_error ? `${options.errorPrefix ?? ""}${status.last_error}` : null,
+  ].filter(Boolean)
+  const next = remoteExtensionSyncStatusNext(status, options)
+  if (next) parts.push(`next=${next}`)
+  return parts.join(", ")
 }
 
 export function remoteExtensionSyncNextAction(
@@ -301,6 +329,20 @@ export function remoteExtensionSyncNextAction(
       : `run /extension sync-status ${agentRef}; check worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   return null
+}
+
+function remoteExtensionSyncStatusNext(
+  status: RemoteExtensionSyncNextActionStatus,
+  options: RemoteExtensionSyncStatusLineOptions,
+): string | null {
+  if (options.includeNext === false || !options.agentRef) {
+    return null
+  }
+  if (status && status.state === "synced" && !status.pending_revoke && !status.last_error) {
+    return null
+  }
+  return remoteExtensionSyncNextAction(status, options.agentRef, options.workerMachineId)
+    ?? `run /extension sync-status ${options.agentRef}`
 }
 
 function fieldPart(label: string, value: unknown): string | null {

@@ -14,7 +14,7 @@ import {
   formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
 } from "@arroba/kernel-client/extension-grant-placement"
-import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
 type FooterTone = "info" | "error"
@@ -378,13 +378,19 @@ function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {
     if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
       return "not applicable (no active home-proxy tools)"
     }
-    return `pending, next=${formatAgentRemoteExtensionSyncNextAction(agent)}`
+    return formatRemoteExtensionSyncStatusLine(null, {
+      includeNext: true,
+      agentRef: agent.agent_ref,
+      workerMachineId: agent.remote_execution.worker_machine_id,
+      errorPrefix: "error=",
+    })
   }
   const details = [
-    sync.state,
-    sync.pending_revoke ? "pending revoke" : null,
-    sync.manifest_hash ? `hash=${sync.manifest_hash.slice(0, 12)}` : null,
-    sync.last_error ? `error=${sync.last_error}` : null,
+    formatRemoteExtensionSyncStatusLine(sync, {
+      includeHash: true,
+      includeNext: false,
+      errorPrefix: "error=",
+    }),
     sync.last_synced_at_ms ? `synced=${formatTimestamp(sync.last_synced_at_ms)}` : null,
     sync.last_attempted_at_ms ? `attempted=${formatTimestamp(sync.last_attempted_at_ms)}` : null,
   ].filter(Boolean)

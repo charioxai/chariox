@@ -8,7 +8,7 @@ import {
   formatExtensionGrantPlacement,
   formatExtensionGrantRuntimeDetail,
 } from "@arroba/kernel-client/extension-grant-placement"
-import { remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
+import { formatRemoteExtensionSyncStatusLine } from "@arroba/kernel-client/shell-capability-format"
 import { formatSliceProviderAccounts, formatSliceScope } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
@@ -80,19 +80,13 @@ function formatRemoteExtensionSync(agent: AgentInstance, mcps: readonly string[]
     grant.kind === "mcp" || grant.kind === "script" || grant.kind === "connector"
   )))
   if (!status && !hasActiveHomeProxy) return []
-  const details = [
-    status?.state ?? "pending",
-    status?.pending_revoke ? "pending revoke" : null,
-    status?.manifest_hash ? `hash=${status.manifest_hash.slice(0, 12)}` : null,
-    status?.last_error ? `error=${status.last_error}` : null,
-  ].filter(Boolean)
-  const needsAction = !status || status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error
-  if (needsAction) {
-    const next = remoteExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution.worker_machine_id)
-      ?? `run /extension sync-status ${agent.agent_ref}`
-    details.push(`next=${next}`)
-  }
-  return [`  remote ext sync: ${details.join(", ")}`]
+  return [`  remote ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
+    includeHash: true,
+    includeNext: true,
+    agentRef: agent.agent_ref,
+    workerMachineId: agent.remote_execution.worker_machine_id,
+    errorPrefix: "error=",
+  })}`]
 }
 
 function formatSession(session: RuntimeSession): string {

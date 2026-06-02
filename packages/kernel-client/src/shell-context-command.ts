@@ -1,6 +1,6 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
-import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import { formatRemoteExtensionSyncStatusLine } from "./shell-capability-format.js"
 import {
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacementSummary,
@@ -209,22 +209,13 @@ function formatContextRemoteExtensionSync(agent: AgentInstance): string {
   if (!sync && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
     return "not applicable (no active home-proxy tools)"
   }
-  const action = remoteExtensionSyncNextAction(sync, agent.agent_ref, agent.remote_execution.worker_machine_id)
-    ?? `run /extension sync-status ${agent.agent_ref}`
-  if (!sync) {
-    return `pending; next=${action}`
-  }
-  const details = [
-    sync.state,
-    sync.pending_revoke ? "pending revoke" : null,
-    sync.manifest_hash ? `hash=${sync.manifest_hash.slice(0, 12)}` : null,
-    sync.last_error ? `error=${sync.last_error}` : null,
-  ].filter(Boolean)
-  const needsAction = sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error
-  if (needsAction) {
-    details.push(`next=${action}`)
-  }
-  return details.join(", ")
+  return formatRemoteExtensionSyncStatusLine(sync, {
+    includeHash: true,
+    includeNext: true,
+    agentRef: agent.agent_ref,
+    workerMachineId: agent.remote_execution.worker_machine_id,
+    errorPrefix: "error=",
+  })
 }
 
 function sliceForRemoteAgent(agent: AgentInstance, slices: readonly SliceRecord[]): SliceRecord | null {

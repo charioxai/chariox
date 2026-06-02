@@ -1,5 +1,5 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
-import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
@@ -297,13 +297,19 @@ function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
     if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
       return "not applicable (no active home-proxy tools)"
     }
-    return `pending, next=${formatAgentRemoteExtensionSyncNextAction(agent)}`
+    return formatRemoteExtensionSyncStatusLine(null, {
+      includeNext: true,
+      agentRef: agent.agent_ref,
+      workerMachineId: agent.remote_execution.worker_machine_id,
+      errorPrefix: "error=",
+    })
   }
   const details = [
-    status.state,
-    status.pending_revoke ? "pending revoke" : null,
-    status.manifest_hash ? `hash=${status.manifest_hash.slice(0, 12)}` : null,
-    status.last_error ? `error=${status.last_error}` : null,
+    formatRemoteExtensionSyncStatusLine(status, {
+      includeHash: true,
+      includeNext: false,
+      errorPrefix: "error=",
+    }),
     status.last_synced_at_ms ? `synced=${formatTimestamp(status.last_synced_at_ms)}` : null,
     status.last_attempted_at_ms ? `attempted=${formatTimestamp(status.last_attempted_at_ms)}` : null,
   ].filter(Boolean)
