@@ -745,6 +745,28 @@ test("executeShellCommand treats --slice off as local agent placement", async ()
   assert.deepEqual(result.contextUpdates, { agentId: "agent-local" })
 })
 
+test("executeShellCommand rejects kernel and slice together before provisioning", async () => {
+  const fake = fakeClient((request) => {
+    throw new Error(`should not send request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+  })
+  const result = await executeShellCommand(
+    parseShellCommand("agent spawn qa --kernel worker-1 --slice new"),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.message, "use either --kernel or --slice, not both; slices are home-managed workers")
+})
+
 test("executeShellCommand creates and starts a headed slice for agent spawn", async () => {
   const agent = makeAgent({
     id: "agent-slice",

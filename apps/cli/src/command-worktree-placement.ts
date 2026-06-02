@@ -146,7 +146,7 @@ export function parsePlacementOptions(
     error = `usage: ${commandName} uses either --dir or --worktree/--branch, not both`
   }
   if (!error && machineRef && sliceRef) {
-    error = "usage: /agent spawn uses either --machine or --slice, not both"
+    error = "usage: /agent spawn uses either --machine or --slice, not both; slices are home-managed workers"
   }
   const sliceCreatesPlacement = sliceRef === "new"
   if (!error && sliceDisplayMode && !sliceCreatesPlacement) {

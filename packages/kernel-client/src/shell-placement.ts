@@ -70,7 +70,7 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
     return { options, error: "--branch/--from require --worktree" }
   }
   if (options.kernelRef && options.sliceRef) {
-    return { options, error: "use either --kernel or --slice, not both" }
+    return { options, error: "use either --kernel or --slice, not both; slices are home-managed workers" }
   }
   if (options.sliceDisplayMode && options.sliceRef !== "new") {
     return { options, error: "--slice-display requires --slice new" }
