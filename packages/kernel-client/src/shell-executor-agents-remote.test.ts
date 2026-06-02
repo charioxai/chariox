@@ -708,6 +708,91 @@ test("executeShellCommand spawns worker agent on kernel", async () => {
   assert.deepEqual(result.contextUpdates, { agentId: "agent-remote" })
 })
 
+test("executeShellCommand resolves machine spawn to a ready provider kernel", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "qa",
+    remote_execution: {
+      worker_kernel_id: "worker-ready",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListRemoteMachineKernels" in request) {
+      return {
+        RemoteMachineKernelsListed: {
+          kernels: [{
+            kernel_id: "worker-blocked",
+            machine_id: "machine-1",
+            accepting_remote_leases: false,
+            available_providers: ["codex"],
+          }, {
+            kernel_id: "worker-ready",
+            machine_id: "machine-1",
+            accepting_remote_leases: true,
+            available_providers: ["codex"],
+          }],
+        },
+      }
+    }
+    if ("SpawnAgent" in request) {
+      return { AgentSpawned: { agent } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests[0], { ListRemoteMachineKernels: { machine_ref: "machine-1" } })
+  assert.equal((requests[1] as { SpawnAgent: { kernel_ref: string | null } }).SpawnAgent.kernel_ref, "worker-ready")
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-remote" })
+})
+
+test("executeShellCommand rejects machine spawn when no ready kernel supports the provider", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    return {
+      RemoteMachineKernelsListed: {
+        kernels: [{
+          kernel_id: "worker-opencode",
+          machine_id: "machine-1",
+          accepting_remote_leases: true,
+          available_providers: ["opencode"],
+        }],
+      },
+    }
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /no accepting kernel with provider codex/)
+  assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
+})
+
 test("executeShellCommand treats --slice off as local agent placement", async () => {
   const agent = makeAgent({
     id: "agent-local",

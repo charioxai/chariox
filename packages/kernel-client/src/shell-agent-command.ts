@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  RelayKernelPresence,
   RuntimeProviderRun,
   RuntimeSession,
   SliceRecord,
@@ -11,6 +12,7 @@ import {
   getProviderRunRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  listRemoteMachineKernelsRequest,
   listSlicesRequest,
   spawnAgentRequest,
   updateAgentConfigRequest,
@@ -38,6 +40,7 @@ import {
   resolveShellSliceRef,
   shellSliceCreatesPlacement,
 } from "./shell-slice-placement.js"
+import { remoteKernelReadiness } from "./shell-remote-format.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -111,7 +114,11 @@ export async function executeAgentCommand(
       if (parsedSpawn.options.positional.length > 2) {
         return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
       }
-      const remoteKernelRef = parsedSpawn.options.kernelRef ?? parsedSpawn.options.machineRef
+      const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
+      if (!resolvedMachineKernel.ok) {
+        return { ok: false, message: resolvedMachineKernel.message }
+      }
+      const remoteKernelRef = parsedSpawn.options.kernelRef ?? resolvedMachineKernel.kernelRef
       if (remoteKernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
         return { ok: false, message: "usage: agent spawn [alias] [model] --machine/--kernel <ref> uses the worker kernel default directory" }
       }
@@ -311,6 +318,30 @@ export async function executeAgentCommand(
     default:
       return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
   }
+}
+
+async function resolveMachineSpawnKernelRef(
+  machineRef: string | undefined,
+  provider: string,
+  deps: ShellAgentCommandDeps,
+): Promise<{ readonly ok: true; readonly kernelRef?: string } | { readonly ok: false; readonly message: string }> {
+  if (!machineRef) {
+    return { ok: true }
+  }
+  const response = await deps.client.send(listRemoteMachineKernelsRequest(machineRef))
+  const kernels = expectVariant<{ kernels: RelayKernelPresence[] }>(response, "RemoteMachineKernelsListed").kernels
+  if (kernels.length === 0) {
+    return { ok: false, message: `remote machine ${machineRef} has no live worker kernels; next: run machine kernels ${machineRef} or choose another worker` }
+  }
+  const ready = kernels.filter((kernel) => remoteKernelReadiness(kernel) === "ready")
+  if (ready.length === 0) {
+    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel; next: run machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker` }
+  }
+  const providerReady = ready.find((kernel) => (kernel.available_providers ?? []).includes(provider))
+  if (!providerReady) {
+    return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider` }
+  }
+  return { ok: true, kernelRef: providerReady.kernel_id }
 }
 
 async function listAgentInspectSlices(deps: ShellAgentCommandDeps): Promise<{

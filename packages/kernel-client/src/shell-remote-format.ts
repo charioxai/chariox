@@ -124,7 +124,7 @@ function formatRemoteKernelSummary(kernels: RelayKernelPresence[], kernelRef: st
   return `machine ${kernelRef} worker readiness: ${parts.join(", ")}; next: ${next}`
 }
 
-function remoteKernelReadiness(kernel: RelayKernelPresence): "ready" | "blocked" | "needs-provider" | "unknown" {
+export function remoteKernelReadiness(kernel: RelayKernelPresence): "ready" | "blocked" | "needs-provider" | "unknown" {
   if (kernel.accepting_remote_leases === false) return "blocked"
   if ((kernel.available_providers ?? []).length === 0) {
     return kernel.accepting_remote_leases === undefined ? "unknown" : "needs-provider"
