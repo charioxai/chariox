@@ -1,5 +1,5 @@
 import type { DaemonHealthProjection, RuntimeSession } from "./kernel-types.js"
-import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest } from "./ipc-requests.js"
+import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest, getSessionStateRequest } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   formatKernelHealth,
@@ -23,10 +23,11 @@ export async function executeKernelCommand(
   if ((action === "health" || action === "status") && args.length === 0) {
     const response = await deps.client.send(getDaemonHealthRequest())
     const payload = expectVariant<{ projection: DaemonHealthProjection }>(response, "DaemonHealth")
+    const runtimeContext = await kernelHealthRuntimeContext(context, deps)
     const issueCount = kernelHealthIssueCount(payload.projection)
     return {
       ok: issueCount === 0,
-      message: formatKernelHealth(payload.projection),
+      message: [runtimeContext, formatKernelHealth(payload.projection)].filter(Boolean).join("\n"),
       data: payload.projection,
     }
   }
@@ -64,6 +65,50 @@ export async function executeKernelCommand(
       : undefined,
     data: payload,
   }
+}
+
+async function kernelHealthRuntimeContext(
+  context: ShellContext,
+  deps: ShellKernelCommandDeps,
+): Promise<string> {
+  if (!context.sessionId) {
+    return ""
+  }
+  try {
+    const response = await deps.client.send(getSessionStateRequest(context.sessionId))
+    const session = expectSessionState(response)
+    return [
+      "session runtime:",
+      `  session: ${session.id}`,
+      `  home kernel: ${formatHomeKernel(session)}`,
+      `  owner: ${session.owner_user_id?.trim() || "-"}`,
+      `  agent: ${context.agentId ?? "-"}`,
+    ].join("\n")
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return [
+      "session runtime:",
+      `  session: ${context.sessionId}`,
+      "  home kernel: unknown",
+      `  lookup: ${message || "failed"}`,
+    ].join("\n")
+  }
+}
+
+function expectSessionState(response: Record<string, unknown>): RuntimeSession {
+  if ("SessionState" in response) {
+    return (response.SessionState as { session: RuntimeSession }).session
+  }
+  return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
+}
+
+function formatHomeKernel(session: RuntimeSession): string {
+  const kernel = session.host_daemon_id?.trim() || ""
+  const machine = session.host_machine_id?.trim() || ""
+  if (kernel && machine) {
+    return `${kernel}@${machine}`
+  }
+  return kernel || machine || "-"
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -157,6 +157,60 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
 })
 
+test("executeShellCommand renders attached session runtime context before kernel health", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetDaemonHealth" in request) {
+      return { DaemonHealth: { projection: daemonHealth() } }
+    }
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return {
+      SessionState: {
+        session: makeSession({
+          id: "session-1",
+          host_daemon_id: "home-kernel-1",
+          host_machine_id: "home-machine-1",
+          owner_user_id: "user-1",
+        }),
+        agent_activity: {},
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /^session runtime:\n  session: session-1\n  home kernel: home-kernel-1@home-machine-1\n  owner: user-1\n  agent: agent-1\nkernel health/)
+  assert.deepEqual(fake.requests, [
+    { GetDaemonHealth: null },
+    { GetSessionState: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand keeps kernel health available when session runtime lookup fails", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-missing",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetDaemonHealth" in request) {
+      return { DaemonHealth: { projection: daemonHealth() } }
+    }
+    throw new Error("session not found")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /^session runtime:\n  session: session-missing\n  home kernel: unknown\n  lookup: session not found\nkernel health/)
+})
+
 test("executeShellCommand renders shell-local context and pwd", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
