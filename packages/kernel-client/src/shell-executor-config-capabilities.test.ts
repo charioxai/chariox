@@ -393,9 +393,74 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
   assert.match(grantsResult.message ?? "", /agent-1 MCP grants/)
   assert.match(grantsResult.message ?? "", /playwright/)
   assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
     { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
     { RevokeAgentExtension: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
     { ListAgents: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand confirms active home-proxy grants before exposing home execution", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GrantAgentExtension" in request) return { AgentExtensionGranted: { agent } }
+        return { AgentsListed: { agents: [agent] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+
+  const blocked = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py"), context, { client: fake.client })
+  const confirmed = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py --confirm-home-proxy"), context, { client: fake.client })
+
+  assert.equal(blocked.ok, false)
+  assert.match(blocked.message ?? "", /Confirm exposing script lookup to remote agent agent-1; home keeps credentials local and executes calls on this machine\./)
+  assert.match(blocked.message ?? "", /rerun: extension grant script agent-1 lookup --env py --confirm-home-proxy/)
+  assert.equal(confirmed.ok, true)
+  assert.match(confirmed.message ?? "", /granted script lookup to agent-1/)
+  assert.deepEqual(requests, [
+    { ListAgents: { session_id: "session-1" } },
+    { ListAgents: { session_id: "session-1" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
+  ])
+})
+
+test("executeShellCommand grants passive remote skills without home-proxy confirmation", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { AgentExtensionGranted: { agent } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+
+  const result = await executeShellCommand(parseShellCommand("extension grant skill agent-1 qa"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "skill", name: "qa" } },
   ])
 })
 
@@ -573,6 +638,7 @@ test("executeShellCommand manages script environments and script extensions", as
         if ("RegisterScript" in request) return { ScriptRegistered: { script } }
         if ("ValidateScript" in request) return { ScriptValidated: { script } }
         if ("GrantAgentExtension" in request) return { AgentExtensionGranted: { agent } }
+        if ("ListAgents" in request) return { AgentsListed: { agents: [agent] } }
         if ("ListScripts" in request) return { ScriptsListed: { scripts: [script] } }
         return { EnvironmentsListed: { environments: [environment] } }
       },
@@ -596,6 +662,7 @@ test("executeShellCommand manages script environments and script extensions", as
     { RegisterEnvironment: { workspace_id: "/repo", config: environment } },
     { ValidateScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
     { RegisterScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
+    { ListAgents: { session_id: "session-1" } },
     { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
     { ListScripts: { workspace_id: "/repo" } },
     { ListEnvironments: { workspace_id: "/repo" } },

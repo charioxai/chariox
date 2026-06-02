@@ -165,6 +165,8 @@ export async function executeMcpCommand(
       if (!agentRef || !grantName) {
         return { ok: false, message: `usage: mcp ${action} <agent-ref> <name>` }
       }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "mcp", agentRef, grantName)
+      if (confirmation) return confirmation
       const request = action === "grant"
         ? grantAgentExtensionRequest(context.workspace, agentRef, "mcp", grantName)
         : revokeAgentExtensionRequest(agentRef, "mcp", grantName)
@@ -354,6 +356,8 @@ export async function executeScriptCommand(
       if (!agentRef || !scriptName || (action === "grant" && !environment)) {
         return { ok: false, message: `usage: script ${action} <agent-ref> <name>${action === "grant" ? " --env <environment>" : ""}` }
       }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "script", agentRef, scriptName)
+      if (confirmation) return confirmation
       const request = action === "grant"
         ? grantAgentExtensionRequest(context.workspace, agentRef, "script", scriptName, environment)
         : revokeAgentExtensionRequest(agentRef, "script", scriptName)
@@ -430,6 +434,8 @@ export async function executeConnectorCommand(
       const agentRef = name
       const connectorName = parsed.args[2]
       if (!agentRef || !connectorName) return { ok: false, message: `usage: connector ${action} <agent-ref> <name>` }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "connector", agentRef, connectorName)
+      if (confirmation) return confirmation
       const request = action === "grant"
         ? grantAgentExtensionRequest(context.workspace, agentRef, "connector", connectorName, null, {
           credential: readOption(parsed.args, "--credential"),
@@ -493,6 +499,8 @@ export async function executeExtensionCommand(
   if (action === "grant" && kind === "script" && !environment) {
     return { ok: false, message: "usage: extension grant script <agent-ref> <name> --env <environment>" }
   }
+  const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, kind, agentRef, name)
+  if (confirmation) return confirmation
   const request = action === "grant"
     ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment, {
       credential: readOption(parsed.args, "--credential"),
@@ -591,6 +599,41 @@ function readOption(args: string[], flag: string): string | null {
   if (index === -1) return null
   const value = args[index + 1]
   return value && !value.startsWith("--") ? value : null
+}
+
+async function confirmActiveHomeProxyGrant(
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellCapabilityCommandDeps,
+  action: "grant" | "revoke",
+  kind: ExtensionKind,
+  agentRef: string,
+  name: string,
+): Promise<ShellCommandResult | null> {
+  if (action !== "grant" || kind === "skill") {
+    return null
+  }
+  const agent = await resolveShellAgent(context, deps, agentRef)
+  if (!agent.ok) {
+    return { ok: false, message: agent.message }
+  }
+  if (!agent.agent.remote_execution) {
+    return null
+  }
+  if (parsed.args.includes("--confirm-home-proxy")) {
+    return null
+  }
+  const command = parsed.normalized.includes("--confirm-home-proxy")
+    ? parsed.normalized
+    : `${parsed.normalized} --confirm-home-proxy`
+  return {
+    ok: false,
+    message: [
+      `Confirm exposing ${kind} ${name} to remote agent ${agent.agent.agent_ref}; home keeps credentials local and executes calls on this machine.`,
+      `rerun: ${command}`,
+    ].join("\n"),
+    data: { agent: agent.agent },
+  }
 }
 
 function readNumberOption(args: string[], flag: string): number | null {
