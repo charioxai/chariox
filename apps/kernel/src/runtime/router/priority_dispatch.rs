@@ -219,8 +219,13 @@ impl CommandRouter {
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
-                execute_user_config_request(&self.config_projection, &self.runtime_state, request)
-                    .await
+                execute_user_config_request(
+                    &self.config_projection,
+                    &self.runtime_state,
+                    &command,
+                    request,
+                )
+                .await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {
                 execute_kernel_lifecycle_request(

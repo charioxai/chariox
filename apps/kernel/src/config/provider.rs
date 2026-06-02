@@ -105,6 +105,14 @@ pub enum WorkspaceLiveSyncMode {
 }
 
 impl WorkspaceLiveSyncMode {
+    pub fn as_config_str(&self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::Tracked => "tracked",
+            Self::Unrestricted => "off",
+        }
+    }
+
     pub(super) fn parse_config_policy(value: &str) -> Result<Self, DaemonError> {
         match value.trim().to_ascii_lowercase().as_str() {
             "managed" => Ok(Self::Managed),

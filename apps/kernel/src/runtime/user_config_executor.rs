@@ -4,6 +4,7 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
     SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest, UserConfigMutationEffect,
 };
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
@@ -11,6 +12,7 @@ use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfi
 pub(crate) async fn execute_user_config_request(
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -24,7 +26,7 @@ pub(crate) async fn execute_user_config_request(
             execute_set_user_config_value_request(runtime_state, request).await
         }
         LocalDaemonRequest::SetWorkspaceLiveSyncMode(request) => {
-            execute_set_workspace_live_sync_mode_request(runtime_state, request).await
+            execute_set_workspace_live_sync_mode_request(runtime_state, command, request).await
         }
         LocalDaemonRequest::UnsetUserConfigValue(request) => {
             execute_unset_user_config_value_request(runtime_state, request).await
@@ -82,9 +84,15 @@ pub(crate) async fn execute_set_user_config_value_request(
 
 pub(crate) async fn execute_set_workspace_live_sync_mode_request(
     runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: SetWorkspaceLiveSyncModeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let session = runtime_state.set_workspace_live_sync_mode(&request.session_id, request.mode)?;
+    let session = runtime_state.set_workspace_live_sync_mode(
+        &request.session_id,
+        request.mode,
+        &command_caller_user_id(command),
+        Some(command),
+    )?;
     Ok(LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session })
 }
 

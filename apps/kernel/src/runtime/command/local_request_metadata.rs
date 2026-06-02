@@ -87,8 +87,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("workspace_live_sync.status", Normal)
                 .session(&request.session_id)
         }
-        LocalDaemonRequest::SetWorkspaceLiveSyncMode(_) => {
+        LocalDaemonRequest::SetWorkspaceLiveSyncMode(request) => {
             LocalRequestMetadata::new("workspace_live_sync.mode", Normal)
+                .session(&request.session_id)
         }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)

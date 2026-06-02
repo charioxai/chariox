@@ -47,6 +47,7 @@ pub enum HistoryEventKind {
     GitWorktreeDirty,
     GitWorktreeClean,
     GitPushDetected,
+    WorkspaceLiveSyncModeChanged,
     PromptInput,
 }
 
@@ -608,6 +609,7 @@ fn history_event_kind_key(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::GitWorktreeDirty => "git_worktree_dirty",
         HistoryEventKind::GitWorktreeClean => "git_worktree_clean",
         HistoryEventKind::GitPushDetected => "git_push_detected",
+        HistoryEventKind::WorkspaceLiveSyncModeChanged => "workspace_live_sync_mode_changed",
         HistoryEventKind::PromptInput => "prompt_input",
     }
 }

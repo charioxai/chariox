@@ -105,7 +105,8 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             | HistoryEventKind::GitWorktreeChanged
             | HistoryEventKind::GitWorktreeDirty
             | HistoryEventKind::GitWorktreeClean
-            | HistoryEventKind::GitPushDetected => {}
+            | HistoryEventKind::GitPushDetected
+            | HistoryEventKind::WorkspaceLiveSyncModeChanged => {}
         }
     }
     turns

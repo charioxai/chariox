@@ -30,6 +30,39 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
         updated.workspace_live_sync_mode(),
         Some(crate::config::WorkspaceLiveSyncMode::Tracked)
     );
+
+    let events = match harness
+        .dispatch(LocalDaemonRequest::QueryRecall(QueryRecallRequest {
+            session_id: Some(session.id().to_string()),
+            kind: Some("workspace_live_sync_mode_changed".to_string()),
+            limit: Some(5),
+            ..Default::default()
+        }))
+        .expect("workspace live sync audit query should succeed")
+    {
+        LocalDaemonResponse::RecallEvents { events, .. } => events,
+        _ => panic!("unexpected local response"),
+    };
+    let event = events
+        .iter()
+        .find(|event| event.kind == crate::history::HistoryEventKind::WorkspaceLiveSyncModeChanged)
+        .expect("workspace live sync mode change should be recorded");
+    assert_eq!(event.session_id.as_deref(), Some(session.id()));
+    assert_eq!(event.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(
+        event.metadata["caller_user_id"],
+        serde_json::json!(crate::session::DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(event.metadata["previous_mode"], serde_json::Value::Null);
+    assert_eq!(event.metadata["mode"], serde_json::json!("tracked"));
+    assert_eq!(
+        event.metadata["scope"],
+        serde_json::json!("selected_workspace_worktree")
+    );
+    assert_eq!(
+        event.metadata["other_repositories"],
+        serde_json::json!("unrestricted")
+    );
 }
 
 #[test]

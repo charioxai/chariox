@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::*;
@@ -123,13 +124,108 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         mode: crate::config::WorkspaceLiveSyncMode,
+        caller_user_id: &str,
+        command: Option<&crate::runtime::command::KernelCommand>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let previous_mode = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .workspace_live_sync_mode();
         let session = self
             .owned
             .session_store
             .write()
             .set_workspace_live_sync_mode(session_id, mode)?;
-        self.owned.session_snapshot(session.id())
+        let session = self.owned.session_snapshot(session.id())?;
+        self.record_workspace_live_sync_mode_changed_event(
+            &session,
+            previous_mode,
+            mode,
+            caller_user_id,
+            command,
+        );
+        Ok(session)
+    }
+
+    fn record_workspace_live_sync_mode_changed_event(
+        &self,
+        session: &crate::session::RuntimeSession,
+        previous_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+        mode: crate::config::WorkspaceLiveSyncMode,
+        caller_user_id: &str,
+        command: Option<&crate::runtime::command::KernelCommand>,
+    ) {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "caller_user_id".to_string(),
+            serde_json::json!(caller_user_id),
+        );
+        metadata.insert(
+            "previous_mode".to_string(),
+            previous_mode
+                .map(|mode| serde_json::json!(mode.as_config_str()))
+                .unwrap_or(serde_json::Value::Null),
+        );
+        metadata.insert("mode".to_string(), serde_json::json!(mode.as_config_str()));
+        metadata.insert(
+            "scope".to_string(),
+            serde_json::json!("selected_workspace_worktree"),
+        );
+        metadata.insert(
+            "other_repositories".to_string(),
+            serde_json::json!("unrestricted"),
+        );
+        if let Some(command) = command {
+            metadata.insert(
+                "command_id".to_string(),
+                serde_json::json!(command.command_id),
+            );
+            metadata.insert(
+                "correlation_id".to_string(),
+                serde_json::json!(command.correlation_id),
+            );
+            metadata.insert(
+                "command_source".to_string(),
+                serde_json::json!(format!("{:?}", command.source)),
+            );
+            metadata.insert(
+                "caller_kind".to_string(),
+                serde_json::json!(format!("{:?}", command.caller.caller_kind)),
+            );
+            if let Some(client_id) = command.caller.client_id.as_deref() {
+                metadata.insert("client_id".to_string(), serde_json::json!(client_id));
+            }
+            if let Some(machine_id) = command.caller.machine_id.as_deref() {
+                metadata.insert("machine_id".to_string(), serde_json::json!(machine_id));
+            }
+        }
+
+        if let Err(error) = self.owned.operational_history_store.append_operational_event(
+            crate::history::HistoryEventKind::WorkspaceLiveSyncModeChanged,
+            Some(crate::history::HistoryEventRole::System),
+            Some(format!(
+                "Workspace live sync mode changed to {} for selected workspace/worktree; other repositories remain unrestricted.",
+                mode.as_config_str(),
+            )),
+            metadata,
+            crate::history::HistoryEventTurnContext {
+                workspace_id: Some(session.workspace_id().to_string()),
+                session_id: Some(session.id().to_string()),
+                worktree_path: Some(session.worktree_id().to_string()),
+                ..Default::default()
+            },
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append workspace live sync mode audit event",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "mode": mode.as_config_str(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(crate) fn resolve_workspace_link_ref(
