@@ -197,17 +197,19 @@ Export a local debug bundle for one session or provider run:
 arroba-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/arroba-session-1-logs
 ```
 
-From an attached TUI session, export the current session logs without leaving the terminal:
+From an attached TUI/web session, ask the kernel to export the current session logs without leaving the terminal:
 
 ```text
 /kernel debug-bundle
 ```
 
-Or choose the destination explicitly:
+Or add a label for the kernel-owned bundle directory:
 
 ```text
-/kernel debug-bundle /tmp/arroba-session-1-logs
+/kernel debug-bundle support-case-42
 ```
+
+The interactive `/kernel debug-bundle` command does not accept an output path. It filters by the active session, sanitizes the optional label, writes under the kernel machine's debug-bundles root, and prints the returned kernel-local path.
 
 The bundle directory contains:
 

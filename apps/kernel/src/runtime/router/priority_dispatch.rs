@@ -8,6 +8,7 @@ use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
+use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::interactive_command_dispatcher::{
     dispatch_interactive_command, is_interactive_command,
@@ -75,6 +76,9 @@ impl CommandRouter {
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+            }
+            LocalDaemonRequest::ExportDebugBundle(request) => {
+                execute_export_debug_bundle_request(request)
             }
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => {

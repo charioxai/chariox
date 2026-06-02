@@ -1,5 +1,5 @@
 import type { DaemonHealthProjection, RuntimeSession } from "./kernel-types.js"
-import { deleteKernelRequest, getDaemonHealthRequest } from "./ipc-requests.js"
+import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   formatKernelHealth,
@@ -30,8 +30,26 @@ export async function executeKernelCommand(
       data: payload.projection,
     }
   }
+  if (action === "debug-bundle" && args.length <= 1) {
+    if (!context.sessionId) {
+      return { ok: false, message: "kernel debug-bundle requires an active session" }
+    }
+    const response = await deps.client.send(exportDebugBundleRequest(context.sessionId, { bundleLabel: args[0] ?? null }))
+    const payload = expectVariant<{
+      bundle_dir: string
+      manifest_path: string
+      logs_path: string
+      record_count: number
+      limit: number
+    }>(response, "DebugBundleExported")
+    return {
+      ok: true,
+      message: `kernel debug bundle exported on kernel machine: ${payload.bundle_dir} (${payload.record_count}/${payload.limit} records)`,
+      data: payload,
+    }
+  }
   if (action !== "delete" || args.length > 0) {
-    return { ok: false, message: "usage: kernel health|status|delete" }
+    return { ok: false, message: "usage: kernel health|status|debug-bundle [label]|delete" }
   }
   const response = await deps.client.send(deleteKernelRequest())
   const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")

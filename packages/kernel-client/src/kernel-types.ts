@@ -1273,7 +1273,18 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 98
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 99
+
+export type DebugBundleExportedResponse = {
+  DebugBundleExported: {
+    bundle_dir: string
+    manifest_path: string
+    logs_path: string
+    log_root: string
+    record_count: number
+    limit: number
+  }
+}
 
 export type AgentUtilityKind = "WorkspaceCommitMessage"
 

@@ -1,8 +1,5 @@
 import type { RuntimeSession } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import { defaultLogDir } from "./logging.js"
-import { matchingLogRecords, writeLogBundle } from "./logs.js"
-import path from "node:path"
 import {
   formatKernelHealth,
   kernelHealthIssueCount,
@@ -22,11 +19,11 @@ export type KernelCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: () => Promise<DaemonHealthProjection>
-  writeDebugLogBundle?: (input: {
-    sessionId: string
+  exportDebugBundle?: (sessionId: string, label: string | null) => Promise<{
     bundleDir: string
+    recordCount: number
     limit: number
-  }) => { bundleDir: string; recordCount: number }
+  }>
   appendNotice: (message: string) => void
   transitionToNoSession: (message: string) => void
 }
@@ -57,26 +54,28 @@ export async function handleKernelSlashCommand(
     return
   }
   if (subcommand === "debug-bundle") {
+    if (!deps.exportDebugBundle) {
+      deps.flashFooter("kernel debug bundle export is unavailable in this build", "error")
+      return
+    }
     if (!deps.isAttached()) {
-      deps.flashFooter("attach to a session before writing a debug bundle", "error")
+      deps.flashFooter("attach to a session before exporting a debug bundle", "error")
       return
     }
     if (args.length > 1) {
-      deps.flashFooter("usage: /kernel debug-bundle [directory]", "error")
+      deps.flashFooter("usage: /kernel debug-bundle [label]", "error")
       return
     }
     const session = deps.sessionState()
-    const bundleDir = args[0] ?? defaultDebugBundleDir(session.id)
-    const bundle = deps.writeDebugLogBundle
-      ? deps.writeDebugLogBundle({ sessionId: session.id, bundleDir, limit: 1000 })
-      : writeAttachedSessionDebugBundle(session.id, bundleDir, 1000)
+    const bundle = await deps.exportDebugBundle(session.id, args[0] ?? null)
     deps.appendNotice([
       `debug bundle: ${bundle.bundleDir}`,
+      "location: kernel machine",
       `session: ${session.id}`,
-      `records: ${bundle.recordCount}`,
+      `records: ${bundle.recordCount}/${bundle.limit}`,
       "contents: manifest.json, logs.ndjson",
     ].join("\n"))
-    deps.flashFooter(`debug bundle written: ${bundle.recordCount} records`, "info")
+    deps.flashFooter(`debug bundle exported: ${bundle.recordCount} records`, "info")
     return
   }
   if (subcommand === "delete") {
@@ -96,17 +95,5 @@ export async function handleKernelSlashCommand(
     deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
     return
   }
-  deps.flashFooter("usage: /kernel health | /kernel debug-bundle [directory] | /kernel delete", "error")
-}
-
-function writeAttachedSessionDebugBundle(sessionId: string, bundleDir: string, limit: number) {
-  const logDir = defaultLogDir()
-  const options = { sessionId, limit }
-  const records = matchingLogRecords(logDir, options)
-  return writeLogBundle(logDir, bundleDir, options, records)
-}
-
-function defaultDebugBundleDir(sessionId: string) {
-  const safeSession = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_") || "session"
-  return path.join(process.cwd(), ".arroba", "debug-bundles", `${safeSession}-${Date.now()}`)
+  deps.flashFooter("usage: /kernel health | /kernel debug-bundle [label] | /kernel delete", "error")
 }

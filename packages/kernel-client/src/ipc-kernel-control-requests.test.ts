@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { getDaemonHealthRequest } from "./ipc-kernel-control-requests.js"
+import { exportDebugBundleRequest, getDaemonHealthRequest } from "./ipc-kernel-control-requests.js"
 import type { DaemonHealthProjection, DaemonHealthResponse } from "./kernel-types.js"
 
 test("getDaemonHealthRequest has typed workspace live sync health projection", () => {
@@ -153,4 +153,21 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
   assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)
   assert.equal(response.DaemonHealth.projection.remote_extension_sync.home_proxy_agents, 1)
   assert.equal(response.DaemonHealth.projection.workspace_coordination.active_operation_claims[0]?.mode, "write")
+})
+
+test("exportDebugBundleRequest is session scoped and label-only", () => {
+  assert.deepEqual(exportDebugBundleRequest("session-1"), {
+    ExportDebugBundle: {
+      session_id: "session-1",
+      bundle_label: null,
+      limit: null,
+    },
+  })
+  assert.deepEqual(exportDebugBundleRequest("session-1", { bundleLabel: "support", limit: 500 }), {
+    ExportDebugBundle: {
+      session_id: "session-1",
+      bundle_label: "support",
+      limit: 500,
+    },
+  })
 })

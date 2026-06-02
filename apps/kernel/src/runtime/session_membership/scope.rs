@@ -102,6 +102,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ExportDebugBundle(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

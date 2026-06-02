@@ -222,6 +222,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
+        LocalDaemonRequest::ExportDebugBundle(request) => {
+            LocalRequestMetadata::new("daemon.debug_bundle.export", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::GetProviderRun(request) => {
             LocalRequestMetadata::new("provider_run.get", Normal)
                 .provider_run(&request.provider_run_id)
@@ -487,6 +491,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DeleteSession(_)
         | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
+        | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),

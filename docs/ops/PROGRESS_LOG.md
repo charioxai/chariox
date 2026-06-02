@@ -8,7 +8,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added `arroba-cli logs --bundle <dir>` to export filtered local structured logs plus a manifest for a session/provider-run support handoff. The command reuses the existing process-kind/component/session/provider-run/client/level filters and refuses `--follow` so bundles are finite artifacts.
 - Updated logging docs and closed the M3 log-collection checklist item for local multi-process session/provider-run bundles.
-- Added attached-TUI `/kernel debug-bundle [dir]` so users can export a current-session local debug bundle from the same surface where remote/slice/session health is shown.
+- Added attached-TUI `/kernel debug-bundle [label]` so users can export a current-session local debug bundle from the same surface where remote/slice/session health is shown.
+- Added kernel-owned `ExportDebugBundle { session_id, bundle_label, limit }` / `DebugBundleExported` protocol support so TUI, web, and remote clients can request the same session-scoped bundle without arbitrary remote output paths. Labels are sanitized and bundles are written under the kernel machine's debug-bundles root.
 
 ### Home extension invocation replay audit
 

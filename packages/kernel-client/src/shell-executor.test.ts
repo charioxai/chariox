@@ -39,10 +39,56 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /kernel health\|status\|delete/)
+  assert.match(result.message ?? "", /kernel health\|status\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
+})
+
+test("executeShellCommand exports session-scoped kernel debug bundle", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, {
+      ExportDebugBundle: {
+        session_id: "session-1",
+        bundle_label: "glitch",
+        limit: null,
+      },
+    })
+    return {
+      DebugBundleExported: {
+        bundle_dir: "/kernel/logs/debug-bundles/session-1-glitch",
+        manifest_path: "/kernel/logs/debug-bundles/session-1-glitch/manifest.json",
+        logs_path: "/kernel/logs/debug-bundles/session-1-glitch/logs.ndjson",
+        log_root: "/kernel/logs",
+        record_count: 12,
+        limit: 1000,
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("kernel debug-bundle glitch"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /kernel debug bundle exported on kernel machine: \/kernel\/logs\/debug-bundles\/session-1-glitch \(12\/1000 records\)/)
+  assert.equal(fake.requests.length, 1)
+})
+
+test("executeShellCommand requires an active session for kernel debug bundle", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called without a session")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("kernel debug-bundle"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /requires an active session/)
+  assert.equal(fake.requests.length, 0)
 })
 
 test("executeShellCommand renders kernel health diagnostics", async () => {

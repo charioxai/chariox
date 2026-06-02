@@ -124,6 +124,7 @@ type CommandActionDeps =
   ) => Promise<void>
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: KernelCommandHandlerDeps["getDaemonHealth"]
+  exportDebugBundle?: KernelCommandHandlerDeps["exportDebugBundle"]
   transitionToNoSession: (message: string) => void
   updateSessionConfig: (
     sessionId: string,

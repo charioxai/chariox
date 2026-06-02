@@ -76,7 +76,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, getDaemonHealth } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, getDaemonHealth } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -360,6 +360,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
     getDaemonHealth: () => getDaemonHealth(client),
+    exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
     updateAgentProfile: (sessionId, agentId, options) =>

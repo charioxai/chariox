@@ -42,10 +42,17 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 98;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 99;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportDebugBundleRequest {
+    pub session_id: String,
+    pub bundle_label: Option<String>,
+    pub limit: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetWaitingRoomInventoryRequest;
@@ -76,6 +83,7 @@ pub enum LocalDaemonRequest {
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
     GetDaemonHealth(GetDaemonHealthRequest),
+    ExportDebugBundle(ExportDebugBundleRequest),
     GetProviderRun(GetProviderRunRequest),
     UpdateProviderRunSelection(UpdateProviderRunSelectionRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
@@ -356,6 +364,14 @@ pub enum LocalDaemonResponse {
     },
     DaemonHealth {
         projection: DaemonHealthProjection,
+    },
+    DebugBundleExported {
+        bundle_dir: String,
+        manifest_path: String,
+        logs_path: String,
+        log_root: String,
+        record_count: usize,
+        limit: usize,
     },
     ProviderRun {
         provider_run: RuntimeProviderRun,

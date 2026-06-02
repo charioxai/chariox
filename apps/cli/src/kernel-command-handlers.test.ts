@@ -679,29 +679,30 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
-test("kernel debug-bundle writes a session-scoped log bundle", async () => {
+test("kernel debug-bundle exports a session-scoped log bundle", async () => {
   const notices: string[] = []
   const flashes: Array<{ message: string; tone: string }> = []
-  const bundleRequests: Array<{ sessionId: string; bundleDir: string; limit: number }> = []
+  const bundleRequests: Array<{ sessionId: string; label: string | null }> = []
 
   await handleKernelSlashCommand({
     isAttached: () => true,
     sessionState: () => makeSession({ id: "session-1" }),
     appendNotice: (message) => { notices.push(message) },
     flashFooter: (message, tone) => { flashes.push({ message, tone }) },
-    writeDebugLogBundle: (input) => {
-      bundleRequests.push(input)
-      return { bundleDir: "/tmp/arroba-debug-session-1", recordCount: 7 }
+    exportDebugBundle: async (sessionId, label) => {
+      bundleRequests.push({ sessionId, label })
+      return { bundleDir: "/kernel/debug-bundles/session-1-glitch", recordCount: 7, limit: 1000 }
     },
     transitionToNoSession: () => {},
-  }, { kind: "kernel", raw: "/kernel debug-bundle /tmp/arroba-debug-session-1", args: ["debug-bundle", "/tmp/arroba-debug-session-1"] })
+  }, { kind: "kernel", raw: "/kernel debug-bundle glitch", args: ["debug-bundle", "glitch"] })
 
-  assert.deepEqual(bundleRequests, [{ sessionId: "session-1", bundleDir: "/tmp/arroba-debug-session-1", limit: 1000 }])
-  assert.match(notices.at(-1) ?? "", /debug bundle: \/tmp\/arroba-debug-session-1/)
+  assert.deepEqual(bundleRequests, [{ sessionId: "session-1", label: "glitch" }])
+  assert.match(notices.at(-1) ?? "", /debug bundle: \/kernel\/debug-bundles\/session-1-glitch/)
+  assert.match(notices.at(-1) ?? "", /location: kernel machine/)
   assert.match(notices.at(-1) ?? "", /session: session-1/)
-  assert.match(notices.at(-1) ?? "", /records: 7/)
+  assert.match(notices.at(-1) ?? "", /records: 7\/1000/)
   assert.match(notices.at(-1) ?? "", /contents: manifest\.json, logs\.ndjson/)
-  assert.deepEqual(flashes.at(-1), { message: "debug bundle written: 7 records", tone: "info" })
+  assert.deepEqual(flashes.at(-1), { message: "debug bundle exported: 7 records", tone: "info" })
 })
 
 test("kernel debug-bundle rejects detached and invalid usage", async () => {
@@ -711,8 +712,8 @@ test("kernel debug-bundle rejects detached and invalid usage", async () => {
     sessionState: () => makeSession({ id: "session-1" }),
     appendNotice: () => {},
     flashFooter: (message: string, tone: "info" | "error") => { flashes.push({ message, tone }) },
-    writeDebugLogBundle: () => {
-      throw new Error("should not write bundle")
+    exportDebugBundle: async () => {
+      throw new Error("should not export bundle")
     },
     transitionToNoSession: () => {},
   }
@@ -721,7 +722,7 @@ test("kernel debug-bundle rejects detached and invalid usage", async () => {
   await handleKernelSlashCommand({ ...deps, isAttached: () => true }, { kind: "kernel", raw: "/kernel debug-bundle one two", args: ["debug-bundle", "one", "two"] })
 
   assert.deepEqual(flashes, [
-    { message: "attach to a session before writing a debug bundle", tone: "error" },
-    { message: "usage: /kernel debug-bundle [directory]", tone: "error" },
+    { message: "attach to a session before exporting a debug bundle", tone: "error" },
+    { message: "usage: /kernel debug-bundle [label]", tone: "error" },
   ])
 })
