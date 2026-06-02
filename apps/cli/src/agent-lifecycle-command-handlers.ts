@@ -264,13 +264,21 @@ function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): 
   if (!remote) {
     return "local"
   }
+  const details = formatAgentListRemotePlacementDetails(remote)
   if (slice) {
-    const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
-    return `slice ${slice.name || slice.id}${run}`
+    return `slice ${slice.name || slice.id}${details}`
   }
   const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
-  const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
-  return `remote ${remote.worker_kernel_id}${machine}${run}`
+  return `remote ${remote.worker_kernel_id}${machine}${details}`
+}
+
+function formatAgentListRemotePlacementDetails(remote: NonNullable<AgentInstance["remote_execution"]>): string {
+  const details = [
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `run=${remote.active_worker_provider_run_id}` : null,
+  ].filter(Boolean)
+  return details.length ? ` (${details.join(", ")})` : ""
 }
 
 function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
