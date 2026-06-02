@@ -175,6 +175,7 @@ export function formatAgentInspectSummary(
     `variant: ${agent.effort ?? "<none>"}`,
     `mode: ${agent.execution_mode_override ?? "session"}`,
     `permissions: ${agent.permission_level_override ?? "session"}`,
+    `workspace: ${agent.workspace_id ?? "<none>"}`,
     `worktree: ${agent.worktree_id ?? "<none>"}`,
     `placement: ${formatAgentInspectPlacement(agent, slice)}`,
     `provider run: ${formatAgentProviderRunSummary(agent, providerRunContext)}`,
