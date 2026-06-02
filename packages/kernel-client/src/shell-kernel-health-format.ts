@@ -146,7 +146,8 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
     const target = firstAgent ?? "<agent>"
-    lines.push(`  next: run /agent inspect ${target}; run /provider processes; stop duplicate provider runs before sending more prompts`)
+    lines.push("  invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates")
+    lines.push(`  next: run /agent inspect ${target}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending more prompts`)
   }
 
   if (providerRuns.multi_interface_agent_bindings.length > 0) {
