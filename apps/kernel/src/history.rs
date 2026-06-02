@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -359,10 +361,15 @@ pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
     next_sequence: Arc<AtomicU64>,
+    read_delay_ms: u64,
 }
 
 impl OperationalHistoryStore {
     pub fn open(path: PathBuf) -> Result<Self, DaemonError> {
+        Self::open_with_read_delay(path, 0)
+    }
+
+    pub fn open_with_read_delay(path: PathBuf, read_delay_ms: u64) -> Result<Self, DaemonError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: None,
@@ -390,7 +397,14 @@ impl OperationalHistoryStore {
             path,
             connection: Arc::new(Mutex::new(connection)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
+            read_delay_ms,
         })
+    }
+
+    pub(crate) fn delay_read_if_configured(&self) {
+        if self.read_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(self.read_delay_ms));
+        }
     }
 
     pub fn append_transcript(

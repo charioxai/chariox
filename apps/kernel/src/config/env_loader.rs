@@ -75,6 +75,10 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
+            operational_history_read_delay_ms: env::var("ARROBA_OPERATIONAL_HISTORY_READ_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
             provider_catalog_read_delay_ms: env::var("ARROBA_PROVIDER_CATALOG_READ_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())

@@ -149,7 +149,7 @@ async fn rejects_session_commands_when_bounded_lane_is_full() {
 #[tokio::test(flavor = "multi_thread")]
 async fn prompt_submit_does_not_wait_behind_slow_history_load() {
     let mut config = DaemonConfig::for_tests();
-    config.session_history_read_delay_ms = 120;
+    config.operational_history_read_delay_ms = 120;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))

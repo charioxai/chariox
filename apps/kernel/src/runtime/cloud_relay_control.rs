@@ -170,6 +170,7 @@ mod tests {
             runtime_mcp_port: 43119,
             session_history_root: PathBuf::from("history"),
             session_history_read_delay_ms: 0,
+            operational_history_read_delay_ms: 0,
             provider_catalog_read_delay_ms: 0,
             provider_process_list_delay_ms: 0,
             provider_runtime_init_delay_ms: 0,

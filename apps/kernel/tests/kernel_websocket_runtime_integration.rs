@@ -25,7 +25,7 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = unused_tcp_port();
-    config.session_history_read_delay_ms = 500;
+    config.operational_history_read_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

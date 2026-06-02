@@ -4,6 +4,7 @@ use super::{HistoryEvent, HistoryEventQuery, OperationalHistoryStore};
 
 impl OperationalHistoryStore {
     pub fn query_events(&self, query: HistoryEventQuery) -> Result<Vec<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
         let connection =
             self.connection
                 .lock()

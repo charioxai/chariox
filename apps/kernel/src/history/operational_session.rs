@@ -9,6 +9,7 @@ impl OperationalHistoryStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<String>, DaemonError> {
+        self.delay_read_if_configured();
         let connection =
             self.connection
                 .lock()
@@ -62,6 +63,7 @@ impl OperationalHistoryStore {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
         let connection =
             self.connection
                 .lock()
@@ -102,6 +104,7 @@ impl OperationalHistoryStore {
         sequence_start: u64,
         sequence_end: u64,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
         let connection =
             self.connection
                 .lock()
@@ -145,6 +148,7 @@ impl OperationalHistoryStore {
         session_id: &str,
         agent_id: Option<&str>,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
         let connection =
             self.connection
                 .lock()
