@@ -91,7 +91,7 @@ export async function executeWorkspaceCommand(
       const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
       return {
         ok: true,
-        message: `attached ${repoRoot} to workspace link ${payload.link.name}; enable with \`workspace sync managed\` (recommended)`,
+        message: `attached ${repoRoot} to workspace link ${payload.link.name}; enable with \`workspace sync managed\`, or use \`workspace sync tracked\` when managed write fencing is unavailable`,
         data: payload,
         contextUpdates: { sessionId: payload.session.id },
       }
@@ -217,7 +217,7 @@ async function executeWorkspaceSyncCommand(
     const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
     return {
       ok: true,
-      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}; recommended mode: managed`,
+      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}; next: \`workspace sync managed\`, or \`workspace sync tracked\` on workers without managed write fencing`,
       data: payload,
       contextUpdates: { sessionId: payload.session.id },
     }
