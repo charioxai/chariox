@@ -71,3 +71,22 @@ export function formatExtensionGrantRuntimeDetail(
   }
   return "home-proxy: home remains authoritative for projected remote extension tools"
 }
+
+export function formatExtensionAuthorityBoundaryDetail(
+  grants: readonly { readonly kind: string }[] | null | undefined,
+  remote: boolean,
+): string {
+  if (!remote) {
+    return "definition and execution stay on the selected kernel"
+  }
+  const visibleGrants = grants ?? []
+  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(visibleGrants)
+  const passiveSkillSnapshot = visibleGrants.some((grant) => grant.kind === "skill")
+  if (activeHomeProxy) {
+    return "home validates every call; credentials never leave home"
+  }
+  if (passiveSkillSnapshot) {
+    return "passive content only; executable helpers require separate tool grants"
+  }
+  return "home remains authoritative for projected remote extension tools"
+}

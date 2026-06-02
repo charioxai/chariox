@@ -10,6 +10,7 @@ import type {
   SkillImportOutcome,
 } from "./kernel-types.js"
 import {
+  formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   hasActiveHomeProxyExtensionGrants,
@@ -127,6 +128,7 @@ function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
   const lines = [
     `remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
     `runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, true)}`,
+    `authority boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, true)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
   ]
   const nextAction = remoteExtensionSyncNextAction(
@@ -150,6 +152,7 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   const rows = [
     `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
     `runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, true)}`,
+    `authority boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, true)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
     `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
     `worker machine: ${agent.remote_execution.worker_machine_id}`,

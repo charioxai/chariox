@@ -1,6 +1,7 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
+  formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
@@ -189,6 +190,7 @@ export function formatAgentInspectSummary(
     ] : []),
     `extensions: ${formatAgentExtensionSummary(agent)}`,
     `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
+    `extension boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
     ...formatAgentRemoteExtensionSyncLines(agent),
     `substitutes: ${formatAgentSubstitutesInline(agent)}`,
   ]

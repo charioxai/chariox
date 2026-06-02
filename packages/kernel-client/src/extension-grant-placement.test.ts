@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
@@ -61,5 +62,24 @@ test("extension grant runtime detail explains authority and execution", () => {
   assert.equal(
     formatExtensionGrantRuntimeDetail([{ kind: "mcp" }, { kind: "skill" }], true),
     "home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots",
+  )
+})
+
+test("extension authority boundary detail explains call validation and credentials", () => {
+  assert.equal(
+    formatExtensionAuthorityBoundaryDetail([{ kind: "mcp" }], false),
+    "definition and execution stay on the selected kernel",
+  )
+  assert.equal(
+    formatExtensionAuthorityBoundaryDetail([{ kind: "script" }], true),
+    "home validates every call; credentials never leave home",
+  )
+  assert.equal(
+    formatExtensionAuthorityBoundaryDetail([{ kind: "skill" }], true),
+    "passive content only; executable helpers require separate tool grants",
+  )
+  assert.equal(
+    formatExtensionAuthorityBoundaryDetail([{ kind: "mcp" }, { kind: "skill" }], true),
+    "home validates every call; credentials never leave home",
   )
 })

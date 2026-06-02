@@ -5,6 +5,7 @@ import type {
   SliceRecord,
 } from "../cli-types.js"
 import {
+  formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantRuntimeDetail,
 } from "@arroba/kernel-client/extension-grant-placement"
@@ -29,6 +30,7 @@ export type NativeTuiRuntimeBannerInput = {
 
 export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput): string {
   const slice = sliceForRemoteAgent(input.agent, input.slices ?? [])
+  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])
   return [
     `[arroba ${input.surface}]`,
     `  arroba session: ${formatSession(input.session)}`,
@@ -39,7 +41,8 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
     `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
-    `  ext runtime:    ${formatExtensionGrantRuntimeDetail(nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? []), Boolean(input.agent.remote_execution))}`,
+    `  ext runtime:    ${formatExtensionGrantRuntimeDetail(extensionGrants, Boolean(input.agent.remote_execution))}`,
+    `  ext boundary:   ${formatExtensionAuthorityBoundaryDetail(extensionGrants, Boolean(input.agent.remote_execution))}`,
     ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? []),
     ...formatProviderRunLines(input.agent, input.run ?? null),
     ...(input.providerLines ?? []),
