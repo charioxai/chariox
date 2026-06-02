@@ -9,7 +9,7 @@ import {
   formatExtensionGrantRuntimeDetail,
 } from "@arroba/kernel-client/extension-grant-placement"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
-import { formatSliceProviderAccounts, formatSliceScope } from "../slice-format.js"
+import { formatSliceProviderAccounts, formatSliceProviderAuthReadiness, formatSliceScope } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
 
@@ -128,7 +128,8 @@ function formatSliceLines(
   if (slice) {
     return [
       `  slice:          ${formatSliceSummary(slice)}`,
-      `  slice auth:     ${formatSliceProviderAccounts(slice)}`,
+      `  slice auth:     ${formatSliceProviderAuthReadiness(slice)}`,
+      `  slice accounts: ${formatSliceProviderAccounts(slice)}`,
     ]
   }
   if (agent.remote_execution && sliceLookupError) {
