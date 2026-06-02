@@ -5,6 +5,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
+  formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
   workspaceLiveSyncModeProtocolValue,
   type WorkspaceLiveSyncModeProtocolValue,
@@ -133,7 +134,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
-    deps.flashFooter(`current session workspace live sync enabled: ${mode}`, "info")
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode, { action: "enabled" }), "info")
     return
   }
   if (action === "off" || action === "managed" || action === "tracked") {
@@ -142,7 +143,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(action))
-    deps.flashFooter(action === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${action}`, "info")
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(action), "info")
     return
   }
   if (action === "disable") {
@@ -151,7 +152,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, "unrestricted")
-    deps.flashFooter("current session workspace live sync disabled", "info")
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage("unrestricted"), "info")
     return
   }
   if (action === "mode") {
@@ -161,7 +162,7 @@ async function handleWorkspaceSyncCommand(
       return
     }
     await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(mode))
-    deps.flashFooter(mode === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${mode}`, "info")
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode), "info")
     return
   }
   if (action === "link") {

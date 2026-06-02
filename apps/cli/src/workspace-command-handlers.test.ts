@@ -99,10 +99,10 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     "session-1:unrestricted",
   ])
   assert.deepEqual(footers.slice(-4), [
-    "info:current session workspace live sync set to tracked",
-    "info:current session workspace live sync enabled: managed",
-    "info:current session workspace live sync enabled: tracked",
-    "info:current session workspace live sync disabled",
+    "info:current session workspace live sync set to tracked (selected workspace/worktree only; other repositories unrestricted)",
+    "info:current session workspace live sync enabled: managed (selected workspace/worktree only; other repositories unrestricted)",
+    "info:current session workspace live sync enabled: tracked (selected workspace/worktree only; other repositories unrestricted)",
+    "info:current session workspace live sync disabled; other repositories remain unrestricted",
   ])
 
   status.targets = []
@@ -130,7 +130,7 @@ test("workspace sync slash commands use off managed tracked mode names", async (
   assert.deepEqual(modeUpdates, ["session-1:unrestricted"])
   assert.deepEqual(footers, [
     "error:usage: /workspace sync mode off|managed|tracked",
-    "info:current session workspace live sync disabled",
+    "info:current session workspace live sync disabled; other repositories remain unrestricted",
     "error:usage: /workspace sync enable [managed|tracked]",
   ])
 })

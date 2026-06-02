@@ -22,6 +22,7 @@ import {
   formatWorkspaceLinks,
 } from "./shell-workspace-format.js"
 import {
+  formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
 } from "./workspace-live-sync-mode.js"
 
@@ -174,7 +175,7 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
-    return { ok: true, message: `current session workspace live sync enabled: ${mode}`, data: response }
+    return { ok: true, message: formatWorkspaceLiveSyncModeChangeMessage(mode, { action: "enabled" }), data: response }
   }
   if (action === "off" || action === "managed" || action === "tracked") {
     if (args.length > 0) {
@@ -183,7 +184,7 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, action))
     return {
       ok: true,
-      message: action === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${action}`,
+      message: formatWorkspaceLiveSyncModeChangeMessage(action),
       data: response,
     }
   }
@@ -192,7 +193,7 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync disable" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, "unrestricted"))
-    return { ok: true, message: "current session workspace live sync disabled", data: response }
+    return { ok: true, message: formatWorkspaceLiveSyncModeChangeMessage("unrestricted"), data: response }
   }
   if (action === "mode") {
     const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
@@ -202,7 +203,7 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
     return {
       ok: true,
-      message: mode === "off" ? "current session workspace live sync disabled" : `current session workspace live sync set to ${mode}`,
+      message: formatWorkspaceLiveSyncModeChangeMessage(mode),
       data: response,
     }
   }

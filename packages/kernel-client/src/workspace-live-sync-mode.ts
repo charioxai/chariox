@@ -23,3 +23,16 @@ export function formatWorkspaceLiveSyncModeLabel(mode: WorkspaceLiveSyncModeLabe
   }
   return "config default"
 }
+
+export function formatWorkspaceLiveSyncModeChangeMessage(
+  mode: WorkspaceLiveSyncModeInput,
+  options: { readonly action?: "set" | "enabled" } = {},
+): string {
+  if (mode === "off" || mode === "unrestricted") {
+    return "current session workspace live sync disabled; other repositories remain unrestricted"
+  }
+  const label = formatWorkspaceLiveSyncModeLabel(mode)
+  return options.action === "enabled"
+    ? `current session workspace live sync enabled: ${label}`
+    : `current session workspace live sync set to ${label}`
+}

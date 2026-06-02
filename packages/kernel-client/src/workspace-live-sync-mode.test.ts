@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatWorkspaceLiveSyncModeChangeMessage,
   formatWorkspaceLiveSyncModeLabel,
   parseWorkspaceLiveSyncModeCommand,
   workspaceLiveSyncModeProtocolValue,
@@ -33,5 +34,24 @@ test("workspace live sync mode helper formats user-facing scoped labels", () => 
   assert.equal(
     formatWorkspaceLiveSyncModeLabel("tracked"),
     "tracked (selected workspace/worktree only; other repositories unrestricted)",
+  )
+})
+
+test("workspace live sync mode helper formats scoped mode-change messages", () => {
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("managed"),
+    "current session workspace live sync set to managed (selected workspace/worktree only; other repositories unrestricted)",
+  )
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("tracked", { action: "enabled" }),
+    "current session workspace live sync enabled: tracked (selected workspace/worktree only; other repositories unrestricted)",
+  )
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("off"),
+    "current session workspace live sync disabled; other repositories remain unrestricted",
+  )
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("unrestricted"),
+    "current session workspace live sync disabled; other repositories remain unrestricted",
   )
 })
