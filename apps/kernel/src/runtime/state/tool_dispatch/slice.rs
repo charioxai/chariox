@@ -292,11 +292,18 @@ fn slice_tool_payload(
     );
     for line in output.stdout.lines() {
         if let Some((key, value)) = line.split_once('=') {
-            if matches!(key, "display" | "screen" | "viewer") {
-                payload.insert(
-                    key.to_string(),
-                    serde_json::Value::String(value.trim().to_string()),
-                );
+            let value = value.trim();
+            match key {
+                "available" => {
+                    payload.insert(key.to_string(), serde_json::Value::Bool(value == "true"));
+                }
+                "display" | "screen" | "viewer" | "mode" | "missing" | "message" => {
+                    payload.insert(
+                        key.to_string(),
+                        serde_json::Value::String(value.to_string()),
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -419,5 +426,34 @@ mod tests {
         };
 
         assert!(slice_keyboard_command_args(args).is_err());
+    }
+
+    #[test]
+    fn slice_tool_payload_reports_screen_availability() {
+        let output = SliceScreenCommandOutput {
+            success: false,
+            status_code: Some(1),
+            stdout: [
+                "display=:99",
+                "screen=1280x800",
+                "mode=headless",
+                "available=false",
+                "missing=xvfb,novnc",
+                "message=slice screen is unavailable; missing xvfb,novnc",
+            ]
+            .join("\n"),
+            stderr: String::new(),
+        };
+
+        let payload = slice_tool_payload("slice-1", "agent-1", &output);
+
+        assert_eq!(payload["mode"], "headless");
+        assert_eq!(payload["available"], false);
+        assert_eq!(payload["missing"], "xvfb,novnc");
+        assert_eq!(
+            payload["message"],
+            "slice screen is unavailable; missing xvfb,novnc"
+        );
+        assert_eq!(payload.get("viewer"), None);
     }
 }

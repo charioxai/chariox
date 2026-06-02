@@ -399,13 +399,13 @@ fn configure_local_docker_slice_command(
         .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
         .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
         .env(
-            "ARROBA_SLICE_START_DESKTOP",
-            if record.display_mode == SliceDisplayMode::Headed {
-                "1"
-            } else {
-                "0"
+            "ARROBA_SLICE_DISPLAY_MODE",
+            match record.display_mode {
+                SliceDisplayMode::Headed => "headed",
+                SliceDisplayMode::Headless => "headless",
             },
         )
+        .env("ARROBA_SLICE_START_DESKTOP", "1")
         .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
         .env("ARROBA_SLICE_START_RUNTIME", "1")
         .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
@@ -806,6 +806,41 @@ mod tests {
             })
             .expect("provider bind host should be configured");
         assert_eq!(provider_bind_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
+        let store = SliceStore::default();
+        let record = store
+            .create(
+                "kernel-1",
+                "machine-1",
+                CreateSliceInput {
+                    name: "dev".to_string(),
+                    backend: SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: SliceDisplayMode::Headless,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    now_ms: 42,
+                },
+            )
+            .expect("headless slice should create");
+        let options = test_options();
+        let mut command = Command::new("slice-provisioner");
+
+        configure_local_docker_slice_command(&mut command, &record, None, &options);
+
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+        assert_eq!(envs.get("ARROBA_SLICE_DISPLAY_MODE"), Some(&"headless"));
+        assert_eq!(envs.get("ARROBA_SLICE_START_DESKTOP"), Some(&"1"));
     }
 
     #[test]
