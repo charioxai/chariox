@@ -110,8 +110,9 @@ impl SessionStateProjectionStore {
     pub(crate) fn invariant_snapshot(
         &self,
         agent_runtime: &AgentRuntimeProjectionStore,
+        canonical_agents: &[crate::agent::AgentInstance],
     ) -> ProjectionInvariantHealthSnapshot {
-        invariant::snapshot(self.projected_sessions(), agent_runtime)
+        invariant::snapshot(self.projected_sessions(), agent_runtime, canonical_agents)
     }
 
     pub(crate) fn resolve_session_ref_id(

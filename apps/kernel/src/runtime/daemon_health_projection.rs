@@ -71,7 +71,7 @@ pub(crate) async fn build_daemon_health_projection(
             .await,
         input
             .session_projection
-            .invariant_snapshot(input.agent_runtime_projection),
+            .invariant_snapshot(input.agent_runtime_projection, &agents),
     )
 }
 

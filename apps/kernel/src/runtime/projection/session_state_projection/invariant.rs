@@ -1,7 +1,8 @@
 //! Session and agent runtime projection invariant checks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::agent::AgentInstance;
 use crate::session::{PromptQueueItem, RuntimeSession};
 
 use super::super::{
@@ -11,12 +12,22 @@ use super::super::{
 pub(super) fn snapshot(
     sessions: Vec<RuntimeSession>,
     agent_runtime: &AgentRuntimeProjectionStore,
+    canonical_agents: &[AgentInstance],
 ) -> ProjectionInvariantHealthSnapshot {
     let mut agent_projections = agent_runtime
         .list()
         .into_iter()
         .map(|projection| (projection.agent_id.clone(), projection))
         .collect::<BTreeMap<_, _>>();
+    let canonical_agent_ids = canonical_agents
+        .iter()
+        .map(|agent| agent.id().to_string())
+        .collect::<BTreeSet<_>>();
+    let session_ids = sessions
+        .iter()
+        .map(|session| session.id().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut projected_session_agents = BTreeMap::new();
     let mut checked_agents = 0;
     let mut mismatches = Vec::new();
 
@@ -38,6 +49,15 @@ pub(super) fn snapshot(
 
         let mut expected_prompt_states = BTreeMap::new();
         for agent in session.agents() {
+            projected_session_agents.insert(agent.id().to_string(), session.id().to_string());
+            if !canonical_agent_ids.is_empty() && !canonical_agent_ids.contains(agent.id()) {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "session_agent_missing_record".to_string(),
+                    session_id: session.id().to_string(),
+                    agent_id: Some(agent.id().to_string()),
+                    details: "session projection contains an agent missing from the canonical agent store".to_string(),
+                });
+            }
             let prompt_state = session.prompt_states().get(agent.id());
             expected_prompt_states.insert(
                 agent.id().to_string(),
@@ -134,6 +154,31 @@ pub(super) fn snapshot(
         });
     }
 
+    for agent in canonical_agents {
+        if !session_ids.contains(agent.session_id()) {
+            mismatches.push(ProjectionInvariantMismatch {
+                kind: "agent_record_missing_projected_session".to_string(),
+                session_id: agent.session_id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                details:
+                    "canonical agent record points at a session missing from the session projection"
+                        .to_string(),
+            });
+            continue;
+        }
+        if projected_session_agents.get(agent.id()).map(String::as_str) != Some(agent.session_id())
+        {
+            mismatches.push(ProjectionInvariantMismatch {
+                kind: "agent_record_not_in_session_projection".to_string(),
+                session_id: agent.session_id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                details:
+                    "canonical agent record is not present in its projected session agent list"
+                        .to_string(),
+            });
+        }
+    }
+
     ProjectionInvariantHealthSnapshot {
         checked_sessions: sessions.len(),
         checked_agents,
@@ -194,7 +239,7 @@ mod tests {
         let agent_store = AgentRuntimeProjectionStore::default();
         session_store.update(session.clone());
         agent_store.update_session(&session);
-        let clean_snapshot = session_store.invariant_snapshot(&agent_store);
+        let clean_snapshot = session_store.invariant_snapshot(&agent_store, &[]);
         assert_eq!(clean_snapshot.checked_sessions, 1);
         assert_eq!(clean_snapshot.checked_agents, 1);
         assert!(clean_snapshot.mismatches.is_empty());
@@ -210,7 +255,7 @@ mod tests {
             0,
         );
 
-        let drift_snapshot = session_store.invariant_snapshot(&agent_store);
+        let drift_snapshot = session_store.invariant_snapshot(&agent_store, &[]);
         assert!(drift_snapshot
             .mismatches
             .iter()
@@ -237,7 +282,7 @@ mod tests {
         session_store.update(session.clone());
         agent_store.update_session(&session);
 
-        let snapshot = session_store.invariant_snapshot(&agent_store);
+        let snapshot = session_store.invariant_snapshot(&agent_store, &[]);
 
         assert_eq!(snapshot.checked_sessions, 1);
         assert_eq!(snapshot.checked_agents, 1);
@@ -250,6 +295,49 @@ mod tests {
         assert!(!snapshot.mismatches.iter().any(|mismatch| {
             mismatch.kind == "missing_agent_runtime_projection"
                 && mismatch.agent_id.as_deref() == Some(agent.id())
+        }));
+    }
+
+    #[test]
+    fn projection_invariant_health_reports_canonical_agent_membership_drift() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("first session should be created");
+        let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+            .expect("second session should be created");
+        let second_session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(second_session.id())
+            .expect("second session snapshot should load");
+        let ghost_agent = crate::agent::AgentInstance::new(
+            "ghost-agent",
+            "ghost-agent",
+            second_session.id(),
+            None,
+            "dev-stub",
+            Some("default".to_string()),
+            None,
+            Some(second_session.worktree_id().to_string()),
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(second_session.clone());
+        agent_store.update_session(&second_session);
+
+        let snapshot = session_store
+            .invariant_snapshot(&agent_store, &[first_agent.clone(), ghost_agent.clone()]);
+
+        assert!(snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "agent_record_missing_projected_session"
+                && mismatch.session_id == first_session.id()
+                && mismatch.agent_id.as_deref() == Some(first_agent.id())
+        }));
+        assert!(snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "agent_record_not_in_session_projection"
+                && mismatch.session_id == second_session.id()
+                && mismatch.agent_id.as_deref() == Some(ghost_agent.id())
         }));
     }
 }
