@@ -40,7 +40,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])}`,
     `  ext runtime:    ${formatExtensionGrantRuntimeDetail(nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? []), Boolean(input.agent.remote_execution))}`,
     ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? []),
-    ...(input.run ? [`  provider run:   ${input.run.id}`] : []),
+    ...formatProviderRunLines(input.agent, input.run ?? null),
     ...(input.providerLines ?? []),
     ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
     "",
@@ -94,6 +94,24 @@ function formatRemoteExtensionSync(agent: AgentInstance, mcps: readonly string[]
   )
   if (next) {
     lines.push(`  ext sync next:  ${next}`)
+  }
+  return lines
+}
+
+function formatProviderRunLines(agent: AgentInstance, run: RuntimeProviderRun | null): string[] {
+  const lines = run ? [`  provider run:   ${run.id}`] : []
+  const sessionRunAgentId = run?.agent_instance_id?.trim()
+  if (run && (!sessionRunAgentId || sessionRunAgentId !== agent.id)) {
+    lines.push(
+      `  provider next:  run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
+    )
+  }
+  const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
+  if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
+    const worker = agent.remote_execution.worker_machine_id?.trim() || "<worker-machine>"
+    lines.push(
+      `  provider next:  run /kernel health and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker if no active worker run appears`,
+    )
   }
   return lines
 }
