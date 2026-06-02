@@ -254,6 +254,59 @@ test("agent spawn command treats --slice off as normal local placement", async (
   assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree /workspace-feature")
 })
 
+test("agent spawn command targets an exact kernel without machine resolution", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    listRemoteMachineKernels: async () => {
+      throw new Error("--kernel should not list machine kernels")
+    },
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => { calls.push("rebuild") },
+    launchAgentProviderRun: async () => {
+      throw new Error("kernel-targeted spawn should not launch locally")
+    },
+    setProviderRunState: (run) => { calls.push(`run:${run ? run.id : "null"}`) },
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, kernelRef, placement, sliceRef) => {
+      calls.push(`spawn:${alias}:${worktreeId ?? "default"}:${kernelRef}:${placement ? "placement" : "none"}:${sliceRef ?? "none"}`)
+      const nextAgent = agent({
+        id: "agent-worker",
+        agent_ref: "agent-worker",
+        alias: alias ?? null,
+        worktree_id: null,
+        remote_execution: {
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
+  }, ["builder", "codex/gpt-5.4", "--kernel", "kernel-worker"])
+
+  assert.deepEqual(calls, [
+    "spawn:builder:default:kernel-worker:none:none",
+    "run:null",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "spawned agent agent-worker (builder) · remote machine-worker")
+})
+
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
     id: "agent-0",
