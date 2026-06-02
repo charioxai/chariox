@@ -418,7 +418,7 @@ export const COMMAND_TREE: CommandNode[] = [
           {
             id: "config-workspace-live-sync-off",
             label: "off",
-            description: "Default new sessions to live sync off",
+            description: "Explicitly default new sessions to live sync off; other repositories stay unrestricted",
             value: "/config workspace-live-sync off",
           },
           {

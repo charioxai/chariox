@@ -45,7 +45,7 @@ test("buildCommandCenterItems includes config subcommands", () => {
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
-  assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync off")?.description, "Default new sessions to live sync off")
+  assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync off")?.description, "Explicitly default new sessions to live sync off; other repositories stay unrestricted")
   assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync managed")?.description, "Default new sessions to managed sync for their selected workspace/worktree; other repositories stay unrestricted")
   assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync tracked")?.description, "Default new sessions to tracked turn-end sync for their selected workspace/worktree; other repositories stay unrestricted")
 })

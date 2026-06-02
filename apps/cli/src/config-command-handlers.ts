@@ -169,7 +169,7 @@ async function setWorkspaceLiveSyncMode(
     deps.flashFooter("workspace live sync mode updates are unavailable in this build", "error")
     return
   }
-  const mode = normalizeWorkspaceLiveSyncPolicy(modeValue ?? "off")
+  const mode = modeValue ? normalizeWorkspaceLiveSyncPolicy(modeValue) : null
   if (rest.length > 0 || !mode) {
     deps.flashFooter("usage: /config workspace-live-sync off|managed|tracked", "error")
     return

@@ -176,12 +176,10 @@ test("config command renders kernel mutation effects", async () => {
   assert.deepEqual(updates, [
     { path: "providers.workspace_live_sync", value: "off" },
     { path: "providers.workspace_live_sync", value: "tracked" },
-    { path: "providers.workspace_live_sync", value: "off" },
     { path: "providers.workspace_live_sync", value: "managed" },
   ])
   assert.deepEqual(notices, [
     "providers.workspace_live_sync (enum; live; provider_reload unset values=off|managed|tracked)",
-    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
@@ -190,7 +188,7 @@ test("config command renders kernel mutation effects", async () => {
     "listed 1 config key",
     "default workspace live sync for new sessions disabled; other repositories remain unrestricted",
     "default workspace live sync for new sessions set to tracked (selected workspace/worktree only; other repositories unrestricted)",
-    "default workspace live sync for new sessions disabled; other repositories remain unrestricted",
+    "usage: /config workspace-live-sync off|managed|tracked",
     "default workspace live sync for new sessions set to managed (selected workspace/worktree only; other repositories unrestricted)",
     "usage: /config workspace-live-sync off|managed|tracked",
   ])
