@@ -2,6 +2,7 @@ import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } f
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
+  formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
 } from "./extension-grant-placement.js"
@@ -96,6 +97,7 @@ function formatShellContext(
       `agent placement: ${formatContextAgentPlacement(currentAgent, slices, sliceLookupError)}`,
       `provider run: ${formatContextProviderRun(currentAgent, session, activeProviderRun, providerRunLookupError)}`,
       `extensions: ${formatContextExtensionSummary(currentAgent)}`,
+      `extension runtime: ${formatExtensionGrantRuntimeDetail(currentAgent.extension_grants, Boolean(currentAgent.remote_execution))}`,
       `remote extension sync: ${formatContextRemoteExtensionSync(currentAgent)}`,
     ] : []),
     `mode: ${currentAgent ? `${effectiveAgentMode} (agent${currentAgent.execution_mode_override ? "-override" : "-session"})` : sessionMode}`,
