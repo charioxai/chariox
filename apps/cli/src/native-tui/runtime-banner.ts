@@ -8,7 +8,7 @@ import {
   formatExtensionGrantPlacement,
   formatExtensionGrantRuntimeDetail,
 } from "@arroba/kernel-client/extension-grant-placement"
-import { formatRemoteExtensionSyncStatusLine } from "@arroba/kernel-client/shell-capability-format"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatSliceProviderAccounts, formatSliceScope } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
 
@@ -80,13 +80,22 @@ function formatRemoteExtensionSync(agent: AgentInstance, mcps: readonly string[]
     grant.kind === "mcp" || grant.kind === "script" || grant.kind === "connector"
   )))
   if (!status && !hasActiveHomeProxy) return []
-  return [`  remote ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
+  const lines = [`  remote ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
     includeHash: true,
-    includeNext: true,
+    includeNext: false,
     agentRef: agent.agent_ref,
     workerMachineId: agent.remote_execution.worker_machine_id,
     errorPrefix: "error=",
   })}`]
+  const next = remoteExtensionSyncNextAction(
+    status,
+    agent.agent_ref,
+    agent.remote_execution.worker_machine_id,
+  )
+  if (next) {
+    lines.push(`  ext sync next:  ${next}`)
+  }
+  return lines
 }
 
 function formatSession(session: RuntimeSession): string {

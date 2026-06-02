@@ -50,7 +50,8 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
-  assert.match(banner, /remote ext sync: pending, next=wait for the worker manifest update; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
+  assert.match(banner, /remote ext sync: pending/)
+  assert.match(banner, /ext sync next:  wait for the worker manifest update; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)
@@ -119,7 +120,8 @@ test("native TUI runtime banner surfaces blocked remote extension sync", () => {
 
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\)/)
   assert.match(banner, /ext runtime:    home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
-  assert.match(banner, /remote ext sync: failed, pending revoke, hash=abcdef123456, error=worker offline, next=keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+  assert.match(banner, /remote ext sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(banner, /ext sync next:  keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
 })
 
 test("native TUI runtime banner omits sync line for passive skill snapshots", () => {

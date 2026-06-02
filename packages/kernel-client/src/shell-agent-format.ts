@@ -142,23 +142,15 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
     return null
   }
   if (!status) {
-    return `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}`
+    return `manifest pending; see /extension sync-status ${agent.agent_ref}`
   }
   const hash = status.manifest_hash ? ` ${status.manifest_hash.slice(0, 8)}` : ""
   const revoke = status.pending_revoke ? " pending revoke" : ""
   const error = status.last_error ? ` error ${status.last_error}` : ""
   const action = status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error
-    ? ` next ${formatAgentListRemoteExtensionSyncAction(agent)}`
+    ? `; see /extension sync-status ${agent.agent_ref}`
     : ""
   return `manifest ${status.state}${hash}${revoke}${error}${action}`
-}
-
-function formatAgentListRemoteExtensionSyncAction(agent: AgentInstance): string {
-  return remoteExtensionSyncNextAction(
-    agent.remote_extension_manifest_sync,
-    agent.agent_ref,
-    agent.remote_execution?.worker_machine_id,
-  ) ?? `run /extension sync-status ${agent.agent_ref}`
 }
 
 export function formatAgentInspectSummary(
