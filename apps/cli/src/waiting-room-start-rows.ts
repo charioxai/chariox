@@ -75,7 +75,7 @@ export function waitingRoomStartRows(
     {
       id: "effort",
       title: "Variant",
-      value: choice.effort ? formatTitleCase(choice.effort) : "Default",
+      value: formatVariantValue(choice.effort, choice.providerCatalogFallback),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "effort",
@@ -182,6 +182,11 @@ function formatWaitingRoomModelValue(
   fallback = false,
 ) {
   const label = formatWaitingRoomModelLabel(model, options)
+  return fallback ? `${label} (local list)` : label
+}
+
+function formatVariantValue(effort: string, fallback = false) {
+  const label = effort ? formatTitleCase(effort) : "Default"
   return fallback ? `${label} (local list)` : label
 }
 

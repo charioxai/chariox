@@ -147,6 +147,7 @@ test("waiting room start rows mark provider choices from local fallback catalog"
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

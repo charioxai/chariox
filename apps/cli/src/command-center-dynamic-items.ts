@@ -181,13 +181,18 @@ export function buildModelItems(input: string, context: CommandCenterDynamicCont
 
 export function buildVariantItems(input: string, context: CommandCenterDynamicContext) {
   const query = input.slice("/variant ".length).trim().toLowerCase()
+  const localFallback = providerCatalogIsLocalFallback(context.providerCatalog)
   const current = catalogModelOptions(context.providerCatalog, context.currentProvider).find((option) => option.id === context.currentModel)
   const variants = current?.variants ?? []
   return filterCommandCenterItems(
     variants.map((variant) => ({
       id: `variant-${variant}`,
       label: variant,
-      description: `${current?.label ?? context.currentModel}${variant === context.currentVariant ? " • current" : ""}`,
+      description: variantSelectionDescription(
+        current?.label ?? context.currentModel,
+        variant === context.currentVariant,
+        localFallback,
+      ),
       kind: "variant" as const,
       value: variant,
     })),
@@ -230,5 +235,10 @@ function providerSelectionDescription(providerName: string, localFallback: boole
 
 function modelSelectionDescription(modelId: string, current: boolean, localFallback: boolean) {
   const base = current ? "current model" : modelId
+  return localFallback ? `${base}; local provider list` : base
+}
+
+function variantSelectionDescription(modelLabel: string, current: boolean, localFallback: boolean) {
+  const base = `${modelLabel}${current ? " • current" : ""}`
   return localFallback ? `${base}; local provider list` : base
 }

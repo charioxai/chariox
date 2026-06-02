@@ -59,6 +59,7 @@ test("command center marks provider and model choices from local fallback provid
 
   assert.match(buildProviderItems("/provider codex", providerNode, context)[0]?.description ?? "", /local provider list/)
   assert.match(buildModelItems("/model gpt", context)[0]?.description ?? "", /local provider list/)
+  assert.match(buildVariantItems("/variant high", context)[0]?.description ?? "", /local provider list/)
 })
 
 function withCodexCommand(): ProviderCommandCatalogs {
