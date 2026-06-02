@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}"
 LOGS="$ROOT/logs"
 DISPLAY_ID="${ARROBA_SLICE_DISPLAY:-:99}"
+DISPLAY_MODE="${ARROBA_SLICE_DISPLAY_MODE:-unknown}"
 SCREEN_GEOMETRY="${ARROBA_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
 VNC_PORT="${ARROBA_SLICE_VNC_PORT:-5900}"
@@ -53,6 +54,45 @@ require_process() {
   return 1
 }
 
+process_running() {
+  pgrep -af "$1" | grep -v defunct >/dev/null
+}
+
+screen_missing_components() {
+  local missing=()
+  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
+    missing+=("display")
+  fi
+  if ! process_running "Xvfb $DISPLAY_ID"; then
+    missing+=("xvfb")
+  fi
+  if ! process_running "x11vnc.*$DISPLAY_ID"; then
+    missing+=("x11vnc")
+  fi
+  if ! process_running "websockify.*$NOVNC_PORT"; then
+    missing+=("novnc")
+  fi
+  if ! process_running "chromium.*$CHROME_PROFILE"; then
+    missing+=("chromium")
+  fi
+  printf '%s\n' "${missing[@]}"
+}
+
+join_by_comma() {
+  local IFS=,
+  printf '%s' "$*"
+}
+
+require_screen_available() {
+  local missing
+  missing="$(screen_missing_components)"
+  if [[ -z "$missing" ]]; then
+    return 0
+  fi
+  status
+  return 1
+}
+
 start_desktop() {
   pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
   pkill -f "openbox.*$DISPLAY_ID" >/dev/null 2>&1 || true
@@ -89,10 +129,23 @@ start_desktop() {
 }
 
 status() {
+  local missing
+  missing="$(screen_missing_components)"
   printf 'display=%s\n' "$DISPLAY_ID"
   printf 'screen=%s\n' "$SCREEN_SIZE"
-  printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$NOVNC_PORT" "$NOVNC_PORT"
-  pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+  printf 'mode=%s\n' "$DISPLAY_MODE"
+  if [[ -z "$missing" ]]; then
+    printf 'available=true\n'
+    printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$NOVNC_PORT" "$NOVNC_PORT"
+    pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+    return 0
+  fi
+  local missing_csv
+  missing_csv="$(join_by_comma $missing)"
+  printf 'available=false\n'
+  printf 'missing=%s\n' "$missing_csv"
+  printf 'message=slice screen is unavailable; missing %s\n' "$missing_csv"
+  return 1
 }
 
 stop_desktop() {
@@ -104,6 +157,7 @@ stop_desktop() {
 }
 
 screenshot() {
+  require_screen_available
   local path="${1:-/tmp/arroba-slice-screenshot.png}"
   scrot -z "$path"
   printf '%s\n' "$path"
@@ -120,25 +174,30 @@ focus_chromium() {
 }
 
 click() {
+  require_screen_available
   focus_chromium
   xdotool mousemove "$1" "$2" click 1
 }
 
 double_click() {
+  require_screen_available
   focus_chromium
   xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
 }
 
 drag() {
+  require_screen_available
   focus_chromium
   xdotool mousemove "$1" "$2" mousedown 1 mousemove --sync "$3" "$4" mouseup 1
 }
 
 move_mouse() {
+  require_screen_available
   xdotool mousemove "$1" "$2"
 }
 
 scroll() {
+  require_screen_available
   local amount="${1:-1}"
   local button=5
   if [[ "$amount" =~ ^- ]]; then
@@ -152,28 +211,34 @@ scroll() {
 }
 
 type_text() {
+  require_screen_available
   focus_chromium
   xdotool type --clearmodifiers --delay 5 "$*"
 }
 
 key() {
+  require_screen_available
   focus_chromium
   xdotool key --clearmodifiers "$1"
 }
 
 clipboard_get() {
+  require_screen_available
   xclip -selection clipboard -out 2>/dev/null || true
 }
 
 clipboard_set() {
+  require_screen_available
   printf '%s' "$*" | xclip -selection clipboard -in
 }
 
 clipboard_clear() {
+  require_screen_available
   printf '' | xclip -selection clipboard -in
 }
 
 paste_stdin() {
+  require_screen_available
   focus_chromium
   local previous
   previous="$(clipboard_get || true)"
@@ -184,6 +249,7 @@ paste_stdin() {
 }
 
 ocr() {
+  require_screen_available
   local image="${1:-/tmp/arroba-slice-screenshot.png}"
   if [[ ! -f "$image" ]]; then
     screenshot "$image" >/dev/null
@@ -192,6 +258,7 @@ ocr() {
 }
 
 find_text() {
+  require_screen_available
   local query="$1"
   local image="${2:-/tmp/arroba-slice-screenshot.png}"
   local tsv="/tmp/arroba-slice-ocr.tsv"
@@ -253,6 +320,7 @@ PY
 }
 
 open_url() {
+  require_screen_available
   chromium --user-data-dir="$CHROME_PROFILE" --no-sandbox --new-window "$1" >/dev/null 2>&1 &
   sleep 1
   focus_chromium

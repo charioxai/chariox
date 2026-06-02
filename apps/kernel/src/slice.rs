@@ -79,6 +79,22 @@ mod tests {
     }
 
     #[test]
+    fn slice_store_keeps_headless_display_endpoint_hidden() {
+        let store = SliceStore::default();
+        let mut input = create_input("dev");
+        input.display_mode = SliceDisplayMode::Headless;
+        input.display_url = None;
+
+        let slice = store
+            .create("kernel-1", "machine-1", input)
+            .expect("headless slice should create");
+
+        assert_eq!(slice.display_mode, SliceDisplayMode::Headless);
+        assert_eq!(slice.display_endpoint, None);
+        assert!(store.display_endpoint("dev").is_err());
+    }
+
+    #[test]
     fn slice_store_rejects_names_that_collide_with_existing_ids() {
         let store = SliceStore::default();
         store
