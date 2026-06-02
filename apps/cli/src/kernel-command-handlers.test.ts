@@ -151,6 +151,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0 auth_missing=0 auth_unconfigured=0/)
   assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
+  assert.doesNotMatch(rendered, /remote extension runtime:/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace watcher: tracked=0 external_changes=0 events=0 scans=0 scan_errors=0 started=no/)
@@ -433,6 +434,7 @@ test("kernel health formatter reports remote extension sync issues", () => {
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /remote extensions: remote_agents=4 home_proxy_agents=3 grants=5 synced=1 syncing=0 pending=0 failed=1 stale=1 missing=1 pending_revoke=1/)
+  assert.match(rendered, /remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only/)
   assert.match(rendered, /remote extension sync issues: failed=1 stale=1 missing=1 pending_revoke=1/)
   assert.match(rendered, /agent=agent-failed \(agent-failed\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 worker_run=worker-run-1 state=failed pending_revoke=yes hash=hash-failed worktree=\/repo grants=connector:status-api: relay offline/)
   assert.match(rendered, /next: keep the home revoke in place; run \/extension sync-status agent-failed; run \/machine kernels worker-machine if the revoke stays pending; use \/extension sync-retry agent-failed after the worker reconnects/)
