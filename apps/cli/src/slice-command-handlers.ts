@@ -571,7 +571,10 @@ async function importSliceAuth(
     return
   }
   const result = await deps.importSliceProviderAuth(sliceRef, provider)
-  deps.flashFooter(`slice auth import ${result.provider}: ${result.status}`, result.status === "imported" ? "info" : "error")
+  deps.flashFooter(
+    formatSliceProviderAuthActionResult("import", result.slice, result.provider, result.status),
+    result.status === "imported" ? "info" : "error",
+  )
 }
 
 async function removeSliceAuth(
@@ -589,7 +592,10 @@ async function removeSliceAuth(
     return
   }
   const result = await deps.removeSliceProviderAuth(sliceRef, provider)
-  deps.flashFooter(`slice auth remove ${result.provider}: ${result.status}`, result.status === "removed" ? "info" : "error")
+  deps.flashFooter(
+    formatSliceProviderAuthActionResult("remove", result.slice, result.provider, result.status),
+    result.status === "removed" ? "info" : "error",
+  )
 }
 
 async function startSliceAuthLogin(
@@ -618,6 +624,25 @@ function formatSliceProviderLogin(login: SliceProviderLogin): string {
     login.user_code ? `code=${login.user_code}` : "",
     login.message,
   ].filter(Boolean).join("\n")
+}
+
+function formatSliceProviderAuthActionResult(
+  action: "import" | "remove",
+  slice: SliceRecord,
+  provider: string,
+  status: string,
+): string {
+  const sliceRef = formatSliceLabel(slice)
+  if ((action === "import" && status === "imported") || (action === "remove" && status === "removed")) {
+    return `slice auth ${action} ${provider}: ${status}`
+  }
+  if (status === "not_implemented") {
+    const fallback = action === "import"
+      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
+      : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
+    return `slice auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
+  }
+  return `slice auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
 }
 
 async function setSliceAuthAlias(

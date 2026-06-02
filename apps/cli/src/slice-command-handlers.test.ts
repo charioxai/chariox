@@ -357,6 +357,43 @@ test("slice command auth remove can target the focused agent slice", async () =>
   assert.equal(harness.footers.at(-1)?.message, "slice auth remove opencode: removed")
 })
 
+test("slice command auth import and remove explain unsupported worker operations", async () => {
+  const harness = sliceHarness({
+    importedAuthStatus: "not_implemented",
+    removedAuthStatus: "not_implemented",
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("auth", "import", "codex"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "codex"))
+
+  assert.equal(harness.footers.at(-2)?.tone, "error")
+  assert.match(
+    harness.footers.at(-2)?.message ?? "",
+    /slice auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-dev codex, open \/slice screen linux-dev to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
+  )
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+  assert.match(
+    harness.footers.at(-1)?.message ?? "",
+    /slice auth remove codex is unavailable on this kernel\. Next action: open \/slice screen linux-dev to remove the provider account inside the slice, or update\/restart the worker kernel if auth removal should be available\./,
+  )
+})
+
 test("slice command auth login starts provider login in focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -439,6 +476,8 @@ function sliceHarness(options: {
   readonly slices?: SliceRecord[]
   readonly focusedAgent?: Partial<AgentInstance>
   readonly endpoint?: SliceDisplayEndpoint
+  readonly importedAuthStatus?: string
+  readonly removedAuthStatus?: string
 } = {}) {
   const notices: string[] = []
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
@@ -487,11 +526,11 @@ function sliceHarness(options: {
     },
     importSliceProviderAuth: async (sliceRef, provider) => {
       importedAuth.push({ sliceRef, provider })
-      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "imported" }
+      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: options.importedAuthStatus ?? "imported" }
     },
     removeSliceProviderAuth: async (sliceRef, provider) => {
       removedAuth.push({ sliceRef, provider })
-      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: "removed" }
+      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: options.removedAuthStatus ?? "removed" }
     },
     startSliceProviderLogin: async (sliceRef, provider) => {
       startedAuthLogins.push({ sliceRef, provider })
