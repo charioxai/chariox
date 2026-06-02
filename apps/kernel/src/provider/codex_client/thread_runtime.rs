@@ -228,12 +228,11 @@ impl CodexClient {
         policy: &CodexPermissionPolicy,
     ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
-        let provider_mcp_servers =
-            crate::provider::mcp_proxy::provider_facing_mcp_proxy_configs(
-                &self.mcp_servers,
-                self.runtime_mcp_server_url.as_deref(),
-                self.runtime_mcp_auth_token.as_deref(),
-            )?;
+        let provider_mcp_servers = crate::provider::mcp_proxy::provider_facing_mcp_proxy_configs(
+            &self.mcp_servers,
+            self.runtime_mcp_server_url.as_deref(),
+            self.runtime_mcp_auth_token.as_deref(),
+        )?;
         append_codex_mcp_overrides(&mut overrides, &provider_mcp_servers);
         if let (Some(server_url), Some(auth_token)) = (
             self.runtime_mcp_server_url.as_deref(),

@@ -468,7 +468,10 @@ mod tests {
             overrides.get("mcp_servers.arroba.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
-        assert_eq!(overrides.get("mcp_servers.arroba.bearer_token_env_var"), None);
+        assert_eq!(
+            overrides.get("mcp_servers.arroba.bearer_token_env_var"),
+            None
+        );
         assert_eq!(
             overrides.get("mcp_servers.arroba.required"),
             Some(&json!(true))
@@ -541,7 +544,10 @@ mod tests {
             overrides.get("mcp_servers.browser.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
-        assert_eq!(overrides.get("mcp_servers.browser.bearer_token_env_var"), None);
+        assert_eq!(
+            overrides.get("mcp_servers.browser.bearer_token_env_var"),
+            None
+        );
         assert_eq!(overrides.get("mcp_servers.browser.command"), None);
         assert_eq!(overrides.get("mcp_servers.browser.args"), None);
         assert_eq!(
