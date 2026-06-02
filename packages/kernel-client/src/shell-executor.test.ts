@@ -152,7 +152,7 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /session=session-1 agent=agent-1 runs=run-1,run-2/)
   assert.match(result.message ?? "", /remote execution issues: missing_worker_runs=1 malformed=0/)
   assert.match(result.message ?? "", /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run: active remote agent has no worker run/)
-  assert.match(result.message ?? "", /next: run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+  assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(result.message ?? "", /workspace live sync managed mode unavailable: managed mode needs selective write fencing/)
   assert.match(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
 })
@@ -439,7 +439,7 @@ test("executeShellCommand context reports missing active remote worker provider 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent placement: remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1\)/)
   assert.match(result.message ?? "", /provider run: none/)
-  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel remote-runtime and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
 })
 
 test("executeShellCommand lists sessions with home kernel ownership", async () => {
@@ -481,7 +481,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1 current/)
-  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
 test("executeShellCommand submits prompt without waiting", async () => {

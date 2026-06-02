@@ -151,7 +151,7 @@ test("native TUI runtime banner surfaces provider run recovery actions", () => {
     worktree: "/repo",
     run: providerRun("session-run-2"),
   })
-  assert.match(missingWorkerRun, /provider next:  run \/kernel health and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
+  assert.match(missingWorkerRun, /provider next:  run \/kernel remote-runtime and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
 })
 
 test("native TUI runtime banner omits sync line for passive skill snapshots", () => {
