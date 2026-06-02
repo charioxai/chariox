@@ -67,12 +67,18 @@ export async function getProviderCommandCatalogs(
         discovery: catalog.discovery,
       })),
     })
-    return payload.catalogs
+    return Object.fromEntries(
+      Object.entries(payload.catalogs).map(([provider, catalog]) => [
+        provider,
+        { ...catalog, catalog_source: "daemon" as const },
+      ]),
+    ) as ProviderCommandCatalogs
   } catch (error) {
+    const message = describeCliError(error)
     logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
-      error: describeCliError(error),
+      error: message,
     })
-    return fallbackProviderCommandCatalogs()
+    return fallbackProviderCommandCatalogs({ catalogSource: "local_fallback", unavailableReason: message })
   }
 }
 

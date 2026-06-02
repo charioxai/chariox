@@ -23,6 +23,13 @@ test("command center dynamic items project provider namespaces and completions",
   )
 })
 
+test("command center marks provider namespace command lists from local fallback", () => {
+  const catalogs = fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" })
+
+  assert.match(providerNamespaceRootItem("codex", catalogs).description, /local command list/)
+  assert.match(buildProviderNamespaceItems("/codex ", "codex", catalogs)[0]?.description ?? "", /local command list/)
+})
+
 test("command center dynamic items project provider, model, variant, and view choices", () => {
   const providerNode = COMMAND_TREE.find((node) => node.id === "provider")!
   const context = {

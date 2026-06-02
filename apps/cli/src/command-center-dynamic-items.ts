@@ -1,6 +1,7 @@
 import { backendProviderLabel, catalogModelOptions, type BackendProviderId } from "./provider-catalog.js"
 import {
   type ProviderCommandCatalogs,
+  providerCommandCatalogIsLocalFallback,
   providerNamespace,
   providerNamespaceDescription,
 } from "./provider-command-catalog.js"
@@ -14,10 +15,11 @@ export function providerNamespaceRootItem(
   catalogs: ProviderCommandCatalogs,
 ): CommandCenterItem {
   const catalog = catalogs[provider] ?? emptyProviderCommandCatalog(provider)
+  const localFallback = providerCommandCatalogIsLocalFallback(catalog)
   return {
     id: `provider-namespace-${provider}`,
     label: providerNamespace(provider),
-    description: providerNamespaceDescription(provider, catalog.commands.length),
+    description: providerNamespaceDescription(provider, catalog.commands.length, { localFallback }),
     kind: "group",
     value: `${providerNamespace(provider)} `,
     ...(catalog.commands.length > 0
@@ -33,10 +35,11 @@ export function providerNamespaceScopeNode(
   catalogs: ProviderCommandCatalogs,
 ): CommandNode {
   const catalog = catalogs[provider] ?? emptyProviderCommandCatalog(provider)
+  const localFallback = providerCommandCatalogIsLocalFallback(catalog)
   return {
     id: `provider-namespace-${provider}`,
     label: providerNamespace(provider),
-    description: providerNamespaceDescription(provider, catalog.commands.length),
+    description: providerNamespaceDescription(provider, catalog.commands.length, { localFallback }),
     value: `${providerNamespace(provider)} `,
   }
 }
@@ -47,13 +50,14 @@ export function buildProviderNamespaceItems(
   catalogs: ProviderCommandCatalogs,
 ) {
   const catalog = catalogs[provider] ?? emptyProviderCommandCatalog(provider)
+  const localFallback = providerCommandCatalogIsLocalFallback(catalog)
   const namespace = providerNamespace(provider)
   const rootItem: CommandCenterItem = {
     id: `provider-namespace-${provider}`,
     label: namespace,
     description: catalog.commands.length > 0
-      ? providerNamespaceDescription(provider, catalog.commands.length)
-      : `${providerNamespaceDescription(provider, 0)}; no registered completions for this provider version yet`,
+      ? providerNamespaceDescription(provider, catalog.commands.length, { localFallback })
+      : `${providerNamespaceDescription(provider, 0, { localFallback })}; no registered completions for this provider version yet`,
     kind: "group",
     value: `${namespace} `,
   }

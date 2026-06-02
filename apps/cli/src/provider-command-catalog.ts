@@ -16,10 +16,16 @@ export type ProviderCommandCatalog = {
   provider: BackendProviderId
   source: "shipped" | "discovered" | "merged"
   discovery: "none" | "provider_api" | "custom_files" | "driver"
+  catalog_source?: "daemon" | "local_fallback"
+  unavailable_reason?: string
   commands: ProviderCommandDescriptor[]
 }
 
 export type ProviderCommandCatalogs = Record<BackendProviderId, ProviderCommandCatalog>
+type ProviderCommandCatalogFallbackOptions = {
+  catalogSource?: "local_fallback"
+  unavailableReason?: string
+}
 
 const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
   opencode: {
@@ -55,29 +61,49 @@ export function providerSupportsNamespaceCommands(provider: BackendProviderId) {
   return (PROVIDER_NAMESPACE_COMMAND_IDS as readonly BackendProviderId[]).includes(provider)
 }
 
-export function fallbackProviderCommandCatalogs(): ProviderCommandCatalogs {
+export function fallbackProviderCommandCatalogs(
+  options: ProviderCommandCatalogFallbackOptions = {},
+): ProviderCommandCatalogs {
+  const metadata = options.catalogSource
+    ? {
+      catalog_source: options.catalogSource,
+      ...(options.unavailableReason ? { unavailable_reason: options.unavailableReason } : {}),
+    }
+    : {}
   return {
     opencode: {
       ...EMPTY_PROVIDER_COMMAND_CATALOGS.opencode,
+      ...metadata,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.opencode.commands],
     },
     codex: {
       ...EMPTY_PROVIDER_COMMAND_CATALOGS.codex,
+      ...metadata,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.codex.commands],
     },
     claude: {
       ...EMPTY_PROVIDER_COMMAND_CATALOGS.claude,
+      ...metadata,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.claude.commands],
     },
   }
 }
 
-export function providerNamespaceDescription(provider: BackendProviderId, commandCount: number) {
+export function providerCommandCatalogIsLocalFallback(catalog: ProviderCommandCatalog) {
+  return catalog.catalog_source === "local_fallback"
+}
+
+export function providerNamespaceDescription(
+  provider: BackendProviderId,
+  commandCount: number,
+  options: { localFallback?: boolean } = {},
+) {
   const providerLabel = backendProviderLabel(provider)
+  const suffix = options.localFallback ? "; local command list" : ""
   if (commandCount > 0) {
-    return `Forward ${providerLabel} native commands to the focused agent (${commandCount})`
+    return `Forward ${providerLabel} native commands to the focused agent (${commandCount})${suffix}`
   }
-  return `Forward ${providerLabel} native commands to the focused agent`
+  return `Forward ${providerLabel} native commands to the focused agent${suffix}`
 }
 
 export type ParsedProviderNamespaceCommand = {

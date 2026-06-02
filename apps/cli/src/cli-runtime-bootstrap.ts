@@ -271,7 +271,7 @@ export function buildDetachedBootstrap(
     binding: null,
     sessions: [],
     providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
     options,
     preferences,
   }
