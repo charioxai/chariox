@@ -103,7 +103,7 @@ function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
   return (session.activity?.missing_worker_provider_run_count ?? 0) > 0
-    ? ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}; run /kernel health`
+    ? ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}`
     : ""
 }
 

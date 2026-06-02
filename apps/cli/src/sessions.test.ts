@@ -48,7 +48,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
     ),
     [
       "Sessions",
-      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked - 1 remote agent, 1 worker run gap - next run /kernel remote-runtime; run /agent inspect <agent>; reconnect or relaunch the remote/slice worker; run /kernel health current",
+      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked - 1 remote agent, 1 worker run gap - next run /kernel remote-runtime; run /agent inspect <agent>; reconnect or relaunch the remote/slice worker current",
       "- `session-1` - ended - 0 CLIs - demo - sync off",
     ].join("\n"),
   )

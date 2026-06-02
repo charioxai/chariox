@@ -40,6 +40,31 @@ test("parseArgs rejects invalid option combinations", () => {
   )
 })
 
+test("parseArgs help lists remote runtime once next to kernel health", () => {
+  const previousWrite = process.stdout.write
+  const previousExit = process.exit
+  let output = ""
+  ;(process.stdout.write as unknown as (chunk: string) => boolean) = (chunk: string) => {
+    output += chunk
+    return true
+  }
+  ;(process.exit as unknown as (code?: number) => never) = ((code?: number) => {
+    throw Object.assign(new Error("process.exit"), { code })
+  }) as (code?: number) => never
+
+  try {
+    assert.throws(() => parseArgs(["--help"]), /process\.exit/)
+  } finally {
+    process.stdout.write = previousWrite
+    process.exit = previousExit
+  }
+
+  assert.match(output, /\/kernel health\s+show runtime health and provider-run invariants/)
+  assert.match(output, /\/kernel remote-runtime\s+show remote agents, slices, home-proxy, and live sync readiness/)
+  assert.equal(output.match(/\/kernel health/g)?.length, 1)
+  assert.equal(output.match(/\/kernel remote-runtime/g)?.length, 1)
+})
+
 test("resolveConfiguredCloudRelayApiUrl prefers env and trims trailing slashes", () => {
   const previous = process.env.ARROBA_CLOUD_API_URL
   process.env.ARROBA_CLOUD_API_URL = "https://cloud.example.test///"
