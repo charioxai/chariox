@@ -12,6 +12,7 @@ import {
   parsePermissionLevel,
 } from "./shell-agent-policy.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
+import { providerRunRecoveryActions } from "./provider-run-recovery.js"
 
 type ShellContextCommandDeps = {
   client: {
@@ -196,21 +197,11 @@ function formatContextProviderRunNextAction(
   session: RuntimeSession | null,
   activeProviderRun: RuntimeProviderRun | null,
 ): string[] {
-  const sessionRunId = session?.active_provider_run_id?.trim()
-  const sessionRunAgentId = activeProviderRun?.agent_instance_id?.trim()
-  const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
-  if (sessionRunId && (!sessionRunAgentId || sessionRunAgentId !== agent.id)) {
-    return [
-      `provider run next: run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
-    ]
-  }
-  if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
-    const worker = agent.remote_execution.worker_machine_id?.trim() || "<worker-machine>"
-    return [
-      `provider run next: run /kernel health and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker if no active worker run appears`,
-    ]
-  }
-  return []
+  return providerRunRecoveryActions({
+    agent,
+    activeProviderRunId: session?.active_provider_run_id,
+    activeProviderRunAgentId: activeProviderRun?.agent_instance_id,
+  }).map((action) => `provider run next: ${action}`)
 }
 
 function formatContextExtensionSummary(agent: AgentInstance): string {

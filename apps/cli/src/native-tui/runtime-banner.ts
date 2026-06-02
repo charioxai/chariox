@@ -11,6 +11,7 @@ import {
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
 import { formatSliceProviderAccounts, formatSliceScope } from "../slice-format.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
 
 export type NativeTuiRuntimeBannerInput = {
   readonly surface: string
@@ -100,19 +101,11 @@ function formatRemoteExtensionSync(agent: AgentInstance, mcps: readonly string[]
 
 function formatProviderRunLines(agent: AgentInstance, run: RuntimeProviderRun | null): string[] {
   const lines = run ? [`  provider run:   ${run.id}`] : []
-  const sessionRunAgentId = run?.agent_instance_id?.trim()
-  if (run && (!sessionRunAgentId || sessionRunAgentId !== agent.id)) {
-    lines.push(
-      `  provider next:  run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
-    )
-  }
-  const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
-  if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
-    const worker = agent.remote_execution.worker_machine_id?.trim() || "<worker-machine>"
-    lines.push(
-      `  provider next:  run /kernel health and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker if no active worker run appears`,
-    )
-  }
+  lines.push(...providerRunRecoveryActions({
+    agent,
+    activeProviderRunId: run?.id,
+    activeProviderRunAgentId: run?.agent_instance_id,
+  }).map((action) => `  provider next:  ${action}`))
   return lines
 }
 
