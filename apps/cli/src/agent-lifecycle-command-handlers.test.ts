@@ -163,7 +163,7 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(summary, /next=keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+  assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
 })
 

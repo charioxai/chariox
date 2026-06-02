@@ -185,7 +185,7 @@ export function formatAgentInspectSummary(
     ] : []),
     `extensions: ${formatAgentExtensionSummary(agent)}`,
     `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
-    `remote extension sync: ${formatAgentRemoteExtensionSyncSummary(agent)}`,
+    ...formatAgentRemoteExtensionSyncLines(agent),
     `substitutes: ${formatAgentSubstitutesInline(agent)}`,
   ]
   const activeSubstitute = agent.active_substitute_index
@@ -288,21 +288,24 @@ export function formatAgentExtensionPlacementSummary(agent: AgentInstance): stri
   return formatExtensionGrantPlacement(agent.extension_grants, Boolean(agent.remote_execution))
 }
 
-function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
+function formatAgentRemoteExtensionSyncLines(agent: AgentInstance): string[] {
   if (!agent.remote_execution) {
-    return "not applicable"
+    return ["remote extension sync: not applicable"]
   }
   const status = agent.remote_extension_manifest_sync
   if (!status) {
     if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-      return "not applicable (no active home-proxy tools)"
+      return ["remote extension sync: not applicable (no active home-proxy tools)"]
     }
-    return formatRemoteExtensionSyncStatusLine(null, {
-      includeNext: true,
-      agentRef: agent.agent_ref,
-      workerMachineId: agent.remote_execution.worker_machine_id,
-      errorPrefix: "error=",
-    })
+    return [
+      `remote extension sync: ${formatRemoteExtensionSyncStatusLine(null, {
+        includeNext: false,
+        agentRef: agent.agent_ref,
+        workerMachineId: agent.remote_execution.worker_machine_id,
+        errorPrefix: "error=",
+      })}`,
+      `remote extension next: ${formatAgentRemoteExtensionSyncNextAction(agent)}`,
+    ]
   }
   const details = [
     formatRemoteExtensionSyncStatusLine(status, {
@@ -313,10 +316,11 @@ function formatAgentRemoteExtensionSyncSummary(agent: AgentInstance): string {
     status.last_synced_at_ms ? `synced=${formatTimestamp(status.last_synced_at_ms)}` : null,
     status.last_attempted_at_ms ? `attempted=${formatTimestamp(status.last_attempted_at_ms)}` : null,
   ].filter(Boolean)
+  const lines = [`remote extension sync: ${details.join(", ")}`]
   if (status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error) {
-    details.push(`next=${formatAgentRemoteExtensionSyncNextAction(agent)}`)
+    lines.push(`remote extension next: ${formatAgentRemoteExtensionSyncNextAction(agent)}`)
   }
-  return details.join(", ")
+  return lines
 }
 
 function formatAgentRemoteExtensionSyncNextAction(agent: AgentInstance): string {
