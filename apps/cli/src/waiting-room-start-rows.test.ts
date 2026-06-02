@@ -164,6 +164,33 @@ test("waiting room start rows mark provider choices from local fallback catalog"
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
 
+test("waiting room start rows include selected slice provider account", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ providerId: "opencode", sliceSelectionId: "slice-1" }),
+    {
+      providerId: "opencode",
+      model: modelOptions[0] ?? null,
+      effort: "high",
+      slice: slice({
+        providers: ["opencode"],
+        provider_auth: [{ provider: "opencode:openai", state: "configured", account_id: "acct-1234567890abcdef" }],
+      }),
+    },
+    {
+      modelOptions,
+      remote: { slices: [slice()] },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (acct-123...cdef)")
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",

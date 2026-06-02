@@ -103,6 +103,25 @@ export function formatSliceProviderAccounts(slice: SliceRecordLike): string {
     .join(", ")
 }
 
+export function formatSliceBackendProviderAccount(
+  slice: SliceRecordLike,
+  provider: string,
+): string | null {
+  const providerId = provider.trim()
+  if (!providerId) {
+    return null
+  }
+  const account = (slice.provider_auth ?? []).find((entry) => sliceProviderMatches(entry.provider, providerId))
+  if (account) {
+    return account.alias?.trim()
+      || account.email?.trim()
+      || shortAccountId(account.account_id)
+      || (sliceAuthNeedsAttention(account.state) ? "auth missing" : "auth configured")
+  }
+  const targeted = sliceProviderNames(slice.providers ?? []).some((target) => sliceProviderMatches(target, providerId))
+  return targeted ? "auth missing" : null
+}
+
 export function formatSliceProviderAuthStatus(slice: SliceRecordLike): string | null {
   const coverage = sliceProviderAuthCoverage(slice)
   const accounts = slice.provider_auth ?? []
@@ -181,4 +200,12 @@ function sliceProviderNames(providers: readonly string[]): string[] {
 
 function sliceProviderMatches(authProvider: string, advertisedProvider: string): boolean {
   return authProvider === advertisedProvider || authProvider.startsWith(`${advertisedProvider}:`)
+}
+
+function shortAccountId(accountId: string | null | undefined): string | null {
+  const value = accountId?.trim()
+  if (!value) {
+    return null
+  }
+  return value.length <= 12 ? value : `${value.slice(0, 8)}...${value.slice(-4)}`
 }

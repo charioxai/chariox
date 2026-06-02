@@ -3,6 +3,8 @@ import {
   type BackendProviderId,
   type CatalogModelOption,
 } from "./provider-catalog.js"
+import { formatSliceBackendProviderAccount } from "./slice-format.js"
+import type { SliceRecord } from "./cli-types.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -15,6 +17,7 @@ export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
   model: CatalogModelOption | null
   effort: string
+  slice?: SliceRecord | null
   providerCatalogFallback?: boolean
 }
 
@@ -82,7 +85,7 @@ export function waitingRoomStartRows(
     {
       id: "provider",
       title: "Provider",
-      value: formatProviderValue(choice.providerId, choice.providerCatalogFallback),
+      value: formatProviderValue(choice.providerId, choice.slice ?? null, choice.providerCatalogFallback),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "provider",
@@ -188,9 +191,11 @@ function formatBackendProviderLabel(providerId: BackendProviderId) {
   return backendProviderLabel(providerId)
 }
 
-function formatProviderValue(providerId: BackendProviderId, fallback = false) {
+function formatProviderValue(providerId: BackendProviderId, slice: SliceRecord | null, fallback = false) {
   const label = formatBackendProviderLabel(providerId)
-  return fallback ? `${label} (local list)` : label
+  const account = slice ? formatSliceBackendProviderAccount(slice, providerId) : null
+  const providerLabel = account ? `${label} (${account})` : label
+  return fallback ? `${providerLabel} (local list)` : providerLabel
 }
 
 function formatWaitingRoomModelValue(

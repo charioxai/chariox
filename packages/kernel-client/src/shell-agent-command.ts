@@ -142,7 +142,7 @@ export async function executeAgentCommand(
         context.effort,
         undefined,
         undefined,
-        remoteKernelRef,
+        sliceRef ? undefined : remoteKernelRef,
         undefined,
         sliceRef,
       ))

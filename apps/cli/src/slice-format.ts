@@ -1,5 +1,6 @@
 export {
   formatSliceAuthIdentity,
+  formatSliceBackendProviderAccount,
   formatSliceDiagnostics,
   formatSliceOperation,
   formatSliceProviderAuth,

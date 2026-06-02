@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatSliceBackendProviderAccount,
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
   formatSliceProviderAuthStatus,
@@ -22,6 +23,23 @@ test("slice formatter projects provider account identities", () => {
     }),
     "codex=daily (dev@example.com)",
   )
+})
+
+test("slice formatter resolves backend provider account labels", () => {
+  const slice = {
+    providers: ["codex", "opencode", "claude"],
+    provider_auth: [
+      { provider: "codex", state: "configured", alias: "daily", email: "dev@example.com" },
+      { provider: "opencode:openai", state: "configured", account_id: "acct-1234567890abcdef" },
+      { provider: "claude", state: "not_configured" },
+    ],
+  }
+
+  assert.equal(formatSliceBackendProviderAccount(slice, "codex"), "daily")
+  assert.equal(formatSliceBackendProviderAccount(slice, "opencode"), "acct-123...cdef")
+  assert.equal(formatSliceBackendProviderAccount(slice, "claude"), "auth missing")
+  assert.equal(formatSliceBackendProviderAccount({ providers: ["codex"], provider_auth: [] }, "codex"), "auth missing")
+  assert.equal(formatSliceBackendProviderAccount(slice, "unknown"), null)
 })
 
 test("slice formatter preserves provider auth attention states", () => {

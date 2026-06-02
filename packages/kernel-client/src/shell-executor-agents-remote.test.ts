@@ -746,9 +746,31 @@ test("executeShellCommand treats --slice off as local agent placement", async ()
   assert.deepEqual(result.contextUpdates, { agentId: "agent-local" })
 })
 
-test("executeShellCommand rejects kernel and slice together before provisioning", async () => {
+test("executeShellCommand creates a new slice on an explicit worker kernel", async () => {
+  const agent = makeAgent({
+    id: "agent-slice",
+    agent_ref: "agent-slice",
+    alias: "qa",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
-    throw new Error(`should not send request ${JSON.stringify(request)}`)
+    requests.push(request)
+    if ("CreateSlice" in request) {
+      return { SliceCreated: { slice: { id: "slice-1" } } }
+    }
+    if ("StartSlice" in request) {
+      return { SliceStarted: { slice: { id: "slice-1" } } }
+    }
+    if ("SpawnAgent" in request) {
+      return { AgentSpawned: { agent } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
   const context = createDefaultShellContext({
     workspace: "/repo",
@@ -764,8 +786,45 @@ test("executeShellCommand rejects kernel and slice together before provisioning"
     { client: fake.client },
   )
 
-  assert.equal(result.ok, false)
-  assert.equal(result.message, "use either --kernel or --slice, not both; slices are home-managed workers")
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "SpawnAgent"])
+  assert.deepEqual({
+    ...requests[0],
+    CreateSlice: {
+      ...(requests[0] as { CreateSlice: Record<string, unknown> }).CreateSlice,
+      name: "<dynamic>",
+    },
+  }, {
+    CreateSlice: {
+      name: "<dynamic>",
+      backend: "local_docker",
+      os: "linux",
+      display_mode: "headless",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+      workspace_mount: "/repo",
+      worker_kernel_ref: "worker-1",
+      display_url: null,
+      provider_auth: [],
+    },
+  })
+  assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })
+  assert.deepEqual(requests[2], {
+    SpawnAgent: {
+      session_id: "session-1",
+      provider: "codex",
+      alias: "qa",
+      model: "gpt-5.2",
+      effort: "low",
+      execution_mode: null,
+      permission_level: null,
+      worktree_id: null,
+      kernel_ref: null,
+      slice_ref: "slice-1",
+      worktree_placement: null,
+    },
+  })
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-slice" })
 })
 
 test("executeShellCommand creates and starts a headed slice for agent spawn", async () => {
