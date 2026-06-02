@@ -1137,6 +1137,51 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
 })
 
+test("executeShellCommand requires slice auth coverage for every advertised provider", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return {
+        Slice: {
+          slice: {
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "running",
+            display_mode: "headless",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: "kernel-slice",
+            worker_machine_id: "machine-slice",
+            providers: ["codex", "opencode:openai"],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [{
+              provider: "codex",
+              state: "authenticated",
+              email: "codex@example.com",
+            }],
+            relay_endpoint: { url: "wss://relay.example/slice", private: false },
+            display_endpoint: null,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice doctor linux-a"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /ok provider CLIs: codex,opencode:openai/)
+  assert.match(result.message ?? "", /fail provider accounts: codex:codex@example.com/)
+  assert.match(result.message ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-a opencode:openai or \/slice auth login linux-a opencode:openai/)
+})
+
 test("executeShellCommand renders concrete or placeholder slice stale-auth recovery", async () => {
   const baseSlice = {
     id: "slice-1",

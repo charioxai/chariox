@@ -250,6 +250,32 @@ test("slice command doctor flags missing provider accounts", async () => {
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
+test("slice command doctor requires provider auth for every advertised provider", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        status: "running",
+        worker_kernel_id: "kernel-slice",
+        relay_endpoint: { url: "wss://relay.example/slice", private: false },
+        worktree_id: "/repo/wt",
+        providers: ["codex", "opencode:openai"],
+        provider_auth: [
+          { provider: "codex", state: "authenticated", email: "codex@example.com", source: "test" },
+        ],
+      }),
+    ],
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
+
+  assert.match(harness.notices.at(-1) ?? "", /ok provider CLIs: codex,opencode:openai/)
+  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: codex:codex@example.com/)
+  assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-dev opencode:openai or \/slice auth login linux-dev opencode:openai/)
+  assert.equal(harness.footers.at(-1)?.tone, "error")
+})
+
 test("slice command logs renders focused slice diagnostics", async () => {
   const harness = sliceHarness({
     slices: [

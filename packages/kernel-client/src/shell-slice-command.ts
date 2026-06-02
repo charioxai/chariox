@@ -302,9 +302,6 @@ function formatSliceDoctor(slice: SliceRecord): string {
   const relay = formatSliceRelayLabel(slice, { includeUrl: true }) || "none"
   const providers = slice.providers ?? []
   const providerAuth = slice.provider_auth ?? []
-  const providerAuthHealthy = providers.length > 0
-    && providerAuth.length > 0
-    && providerAuth.every((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
   const checks = [
     doctorCheck("lifecycle", slice.status !== "unhealthy", slice.status),
     doctorCheck("worker", slice.status !== "running" || Boolean(slice.worker_kernel_id), slice.worker_kernel_id ?? "not discovered"),
@@ -315,24 +312,20 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider CLIs", providers.length > 0, providers.join(",") || "none"),
-    doctorCheck("provider accounts", providerAuthHealthy, providerAuth.map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
+    doctorCheck("provider accounts", sliceProviderAuthHealthy(slice), providerAuth.map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
 
 function sliceDoctorHealthy(slice: SliceRecord): boolean {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || ""
-  const providers = slice.providers ?? []
-  const providerAuth = slice.provider_auth ?? []
   return slice.status !== "unhealthy"
     && (slice.status !== "running" || Boolean(slice.worker_kernel_id))
     && (slice.status !== "running" || Boolean(slice.relay_endpoint?.url))
     && Boolean(scope)
     && (slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url))
     && slice.last_operation_status !== "failed"
-    && providers.length > 0
-    && providerAuth.length > 0
-    && providerAuth.every((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
+    && sliceProviderAuthHealthy(slice)
 }
 
 function sliceDoctorNextActions(slice: SliceRecord): string[] {
@@ -367,27 +360,51 @@ function sliceNextAction(slice: SliceRecord): string | null {
   if ((slice.providers ?? []).length === 0) {
     return "configure provider CLIs inside the slice before spawning agents there"
   }
-  const auth = slice.provider_auth ?? []
-  if (auth.length === 0) {
-    const provider = sliceProviderCommandArg(slice.providers ?? [])
-    return `import or login provider accounts${formatSliceProviderActionTarget(slice.providers ?? [])} with ${formatSliceAuthImportCommand(slice, provider)} or ${formatSliceAuthLoginCommand(slice, provider)}`
-  }
-  const staleProviders = auth
+  const providerNames = sliceProviderNames(slice.providers ?? [])
+  const authProviders = new Set((slice.provider_auth ?? []).map((entry) => entry.provider))
+  const missingProviders = providerNames.filter((provider) => !authProviders.has(provider))
+  const staleProviders = (slice.provider_auth ?? [])
     .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
     .map((entry) => entry.provider)
-  if (staleProviders.length > 0) {
-    return `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(staleProviders))}`
+    .filter((provider) => providerNames.includes(provider))
+  const actions = [
+    missingProviders.length > 0
+      ? `import or login provider accounts${formatSliceProviderActionTarget(missingProviders)} with ${formatSliceAuthImportCommand(slice, sliceProviderCommandArg(missingProviders))} or ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(missingProviders))}`
+      : null,
+    staleProviders.length > 0
+      ? `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(staleProviders))}`
+      : null,
+  ].filter((action): action is string => Boolean(action))
+  if (actions.length > 0) {
+    return actions.join("; ")
   }
   return null
 }
 
+function sliceProviderAuthHealthy(slice: SliceRecord): boolean {
+  const providers = sliceProviderNames(slice.providers ?? [])
+  if (providers.length === 0) {
+    return false
+  }
+  const healthyProviders = new Set(
+    (slice.provider_auth ?? [])
+      .filter((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
+      .map((entry) => entry.provider),
+  )
+  return providers.every((provider) => healthyProviders.has(provider))
+}
+
+function sliceProviderNames(providers: readonly string[]): string[] {
+  return [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+}
+
 function formatSliceProviderActionTarget(providers: readonly string[]): string {
-  const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  const unique = sliceProviderNames(providers)
   return unique.length > 0 ? ` for ${unique.join(",")}` : " for this slice"
 }
 
 function sliceProviderCommandArg(providers: readonly string[]): string {
-  const unique = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  const unique = sliceProviderNames(providers)
   return unique.length === 1 ? unique[0]! : "<provider>"
 }
 
