@@ -657,6 +657,27 @@ test("kernel health formatter reports transport terminal and capability issues",
   assert.match(rendered, /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
 })
 
+test("kernel health formatter reports stale focused agent invariants", () => {
+  const unhealthy = health({
+    projection_invariants: {
+      checked_sessions: 1,
+      checked_agents: 1,
+      mismatches: [{
+        kind: "stale_focused_agent",
+        session_id: "session-1",
+        agent_id: "missing-agent",
+        details: "focused agent is not present in the session agent list",
+      }],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /projection invariant mismatches:/)
+  assert.match(rendered, /stale_focused_agent session=session-1 agent=missing-agent: focused agent is not present in the session agent list/)
+  assert.match(rendered, /next: refresh the session; restart the kernel if the invariant mismatch persists/)
+})
+
 test("kernel health command reports duplicate provider-run bindings", async () => {
   const notices: string[] = []
   const flashes: Array<{ message: string; tone: string }> = []

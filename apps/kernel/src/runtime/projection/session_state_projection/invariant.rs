@@ -21,6 +21,21 @@ pub(super) fn snapshot(
     let mut mismatches = Vec::new();
 
     for session in &sessions {
+        if let Some(focused_agent_id) = session.focused_agent_id() {
+            if !session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == focused_agent_id)
+            {
+                mismatches.push(ProjectionInvariantMismatch {
+                    kind: "stale_focused_agent".to_string(),
+                    session_id: session.id().to_string(),
+                    agent_id: Some(focused_agent_id.to_string()),
+                    details: "focused agent is not present in the session agent list".to_string(),
+                });
+            }
+        }
+
         let mut expected_prompt_states = BTreeMap::new();
         for agent in session.agents() {
             let prompt_state = session.prompt_states().get(agent.id());
@@ -204,5 +219,37 @@ mod tests {
             .mismatches
             .iter()
             .any(|mismatch| mismatch.kind == "queued_prompt_count_mismatch"));
+    }
+
+    #[test]
+    fn projection_invariant_health_reports_stale_focused_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let mut session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should load");
+        session.set_focused_agent(Some("missing-agent".to_string()));
+
+        let session_store = SessionStateProjectionStore::default();
+        let agent_store = AgentRuntimeProjectionStore::default();
+        session_store.update(session.clone());
+        agent_store.update_session(&session);
+
+        let snapshot = session_store.invariant_snapshot(&agent_store);
+
+        assert_eq!(snapshot.checked_sessions, 1);
+        assert_eq!(snapshot.checked_agents, 1);
+        assert!(snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "stale_focused_agent"
+                && mismatch.session_id == session.id()
+                && mismatch.agent_id.as_deref() == Some("missing-agent")
+                && mismatch.details == "focused agent is not present in the session agent list"
+        }));
+        assert!(!snapshot.mismatches.iter().any(|mismatch| {
+            mismatch.kind == "missing_agent_runtime_projection"
+                && mismatch.agent_id.as_deref() == Some(agent.id())
+        }));
     }
 }
