@@ -159,12 +159,38 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(summary, /provider run: session=run-session, worker=run-1/)
   assert.match(summary, /slice: devbox \(id=slice-1, status=running, display=headless, worktree=\/repo\/feature, agents=2\)/)
+  assert.match(summary, /slice provider auth: ready codex/)
   assert.match(summary, /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
+})
+
+test("agent inspect summary calls out missing slice provider auth", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  }), [slice({
+    id: "slice-1",
+    name: "devbox",
+    status: "running",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-remote"],
+    providers: ["codex", "opencode:openai"],
+  })])
+
+  assert.match(summary, /placement: slice devbox/)
+  assert.match(summary, /slice provider auth: missing codex, opencode:openai/)
+  assert.match(summary, /slice provider accounts: none/)
 })
 
 test("remote skill-only agent summaries do not report pending home-proxy manifest", () => {

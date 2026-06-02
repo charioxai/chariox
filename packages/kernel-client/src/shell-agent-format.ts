@@ -9,6 +9,7 @@ import {
 } from "./extension-grant-placement.js"
 import {
   formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
   formatSliceProviderAuthStatus,
   formatSliceScope,
 } from "./slice-format.js"
@@ -181,6 +182,7 @@ export function formatAgentInspectSummary(
     ...formatAgentProviderRunNextAction(agent, providerRunContext),
     ...(slice ? [
       `slice: ${formatSliceSummary(slice)}`,
+      `slice provider auth: ${formatSliceProviderAuthReadiness(slice)}`,
       `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
     ] : sliceLookupError ? [
       `slice lookup: ${sliceLookupError}`,
