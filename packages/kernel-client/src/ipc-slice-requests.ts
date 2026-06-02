@@ -95,3 +95,12 @@ export function getSliceLogsRequest(sliceRef: string, tailLines?: number | null)
     },
   }
 }
+
+export function listSliceAuditRequest(sliceRef: string, limit?: number | null) {
+  return {
+    ListSliceAudit: {
+      slice_ref: sliceRef,
+      ...(limit == null ? {} : { limit }),
+    },
+  }
+}

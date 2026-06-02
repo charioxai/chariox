@@ -39,6 +39,13 @@ pub struct GetSliceLogsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSliceAuditRequest {
+    pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportSliceProviderAuthRequest {
     pub slice_ref: String,
     pub provider: String,

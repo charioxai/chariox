@@ -7,6 +7,7 @@ import {
   getSliceLogsRequest,
   getSliceRequest,
   importSliceProviderAuthRequest,
+  listSliceAuditRequest,
   listSlicesRequest,
   removeSliceProviderAuthRequest,
   setSliceProviderAuthAliasRequest,
@@ -108,4 +109,13 @@ export async function getSliceLogs(
 ): Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }> {
   const response = await client.send<Record<string, unknown>>(getSliceLogsRequest(sliceRef, tailLines))
   return expectVariant<{ slice: SliceRecord; entries: SliceLogEntry[] }>(response, "SliceLogs")
+}
+
+export async function listSliceAudit(
+  client: LocalIpcClient,
+  sliceRef: string,
+  limit?: number | null,
+): Promise<Record<string, unknown>[]> {
+  const response = await client.send<Record<string, unknown>>(listSliceAuditRequest(sliceRef, limit))
+  return expectVariant<{ events: Record<string, unknown>[] }>(response, "SliceAuditListed").events
 }

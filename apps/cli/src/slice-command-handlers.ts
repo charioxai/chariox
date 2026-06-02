@@ -50,6 +50,7 @@ export type SliceCommandHandlerDeps = {
   setSliceProviderAuthAlias?: (sliceRef: string, provider: string, alias: string | null) => Promise<{ slice: SliceRecord; provider: string; alias: string | null }>
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
+  listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
 }
 
 type SliceProviderLogin = {
@@ -87,6 +88,10 @@ export async function handleSliceSlashCommand(
     await showSliceLogs(deps, args)
     return
   }
+  if (subcommand === "audit") {
+    await showSliceAudit(deps, args)
+    return
+  }
   if (subcommand === "start" || subcommand === "stop") {
     await setSliceRunning(deps, subcommand, args[0])
     return
@@ -115,7 +120,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -150,6 +155,37 @@ function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
   ].join("\n")
 }
 
+function formatSliceAuditEvents(events: readonly Record<string, unknown>[]): string {
+  if (!events.length) {
+    return "no slice audit events"
+  }
+  return events.map((event) => {
+    const payload = typeof event.payload === "object" && event.payload ? event.payload as Record<string, unknown> : {}
+    const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
+    const action = typeof payload.action === "string" ? payload.action : String(event.kind ?? "slice.audit")
+    const outcome = typeof payload.outcome === "string" ? payload.outcome : typeof payload.result === "string" ? payload.result : ""
+    const label = typeof payload.slice_name === "string" && payload.slice_name ? payload.slice_name : payload.slice_id
+    const provider = typeof payload.provider === "string" && payload.provider ? ` provider=${payload.provider}` : ""
+    const message = typeof payload.message === "string" && payload.message ? ` message=${payload.message}` : ""
+    const details = [
+      auditField("status", payload.status),
+      auditField("display", payload.display_mode),
+      auditField("worktree", payload.worktree_id ?? payload.workspace_mount),
+      auditField("agents", Array.isArray(payload.agent_ids) ? payload.agent_ids.length : undefined),
+      auditField("worker", payload.worker_kernel_id ?? payload.worker_kernel_ref),
+    ].filter(Boolean)
+    const detailLine = details.length > 0 ? `\n  ${details.join(" ")}` : ""
+    return `${at} ${action}${outcome ? ` ${outcome}` : ""} slice=${String(label ?? "-")}${provider}${message}${detailLine}`
+  }).join("\n")
+}
+
+function auditField(label: string, value: unknown): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null
+  }
+  return `${label}=${String(value)}`
+}
+
 function parseSliceLogsArgs(args: string[]): {
   sliceRef?: string
   tailLines?: number
@@ -176,6 +212,34 @@ function parseSliceLogsArgs(args: string[]): {
     return { error: "usage: /slice logs [slice-ref] [--tail <lines>]" }
   }
   return { ...(sliceRef ? { sliceRef } : {}), ...(tailLines ? { tailLines } : {}) }
+}
+
+function parseSliceAuditArgs(args: string[]): {
+  sliceRef?: string
+  limit?: number
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let limit: number | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if (arg === "--limit" && value && !value.startsWith("--")) {
+      const parsed = Number.parseInt(value, 10)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return { error: "usage: /slice audit [slice-ref] [--limit <count>]" }
+      }
+      limit = parsed
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: /slice audit [slice-ref] [--limit <count>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(limit ? { limit } : {}) }
 }
 
 async function resolveFocusedSliceRef(deps: SliceCommandHandlerDeps): Promise<string> {
@@ -226,6 +290,26 @@ async function showSliceLogs(deps: SliceCommandHandlerDeps, args: string[]): Pro
     deps.flashFooter(`slice logs ${formatSliceLabel(payload.slice)}`, "info")
   } catch (error) {
     deps.flashFooter(error instanceof Error ? error.message : "slice logs failed", "error")
+  }
+}
+
+async function showSliceAudit(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.listSliceAudit) {
+    deps.flashFooter("slice audit is unavailable in this build", "error")
+    return
+  }
+  const parsed = parseSliceAuditArgs(args)
+  if (parsed.error) {
+    deps.flashFooter(parsed.error, "error")
+    return
+  }
+  try {
+    const sliceRef = await explicitOrFocusedSliceRef(deps, parsed.sliceRef)
+    const events = await deps.listSliceAudit(sliceRef, parsed.limit ?? null)
+    deps.appendNotice(formatSliceAuditEvents(events))
+    deps.flashFooter(`slice audit ${sliceRef}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice audit failed", "error")
   }
 }
 

@@ -42,7 +42,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 100;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 101;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -160,6 +160,7 @@ pub enum LocalDaemonRequest {
     SetSliceProviderAuthAlias(SetSliceProviderAuthAliasRequest),
     GetSliceDisplayEndpoint(SliceRefRequest),
     GetSliceLogs(GetSliceLogsRequest),
+    ListSliceAudit(ListSliceAuditRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
@@ -853,6 +854,9 @@ pub enum LocalDaemonResponse {
         agent: AgentInstance,
     },
     HomeExtensionAuditListed {
+        events: Vec<crate::durable_state::DurableStateEvent>,
+    },
+    SliceAuditListed {
         events: Vec<crate::durable_state::DurableStateEvent>,
     },
     AgentDestroyed {

@@ -310,6 +310,34 @@ test("slice command logs renders focused slice diagnostics", async () => {
   assert.equal(harness.footers.at(-1)?.message, "slice logs linux-dev")
 })
 
+test("slice command audit resolves focused slice and passes limit", async () => {
+  const harness = sliceHarness({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+      }),
+    ],
+    focusedAgent: {
+      remote_execution: {
+        worker_kernel_id: "kernel-slice",
+        worker_machine_id: "machine-slice",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "worker-agent",
+      },
+    },
+  })
+
+  await handleSliceSlashCommand(harness.deps, command("audit", "--limit", "5"))
+
+  assert.deepEqual(harness.auditRequests, [{ sliceRef: "linux-dev", limit: 5 }])
+  assert.match(harness.notices.at(-1) ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-dev provider=codex/)
+  assert.match(harness.notices.at(-1) ?? "", /status=running display=headless worktree=\/repo\/wt agents=1 worker=kernel-slice/)
+  assert.equal(harness.footers.at(-1)?.message, "slice audit linux-dev")
+})
+
 test("slice command auth import can target the focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -496,6 +524,7 @@ function sliceHarness(options: {
   const stoppedSlices: string[] = []
   const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
+  const auditRequests: Array<{ sliceRef: string; limit: number | null | undefined }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -571,8 +600,30 @@ function sliceHarness(options: {
         }],
       }
     },
+    listSliceAudit: async (sliceRef, limit) => {
+      auditRequests.push({ sliceRef, limit })
+      return [{
+        sequence: 1,
+        event_id: "state_evt_1",
+        kind: "slice.audit",
+        subject_id: "slice-1",
+        timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
+        payload: {
+          slice_id: "slice-1",
+          slice_name: sliceRef,
+          action: "auth.import",
+          outcome: "completed",
+          provider: "codex",
+          status: "running",
+          display_mode: "headless",
+          worktree_id: "/repo/wt",
+          agent_ids: ["agent-1"],
+          worker_kernel_id: "kernel-slice",
+        },
+      }]
+    },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests, auditRequests }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

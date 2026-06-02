@@ -245,6 +245,7 @@ function printUsage() {
     "  /slice status [s]     show a slice, defaulting to focused agent slice",
     "  /slice doctor [s]     check slice worker, scope, display, operation, and auth health",
     "  /slice logs [s]       show slice worker and lifecycle logs (--tail n)",
+    "  /slice audit [s]      show slice lifecycle and provider-auth audit events",
     "  /slice start [s]      start a slice, defaulting to focused agent slice",
     "  /slice stop [s]       stop a slice, defaulting to focused agent slice",
     "  /slice delete <s>     delete a slice",

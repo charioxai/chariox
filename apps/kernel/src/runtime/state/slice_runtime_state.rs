@@ -313,6 +313,18 @@ impl KernelRuntimeState {
         self.owned.slice_store.display_endpoint(slice_ref)
     }
 
+    pub(crate) fn list_slice_audit_events(
+        &self,
+        slice_ref: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::durable_state::DurableStateEvent>, DaemonError> {
+        let slice = self.resolve_slice(slice_ref)?;
+        let limit = limit.unwrap_or(50);
+        self.owned
+            .durable_state_store
+            .load_subject_events_by_kind(&slice.id, "slice.audit", limit)
+    }
+
     fn append_slice_durable_event(
         &self,
         kind: &'static str,

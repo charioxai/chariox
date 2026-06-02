@@ -2,8 +2,8 @@ use tokio::time::{sleep, Duration};
 
 use crate::error::DaemonError;
 use crate::local::{
-    CreateSliceRequest, GetSliceLogsRequest, ListSlicesRequest, LocalDaemonResponse,
-    SliceRefRequest,
+    CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest, ListSlicesRequest,
+    LocalDaemonResponse, SliceRefRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -53,6 +53,14 @@ pub(super) async fn execute_get_slice_logs_request(
         message: format!("slice log collection task failed: {error}"),
     })??;
     Ok(LocalDaemonResponse::SliceLogs { slice, entries })
+}
+
+pub(super) async fn execute_list_slice_audit_request(
+    runtime_state: &KernelRuntimeState,
+    request: ListSliceAuditRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let events = runtime_state.list_slice_audit_events(&request.slice_ref, request.limit)?;
+    Ok(LocalDaemonResponse::SliceAuditListed { events })
 }
 
 pub(super) async fn execute_start_slice_request(

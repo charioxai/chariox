@@ -42,7 +42,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
-  assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
+  assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
 })
 
 test("executeShellCommand exports session-scoped kernel debug bundle", async () => {
@@ -1529,6 +1529,46 @@ test("executeShellCommand renders slice logs", async () => {
   assert.match(result.message ?? "", /slice logs linux-a id=slice-1/)
   assert.match(result.message ?? "", /== container ==/)
   assert.match(result.message ?? "", /worker started/)
+})
+
+test("executeShellCommand renders slice audit", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    if ("ListSliceAudit" in request) {
+      return {
+        SliceAuditListed: {
+          events: [{
+            sequence: 1,
+            event_id: "state_evt_1",
+            kind: "slice.audit",
+            subject_id: "slice-1",
+            timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
+            payload: {
+              slice_id: "slice-1",
+              slice_name: "linux-a",
+              action: "auth.import",
+              outcome: "completed",
+              provider: "codex",
+              status: "running",
+              display_mode: "headless",
+              worktree_id: "/repo/feature",
+              agent_ids: ["agent-1"],
+              worker_kernel_id: "kernel-slice",
+            },
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const result = await executeShellCommand(parseShellCommand("slice audit linux-a --limit 5"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{ ListSliceAudit: { slice_ref: "linux-a", limit: 5 } }])
+  assert.match(result.message ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-a provider=codex/)
+  assert.match(result.message ?? "", /status=running display=headless worktree=\/repo\/feature agents=1 worker=kernel-slice/)
 })
 
 test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {

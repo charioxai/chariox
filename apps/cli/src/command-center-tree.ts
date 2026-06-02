@@ -333,6 +333,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "slice-status", label: "status", description: "Show a slice", value: "/slice status " },
       { id: "slice-doctor", label: "doctor", description: "Check slice worker, display, scope, operation, and provider account health", value: "/slice doctor " },
       { id: "slice-logs", label: "logs", description: "Show slice worker and lifecycle logs", value: "/slice logs " },
+      { id: "slice-audit", label: "audit", description: "Show slice lifecycle and provider-auth audit events", value: "/slice audit " },
       { id: "slice-start", label: "start", description: "Start a slice", value: "/slice start " },
       { id: "slice-stop", label: "stop", description: "Stop a slice", value: "/slice stop " },
       { id: "slice-delete", label: "delete", description: "Delete a slice", value: "/slice delete " },

@@ -10,6 +10,7 @@ import {
   getSliceLogsRequest,
   getSliceRequest,
   importSliceProviderAuthRequest,
+  listSliceAuditRequest,
   listSlicesRequest,
   removeSliceProviderAuthRequest,
   setSliceProviderAuthAliasRequest,
@@ -109,6 +110,16 @@ export async function executeSliceCommand(
       const response = await deps.client.send(getSliceLogsRequest(resolvedSliceRef, tailLines))
       const payload = expectVariant<{ slice: SliceRecord; entries: SliceLogEntry[] }>(response, "SliceLogs")
       return { ok: true, message: formatSliceLogs(payload.slice, payload.entries), data: payload }
+    }
+    case "audit": {
+      const { sliceRef, limit, error } = parseSliceAuditArgs(first, rest)
+      if (error) {
+        return { ok: false, message: error }
+      }
+      const resolvedSliceRef = sliceRef ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(listSliceAuditRequest(resolvedSliceRef, limit))
+      const events = expectVariant<{ events: Record<string, unknown>[] }>(response, "SliceAuditListed").events
+      return { ok: true, message: formatSliceAuditEvents(events), data: { events } }
     }
     case "start": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
@@ -212,7 +223,7 @@ export async function executeSliceCommand(
       return { ok: false, message: "usage: slice auth import|remove [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|doctor|logs|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
   }
 }
 
@@ -243,6 +254,35 @@ function parseSliceLogsArgs(first: string | undefined, rest: string[]): {
     return { error: "usage: slice logs [slice-ref] [--tail <lines>]" }
   }
   return { ...(sliceRef ? { sliceRef } : {}), ...(tailLines ? { tailLines } : {}) }
+}
+
+function parseSliceAuditArgs(first: string | undefined, rest: string[]): {
+  sliceRef?: string
+  limit?: number
+  error?: string
+} {
+  const args = [first, ...rest].filter((arg): arg is string => Boolean(arg))
+  let sliceRef: string | undefined
+  let limit: number | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if (arg === "--limit" && value && !value.startsWith("--")) {
+      const parsed = Number.parseInt(value, 10)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return { error: "usage: slice audit [slice-ref] [--limit <count>]" }
+      }
+      limit = parsed
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: slice audit [slice-ref] [--limit <count>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(limit ? { limit } : {}) }
 }
 
 function formatSliceLoginMessage(
@@ -445,6 +485,37 @@ function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
       return `== ${entry.source}${location}${truncated} ==\n${body}`
     }),
   ].join("\n")
+}
+
+function formatSliceAuditEvents(events: readonly Record<string, unknown>[]): string {
+  if (events.length === 0) {
+    return "no slice audit events"
+  }
+  return events.map((event) => {
+    const payload = typeof event.payload === "object" && event.payload ? event.payload as Record<string, unknown> : {}
+    const at = typeof event.timestamp_ms === "number" ? new Date(event.timestamp_ms).toISOString() : "unknown-time"
+    const action = typeof payload.action === "string" ? payload.action : String(event.kind ?? "slice.audit")
+    const outcome = typeof payload.outcome === "string" ? payload.outcome : typeof payload.result === "string" ? payload.result : ""
+    const label = typeof payload.slice_name === "string" && payload.slice_name ? payload.slice_name : payload.slice_id
+    const provider = typeof payload.provider === "string" && payload.provider ? ` provider=${payload.provider}` : ""
+    const message = typeof payload.message === "string" && payload.message ? ` message=${payload.message}` : ""
+    const details = [
+      fieldPart("status", payload.status),
+      fieldPart("display", payload.display_mode),
+      fieldPart("worktree", payload.worktree_id ?? payload.workspace_mount),
+      fieldPart("agents", Array.isArray(payload.agent_ids) ? payload.agent_ids.length : undefined),
+      fieldPart("worker", payload.worker_kernel_id ?? payload.worker_kernel_ref),
+    ].filter(Boolean)
+    const detailLine = details.length > 0 ? `\n  ${details.join(" ")}` : ""
+    return `${at} ${action}${outcome ? ` ${outcome}` : ""} slice=${String(label ?? "-")}${provider}${message}${detailLine}`
+  }).join("\n")
+}
+
+function fieldPart(label: string, value: unknown): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null
+  }
+  return `${label}=${String(value)}`
 }
 
 function doctorCheck(name: string, ok: boolean, detail: string): string {

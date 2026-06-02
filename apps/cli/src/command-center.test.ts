@@ -109,6 +109,7 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice status "), true)
   assert.equal(values.has("/slice doctor "), true)
   assert.equal(values.has("/slice logs "), true)
+  assert.equal(values.has("/slice audit "), true)
   assert.equal(values.has("/slice start "), true)
   assert.equal(values.has("/slice stop "), true)
   assert.equal(values.has("/slice delete "), true)
