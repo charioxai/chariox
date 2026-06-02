@@ -8,6 +8,20 @@ import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentLi
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
+test("agent command usage advertises hierarchical spawn placement", async () => {
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => {
+      flashedMessage = message
+    },
+  }))
+
+  await handlers.handleAgentCommand({ kind: "agent", raw: "/agent", args: [] })
+
+  assert.match(flashedMessage, /--machine <machine-ref>\|--kernel <kernel-ref>\|--slice off\|new:headless\|new:headed\|<slice-ref>/)
+  assert.doesNotMatch(flashedMessage, /--slice-display/)
+})
+
 test("agent spawn refreshes session state after launching the provider run", async () => {
   const firstAgent = makeAgent()
   const secondAgent = makeAgent({
