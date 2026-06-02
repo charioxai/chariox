@@ -8,7 +8,7 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAcc
 
 use super::mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
 use super::permission::{codex_collaboration_mode, codex_permission_policy, CodexPermissionPolicy};
-use super::{CodexClient, CodexNotification, CodexSocket, CODEX_MCP_TOKEN_ENV};
+use super::{CodexClient, CodexNotification, CodexSocket};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodexThreadStartResponse {
@@ -229,11 +229,10 @@ impl CodexClient {
     ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
         let provider_mcp_servers =
-            crate::provider::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
+            crate::provider::mcp_proxy::provider_facing_mcp_proxy_configs(
                 &self.mcp_servers,
                 self.runtime_mcp_server_url.as_deref(),
                 self.runtime_mcp_auth_token.as_deref(),
-                CODEX_MCP_TOKEN_ENV,
             )?;
         append_codex_mcp_overrides(&mut overrides, &provider_mcp_servers);
         if let (Some(server_url), Some(auth_token)) = (

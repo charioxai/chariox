@@ -3,7 +3,6 @@ use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
 use std::path::PathBuf;
 
-use super::codex::CODEX_MCP_TOKEN_ENV;
 use super::resolve_codex_executable;
 
 mod approval_bodies;
@@ -466,9 +465,10 @@ mod tests {
             Some(&json!("http://127.0.0.1:43120/mcp"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.bearer_token_env_var"),
-            Some(&json!("ARROBA_MCP_TOKEN"))
+            overrides.get("mcp_servers.arroba.http_headers.Authorization"),
+            Some(&json!("Bearer token-123"))
         );
+        assert_eq!(overrides.get("mcp_servers.arroba.bearer_token_env_var"), None);
         assert_eq!(
             overrides.get("mcp_servers.arroba.required"),
             Some(&json!(true))
@@ -538,13 +538,10 @@ mod tests {
             Some(&json!("http://127.0.0.1:43120/mcp/proxy/browser"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.browser.bearer_token_env_var"),
-            Some(&json!("ARROBA_MCP_TOKEN"))
-        );
-        assert_eq!(
             overrides.get("mcp_servers.browser.http_headers.Authorization"),
-            None
+            Some(&json!("Bearer token-123"))
         );
+        assert_eq!(overrides.get("mcp_servers.browser.bearer_token_env_var"), None);
         assert_eq!(overrides.get("mcp_servers.browser.command"), None);
         assert_eq!(overrides.get("mcp_servers.browser.args"), None);
         assert_eq!(
