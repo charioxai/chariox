@@ -742,11 +742,11 @@ test("kernel remote-runtime command opens health projection with remote footer",
   }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
 
   assert.match(notices.at(-1) ?? "", /^remote runtime/)
+  assert.match(notices.at(-1) ?? "", /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
   assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(notices.at(-1) ?? "", /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(notices.at(-1) ?? "", /workspace live sync:/)
-  assert.doesNotMatch(notices.at(-1) ?? "", /provider runs: projected=/)
   assert.deepEqual(flashes.at(-1), { message: "remote runtime: ok", tone: "info" })
 })
 
@@ -773,6 +773,7 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
   assert.match(rendered, /^remote runtime/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
+  assert.match(rendered, /provider runs: projected=2 active=2 arroba=2 native_tui=0/)
   assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)
   assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)

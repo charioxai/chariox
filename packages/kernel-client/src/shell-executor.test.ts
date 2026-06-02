@@ -169,9 +169,9 @@ test("executeShellCommand accepts kernel remote runtime aliases", async () => {
 
   assert.equal(remoteRuntime.ok, true)
   assert.match(remoteRuntime.message ?? "", /^remote runtime/)
+  assert.match(remoteRuntime.message ?? "", /provider runs: projected=0 active=0 arroba=0 native_tui=0/)
   assert.match(remoteRuntime.message ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(remoteRuntime.message ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
-  assert.doesNotMatch(remoteRuntime.message ?? "", /provider runs: projected=/)
   assert.equal(runtime.ok, true)
   assert.match(runtime.message ?? "", /workspace live sync:/)
   assert.match(runtime.message ?? "", /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)

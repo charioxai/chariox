@@ -61,6 +61,7 @@ function remoteRuntimeSettlingAttentionCount(health: DaemonHealthProjection): nu
 }
 
 export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {
+  const providerRuns = health.provider_runs
   const sliceLifecycle = health.slice_lifecycle
   const remoteExecution = health.remote_execution
   const remoteExtensionSync = health.remote_extension_sync
@@ -72,7 +73,8 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const lines = [
     "remote runtime",
-    `provider run invariants: duplicate=${health.provider_runs.duplicate_arroba_agent_bindings.length} mixed=${health.provider_runs.multi_interface_agent_bindings.length} orphaned=${health.provider_runs.orphaned_active_runs.length} pointer=${health.provider_runs.session_active_run_mismatches.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
+    `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `provider run invariants: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
