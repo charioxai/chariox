@@ -4,6 +4,7 @@ import { extractPromptInputHistoryEntries } from "./prompt-history.js"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
+import { focusedAgentIdForSession } from "./session-state.js"
 
 import type {
   CliOptions,
@@ -140,6 +141,11 @@ export async function bootstrapSession(
         session_id: session.id,
         focused_agent_id: attachedSession.focused_agent_id,
       })
+    } else if (!launchTargetAgent && !createdSession) {
+      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+        session_id: session.id,
+        focused_agent_id: attachedSession.focused_agent_id,
+      })
     } else if (launchTargetAgent?.remote_execution) {
       deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
         session_id: session.id,
@@ -240,11 +246,8 @@ async function loadSessionPromptHistory(
 }
 
 function resolveLaunchTargetAgent(session: RuntimeSession) {
-  if (session.focused_agent_id) {
-    const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id)
-    if (focusedAgent) return focusedAgent
-  }
-  return session.agents[0] ?? null
+  const focusedAgentId = focusedAgentIdForSession(session)
+  return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
 }
 
 function resolveStoredAgentLaunch(
@@ -256,7 +259,10 @@ function resolveStoredAgentLaunch(
     return fallback
   }
 
-  const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? session.agents[0]
+  const focusedAgentId = focusedAgentIdForSession(session)
+  const focusedAgent = focusedAgentId
+    ? session.agents.find((agent) => agent.id === focusedAgentId)
+    : null
   if (!focusedAgent) {
     return fallback
   }

@@ -23,13 +23,14 @@ export function deriveWorkspaceShellContextForSession(
   session: RuntimeSession,
   attachmentId: string | null | undefined,
 ): ShellContext {
+  const focusedAgentId = focusedAgentIdForSession(session)
   return {
     ...previous,
     workspace: session.workspace_id || previous.workspace,
     worktree: session.worktree_id || previous.worktree,
     sessionId: session.id,
     attachmentId: attachmentId ?? previous.attachmentId,
-    agentId: focusedAgentIdForSession(session) ?? previous.agentId,
+    agentId: focusedAgentId ?? (session.focused_agent_id ? undefined : previous.agentId),
   }
 }
 

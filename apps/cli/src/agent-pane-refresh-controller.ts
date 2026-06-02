@@ -11,7 +11,7 @@ import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
-import { sessionHasPromptWork } from "./session-state.js"
+import { focusedAgentIdForSession, sessionHasPromptWork } from "./session-state.js"
 import {
   stitchPrependedHistory,
 } from "./transcript-history.js"
@@ -50,7 +50,7 @@ export function createAgentPaneRefreshController(
       nextAgents: nextSession.agents,
       splitAgentResponseMode: deps.splitAgentResponseMode(),
       currentFocusedAgentId: deps.getFocusedAgentId(),
-      nextFocusedAgentId: nextSession.focused_agent_id ?? nextSession.agents[0]?.id ?? null,
+      nextFocusedAgentId: focusedAgentIdForSession(nextSession),
     })
   }
 

@@ -566,6 +566,69 @@ test("attachBinding skips provider launch when existing session exposes no visib
   assert.deepEqual(providerRuns, [null])
 })
 
+test("attachBinding skips provider launch when focused agent is stale", async () => {
+  const warnings: Array<Record<string, unknown> | undefined> = []
+  const providerRuns: Array<RuntimeProviderRun | null> = []
+  const attachedSession: RuntimeSession = {
+    id: "session-stale-focus",
+    alias: "shared",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-stale-focus"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "missing-agent",
+    max_agents: 6,
+    agents: [{
+      id: "agent-a",
+      agent_ref: "agent-a",
+      session_id: "session-stale-focus",
+      alias: null,
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+      worktree_id: null,
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+  let launchCalled = false
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-stale-focus", session_id: "session-stale-focus" }),
+    getSessionState: async () => attachedSession,
+    launchProviderRun: async () => {
+      launchCalled = true
+      throw new Error("should not launch a provider run")
+    },
+    setProviderRunState: (run: RuntimeProviderRun | null) => { providerRuns.push(run) },
+    setProviderCatalogState: () => {},
+    getProviderCatalog: async () => ({}),
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
+    logWarning: (_message: string, fields?: Record<string, unknown>) => warnings.push(fields),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-stale-focus" }, false)
+
+  assert.equal(launchCalled, false)
+  assert.deepEqual(providerRuns, [null])
+  assert.deepEqual(warnings, [{
+    session_id: "session-stale-focus",
+    focused_agent_id: "missing-agent",
+  }])
+})
+
 test("attachBinding restores the focused agent runtime profile for existing sessions", async () => {
   const launched: Array<{
     provider: string

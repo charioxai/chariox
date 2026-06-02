@@ -93,6 +93,7 @@ import {
 } from "./session-chrome-update-controller.js"
 import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
+  focusedAgentIdForSession,
 } from "./session-state.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
@@ -321,7 +322,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ToolTranscriptUpdate
   >({
     initialMountedTranscriptAgentId: initialBinding
-      ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null
+      ? focusedAgentIdForSession(initialSession)
       : null,
   })
   const transcriptSyntaxStyleController = createTranscriptSyntaxStyleController({

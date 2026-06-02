@@ -268,6 +268,80 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.equal(assistantEntry?.text, "while you were away")
 })
 
+test("bootstrapSession skips attach-time launch when focused agent is stale", async () => {
+  const warnings: Array<Record<string, unknown> | undefined> = []
+  const session = {
+    id: "session-1",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "missing-agent",
+    max_agents: 8,
+    agents: [{
+      id: "agent-a",
+      agent_ref: "agent-a",
+      session_id: "session-1",
+      alias: null,
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+      worktree_id: null,
+      state: "Idle" as const,
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+
+  const bootstrap = await bootstrapSession(
+    {} as never,
+    {
+      clientId: "cli-1",
+      sessionId: "session-1",
+      model: "gpt-5.4",
+      accountProfile: "default",
+      effort: "high",
+    },
+    "/workspace",
+    "/workspace",
+    {},
+    {
+      logger: {
+        warn: (_message: string, fields?: Record<string, unknown>) => warnings.push(fields),
+      } as never,
+      listSessions: async () => [session],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => session,
+      attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+      getSessionState: async () => session,
+      launchProviderRun: async () => { throw new Error("should not launch with stale focus") },
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async () => undefined,
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => null,
+      prepareHistoryOutlineAgent: () => [],
+    },
+  )
+
+  assert.equal(bootstrap.binding?.providerRun, null)
+  assert.deepEqual(warnings, [{
+    session_id: "session-1",
+    focused_agent_id: "missing-agent",
+  }])
+})
+
 function outlineAgent(agentId: string, prompt: string, summary: string) {
   return {
     agent_id: agentId,

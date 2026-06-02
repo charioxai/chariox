@@ -135,6 +135,9 @@ export function focusedAgentIdForSession(session: RuntimeSession): string | null
   if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
     return focusedAgentId
   }
+  if (focusedAgentId) {
+    return null
+  }
   return session.agents[0]?.id ?? null
 }
 

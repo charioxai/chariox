@@ -35,7 +35,7 @@ import type {
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
-import { sessionHasPromptWork, sessionResponseLayout } from "./session-state.js"
+import { focusedAgentIdForSession, sessionHasPromptWork, sessionResponseLayout } from "./session-state.js"
 import type { SessionListEntry } from "./sessions.js"
 import { applyTheme, setThemeRegistry } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -166,7 +166,7 @@ export function createCliAppState(options: {
     workspace: initialWorkspaceTarget,
     worktree: initialWorktreeTarget,
     sessionId: initialBinding ? initialSession.id : undefined,
-    agentId: initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id : undefined,
+    agentId: initialBinding ? focusedAgentIdForSession(initialSession) ?? undefined : undefined,
     provider: cliOptions.provider ?? "opencode",
     model: cliOptions.model ?? "default",
     effort: cliOptions.effort || "medium",

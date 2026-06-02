@@ -71,7 +71,7 @@ test("deriveWorkspaceShellContextForSession ignores stale focused agent ids", ()
     agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
   }), "attachment-2")
 
-  assert.equal(next.agentId, "agent-1")
+  assert.equal(next.agentId, undefined)
 })
 
 test("submitWorkspaceShellCommand records shell output and refreshes selected workflow", async () => {

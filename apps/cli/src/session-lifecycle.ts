@@ -8,7 +8,7 @@ import type {
   AttachedCliTransitionState,
   DetachedCliTransitionState,
 } from "./session-state.js"
-import { sessionResponseLayout } from "./session-state.js"
+import { focusedAgentIdForSession, sessionResponseLayout } from "./session-state.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -267,6 +267,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
             focused_agent_id: attachedSession.focused_agent_id,
           })
           deps.setProviderRunState(null)
+        } else if (!launchTargetAgent && !createdSession) {
+          deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+          deps.setProviderRunState(null)
         } else if (launchTargetAgent?.remote_execution) {
           deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
             session_id: session.id,
@@ -381,11 +387,8 @@ function isCompleteSessionSnapshot(
 }
 
 function resolveLaunchTargetAgent(session: RuntimeSession): RuntimeSession["agents"][number] | null {
-  if (session.focused_agent_id) {
-    const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id)
-    if (focusedAgent) return focusedAgent
-  }
-  return session.agents[0] ?? null
+  const focusedAgentId = focusedAgentIdForSession(session)
+  return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
 }
 
 function resolveStoredAgentLaunch(
@@ -398,7 +401,10 @@ function resolveStoredAgentLaunch(
   }
 
   const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
-  const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? session.agents[0]
+  const focusedAgentId = focusedAgentIdForSession(session)
+  const focusedAgent = focusedAgentId
+    ? session.agents.find((agent) => agent.id === focusedAgentId)
+    : null
   if (!focusedAgent) {
     return sessionDefaults
   }
