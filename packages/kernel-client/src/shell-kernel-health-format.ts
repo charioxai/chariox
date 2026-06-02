@@ -71,6 +71,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     ...(remoteExtensionSync.home_proxy_grants > 0
       ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
       : []),
+    formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
     "workspace live sync scope: selected workspace/worktree only; other repositories unrestricted",
@@ -123,6 +124,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     ...(remoteExtensionSync.home_proxy_grants > 0
       ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
       : []),
+    formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
     "workspace live sync scope: selected workspace/worktree only; other repositories unrestricted",
@@ -393,6 +395,30 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
     lines.push("  next: check workspace paths and permissions, then refresh workspace live sync status")
   }
+}
+
+function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): string {
+  const remoteExecution = health.remote_execution
+  const remoteExtensionSync = health.remote_extension_sync
+  const liveSync = health.workspace_live_sync
+  const workerRuns = remoteExecution.missing_active_worker_runs === 0 && remoteExecution.malformed_bindings === 0
+    ? "ok"
+    : `attention missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`
+  const manifests = remoteExtensionSync.manifest_missing_agents === 0
+    && remoteExtensionSync.failed_agents === 0
+    && remoteExtensionSync.pending_revoke_agents === 0
+    && remoteExtensionSync.stale_agents === 0
+    && remoteExtensionSync.pending_agents === 0
+    && remoteExtensionSync.syncing_agents === 0
+    ? "settled"
+    : `attention syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`
+  const liveSyncScope = liveSync.workspace_identity.identity_changed_provider_runs === 0
+    && liveSync.workspace_identity.invalid_provider_runs === 0
+    && liveSync.external_changes.externally_changed_artifacts === 0
+    && liveSync.external_changes.live_watcher_scan_errors === 0
+    ? "selected-workspace-only"
+    : `attention identity_changed=${liveSync.workspace_identity.identity_changed_provider_runs} invalid=${liveSync.workspace_identity.invalid_provider_runs} external_changes=${liveSync.external_changes.externally_changed_artifacts} scan_errors=${liveSync.external_changes.live_watcher_scan_errors}`
+  return `remote runtime invariants: worker_runs=${workerRuns}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {
