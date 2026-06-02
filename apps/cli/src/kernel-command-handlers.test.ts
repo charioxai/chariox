@@ -365,7 +365,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
-  assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex/)
+  assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex before sending prompts to agents in that slice/)
 })
 
 test("kernel health formatter reports remote execution issues", () => {
