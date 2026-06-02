@@ -11,6 +11,7 @@ export function createSessionRequest(
   agentDefaults?: SessionAgentDefaults,
   sliceRef?: string | null,
   workspaceLiveSyncMode?: WorkspaceLiveSyncModeInput | null,
+  kernelRef?: string | null,
 ) {
   return {
     CreateSession: {
@@ -19,6 +20,7 @@ export function createSessionRequest(
       alias: alias ?? null,
       ...(agentDefaults ? { agent_defaults: agentDefaults } : {}),
       slice_ref: sliceRef ?? null,
+      ...(kernelRef?.trim() ? { kernel_ref: kernelRef.trim() } : {}),
       ...(workspaceLiveSyncMode ? { workspace_live_sync_mode: workspaceLiveSyncModeProtocolValue(workspaceLiveSyncMode) } : {}),
     },
   }

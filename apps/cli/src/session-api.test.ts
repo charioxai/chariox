@@ -36,6 +36,38 @@ test("createSession forwards workspace live sync mode to the kernel request", as
   assert.equal(session.workspace_live_sync_mode, "managed")
 })
 
+test("createSession forwards worker kernel placement to the kernel request", async () => {
+  const sent: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      sent.push(request)
+      return { SessionCreated: { session: runtimeSession() } }
+    },
+  } as unknown as LocalIpcClient
+
+  await createSession(
+    client,
+    "/workspace",
+    "/workspace",
+    undefined,
+    undefined,
+    null,
+    "off",
+    "kernel-worker",
+  )
+
+  assert.deepEqual(sent, [{
+    CreateSession: {
+      workspace_id: "/workspace",
+      worktree_id: "/workspace",
+      alias: null,
+      slice_ref: null,
+      kernel_ref: "kernel-worker",
+      workspace_live_sync_mode: "unrestricted",
+    },
+  }])
+})
+
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",

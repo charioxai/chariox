@@ -6,6 +6,13 @@ impl KernelRuntimeState {
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice_ref = request.slice_ref.clone();
+        let kernel_ref = request.kernel_ref.clone();
+        if slice_ref.is_some() && kernel_ref.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "session.create",
+                message: "use either kernel_ref or slice_ref, not both".to_string(),
+            });
+        }
         let response = if let Some(slice_ref) = slice_ref.as_deref() {
             {
                 let slice_ref = slice_ref.to_string();
@@ -24,6 +31,8 @@ impl KernelRuntimeState {
             let worker_kernel_ref = self.resolve_slice_worker_kernel_ref(slice_ref).await?;
             self.create_sliced_session_response(request, worker_kernel_ref)
                 .await?
+        } else if let Some(kernel_ref) = kernel_ref {
+            self.create_remote_session_response(request, kernel_ref).await?
         } else {
             self.owned.create_session_response(request)?
         };
@@ -59,6 +68,47 @@ impl KernelRuntimeState {
         Ok(response)
     }
 
+    async fn create_remote_session_response(
+        &self,
+        mut request: crate::session::CreateSessionRequest,
+        worker_kernel_ref: String,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create remote session started",
+            serde_json::json!({
+                "workspace_id": request.workspace_id,
+                "worktree_id": request.worktree_id,
+                "worker_kernel_ref": worker_kernel_ref,
+                "has_alias": request.alias.as_ref().is_some_and(|alias| !alias.trim().is_empty()),
+                "has_agent_defaults": request.agent_defaults.is_some(),
+            }),
+        );
+        request.kernel_ref = None;
+        let mut session =
+            SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
+        let agent_request =
+            session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
+                .with_worktree(session.worktree_id())
+                .with_kernel(worker_kernel_ref);
+        let agent = self.spawn_agent(agent_request).await?;
+        self.owned
+            .session_store
+            .write()
+            .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
+        session = self.owned.session_snapshot(session.id())?;
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "create remote session completed",
+            serde_json::json!({
+                "session_id": session.id(),
+                "agent_id": agent.id(),
+                "agent_count": session.agents().len(),
+            }),
+        );
+        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+    }
+
     async fn create_sliced_session_response(
         &self,
         mut request: crate::session::CreateSessionRequest,
@@ -77,6 +127,7 @@ impl KernelRuntimeState {
             }),
         );
         request.slice_ref = None;
+        request.kernel_ref = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
         let agent_request =

@@ -118,6 +118,8 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slice_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     #[serde(default)]
     pub hidden: bool,
@@ -133,6 +135,7 @@ impl CreateSessionRequest {
             alias: None,
             agent_defaults: None,
             slice_ref: None,
+            kernel_ref: None,
             workspace_live_sync_mode: None,
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
@@ -156,6 +159,11 @@ impl CreateSessionRequest {
 
     pub fn with_slice_ref(mut self, slice_ref: impl Into<String>) -> Self {
         self.slice_ref = Some(slice_ref.into());
+        self
+    }
+
+    pub fn with_kernel_ref(mut self, kernel_ref: impl Into<String>) -> Self {
+        self.kernel_ref = Some(kernel_ref.into());
         self
     }
 

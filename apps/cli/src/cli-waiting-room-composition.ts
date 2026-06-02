@@ -212,7 +212,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       account_profile: launch.account_profile,
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode),
+    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : launch.kernelRef),
     createSlice: (options) => createSlice(deps.client, {
       name: options.name,
       displayMode: options.displayMode,
