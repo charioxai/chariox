@@ -128,6 +128,9 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice stop "), true)
   assert.equal(values.has("/slice delete "), true)
   assert.equal(values.has("/slice auth login "), true)
+  assert.equal(items.find((item) => item.value === "/slice auth login ")?.description, "Start login for a slice-specific provider account")
+  assert.equal(items.find((item) => item.value === "/slice auth import ")?.description, "Import host provider auth into this slice account")
+  assert.equal(items.find((item) => item.value === "/slice auth alias ")?.description, "Set or clear a slice provider account alias")
 })
 
 test("buildCommandCenterItems filters model options", () => {
