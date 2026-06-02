@@ -40,6 +40,7 @@ import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
+import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
@@ -149,11 +150,16 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       promptOrigin,
     })
 
+    const sliceInventory = agent.remote_execution
+      ? await loadNativeTuiSliceInventory(client)
+      : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
       surface: "claude native-tui",
       session,
       agent,
       worktree,
+      slices: sliceInventory.slices,
+      sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run,
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,
@@ -391,11 +397,16 @@ async function runClaudeRemoteRendered(
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
 
+    const sliceInventory = agent.remote_execution
+      ? await loadNativeTuiSliceInventory(client)
+      : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
       surface: "claude remote-native-tui",
       session,
       agent,
       worktree,
+      slices: sliceInventory.slices,
+      sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run,
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,

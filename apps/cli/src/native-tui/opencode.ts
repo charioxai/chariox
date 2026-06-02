@@ -37,6 +37,7 @@ import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
+import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
   attachNativeSession,
   createNativeSession,
@@ -166,11 +167,16 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       throw new Error("OpenCode provider run did not expose provider_session_id")
     }
     proxy.bindProviderRun(run)
+    const sliceInventory = agent.remote_execution
+      ? await loadNativeTuiSliceInventory(client)
+      : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
       surface: "opencode native-tui",
       session,
       agent,
       worktree,
+      slices: sliceInventory.slices,
+      sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run,
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,

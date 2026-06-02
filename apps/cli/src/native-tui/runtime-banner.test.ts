@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   RuntimeProviderRun,
   RuntimeSession,
+  SliceRecord,
 } from "../cli-types.js"
 import {
   formatNativeTuiRuntimeBanner,
@@ -29,6 +30,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
         active_worker_provider_run_id: "worker-run-1",
       },
     }),
+    slices: [slice()],
     worktree: "/repo/worktrees/feature",
     run: providerRun("session-run-1"),
     grantedMcps: ["filesystem"],
@@ -42,13 +44,35 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /arroba agent:   A1 \(builder\) \[id=agent-1\]/)
   assert.match(banner, /home kernel:    home-kernel@home-machine/)
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)
-  assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
+  assert.match(banner, /placement:      slice linux-dev \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
+  assert.match(banner, /slice:          linux-dev \(id=slice-1, status=running, display=headed, worktree=\/repo\/worktrees\/feature, agents=1\)/)
+  assert.match(banner, /slice auth:     codex=work \(work@example.com\)/)
   assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /remote ext sync: pending, next=wait for the worker manifest update; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)
+})
+
+test("native TUI runtime banner can show explicit slice lookup failures", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "tracked" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    }),
+    worktree: "/repo",
+    sliceLookupError: "kernel did not return slice inventory",
+  })
+
+  assert.match(banner, /placement:      remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(banner, /slice lookup:   kernel did not return slice inventory/)
 })
 
 test("native TUI runtime banner renders local defaults without inventing state", () => {
@@ -177,5 +201,33 @@ function providerRun(id: string): RuntimeProviderRun {
     variant: null,
     usage_tokens_total: null,
     state: "Ready",
+  }
+}
+
+function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id: "slice-1",
+    name: "linux-dev",
+    owner_kernel_id: "home-kernel",
+    owner_machine_id: "home-machine",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    workspace_id: "/repo",
+    worktree_id: "/repo/worktrees/feature",
+    agent_ids: ["agent-1"],
+    display_mode: "headed",
+    worker_kernel_ref: "slice:slice-1",
+    worker_kernel_id: "worker-kernel",
+    worker_machine_id: "hetzner",
+    provider_auth: [{
+      provider: "codex",
+      state: "authenticated",
+      alias: "work",
+      email: "work@example.com",
+    }],
+    created_at_ms: 1,
+    updated_at_ms: 1,
+    ...overrides,
   }
 }

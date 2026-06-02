@@ -41,6 +41,7 @@ import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
+import { loadNativeTuiSliceInventory } from "./slice-inventory.js"
 import {
   attachNativeSession,
   createNativeSession,
@@ -182,11 +183,16 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     const proxyUrl = `ws://127.0.0.1:${proxyAddress.port}`
     bindState.structuredEndpoint = bindProviderEndpoint || proxyUrl
+    const sliceInventory = agent.remote_execution
+      ? await loadNativeTuiSliceInventory(client)
+      : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
       surface: "codex native-tui",
       session,
       agent,
       worktree,
+      slices: sliceInventory.slices,
+      sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run: bindState.run,
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,
