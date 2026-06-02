@@ -648,6 +648,26 @@ test("kernel health command reports duplicate provider-run bindings", async () =
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
+test("kernel remote-runtime command opens health projection with remote footer", async () => {
+  const notices: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+
+  await handleKernelSlashCommand({
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+    getDaemonHealth: async () => health(),
+    transitionToNoSession: () => {},
+  }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
+
+  assert.match(notices.at(-1) ?? "", /^kernel health/)
+  assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
+  assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
+  assert.match(notices.at(-1) ?? "", /workspace live sync:/)
+  assert.deepEqual(flashes.at(-1), { message: "remote runtime: ok", tone: "info" })
+})
+
 test("kernel health command reports multi-interface provider-run bindings", async () => {
   const notices: string[] = []
   const flashes: Array<{ message: string; tone: string }> = []

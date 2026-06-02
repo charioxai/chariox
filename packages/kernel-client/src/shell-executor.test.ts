@@ -39,7 +39,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /kernel health\|status\|debug-bundle \[label\]\|delete/)
+  assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
@@ -155,6 +155,23 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /next: run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(result.message ?? "", /workspace live sync managed mode unavailable: managed mode needs selective write fencing/)
   assert.match(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
+})
+
+test("executeShellCommand accepts kernel remote runtime aliases", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return { DaemonHealth: { projection: daemonHealth() } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const remoteRuntime = await executeShellCommand(parseShellCommand("kernel remote-runtime"), context, { client: fake.client })
+  const runtime = await executeShellCommand(parseShellCommand("kernel runtime"), context, { client: fake.client })
+
+  assert.equal(remoteRuntime.ok, true)
+  assert.match(remoteRuntime.message ?? "", /^kernel health/)
+  assert.match(remoteRuntime.message ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
+  assert.match(remoteRuntime.message ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
+  assert.equal(runtime.ok, true)
+  assert.match(runtime.message ?? "", /workspace live sync:/)
 })
 
 test("executeShellCommand renders attached session runtime context before kernel health", async () => {

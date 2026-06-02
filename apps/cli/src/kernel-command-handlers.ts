@@ -33,22 +33,23 @@ export async function handleKernelSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
 ): Promise<void> {
   const [subcommand, ...args] = command.args
-  if (subcommand === "health" || subcommand === "status") {
+  if (subcommand === "health" || subcommand === "status" || subcommand === "remote-runtime" || subcommand === "runtime") {
     if (!deps.getDaemonHealth) {
       deps.flashFooter("kernel health is unavailable in this build", "error")
       return
     }
     if (args.length > 0) {
-      deps.flashFooter("usage: /kernel health", "error")
+      deps.flashFooter("usage: /kernel health | /kernel remote-runtime", "error")
       return
     }
     const health = await deps.getDaemonHealth()
     const issueCount = kernelHealthIssueCount(health)
     deps.appendNotice(formatKernelHealth(health))
+    const label = subcommand === "remote-runtime" || subcommand === "runtime" ? "remote runtime" : "kernel health"
     deps.flashFooter(
       issueCount === 0
-        ? "kernel health: ok"
-        : `kernel health: ${issueCount} issue${issueCount === 1 ? "" : "s"}`,
+        ? `${label}: ok`
+        : `${label}: ${issueCount} issue${issueCount === 1 ? "" : "s"}`,
       issueCount === 0 ? "info" : "error",
     )
     return
@@ -95,5 +96,5 @@ export async function handleKernelSlashCommand(
     deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
     return
   }
-  deps.flashFooter("usage: /kernel health | /kernel debug-bundle [label] | /kernel delete", "error")
+  deps.flashFooter("usage: /kernel health | /kernel remote-runtime | /kernel debug-bundle [label] | /kernel delete", "error")
 }

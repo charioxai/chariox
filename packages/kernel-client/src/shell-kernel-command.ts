@@ -20,7 +20,7 @@ export async function executeKernelCommand(
   deps: ShellKernelCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, ...args] = parsed.args
-  if ((action === "health" || action === "status") && args.length === 0) {
+  if ((action === "health" || action === "status" || action === "remote-runtime" || action === "runtime") && args.length === 0) {
     const response = await deps.client.send(getDaemonHealthRequest())
     const payload = expectVariant<{ projection: DaemonHealthProjection }>(response, "DaemonHealth")
     const runtimeContext = await kernelHealthRuntimeContext(context, deps)
@@ -50,7 +50,7 @@ export async function executeKernelCommand(
     }
   }
   if (action !== "delete" || args.length > 0) {
-    return { ok: false, message: "usage: kernel health|status|debug-bundle [label]|delete" }
+    return { ok: false, message: "usage: kernel health|status|remote-runtime|runtime|debug-bundle [label]|delete" }
   }
   const response = await deps.client.send(deleteKernelRequest())
   const payload = expectVariant<{ kernel_id: string; deleted_sessions: RuntimeSession[] }>(response, "KernelDeleted")

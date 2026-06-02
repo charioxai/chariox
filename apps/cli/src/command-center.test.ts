@@ -50,6 +50,20 @@ test("buildCommandCenterItems includes config subcommands", () => {
   assert.equal(configSyncItems.find((item) => item.value === "/config workspace-live-sync tracked")?.description, "Default new sessions to tracked turn-end sync for their selected workspace/worktree; other repositories stay unrestricted")
 })
 
+test("buildCommandCenterItems includes kernel remote runtime diagnostics", () => {
+  const items = buildCommandCenterItems("/kernel", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items.find((item) => item.value === "/kernel health")?.description, "Show runtime health and provider-run invariants")
+  assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show remote agents, slices, home-proxy, and live sync readiness")
+})
+
 test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   const items = buildCommandCenterItems("/workspace sync", {
     providerCatalog: fallbackProviderCatalog(),
