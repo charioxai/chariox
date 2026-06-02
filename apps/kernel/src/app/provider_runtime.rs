@@ -609,6 +609,81 @@ mod tests {
     }
 
     #[test]
+    fn provider_launch_rejects_agent_from_another_session() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("first session create should succeed");
+        let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+            .expect("second session create should succeed");
+
+        let error = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    second_session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(first_agent.id()),
+            )
+            .expect_err("launch should reject an agent outside the requested session");
+
+        assert!(matches!(
+            error,
+            DaemonError::AgentNotInSession {
+                session_id,
+                agent_id,
+            } if session_id == second_session.id() && agent_id == first_agent.id()
+        ));
+        assert!(app
+            .providers()
+            .get_latest_run_for_agent(first_session.id(), first_agent.id())
+            .is_none());
+        assert!(app
+            .providers()
+            .get_latest_run_for_agent(second_session.id(), first_agent.id())
+            .is_none());
+    }
+
+    #[test]
+    fn detached_provider_launch_rejects_agent_from_another_session() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (_first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("first session create should succeed");
+        let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+            .expect("second session create should succeed");
+
+        let error = app
+            .launch_provider_detached(
+                LaunchProviderRequest::new(
+                    second_session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(first_agent.id()),
+            )
+            .expect_err("detached launch should reject an agent outside the requested session");
+
+        assert!(matches!(
+            error,
+            DaemonError::AgentNotInSession {
+                session_id,
+                agent_id,
+            } if session_id == second_session.id() && agent_id == first_agent.id()
+        ));
+        assert!(app.providers().list_runs().is_empty());
+    }
+
+    #[test]
     fn provider_launch_replaces_existing_arroba_run_for_target_agent() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

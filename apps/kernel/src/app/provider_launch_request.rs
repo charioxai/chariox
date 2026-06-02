@@ -25,6 +25,12 @@ impl DaemonApp {
             .as_deref()
             .and_then(|agent_id| self.agents.get_agent(agent_id).ok());
         if let Some(agent) = agent.as_ref() {
+            if agent.session_id() != session.id() {
+                return Err(DaemonError::AgentNotInSession {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                });
+            }
             if agent.remote_execution().is_some() {
                 return Err(DaemonError::LocalTransport {
                     operation,
