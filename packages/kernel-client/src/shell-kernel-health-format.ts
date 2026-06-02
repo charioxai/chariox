@@ -329,7 +329,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     const target = firstAgent ?? "<agent>"
     const nextAction = remoteExtensionSyncNextAction(firstIssue
       ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
-      : null, target, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${target}`
+      : remoteExtensionSyncAggregateStatus(remoteExtensionSync), target, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${target}`
     lines.push(`  next: ${nextAction}`)
   }
 
@@ -461,6 +461,34 @@ function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
       + health.remote_extension_sync.manifest_missing_agents
       + health.remote_extension_sync.pending_revoke_agents
     )
+}
+
+function remoteExtensionSyncAggregateStatus(remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"]): {
+  readonly state: string
+  readonly pending_revoke: boolean
+} | null {
+  if (remoteExtensionSync.pending_revoke_agents > 0) {
+    return {
+      state: remoteExtensionSync.failed_agents > 0
+        ? "failed"
+        : remoteExtensionSync.stale_agents > 0
+          ? "stale"
+          : remoteExtensionSync.manifest_missing_agents > 0
+            ? "missing"
+            : "pending",
+      pending_revoke: true,
+    }
+  }
+  if (remoteExtensionSync.manifest_missing_agents > 0) {
+    return { state: "missing", pending_revoke: false }
+  }
+  if (remoteExtensionSync.failed_agents > 0) {
+    return { state: "failed", pending_revoke: false }
+  }
+  if (remoteExtensionSync.stale_agents > 0) {
+    return { state: "stale", pending_revoke: false }
+  }
+  return null
 }
 
 function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): number {

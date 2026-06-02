@@ -461,6 +461,29 @@ test("kernel health formatter reports remote extension sync issues", () => {
   assert.match(rendered, /agent=agent-missing \(agent-missing\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-2 state=missing worktree=\/repo grants=mcp:github/)
 })
 
+test("kernel health formatter gives worker-connectivity guidance for aggregate missing manifests", () => {
+  const unhealthy = health({
+    remote_extension_sync: {
+      remote_agents: 1,
+      home_proxy_agents: 1,
+      home_proxy_grants: 1,
+      manifest_missing_agents: 1,
+      synced_agents: 0,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+      issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /remote extension sync issues: failed=0 stale=0 missing=1 pending_revoke=0/)
+  assert.match(rendered, /next: run \/extension sync-status <agent>; check worker connectivity; use \/extension sync-retry <agent> after worker connectivity is healthy/)
+})
+
 test("kernel health formatter reports workspace live sync and collision issues", () => {
   const unhealthy = health({
     workspace_coordination: {
