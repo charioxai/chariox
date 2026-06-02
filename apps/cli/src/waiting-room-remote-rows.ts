@@ -219,9 +219,6 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
   if (machine.kernel_count === 0) {
     return "start a kernel on this machine"
   }
-  if ((machine.available_providers ?? []).length === 0) {
-    return `configure provider CLIs on ${machineLabel}`
-  }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "blocked")) {
     const [firstKernel] = kernels
     const kernelLabel = kernels.length === 1 && firstKernel
@@ -234,6 +231,12 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
     return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
+  }
+  if (kernels.length > 0 && !kernels.some((kernel) => remoteKernelReadiness(kernel) === "ready")) {
+    return `fix listed kernel readiness issues on ${machineLabel} or choose another worker`
+  }
+  if ((machine.available_providers ?? []).length === 0) {
+    return `configure provider CLIs on ${machineLabel}`
   }
   return ""
 }
