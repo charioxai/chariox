@@ -150,7 +150,7 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
   const hash = status.manifest_hash ? ` ${status.manifest_hash.slice(0, 8)}` : ""
   const revoke = status.pending_revoke ? " pending revoke" : ""
   const error = status.last_error ? ` error ${status.last_error}` : ""
-  const action = status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error
+  const action = status.state !== "synced" || status.pending_revoke || status.last_error
     ? `; see /extension sync-status ${agent.agent_ref}`
     : ""
   return `manifest ${status.state}${hash}${revoke}${error}${action}`
@@ -334,7 +334,7 @@ function formatAgentRemoteExtensionSyncLines(agent: AgentInstance): string[] {
     status.last_attempted_at_ms ? `attempted=${formatTimestamp(status.last_attempted_at_ms)}` : null,
   ].filter(Boolean)
   const lines = [`remote extension sync: ${details.join(", ")}`]
-  if (status.state === "failed" || status.state === "stale" || status.pending_revoke || status.last_error) {
+  if (status.state !== "synced" || status.pending_revoke || status.last_error) {
     lines.push(`remote extension next: ${formatAgentRemoteExtensionSyncNextAction(agent)}`)
   }
   return lines

@@ -220,6 +220,32 @@ test("remote skill-only agent summaries do not report pending home-proxy manifes
   assert.doesNotMatch(inspectSummary, /pending, next=/)
 })
 
+test("agent summaries make settling home-proxy manifests actionable", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "connector", name: "status-api" }],
+    remote_extension_manifest_sync: {
+      state: "pending",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: false,
+    },
+  })
+
+  const listSummary = formatAgentListSummary([remoteAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteAgent)
+
+  assert.match(listSummary, /manifest pending abcdef12; see \/extension sync-status agent-remote/)
+  assert.match(inspectSummary, /remote extension sync: pending, hash=abcdef123456/)
+  assert.match(inspectSummary, /remote extension next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if it does not settle; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
+})
+
 test("agent summaries expose session and worker provider run pointers", () => {
   const remoteAgent = agent({
     id: "agent-remote",
