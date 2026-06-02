@@ -38,6 +38,8 @@ import {
 import { sessionContextAgentId } from "./shell-session-context.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 
+const sessionCreateUsage = "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new:headless|new:headed|<slice-ref>]"
+
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
@@ -71,10 +73,10 @@ export async function executeSessionCommand(
         return { ok: false, message: placement.error }
       }
       if (placement.options.kernelRef) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
+        return { ok: false, message: sessionCreateUsage }
       }
       if (placement.options.positional.length > 1) {
-        return { ok: false, message: "usage: session new [directory] [--dir <directory>] [--worktree <directory> --branch <branch>] [--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
+        return { ok: false, message: sessionCreateUsage }
       }
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree

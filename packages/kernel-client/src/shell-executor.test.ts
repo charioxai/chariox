@@ -958,7 +958,7 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
     throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
-  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new --slice-display headed as s"), context, {
+  const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new:headed as s"), context, {
     client: fake.client,
     resolveExistingDirectory: async () => "/repo/qa",
   })
@@ -966,6 +966,19 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
   assert.equal(result.ok, true)
   assert.equal((requests[0] as { CreateSlice: { display_mode: string } }).CreateSlice.display_mode, "headed")
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "CreateSession"])
+})
+
+test("executeShellCommand session new usage advertises inline slice display modes", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --kernel worker-1"), context, {
+    client: fakeClient(() => {
+      throw new Error("unexpected request")
+    }).client,
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /--slice off\|new:headless\|new:headed\|<slice-ref>/)
+  assert.doesNotMatch(result.message ?? "", /--slice-display/)
 })
 
 test("executeShellCommand reuses only slices scoped to the session worktree", async () => {
