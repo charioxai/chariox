@@ -226,6 +226,27 @@ test("agent summaries expose session and worker provider run pointers", () => {
     }),
     /provider run: session=run-session owner unknown, worker=run-worker/,
   )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /provider run next: run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to agent-remote/,
+  )
+  assert.match(
+    formatAgentInspectSummary(agent({
+      id: "agent-working",
+      agent_ref: "agent-working",
+      state: "Working",
+      remote_execution: {
+        worker_kernel_id: "kernel-worker",
+        worker_machine_id: "machine-worker",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    })),
+    /provider run next: run \/kernel health and \/machine kernels machine-worker; reconnect or relaunch the remote\/slice worker if no active worker run appears/,
+  )
   assert.doesNotMatch(
     formatAgentListSummary([remoteAgent], [], {
       activeProviderRunId: "run-session",

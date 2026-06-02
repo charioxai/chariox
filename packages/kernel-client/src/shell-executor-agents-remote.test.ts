@@ -264,6 +264,7 @@ test("executeShellCommand reports unknown provider run owner when lookup fails",
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /provider run: session=run-missing owner unknown; provider run disappeared/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to agent-1/)
 })
 
 test("executeShellCommand inspects remote agent lease and manifest state", async () => {
