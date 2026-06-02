@@ -793,6 +793,28 @@ test("executeShellCommand rejects machine spawn when no ready kernel supports th
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
 
+test("executeShellCommand rejects machine spawn directory placement before resolving kernels", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = fakeClient((request) => {
+    requests.push(request)
+    return {}
+  })
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    provider: "codex",
+    model: "gpt-5.2",
+    effort: "low",
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1 --dir /repo"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /uses the worker kernel default directory/)
+  assert.deepEqual(requests, [])
+})
+
 test("executeShellCommand treats --slice off as local agent placement", async () => {
   const agent = makeAgent({
     id: "agent-local",

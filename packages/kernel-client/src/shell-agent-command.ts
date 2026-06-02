@@ -114,14 +114,15 @@ export async function executeAgentCommand(
       if (parsedSpawn.options.positional.length > 2) {
         return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
       }
+      const remotePlacementRef = parsedSpawn.options.kernelRef ?? parsedSpawn.options.machineRef
+      if (remotePlacementRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
+        return { ok: false, message: "usage: agent spawn [alias] [model] --machine/--kernel <ref> uses the worker kernel default directory" }
+      }
       const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
       if (!resolvedMachineKernel.ok) {
         return { ok: false, message: resolvedMachineKernel.message }
       }
       const remoteKernelRef = parsedSpawn.options.kernelRef ?? resolvedMachineKernel.kernelRef
-      if (remoteKernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] --machine/--kernel <ref> uses the worker kernel default directory" }
-      }
       if (
         parsedSpawn.options.sliceRef
         && !shellSliceCreatesPlacement(parsedSpawn.options.sliceRef)
