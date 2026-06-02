@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use arroba_relay::protocol::{ClientTarget, RelayKernelPresence};
 
 use crate::agent::{AgentInstance, CreateAgentRequest, RemoteAgentBinding};
@@ -11,6 +13,9 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use super::remote_kernel_selection::{
     ensure_kernel_can_host_provider, kernel_presence_matches_ref, select_remote_kernel,
 };
+
+const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
+const REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS: u64 = 250;
 
 impl DaemonApp {
     pub(crate) fn remote_extension_manifest_for_agent(
@@ -453,9 +458,28 @@ impl DaemonApp {
                 return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
             }
         }
-        let kernel =
-            self.block_on_relay_future(relay_discovery::get_live_kernel(relay_config, kernel_ref))?;
-        ensure_kernel_can_host_provider(kernel, kernel_ref, provider)
+        let mut last_error = None;
+        for attempt in 0..REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
+            match self
+                .block_on_relay_future(relay_discovery::get_live_kernel(relay_config, kernel_ref))
+            {
+                Ok(kernel) => {
+                    return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
+                        std::thread::sleep(Duration::from_millis(
+                            REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS,
+                        ));
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
+            operation: "select remote kernel",
+            message: format!("kernel `{kernel_ref}` did not appear"),
+        }))
     }
 
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {

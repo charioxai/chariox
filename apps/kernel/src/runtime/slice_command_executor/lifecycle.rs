@@ -8,6 +8,8 @@ use crate::local::{
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
+use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summaries};
+
 pub(super) async fn execute_list_slices_request(
     runtime_state: &KernelRuntimeState,
     _request: ListSlicesRequest,
@@ -115,8 +117,65 @@ pub(super) async fn execute_start_slice_request(
         }
     };
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
+    let slice =
+        import_all_provider_auth_for_started_slice(runtime_state, config_projection, slice).await?;
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
+}
+
+async fn import_all_provider_auth_for_started_slice(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    slice: crate::slice::SliceRecord,
+) -> Result<crate::slice::SliceRecord, DaemonError> {
+    if slice.backend != crate::slice::SliceBackendKind::LocalDocker {
+        return Ok(slice);
+    }
+    runtime_state.record_slice_audit_event(&slice, "auth.import", "accepted", Some("all"), None)?;
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let import_result = tokio::task::spawn_blocking(move || {
+        crate::slice::run_local_docker_slice_action(
+            &task_slice,
+            crate::slice::LocalDockerSliceAction::ImportProviderAuth,
+            None,
+            Some("all"),
+            &docker_options,
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.auth.import",
+        message: format!("slice auth import task failed: {error}"),
+    })?;
+    if let Err(error) = import_result {
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "auth.import",
+            "failed",
+            Some("all"),
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
+    let imported_provider_auth = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
+        .map(|summaries| scoped_provider_auth_summaries("all", summaries))
+        .unwrap_or_default();
+    let slice = runtime_state.set_slice_provider_auth(
+        &slice.id,
+        merge_scoped_provider_auth(slice.provider_auth, "all", imported_provider_auth),
+    )?;
+    runtime_state.record_slice_audit_event(
+        &slice,
+        "auth.import",
+        "completed",
+        Some("all"),
+        None,
+    )?;
+    Ok(slice)
 }
 
 pub(super) async fn execute_stop_slice_request(

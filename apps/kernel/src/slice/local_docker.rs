@@ -1,6 +1,8 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
@@ -31,6 +33,9 @@ pub struct LocalDockerSliceOptions {
     pub screen_width: u32,
     pub screen_height: u32,
 }
+
+const DOCKER_READY_ATTEMPTS: usize = 60;
+const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
@@ -82,6 +87,7 @@ pub fn run_local_docker_slice_action(
         });
     }
     if action == LocalDockerSliceAction::Provision {
+        ensure_host_docker_ready()?;
         ensure_local_docker_slice_ports_available(record)?;
     }
     let script = linux_docker_slice_script()?;
@@ -646,6 +652,84 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
             message: format!("slice Docker provisioner not found at {}", script.display()),
         })
     }
+}
+
+fn ensure_host_docker_ready() -> Result<(), DaemonError> {
+    if !command_exists("docker") {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.local_docker.docker",
+            message: "docker is required for local Docker slices".to_string(),
+        });
+    }
+    if docker_is_ready() {
+        return Ok(());
+    }
+
+    let mut start_attempts = Vec::new();
+    if command_exists("colima") {
+        start_attempts.push("colima start");
+        let _ = Command::new("colima")
+            .arg("start")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if wait_for_docker_ready() {
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if command_exists("open") {
+            start_attempts.push("open -ga Docker");
+            let _ = Command::new("open")
+                .args(["-ga", "Docker"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if wait_for_docker_ready() {
+                return Ok(());
+            }
+        }
+    }
+
+    let attempted = if start_attempts.is_empty() {
+        "no supported Docker launcher found".to_string()
+    } else {
+        format!("attempted {}", start_attempts.join(" and "))
+    };
+    Err(DaemonError::LocalTransport {
+        operation: "slice.local_docker.docker",
+        message: format!("docker is not running and could not be started ({attempted})"),
+    })
+}
+
+fn wait_for_docker_ready() -> bool {
+    for _ in 0..DOCKER_READY_ATTEMPTS {
+        if docker_is_ready() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(DOCKER_READY_RETRY_DELAY_MS));
+    }
+    false
+}
+
+fn docker_is_ready() -> bool {
+    Command::new("docker")
+        .arg("info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn command_log_preview(path: &Path) -> String {
