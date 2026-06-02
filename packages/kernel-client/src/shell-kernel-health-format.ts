@@ -1,4 +1,5 @@
 import type { DaemonHealthProjection } from "./kernel-types.js"
+import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
@@ -207,9 +208,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     }
     const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
     const firstIssue = remoteExecution.issues[0]
-    const inspect = firstAgent ? `run /agent inspect ${firstAgent}` : "inspect the agent placement"
-    const worker = firstIssue?.worker_machine_id ? `; run /machine kernels ${firstIssue.worker_machine_id}` : ""
-    lines.push(`  next: ${inspect}${worker}; reconnect or relaunch the remote/slice worker before sending more prompts`)
+    lines.push(`  next: ${remoteWorkerProviderRunRecoveryAction(firstAgent, firstIssue?.worker_machine_id)}`)
   }
 
   if (remoteExtensionSyncIssueCount(health) > 0) {

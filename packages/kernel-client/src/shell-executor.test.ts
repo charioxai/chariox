@@ -152,7 +152,7 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /session=session-1 agent=agent-1 runs=run-1,run-2/)
   assert.match(result.message ?? "", /remote execution issues: missing_worker_runs=1 malformed=0/)
   assert.match(result.message ?? "", /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run: active remote agent has no worker run/)
-  assert.match(result.message ?? "", /next: run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker before sending more prompts/)
+  assert.match(result.message ?? "", /next: run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(result.message ?? "", /workspace live sync managed mode unavailable: managed mode needs selective write fencing/)
   assert.match(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
 })
