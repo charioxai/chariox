@@ -1,6 +1,6 @@
 import type { AgentInstance, RuntimeProviderRun, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import { getProviderRunRequest, getSessionStateRequest, listSlicesRequest } from "./ipc-requests.js"
-import { formatRemoteExtensionSyncStatusLine } from "./shell-capability-format.js"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacementSummary,
@@ -98,7 +98,7 @@ function formatShellContext(
       `provider run: ${formatContextProviderRun(currentAgent, session, activeProviderRun, providerRunLookupError)}`,
       `extensions: ${formatContextExtensionSummary(currentAgent)}`,
       `extension runtime: ${formatExtensionGrantRuntimeDetail(currentAgent.extension_grants, Boolean(currentAgent.remote_execution))}`,
-      `remote extension sync: ${formatContextRemoteExtensionSync(currentAgent)}`,
+      ...formatContextRemoteExtensionSyncLines(currentAgent),
     ] : []),
     `mode: ${currentAgent ? `${effectiveAgentMode} (agent${currentAgent.execution_mode_override ? "-override" : "-session"})` : sessionMode}`,
     `permissions: ${currentAgent ? `${effectiveAgentPermissions} (agent${currentAgent.permission_level_override ? "-override" : "-session"})` : sessionPermissions}`,
@@ -201,21 +201,30 @@ function formatContextExtensionSummary(agent: AgentInstance): string {
   })
 }
 
-function formatContextRemoteExtensionSync(agent: AgentInstance): string {
+function formatContextRemoteExtensionSyncLines(agent: AgentInstance): string[] {
   if (!agent.remote_execution) {
-    return "not applicable"
+    return ["remote extension sync: not applicable"]
   }
   const sync = agent.remote_extension_manifest_sync
   if (!sync && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-    return "not applicable (no active home-proxy tools)"
+    return ["remote extension sync: not applicable (no active home-proxy tools)"]
   }
-  return formatRemoteExtensionSyncStatusLine(sync, {
+  const lines = [`remote extension sync: ${formatRemoteExtensionSyncStatusLine(sync, {
     includeHash: true,
-    includeNext: true,
+    includeNext: false,
     agentRef: agent.agent_ref,
     workerMachineId: agent.remote_execution.worker_machine_id,
     errorPrefix: "error=",
-  })
+  })}`]
+  const next = remoteExtensionSyncNextAction(
+    sync,
+    agent.agent_ref,
+    agent.remote_execution.worker_machine_id,
+  )
+  if (next) {
+    lines.push(`remote extension next: ${next}`)
+  }
+  return lines
 }
 
 function sliceForRemoteAgent(agent: AgentInstance, slices: readonly SliceRecord[]): SliceRecord | null {
