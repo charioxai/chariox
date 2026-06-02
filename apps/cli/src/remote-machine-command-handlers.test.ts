@@ -14,7 +14,7 @@ test("remote machine command renders recovery hints", async () => {
   assert.match(harness.notices.at(1) ?? "", /cold-kernel id=kernel-2/)
   assert.match(harness.notices.at(1) ?? "", /readiness=blocked/)
   assert.match(harness.notices.at(1) ?? "", /accepting_remote_leases=false/)
-  assert.match(harness.notices.at(1) ?? "", /next: enable remote leases on cold-kernel or choose another worker/)
+  assert.match(harness.notices.at(1) ?? "", /next: run \/machine kernels builder; enable remote leases on cold-kernel or choose another worker/)
   assert.equal(harness.footers.at(0)?.message, "listed 2 live remote machine(s)")
   assert.equal(harness.footers.at(1)?.message, "listed 1 live kernel(s) for machine-1")
 })
@@ -30,7 +30,7 @@ test("remote machine command renders unknown lease state with refresh recovery",
   assert.match(harness.notices.at(0) ?? "", /accepting_remote_leases=unknown/)
   assert.match(harness.notices.at(0) ?? "", /readiness=unknown/)
   assert.doesNotMatch(harness.notices.at(0) ?? "", /enable remote leases/)
-  assert.match(harness.notices.at(0) ?? "", /next: refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.match(harness.notices.at(0) ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
 })
 
 test("remote machine command prioritizes unknown readiness over empty providers", async () => {
@@ -43,7 +43,7 @@ test("remote machine command prioritizes unknown readiness over empty providers"
 
   assert.match(harness.notices.at(0) ?? "", /readiness=unknown/)
   assert.match(harness.notices.at(0) ?? "", /providers=-/)
-  assert.match(harness.notices.at(0) ?? "", /next: refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.match(harness.notices.at(0) ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
   assert.doesNotMatch(harness.notices.at(0) ?? "", /configure provider CLIs/)
 })
 

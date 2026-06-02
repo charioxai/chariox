@@ -93,14 +93,16 @@ function remoteMachineNextAction(machine: RemoteMachineRecord): string {
 
 function remoteKernelNextAction(kernel: RelayKernelPresence): string {
   const kernelLabel = remoteKernelLabel(kernel)
+  const machine = kernel.machine_alias ?? kernel.machine_id
+  const inspect = machine ? `run /machine kernels ${machine}; ` : ""
   if (kernel.accepting_remote_leases === false) {
-    return `enable remote leases on ${kernelLabel} or choose another worker`
+    return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
   }
   if (kernel.accepting_remote_leases === undefined) {
-    return `refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+    return `${inspect}refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
   }
   if ((kernel.available_providers ?? []).length === 0) {
-    return `configure provider CLIs on ${kernelLabel}`
+    return `${inspect}configure provider CLIs on ${kernelLabel}`
   }
   return ""
 }

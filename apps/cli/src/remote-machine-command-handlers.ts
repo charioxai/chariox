@@ -148,15 +148,17 @@ function remoteMachineNextAction(machine: RemoteMachineSummary): string {
 
 function remoteKernelNextAction(kernel: RemoteMachineKernelSummary): string {
   const kernelLabel = remoteKernelLabel(kernel)
+  const machineLabel = kernel.machine_alias ?? kernel.machine_id
+  const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
-    return `enable remote leases on ${kernelLabel} or choose another worker`
+    return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
   }
   if (readiness === "unknown") {
-    return `refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+    return `${inspect}refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
   }
   if (readiness === "needs-provider") {
-    return `configure provider CLIs on ${kernelLabel}`
+    return `${inspect}configure provider CLIs on ${kernelLabel}`
   }
   return ""
 }

@@ -224,10 +224,10 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
     const kernelLabel = kernels.length === 1 && firstKernel
       ? waitingRoomRemoteKernelLabel(firstKernel)
       : "one of this machine's kernels"
-    return `enable remote leases on ${kernelLabel} or choose another worker`
+    return `run /machine kernels ${machineLabel}; enable remote leases on ${kernelLabel} or choose another worker`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
-    return `configure provider CLIs on ${machineLabel}`
+    return `run /machine kernels ${machineLabel}; configure provider CLIs on ${machineLabel}`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
     return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
@@ -243,15 +243,17 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
 
 function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): string {
   const kernelLabel = waitingRoomRemoteKernelLabel(kernel)
+  const machineLabel = kernel.machine_alias ?? kernel.machine_id
+  const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
-    return `enable remote leases on ${kernelLabel} or choose another worker`
+    return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
   }
   if (readiness === "unknown") {
-    return `refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+    return `${inspect}refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
   }
   if (readiness === "needs-provider") {
-    return `configure provider CLIs on ${kernelLabel}`
+    return `${inspect}configure provider CLIs on ${kernelLabel}`
   }
   return ""
 }
