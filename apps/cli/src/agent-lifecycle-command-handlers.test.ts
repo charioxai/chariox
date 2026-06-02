@@ -55,8 +55,26 @@ test("agent list summary renders aliases and pluralization", () => {
       worker_kernel_id: "kernel-worker",
       worker_machine_id: "machine-worker",
       agent_ids: ["agent-2"],
+      provider_auth: [{
+        provider: "codex",
+        state: "authenticated",
+        alias: "work",
+        email: "work@example.com",
+      }],
     })]),
-    /agent-b \[Working; codex\/gpt-5.4; worktree \/repo\/feature; slice devbox run run-worker;/,
+    /agent-b \[Working; codex\/gpt-5.4; worktree \/repo\/feature; slice devbox run run-worker; auth codex=work \(work@example.com\);/,
+  )
+  assert.match(
+    formatAgentListSummary([remoteAgent], [slice({
+      id: "slice-missing-auth",
+      name: "missing-auth",
+      status: "running",
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      agent_ids: ["agent-2"],
+      providers: ["codex", "opencode:openai"],
+    })]),
+    /slice missing-auth run run-worker; auth missing codex, opencode:openai;/,
   )
   assert.match(
     formatAgentListSummary([remoteAgent], [], {}, {

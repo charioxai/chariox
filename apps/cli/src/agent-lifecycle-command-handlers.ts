@@ -219,15 +219,34 @@ function formatAgentListEntry(
   slices: readonly SliceRecord[],
   providerRunContext: AgentProviderRunContext,
 ): string {
+  const slice = sliceForRemoteAgent(agent, slices)
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
     agent.state,
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
-    formatAgentPlacement(agent, sliceForRemoteAgent(agent, slices)),
+    formatAgentPlacement(agent, slice),
+    formatAgentListSliceAuth(slice),
     formatAgentListProviderRun(agent, providerRunContext),
     formatAgentGrantCount(agent),
     formatAgentRemoteExtensionSync(agent),
   ].filter(Boolean).join("; ")}]`
+}
+
+function formatAgentListSliceAuth(slice: SliceRecord | null): string | null {
+  if (!slice) {
+    return null
+  }
+  const accounts = slice.provider_auth ?? []
+  if (accounts.length > 0) {
+    return `auth ${formatSliceProviderAccounts(slice)}`
+  }
+  const providers = (slice.providers ?? []).map((provider) => provider.trim()).filter(Boolean)
+  if (providers.length === 0) {
+    return null
+  }
+  const visible = providers.slice(0, 3).join(", ")
+  const suffix = providers.length > 3 ? `, +${providers.length - 3} more` : ""
+  return `auth missing ${visible}${suffix}`
 }
 
 function formatAgentListProviderRun(

@@ -68,6 +68,7 @@ function formatAgentListEntry(
     formatAgentProvider(agent),
     `worktree ${agent.worktree_id ?? "-"}`,
     formatAgentListPlacement(agent, slice),
+    formatAgentListSliceAuth(slice),
     formatAgentListProviderRun(agent, providerRunContext),
     agent.execution_mode_override ? `mode ${agent.execution_mode_override}` : null,
     agent.permission_level_override ? `permissions ${agent.permission_level_override}` : null,
@@ -75,6 +76,23 @@ function formatAgentListEntry(
     formatAgentListRemoteExtensionSync(agent),
   ].filter(Boolean)
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${parts.join("; ")}]`
+}
+
+function formatAgentListSliceAuth(slice: SliceRecord | null): string | null {
+  if (!slice) {
+    return null
+  }
+  const accounts = slice.provider_auth ?? []
+  if (accounts.length > 0) {
+    return `auth ${formatSliceProviderAccounts(slice)}`
+  }
+  const providers = (slice.providers ?? []).map((provider) => provider.trim()).filter(Boolean)
+  if (providers.length === 0) {
+    return null
+  }
+  const visible = providers.slice(0, 3).join(", ")
+  const suffix = providers.length > 3 ? `, +${providers.length - 3} more` : ""
+  return `auth missing ${visible}${suffix}`
 }
 
 function formatAgentListProviderRun(
