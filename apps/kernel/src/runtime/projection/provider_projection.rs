@@ -238,6 +238,19 @@ fn provider_run_health_snapshot(
                     details: "active provider run is ended".to_string(),
                 });
             }
+            if let (Some(focused_agent_id), Some(run_agent_id)) =
+                (session.focused_agent_id(), run.agent_instance_id())
+            {
+                if focused_agent_id != run_agent_id {
+                    return Some(ProviderRunSessionPointerIssue {
+                        session_id: session.id().to_string(),
+                        active_provider_run_id: Some(active_provider_run_id.to_string()),
+                        details: format!(
+                            "active provider run points at agent {run_agent_id}, focused agent is {focused_agent_id}"
+                        ),
+                    });
+                }
+            }
             None
         })
         .collect();

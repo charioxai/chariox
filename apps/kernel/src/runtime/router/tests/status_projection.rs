@@ -256,6 +256,65 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
 }
 
 #[tokio::test]
+async fn daemon_health_reports_active_provider_run_for_nonfocused_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let focused_agent_id = focused_agent.id().to_string();
+    let background_agent = spawn_test_agent(&mut app, &session_id, "background", "dev-stub");
+    let background_agent_id = background_agent.id().to_string();
+    let background_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        &background_agent_id,
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let projected_session = {
+        let session_store = app.session_state_store();
+        let mut sessions = session_store.write();
+        sessions
+            .set_focused_agent(&session_id, Some(focused_agent_id.clone()))
+            .expect("focus should be forced for drift test");
+        sessions
+            .set_active_provider_run(&session_id, Some(background_run.id().to_string()))
+            .expect("active run should be forced for drift test")
+    };
+    app.update_session_projection(projected_session);
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let health_command = KernelCommand::from_local_request(
+        "cmd-health-active-run-agent-drift",
+        None,
+        None,
+        &health_request,
+    );
+    let health_response = router
+        .dispatch(health_command, health_request)
+        .await
+        .expect("health projection should be returned");
+    let projection = match health_response {
+        LocalDaemonResponse::DaemonHealth { projection } => projection,
+        _ => panic!("unexpected health response"),
+    };
+
+    assert_eq!(
+        projection.provider_runs.session_active_run_mismatches,
+        vec![crate::runtime::projection::ProviderRunSessionPointerIssue {
+            session_id,
+            active_provider_run_id: Some(background_run.id().to_string()),
+            details: format!(
+                "active provider run points at agent {background_agent_id}, focused agent is {focused_agent_id}"
+            ),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn daemon_health_reads_terminal_projection_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
