@@ -5,5 +5,8 @@ export function sessionContextAgentId(session: Pick<RuntimeSession, "agents" | "
   if (focusedAgentId && session.agents.some((agent) => agent.id === focusedAgentId)) {
     return focusedAgentId
   }
+  if (focusedAgentId) {
+    return undefined
+  }
   return session.agents[0]?.id || undefined
 }

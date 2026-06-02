@@ -862,7 +862,7 @@ test("executeShellCommand does not adopt stale focused agent ids from session pa
   assert.equal(result.ok, true)
   assert.deepEqual(result.contextUpdates, {
     sessionId: "session-2",
-    agentId: "agent-1",
+    agentId: undefined,
     workspace: "/repo",
     worktree: "/repo/qa",
   })
