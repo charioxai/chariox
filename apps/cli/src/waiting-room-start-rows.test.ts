@@ -125,6 +125,30 @@ test("waiting room start rows explain managed and tracked live sync modes", () =
   assert.equal(trackedRows.find((row) => row.id === "live-sync")?.value, "tracked (turn-end selected worktree; other repos unrestricted)")
 })
 
+test("waiting room start rows mark provider choices from local fallback catalog", () => {
+  const catalog = fallbackProviderCatalog({ source: "local_fallback" })
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState(),
+    {
+      providerId: "opencode",
+      model: modelOptions[0] ?? null,
+      effort: "high",
+      providerCatalogFallback: true,
+    },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",

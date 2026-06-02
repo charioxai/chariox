@@ -42,12 +42,13 @@ export async function getProviderCatalog(client: LocalIpcClient, logger?: Arroba
       providers: payload.catalog.all.map((p) => ({ id: p.id, model_count: Object.keys(p.models).length })),
       connected: payload.catalog.connected,
     })
-    return payload.catalog
+    return { ...payload.catalog, source: "daemon" }
   } catch (error) {
+    const message = describeCliError(error)
     logger?.warn("provider catalog lookup failed; using fallback catalog", {
-      error: describeCliError(error),
+      error: message,
     })
-    return fallbackProviderCatalog()
+    return fallbackProviderCatalog({ source: "local_fallback", unavailableReason: message })
   }
 }
 

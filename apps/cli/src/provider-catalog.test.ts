@@ -6,6 +6,7 @@ import {
   catalogModelOptions,
   fallbackProviderCatalog,
   normalizeBackendProviderId,
+  providerCatalogIsLocalFallback,
   providerDisplayName,
   type ProviderCatalog,
 } from "./provider-catalog.js"
@@ -62,4 +63,16 @@ test("fallback catalog exposes Claude Code as an isolated backend", () => {
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
   assert.equal(opencodeOptions.some((option) => option.providerId === "claude"), false)
+})
+
+test("fallback catalog can be marked as local fallback metadata", () => {
+  const catalog = fallbackProviderCatalog({
+    source: "local_fallback",
+    unavailableReason: "provider catalog unavailable",
+  })
+
+  assert.equal(providerCatalogIsLocalFallback(catalog), true)
+  assert.equal(catalog.source, "local_fallback")
+  assert.equal(catalog.unavailable_reason, "provider catalog unavailable")
+  assert.equal(providerCatalogIsLocalFallback(fallbackProviderCatalog()), false)
 })

@@ -1,5 +1,6 @@
 import {
   catalogModelOptions,
+  providerCatalogIsLocalFallback,
   type CatalogModelOption,
   type ProviderCatalog,
 } from "./provider-catalog.js"
@@ -55,5 +56,6 @@ export function waitingRoomChoice(
     providerId: state.providerId,
     model,
     effort: state.effort,
+    providerCatalogFallback: providerCatalogIsLocalFallback(catalog),
   }
 }

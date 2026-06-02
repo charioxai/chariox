@@ -52,3 +52,12 @@ test("waiting room rows compose start, session, remote, slice, terminal, and the
   assert.equal(rows.some((row) => row.id === "terminal:terminal-1"), true)
   assert.equal(rows.at(-1)?.id, "theme")
 })
+
+test("waiting room rows expose local provider catalog fallback", () => {
+  const catalog = fallbackProviderCatalog({ source: "local_fallback" })
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, [], catalog)
+
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+})

@@ -2,6 +2,8 @@ export type ProviderCatalog = {
   all: ProviderInfo[]
   default: Record<string, string>
   connected: string[]
+  source?: "daemon" | "local_fallback"
+  unavailable_reason?: string
 }
 
 export type ProviderInfo = {
@@ -54,7 +56,10 @@ export function backendProviderLabel(providerId: BackendProviderId) {
   }
 }
 
-export function fallbackProviderCatalog() {
+export function fallbackProviderCatalog(options: {
+  source?: "local_fallback"
+  unavailableReason?: string
+} = {}) {
   return {
     all: [
       {
@@ -118,7 +123,13 @@ export function fallbackProviderCatalog() {
       claude: "claude-sonnet-4-6",
     },
     connected: ["codex", "opencode", "claude"],
+    ...(options.source ? { source: options.source } : {}),
+    ...(options.unavailableReason ? { unavailable_reason: options.unavailableReason } : {}),
   } satisfies ProviderCatalog
+}
+
+export function providerCatalogIsLocalFallback(catalog: ProviderCatalog) {
+  return catalog.source === "local_fallback"
 }
 
 export function catalogModelOptions(catalog: ProviderCatalog, backendProviderId?: BackendProviderId) {

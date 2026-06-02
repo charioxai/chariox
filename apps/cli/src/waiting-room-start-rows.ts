@@ -11,6 +11,7 @@ export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
   model: CatalogModelOption | null
   effort: string
+  providerCatalogFallback?: boolean
 }
 
 export function waitingRoomStartRows(
@@ -54,7 +55,7 @@ export function waitingRoomStartRows(
     {
       id: "provider",
       title: "Provider",
-      value: formatBackendProviderLabel(choice.providerId),
+      value: formatProviderValue(choice.providerId, choice.providerCatalogFallback),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "provider",
@@ -64,7 +65,7 @@ export function waitingRoomStartRows(
     {
       id: "model",
       title: "Model",
-      value: choice.model ? formatWaitingRoomModelLabel(choice.model, options.modelOptions) : "No models available",
+      value: choice.model ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback) : "No models available",
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "model",
@@ -168,6 +169,20 @@ function formatTitleCase(value: string) {
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {
   return backendProviderLabel(providerId)
+}
+
+function formatProviderValue(providerId: BackendProviderId, fallback = false) {
+  const label = formatBackendProviderLabel(providerId)
+  return fallback ? `${label} (local list)` : label
+}
+
+function formatWaitingRoomModelValue(
+  model: CatalogModelOption,
+  options: CatalogModelOption[],
+  fallback = false,
+) {
+  const label = formatWaitingRoomModelLabel(model, options)
+  return fallback ? `${label} (local list)` : label
 }
 
 function formatWorkspaceLiveSyncMode(mode: WaitingRoomState["workspaceLiveSyncMode"]) {
