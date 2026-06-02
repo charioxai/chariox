@@ -7,15 +7,14 @@ import type {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
-import { formatSliceProviderAccounts, formatSliceProviderAuthStatus, formatSliceScope } from "./slice-format.js"
 import {
-  formatExtensionGrantRuntimeDetail,
-  formatExtensionGrantPlacement,
-  formatExtensionGrantPlacementSummary,
-  hasActiveHomeProxyExtensionGrants,
-} from "@arroba/kernel-client/extension-grant-placement"
-import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
-import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+  formatAgentInspectSummary as formatSharedAgentInspectSummary,
+  formatAgentListSummary as formatSharedAgentListSummary,
+  type AgentInstance as SharedAgentInstance,
+  type ShellAgentProviderRunContext as AgentProviderRunContext,
+  type ShellAgentSessionContext as AgentSessionContext,
+  type SliceRecord as SharedSliceRecord,
+} from "@arroba/kernel-client"
 
 type FooterTone = "info" | "error"
 
@@ -27,18 +26,6 @@ type AgentCyclePayload = {
 type AgentFocusPayload = {
   agent: AgentInstance
   session: RuntimeSession
-}
-
-type AgentProviderRunContext = {
-  activeProviderRunId?: string | null
-  activeProviderRunAgentId?: string | null
-}
-
-type AgentSessionContext = {
-  homeKernelId?: string | null
-  homeMachineId?: string | null
-  ownerUserId?: string | null
-  workspaceLiveSyncMode?: RuntimeSession["workspace_live_sync_mode"]
 }
 
 export type AgentLifecycleCommandHandlerDeps = {
@@ -146,15 +133,12 @@ export function formatAgentListSummary(
   providerRunContext: AgentProviderRunContext = {},
   sessionContext: AgentSessionContext = {},
 ): string {
-  const prefix = formatAgentListSessionContext(sessionContext)
-  if (agents.length === 0) {
-    return prefix ? `${prefix}\nno agents in session` : "no agents in session"
-  }
-  const agentList = agents
-    .map((agent) => formatAgentListEntry(agent, slices, providerRunContext))
-    .join(", ")
-  const summary = `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`
-  return prefix ? `${prefix}\n${summary}` : summary
+  return formatSharedAgentListSummary(
+    agents as SharedAgentInstance[],
+    slices as readonly SharedSliceRecord[],
+    providerRunContext,
+    sessionContext,
+  )
 }
 
 export function formatAgentInspectSummary(
@@ -163,303 +147,13 @@ export function formatAgentInspectSummary(
   providerRunContext: AgentProviderRunContext = {},
   sessionContext: AgentSessionContext = {},
 ): string {
-  const slice = sliceForRemoteAgent(agent, slices)
-  const lines = [
-    `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${agent.state}]`,
-    `id: ${agent.id}`,
-    `session: ${agent.session_id}`,
-    `home kernel: ${formatHomeKernel(sessionContext)}`,
-    `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
-    `live sync: ${formatWorkspaceLiveSyncModeLabel(sessionContext.workspaceLiveSyncMode)}`,
-    `provider: ${agent.provider}`,
-    `model: ${agent.model ?? "<none>"}`,
-    `variant: ${agent.effort ?? "<none>"}`,
-    `mode: ${agent.execution_mode_override ?? "session"}`,
-    `permissions: ${agent.permission_level_override ?? "session"}`,
-    `workspace: ${agent.workspace_id ?? "<none>"}`,
-    `worktree: ${agent.worktree_id ?? "<none>"}`,
-    `placement: ${formatAgentInspectPlacement(agent, slice)}`,
-    `provider run: ${formatAgentProviderRunSummary(agent, providerRunContext)}`,
-    ...(slice ? [
-      `slice: ${formatSliceInspectSummary(slice)}`,
-      `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
-    ] : []),
-    `extensions: ${formatAgentInspectExtensionSummary(agent)}`,
-    `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
-    `remote extension sync: ${formatAgentInspectRemoteExtensionSync(agent)}`,
-    `substitutes: ${formatAgentInspectSubstitutes(agent)}`,
-  ]
-  if (agent.active_substitute_index != null) {
-    lines.push(`active substitute: ${agent.active_substitute_index}`)
-  }
-  if (agent.last_substitution) {
-    lines.push(`last substitution: ${agent.last_substitution.reason}`)
-  }
-  lines.push(`created: ${formatTimestamp(agent.created_at_ms)}`)
-  lines.push(`last activity: ${formatTimestamp(agent.last_activity_at_ms)}`)
-  return lines.join("\n")
-}
-
-function formatHomeKernel(context: AgentSessionContext): string {
-  const homeKernel = context.homeKernelId || "<unknown>"
-  return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
-}
-
-function formatAgentListSessionContext(context: AgentSessionContext): string | null {
-  if (!context.homeKernelId && !context.homeMachineId && !context.ownerUserId && !context.workspaceLiveSyncMode) {
-    return null
-  }
-  const parts = [
-    `home kernel ${formatHomeKernel(context)}`,
-    context.ownerUserId ? `owner ${context.ownerUserId}` : null,
-    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}`,
-  ].filter(Boolean)
-  return `session runtime: ${parts.join("; ")}`
-}
-
-function formatAgentListEntry(
-  agent: AgentInstance,
-  slices: readonly SliceRecord[],
-  providerRunContext: AgentProviderRunContext,
-): string {
-  const slice = sliceForRemoteAgent(agent, slices)
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""} [${[
-    agent.state,
-    formatAgentProvider(agent),
-    `worktree ${agent.worktree_id ?? "-"}`,
-    formatAgentPlacement(agent, slice),
-    formatAgentListSliceAuth(slice),
-    formatAgentListProviderRun(agent, providerRunContext),
-    formatAgentGrantCount(agent),
-    formatAgentRemoteExtensionSync(agent),
-  ].filter(Boolean).join("; ")}]`
-}
-
-function formatAgentListSliceAuth(slice: SliceRecord | null): string | null {
-  if (!slice) {
-    return null
-  }
-  return formatSliceProviderAuthStatus(slice)
-}
-
-function formatAgentListProviderRun(
-  agent: AgentInstance,
-  context: AgentProviderRunContext,
-): string | null {
-  const runId = agentProviderRunId(agent, context)
-  return runId ? `session run ${runId}` : null
-}
-
-function formatAgentProvider(agent: AgentInstance): string {
-  const model = agent.primary_model ?? agent.model
-  const provider = agent.primary_provider ?? agent.provider
-  if (!model) {
-    return provider
-  }
-  return model.startsWith(`${provider}/`) ? model : `${provider} ${model}`
-}
-
-function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
-  const remote = agent.remote_execution
-  if (!remote) {
-    return "local"
-  }
-  const details = formatAgentListRemotePlacementDetails(remote)
-  if (slice) {
-    return `slice ${slice.name || slice.id}${details}`
-  }
-  const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
-  return `remote ${remote.worker_kernel_id}${machine}${details}`
-}
-
-function formatAgentListRemotePlacementDetails(remote: NonNullable<AgentInstance["remote_execution"]>): string {
-  const details = [
-    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
-    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
-    remote.active_worker_provider_run_id ? `run=${remote.active_worker_provider_run_id}` : null,
-  ].filter(Boolean)
-  return details.length ? ` (${details.join(", ")})` : ""
-}
-
-function formatAgentRemoteExtensionSync(agent: AgentInstance): string {
-  const sync = agent.remote_extension_manifest_sync
-  if (!sync) {
-    return agent.remote_execution && hasActiveHomeProxyExtensionGrants(agent.extension_grants)
-      ? `manifest pending next ${formatAgentListRemoteExtensionSyncAction(agent)}`
-      : ""
-  }
-  const hash = sync.manifest_hash ? ` ${sync.manifest_hash.slice(0, 8)}` : ""
-  const revoke = sync.pending_revoke ? " pending revoke" : ""
-  const error = sync.last_error ? ` error ${sync.last_error}` : ""
-  const action = sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error
-    ? ` next ${formatAgentListRemoteExtensionSyncAction(agent)}`
-    : ""
-  return `manifest ${sync.state}${hash}${revoke}${error}${action}`
-}
-
-function formatAgentListRemoteExtensionSyncAction(agent: AgentInstance): string {
-  return remoteExtensionSyncNextAction(
-    agent.remote_extension_manifest_sync,
-    agent.agent_ref,
-    agent.remote_execution?.worker_machine_id,
-  ) ?? `run /extension sync-status ${agent.agent_ref}`
-}
-
-function formatAgentGrantCount(agent: AgentInstance): string {
-  const grants = agent.extension_grants?.length ?? 0
-  const count = `${grants} grant${grants === 1 ? "" : "s"}`
-  return grants > 0 ? `${count} (${formatAgentExtensionPlacementSummary(agent)})` : count
-}
-
-function formatAgentInspectPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
-  const remote = agent.remote_execution
-  if (!remote) {
-    return "worker-local"
-  }
-  const worker = remote.worker_machine_id || remote.worker_kernel_id
-  const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
-  const parts = [
-    worker ? `worker=${worker}` : null,
-    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
-    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
-    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
-    remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
-  ].filter(Boolean)
-  return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
-}
-
-function formatAgentProviderRunSummary(
-  agent: AgentInstance,
-  context: AgentProviderRunContext,
-): string {
-  const sessionRunId = agentProviderRunId(agent, context)
-  const workerRunId = agent.remote_execution?.active_worker_provider_run_id ?? null
-  if (!sessionRunId && context.activeProviderRunId && !context.activeProviderRunAgentId) {
-    return [
-      `session=${context.activeProviderRunId} owner unknown`,
-      workerRunId ? `worker=${workerRunId}` : null,
-    ].filter(Boolean).join(", ")
-  }
-  if (!sessionRunId && !workerRunId) {
-    return "none"
-  }
-  return [
-    sessionRunId ? `session=${sessionRunId}` : null,
-    workerRunId ? `worker=${workerRunId}` : null,
-  ].filter(Boolean).join(", ")
-}
-
-function agentProviderRunId(
-  agent: AgentInstance,
-  context: AgentProviderRunContext,
-): string | null {
-  if (!context.activeProviderRunId) {
-    return null
-  }
-  if (context.activeProviderRunAgentId) {
-    return context.activeProviderRunAgentId === agent.id ? context.activeProviderRunId : null
-  }
-  return null
-}
-
-function formatAgentInspectExtensionSummary(agent: AgentInstance): string {
-  const grants = agent.extension_grants ?? []
-  if (grants.length === 0) {
-    return "none"
-  }
-  return formatExtensionGrantPlacementSummary(grants, {
-    remote: Boolean(agent.remote_execution),
-    countSeparator: "=",
-  })
-}
-
-function formatAgentExtensionPlacementSummary(agent: AgentInstance): string {
-  return formatExtensionGrantPlacement(agent.extension_grants, Boolean(agent.remote_execution))
-}
-
-function formatAgentInspectRemoteExtensionSync(agent: AgentInstance): string {
-  if (!agent.remote_execution) {
-    return "not applicable"
-  }
-  const sync = agent.remote_extension_manifest_sync
-  if (!sync) {
-    if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-      return "not applicable (no active home-proxy tools)"
-    }
-    return formatRemoteExtensionSyncStatusLine(null, {
-      includeNext: true,
-      agentRef: agent.agent_ref,
-      workerMachineId: agent.remote_execution.worker_machine_id,
-      errorPrefix: "error=",
-    })
-  }
-  const details = [
-    formatRemoteExtensionSyncStatusLine(sync, {
-      includeHash: true,
-      includeNext: false,
-      errorPrefix: "error=",
-    }),
-    sync.last_synced_at_ms ? `synced=${formatTimestamp(sync.last_synced_at_ms)}` : null,
-    sync.last_attempted_at_ms ? `attempted=${formatTimestamp(sync.last_attempted_at_ms)}` : null,
-  ].filter(Boolean)
-  if (sync.state === "failed" || sync.state === "stale" || sync.pending_revoke || sync.last_error) {
-    details.push(`next=${formatAgentRemoteExtensionSyncNextAction(agent)}`)
-  }
-  return details.join(", ")
-}
-
-function formatAgentRemoteExtensionSyncNextAction(agent: AgentInstance): string {
-  return remoteExtensionSyncNextAction(
-    agent.remote_extension_manifest_sync,
-    agent.agent_ref,
-    agent.remote_execution?.worker_machine_id,
-  ) ?? `run /extension sync-status ${agent.agent_ref}`
-}
-
-function formatAgentInspectSubstitutes(agent: AgentInstance): string {
-  const substitutes = agent.substitutes ?? []
-  if (substitutes.length === 0) {
-    return "none"
-  }
-  return substitutes.map((substitute, index) => {
-    const marker = agent.active_substitute_index === index ? "*" : ""
-    const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker}${index}:${substitute.provider}/${substitute.model}${variant}`
-  }).join(", ")
-}
-
-function formatTimestamp(timestampMs: number | null | undefined): string {
-  if (!timestampMs) {
-    return "<none>"
-  }
-  return new Date(timestampMs).toISOString()
-}
-
-function sliceForRemoteAgent(
-  agent: AgentInstance,
-  slices: readonly SliceRecord[],
-): SliceRecord | null {
-  const remote = agent.remote_execution
-  if (!remote) {
-    return null
-  }
-  return slices.find((slice) => slice.agent_ids?.includes(agent.id))
-    ?? slices.find((slice) =>
-      slice.worker_kernel_id === remote.worker_kernel_id
-      || slice.worker_kernel_ref === remote.worker_kernel_id
-      || slice.worker_machine_id === remote.worker_machine_id,
-    ) ?? null
-}
-
-function formatSliceInspectSummary(slice: SliceRecord): string {
-  const worktree = formatSliceScope(slice)
-  return `${slice.name || slice.id} (${[
-    `id=${slice.id}`,
-    `status=${slice.status}`,
-    `display=${slice.display_mode ?? "headless"}`,
-    `worktree=${worktree}`,
-    `agents=${slice.agent_ids?.length ?? 0}`,
-  ].join(", ")})`
+  return formatSharedAgentInspectSummary(
+    agent as SharedAgentInstance,
+    slices as readonly SharedSliceRecord[],
+    null,
+    providerRunContext,
+    sessionContext,
+  )
 }
 
 async function applyFocusedAgentSession(
