@@ -2,6 +2,12 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-06-02
+
+### Slice audit recovery guidance
+
+- Aligned slice recovery guidance around the durable `slice.audit` trail. Protocol docs, CLI health, and Cloud Settings tests now treat `/slice audit <slice>` as part of unhealthy-slice and provider-auth recovery instead of relying only on logs or login/import actions.
+
 ## 2026-06-01
 
 ### Local runtime debug bundle export
