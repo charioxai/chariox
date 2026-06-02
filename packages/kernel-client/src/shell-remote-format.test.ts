@@ -44,7 +44,7 @@ test("remote kernel formatter summarizes worker readiness", () => {
   assert.match(output, /ready-kernel id=kernel-ready machine=mini readiness=ready providers=codex accepting_remote_leases=true leased_agents=1 local_sessions=2/)
   assert.match(output, /blocked-kernel id=kernel-blocked machine=mini readiness=blocked providers=opencode accepting_remote_leases=false leased_agents=0 local_sessions=0 next: enable remote leases on blocked-kernel or choose another worker/)
   assert.match(output, /provider-kernel id=kernel-provider machine=mini readiness=needs-provider providers=- accepting_remote_leases=true leased_agents=0 local_sessions=0 next: configure provider CLIs on provider-kernel/)
-  assert.match(output, /unknown-kernel id=kernel-unknown machine=mini readiness=unknown providers=claude accepting_remote_leases=unknown leased_agents=0 local_sessions=0/)
+  assert.match(output, /unknown-kernel id=kernel-unknown machine=mini readiness=unknown providers=claude accepting_remote_leases=unknown leased_agents=0 local_sessions=0 next: refresh unknown-kernel readiness or reconnect that worker before launching remote agents/)
 })
 
 test("remote kernel formatter makes empty machine recovery actionable", () => {

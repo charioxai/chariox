@@ -96,6 +96,9 @@ function remoteKernelNextAction(kernel: RelayKernelPresence): string {
   if (kernel.accepting_remote_leases === false) {
     return `enable remote leases on ${kernelLabel} or choose another worker`
   }
+  if (kernel.accepting_remote_leases === undefined) {
+    return `refresh ${kernelLabel} readiness or reconnect that worker before launching remote agents`
+  }
   if ((kernel.available_providers ?? []).length === 0) {
     return `configure provider CLIs on ${kernelLabel}`
   }
