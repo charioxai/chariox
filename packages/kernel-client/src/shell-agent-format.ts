@@ -1,6 +1,7 @@
 import type { AgentInstance, SliceRecord } from "./kernel-types.js"
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
+  formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
@@ -191,6 +192,7 @@ export function formatAgentInspectSummary(
       `slice lookup: ${sliceLookupError}`,
     ] : []),
     `extensions: ${formatAgentExtensionSummary(agent)}`,
+    `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
     `remote extension sync: ${formatAgentRemoteExtensionSyncSummary(agent)}`,
     `substitutes: ${formatAgentSubstitutesInline(agent)}`,
   ]

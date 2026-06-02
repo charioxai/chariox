@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
@@ -41,5 +42,24 @@ test("extension grant placement summary formats shell and inspect count styles",
       { remote: true, countSeparator: "=" },
     ),
     "2 grants (active tools home-proxy; skills snapshot; script=1, skill=1)",
+  )
+})
+
+test("extension grant runtime detail explains authority and execution", () => {
+  assert.equal(
+    formatExtensionGrantRuntimeDetail([{ kind: "mcp" }], false),
+    "worker-local: definition and execution stay on the selected kernel",
+  )
+  assert.equal(
+    formatExtensionGrantRuntimeDetail([{ kind: "script" }], true),
+    "home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools",
+  )
+  assert.equal(
+    formatExtensionGrantRuntimeDetail([{ kind: "skill" }], true),
+    "skill snapshot: home projects passive content; executable helpers require a separate tool grant",
+  )
+  assert.equal(
+    formatExtensionGrantRuntimeDetail([{ kind: "mcp" }, { kind: "skill" }], true),
+    "home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots",
   )
 })

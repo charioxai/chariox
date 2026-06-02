@@ -9,6 +9,7 @@ import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 import { formatSliceProviderAccounts, formatSliceScope } from "./slice-format.js"
 import {
+  formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
   hasActiveHomeProxyExtensionGrants,
@@ -184,6 +185,7 @@ export function formatAgentInspectSummary(
       `slice provider accounts: ${formatSliceProviderAccounts(slice)}`,
     ] : []),
     `extensions: ${formatAgentInspectExtensionSummary(agent)}`,
+    `extension runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, Boolean(agent.remote_execution))}`,
     `remote extension sync: ${formatAgentInspectRemoteExtensionSync(agent)}`,
     `substitutes: ${formatAgentInspectSubstitutes(agent)}`,
   ]

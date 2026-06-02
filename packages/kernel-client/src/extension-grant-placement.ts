@@ -49,3 +49,25 @@ export function formatExtensionGrantPlacement(
     passiveSkillSnapshot ? "skills snapshot" : null,
   ].filter(Boolean).join("; ") || "home-proxy"
 }
+
+export function formatExtensionGrantRuntimeDetail(
+  grants: readonly { readonly kind: string }[] | null | undefined,
+  remote: boolean,
+): string {
+  if (!remote) {
+    return "worker-local: definition and execution stay on the selected kernel"
+  }
+  const visibleGrants = grants ?? []
+  const activeHomeProxy = hasActiveHomeProxyExtensionGrants(visibleGrants)
+  const passiveSkillSnapshot = visibleGrants.some((grant) => grant.kind === "skill")
+  if (activeHomeProxy && passiveSkillSnapshot) {
+    return "home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots"
+  }
+  if (activeHomeProxy) {
+    return "home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools"
+  }
+  if (passiveSkillSnapshot) {
+    return "skill snapshot: home projects passive content; executable helpers require a separate tool grant"
+  }
+  return "home-proxy: home remains authoritative for projected remote extension tools"
+}
