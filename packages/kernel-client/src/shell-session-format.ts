@@ -1,6 +1,7 @@
 import { basename } from "node:path"
 
 import type {
+  AgentInstance,
   CloudCollaborator,
   CloudSessionMember,
   RuntimeSession,
@@ -19,8 +20,9 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
       const location = basename(session.worktree_id) || session.worktree_id
       const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
+      const remote = formatSessionRemoteRuntime(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${remote}${current}`
     }),
   ].join("\n")
 }
@@ -28,6 +30,24 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
 function formatSessionHomeKernel(session: RuntimeSession): string {
   const host = session.host_daemon_id?.trim() || session.host_machine_id?.trim()
   return host ? ` - home ${host}` : ""
+}
+
+function formatSessionRemoteRuntime(session: RuntimeSession): string {
+  const remoteAgents = session.agents.filter((agent) => agent.remote_execution)
+  if (remoteAgents.length === 0) return ""
+  const workerRunGaps = remoteAgents.filter(remoteAgentHasWorkerRunGap)
+  const remote = ` - remote ${remoteAgents.length} agent${remoteAgents.length === 1 ? "" : "s"}`
+  if (workerRunGaps.length === 0) return remote
+  const target = workerRunGaps[0]?.agent_ref || workerRunGaps[0]?.id || "<agent>"
+  return `${remote}, ${workerRunGaps.length} worker run gap${workerRunGaps.length === 1 ? "" : "s"} - next run /agent inspect ${target}; /kernel health`
+}
+
+function remoteAgentHasWorkerRunGap(agent: AgentInstance): boolean {
+  const remote = agent.remote_execution
+  if (!remote) return false
+  const workerRun = remote.active_worker_provider_run_id?.trim()
+  if (workerRun) return false
+  return agent.state === "Working" || agent.is_processing
 }
 
 export function formatSessionMembers(members: SessionMember[], invites: SessionInvite[]): string {

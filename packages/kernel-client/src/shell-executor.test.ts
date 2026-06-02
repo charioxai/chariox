@@ -397,6 +397,17 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
       attachment_ids: [],
       worktree_id: "/repo/feature",
       status: "Parked",
+      agents: [makeAgent({
+        id: "agent-remote",
+        agent_ref: "remote-1",
+        state: "Working",
+        remote_execution: {
+          worker_kernel_id: "worker-kernel",
+          worker_machine_id: "worker-machine",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+        },
+      })],
     }),
   ]
   const fake = fakeClient((request) => {
@@ -408,7 +419,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1 current/)
-  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2/)
+  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/agent inspect remote-1; \/kernel health/)
 })
 
 test("executeShellCommand submits prompt without waiting", async () => {
