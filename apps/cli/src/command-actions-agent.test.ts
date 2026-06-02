@@ -490,13 +490,28 @@ test("agent spawn with machine requires directory and does not launch local prov
   assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker · worktree /srv/project")
 })
 
-test("agent spawn with machine rejects missing directory", async () => {
-  let spawnCount = 0
+test("agent spawn with machine can use the worker default directory", async () => {
+  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    spawnAgent: async () => {
-      spawnCount += 1
-      throw new Error("should not spawn")
+    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string) => {
+      spawnCalls.push({ worktreeId, machineRef })
+      const agent = makeAgent({
+        id: "agent-2",
+        agent_ref: "agent-2",
+        alias: alias ?? null,
+        provider,
+        model: model ?? null,
+        worktree_id: null,
+        remote_execution: {
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+        },
+        state: "Focused",
+      })
+      return { agent, session: makeSession({ focused_agent_id: agent.id, agents: [makeAgent(), agent] }) }
     },
     flashFooter: (message: string) => { flashedMessage = message },
   }))
@@ -507,11 +522,11 @@ test("agent spawn with machine rejects missing directory", async () => {
     args: ["spawn", "review", "--machine", "worker"],
   })
 
-  assert.equal(spawnCount, 0)
-  assert.equal(flashedMessage, "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)")
+  assert.deepEqual(spawnCalls, [{ worktreeId: undefined, machineRef: "worker" }])
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker")
 })
 
-test("agent spawn rejects machine and slice together before provisioning", async () => {
+test("agent spawn rejects machine and reusable slice together before provisioning", async () => {
   let spawnCount = 0
   let createSliceCount = 0
   let flashedMessage = ""
@@ -529,13 +544,13 @@ test("agent spawn rejects machine and slice together before provisioning", async
 
   await handlers.handleAgentCommand({
     kind: "agent",
-    raw: "/agent spawn review openai/gpt-5 --machine worker --slice new --dir /srv/project",
-    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--slice", "new", "--dir", "/srv/project"],
+    raw: "/agent spawn review openai/gpt-5 --machine worker --slice slice-existing --dir /srv/project",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--slice", "slice-existing", "--dir", "/srv/project"],
   })
 
   assert.equal(spawnCount, 0)
   assert.equal(createSliceCount, 0)
-  assert.equal(flashedMessage, "usage: /agent spawn uses either --machine or --slice, not both; slices are home-managed workers")
+  assert.equal(flashedMessage, "usage: /agent spawn uses either --machine/--kernel or a reusable --slice, not both")
 })
 
 test("agent spawn with machine blocks workers that reject remote leases", async () => {

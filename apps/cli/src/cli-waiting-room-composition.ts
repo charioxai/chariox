@@ -219,6 +219,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       workspaceId: options.workspaceId,
       worktreeId: options.worktreeId,
       workspaceMount: options.workspaceMount,
+      ...(options.workerKernelRef !== undefined ? { workerKernelRef: options.workerKernelRef } : {}),
     }),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
     updateSlices: (slice) => {

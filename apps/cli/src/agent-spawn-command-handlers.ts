@@ -35,6 +35,7 @@ export type AgentSpawnCommandHandlerDeps = {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   applySessionState: (session: RuntimeSession) => void
@@ -75,7 +76,7 @@ export async function handleAgentSpawnCommand(
     const count = parseSpawnCount(parsed.positional[0])
     if (
       count !== null
-      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.sliceRef || parsed.sliceDisplayMode || parsed.gitWorktree || parsed.branch || parsed.fromRef)
+      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.kernelRef || parsed.sliceRef || parsed.sliceDisplayMode || parsed.gitWorktree || parsed.branch || parsed.fromRef)
     ) {
       deps.flashFooter("usage: /agent spawn <count>", "error")
       return
@@ -96,7 +97,8 @@ export async function handleAgentSpawnCommand(
     const provider = model ? deps.currentProviderId() : null
     const effectiveProvider = provider ?? deps.currentProviderId()
     const effort = model ? deps.currentVariantId() : null
-    const remoteGitPlacement = parsed.machineRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
+    const remoteRef = parsed.kernelRef ?? parsed.machineRef
+    const remoteGitPlacement = remoteRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
       ? {
           target_directory: parsed.gitWorktree ?? null,
           branch: parsed.branch ?? null,
@@ -112,19 +114,20 @@ export async function handleAgentSpawnCommand(
       branch: parsed.branch,
       fromRef: parsed.fromRef,
       machineRef: parsed.machineRef,
+      kernelRef: parsed.kernelRef,
       label: "agent working directory",
     }, {
       baseDirectory: deps.currentWorktreeTarget(),
       prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
     })
-    const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId)
+    const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
       alias,
       model: model ?? null,
       effort,
       worktreeId,
-      machineRef: parsed.machineRef,
+      machineRef: remoteRef,
       worktreePlacement: remoteGitPlacement,
       sliceRef,
     })
@@ -189,6 +192,7 @@ async function prepareSliceForSpawn(
   sliceSelection: string | undefined,
   sliceDisplayMode: "headless" | "headed" | undefined,
   worktreeId: string | undefined,
+  workerKernelRef: string | undefined,
 ): Promise<string | undefined> {
   if (!sliceSelection || sliceSelection === "off") {
     return undefined
@@ -210,15 +214,17 @@ async function prepareSliceForSpawn(
     workspaceId: deps.currentWorkspaceTarget(),
     worktreeId: resolvedWorktree,
     workspaceMount: resolvedWorktree,
+    ...(workerKernelRef ? { workerKernelRef } : {}),
   })
   const started = await deps.startSlice(slice.id)
   return started.id
 }
 
 function sliceCreateMode(value: string, displayMode: "headless" | "headed" | undefined): { displayMode: "headless" | "headed" } | null {
-  if (value === "new") {
+  if (value === "new" || value === "new:headless") {
     return { displayMode: displayMode ?? "headless" }
   }
+  if (value === "new:headed") return { displayMode: "headed" }
   return null
 }
 

@@ -22,6 +22,7 @@ export type PlacementParseResult = {
   positional: string[]
   directory?: string | undefined
   machineRef?: string | undefined
+  kernelRef?: string | undefined
   sliceRef?: string | undefined
   sliceDisplayMode?: "headless" | "headed" | undefined
   gitWorktree?: string | undefined
@@ -36,6 +37,7 @@ export type LocalPlacementOptions = {
   branch?: string | undefined
   fromRef?: string | undefined
   machineRef?: string | undefined
+  kernelRef?: string | undefined
   label: string
 }
 
@@ -52,6 +54,7 @@ export function parsePlacementOptions(
   const positional: string[] = []
   let directory: string | undefined
   let machineRef: string | undefined
+  let kernelRef: string | undefined
   let sliceRef: string | undefined
   let sliceDisplayMode: "headless" | "headed" | undefined
   let gitWorktree: string | undefined
@@ -104,20 +107,24 @@ export function parsePlacementOptions(
       index += 1
       continue
     }
-    if (arg === "--machine" && allowMachine) {
+    if ((arg === "--machine" || arg === "--kernel") && allowMachine) {
       const value = args[index + 1]
       if (!value || value.startsWith("--")) {
-        error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>"
+        error = `usage: /agent spawn [alias] [model] ${arg} <ref> --dir <remote-directory>`
         break
       }
-      machineRef = value
+      if (arg === "--machine") {
+        machineRef = value
+      } else {
+        kernelRef = value
+      }
       index += 1
       continue
     }
     if (arg === "--slice" && allowMachine) {
       const value = args[index + 1]
       if (!value || value.startsWith("--")) {
-        error = "usage: /agent spawn [alias] [model] --slice off|new|<slice-ref>"
+        error = "usage: /agent spawn [alias] [model] --slice off|new:headless|new:headed|<slice-ref>"
         break
       }
       sliceRef = value === "off" ? undefined : value
@@ -145,30 +152,32 @@ export function parsePlacementOptions(
   if (!error && directory && gitRequested) {
     error = `usage: ${commandName} uses either --dir or --worktree/--branch, not both`
   }
-  if (!error && machineRef && sliceRef) {
-    error = "usage: /agent spawn uses either --machine or --slice, not both; slices are home-managed workers"
+  if (!error && machineRef && kernelRef) {
+    error = "usage: /agent spawn uses either --machine or --kernel, not both"
   }
-  const sliceCreatesPlacement = sliceRef === "new"
+  const remoteRef = machineRef ?? kernelRef
+  const sliceCreatesPlacement = sliceRef === "new" || sliceRef === "new:headless" || sliceRef === "new:headed"
+  if (!error && remoteRef && sliceRef && !sliceCreatesPlacement) {
+    error = "usage: /agent spawn uses either --machine/--kernel or a reusable --slice, not both"
+  }
   if (!error && sliceDisplayMode && !sliceCreatesPlacement) {
     error = "usage: /agent spawn --slice-display requires --slice new"
   }
   if (!error && sliceRef && !sliceCreatesPlacement && (directory || gitRequested)) {
     error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
   }
-  if (!error && machineRef && !directory && !gitRequested) {
-    error = "usage: /agent spawn [alias] [model] --machine <machine-ref> (--dir <remote-directory>|--worktree <remote-directory> --branch <branch>)"
+  if (!error && remoteRef && gitRequested && !gitWorktree) {
+    error = "usage: /agent spawn [alias] [model] --machine/--kernel <ref> --worktree <remote-directory> --branch <branch>"
   }
-  if (!error && machineRef && gitRequested && !gitWorktree) {
-    error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
-  }
-  if (!error && machineRef && gitRequested && !branch) {
-    error = "usage: /agent spawn [alias] [model] --machine <machine-ref> --worktree <remote-directory> --branch <branch>"
+  if (!error && remoteRef && gitRequested && !branch) {
+    error = "usage: /agent spawn [alias] [model] --machine/--kernel <ref> --worktree <remote-directory> --branch <branch>"
   }
 
   return {
     positional,
     directory,
     machineRef,
+    kernelRef,
     sliceRef,
     sliceDisplayMode,
     gitWorktree,
@@ -182,7 +191,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(args, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
   }
   return {
     ...parsed,
@@ -218,13 +227,13 @@ export async function resolveLocalPlacement(
   context: LocalPlacementContext,
 ): Promise<string | undefined> {
   if (options.directory) {
-    if (options.machineRef) {
+    if (options.machineRef || options.kernelRef) {
       return options.directory
     }
     return resolveExistingLocalDirectory(options.directory, context.baseDirectory, options.label)
   }
   if (options.gitWorktree || options.branch || options.fromRef) {
-    if (options.machineRef) {
+    if (options.machineRef || options.kernelRef) {
       return options.gitWorktree
     }
     return prepareLocalGitWorktree({

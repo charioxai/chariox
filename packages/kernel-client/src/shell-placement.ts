@@ -18,6 +18,7 @@ export type PlacementOptions = {
   gitWorktree?: string | undefined
   branch?: string | undefined
   fromRef?: string | undefined
+  machineRef?: string | undefined
   kernelRef?: string | undefined
   sliceRef?: string | undefined
   sliceDisplayMode?: "headless" | "headed" | undefined
@@ -45,8 +46,12 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
     } else if (arg === "--from" && next) {
       options.fromRef = next
       index += 1
-    } else if (arg === "--kernel" && next && allowMachine) {
-      options.kernelRef = next
+    } else if ((arg === "--machine" || arg === "--kernel") && next && allowMachine) {
+      if (arg === "--machine") {
+        options.machineRef = next
+      } else {
+        options.kernelRef = next
+      }
       index += 1
     } else if (arg === "--slice" && next && allowMachine) {
       options.sliceRef = next
@@ -69,10 +74,14 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
   if ((options.branch || options.fromRef) && !options.gitWorktree) {
     return { options, error: "--branch/--from require --worktree" }
   }
-  if (options.kernelRef && options.sliceRef) {
-    return { options, error: "use either --kernel or --slice, not both; slices are home-managed workers" }
+  if (options.machineRef && options.kernelRef) {
+    return { options, error: "use either --machine or --kernel, not both" }
   }
-  if (options.sliceDisplayMode && options.sliceRef !== "new") {
+  const sliceCreatesPlacement = options.sliceRef === "new" || options.sliceRef === "new:headless" || options.sliceRef === "new:headed"
+  if ((options.machineRef || options.kernelRef) && options.sliceRef && !sliceCreatesPlacement) {
+    return { options, error: "use either --machine/--kernel or a reusable --slice, not both" }
+  }
+  if (options.sliceDisplayMode && !sliceCreatesPlacement) {
     return { options, error: "--slice-display requires --slice new" }
   }
   return { options }
@@ -84,7 +93,7 @@ export async function resolveShellPlacement(
   label: string,
   deps: ShellPlacementDeps,
 ): Promise<string | undefined> {
-  if (options.kernelRef) {
+  if (options.kernelRef || options.machineRef) {
     return undefined
   }
   const positionalDirectory = options.positional.length === 1 && !options.directory && !options.gitWorktree

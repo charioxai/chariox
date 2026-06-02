@@ -16,6 +16,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
+import { normalizeWaitingRoomLaunchPlacement } from "./waiting-room-runtime-placement.js"
 import {
   waitingRoomPreviewSessions,
   waitingRoomSessions,
@@ -49,6 +50,8 @@ export function createWaitingRoomState(
       terminalIndex: 0,
       worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(),
       workspaceLiveSyncMode: "off",
+      selectedMachineRef: "local",
+      selectedKernelRef: "local",
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -77,7 +80,12 @@ export function normalizeWaitingRoomState(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
+  const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
+  const slices = waitingRoomSlices(remote, {
+    worktreeSelectionId: state.worktreeSelectionId,
+    selectedMachineRef: placement.selectedMachineRef,
+    selectedKernelRef: placement.selectedKernelRef,
+  })
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
@@ -93,7 +101,9 @@ export function normalizeWaitingRoomState(
           ? "slice"
         : terminals.length === 0 && state.focus === "terminal"
           ? "add-terminal"
-        : state.focus
+        : state.focus === "slice-display"
+          ? "slice"
+          : state.focus
   return {
     ...state,
     focus,
@@ -105,6 +115,8 @@ export function normalizeWaitingRoomState(
     terminalIndex: terminals.length === 0 ? 0 : modulo(state.terminalIndex, terminals.length),
     worktreeSelectionId: normalizeWaitingRoomWorktreeSelectionId(state.worktreeSelectionId),
     workspaceLiveSyncMode: normalizeWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
+    selectedMachineRef: placement.selectedMachineRef,
+    selectedKernelRef: placement.selectedKernelRef,
     sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
     sliceDisplayMode: normalizeSliceDisplayMode(state.sliceDisplayMode),
     modelId: selected?.id ?? state.modelId,

@@ -4,6 +4,8 @@ import type { ThemeName } from "./theme-registry.js"
 
 export type WaitingRoomFocus =
   | "new"
+  | "launch-machine"
+  | "launch-kernel"
   | "provider"
   | "model"
   | "effort"
@@ -39,6 +41,8 @@ export type WaitingRoomState = {
   terminalIndex: number
   worktreeSelectionId: string
   workspaceLiveSyncMode: "off" | "managed" | "tracked"
+  selectedMachineRef?: string
+  selectedKernelRef?: string
   sliceSelectionId?: string
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId

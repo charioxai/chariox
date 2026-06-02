@@ -4,6 +4,10 @@ import {
   type CatalogModelOption,
 } from "./provider-catalog.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
+import {
+  formatWaitingRoomLaunchKernelValue,
+  formatWaitingRoomLaunchMachineValue,
+} from "./waiting-room-runtime-placement.js"
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 
@@ -15,7 +19,7 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "sliceSelectionId" | "sliceDisplayMode">,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -38,7 +42,10 @@ export function waitingRoomStartRows(
       workspacePath: options.targets?.workspacePath,
       worktreeSelectionId: state.worktreeSelectionId,
       worktreePath: options.targets?.worktreePath,
+      selectedMachineRef: state.selectedMachineRef,
+      selectedKernelRef: state.selectedKernelRef,
     }),
+    state.sliceDisplayMode,
   )
   const collaborationBackend = remote.collaborationBackend ?? "local"
   return [
@@ -49,6 +56,26 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 0,
       focused: state.focus === "new",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "launch-machine",
+      title: "Machine",
+      value: formatWaitingRoomLaunchMachineValue(state, remote),
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "launch-machine",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "launch-kernel",
+      title: "Kernel",
+      value: formatWaitingRoomLaunchKernelValue(state, remote),
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "launch-kernel",
       selectable: true,
       scrollbar: "",
     },
@@ -133,16 +160,6 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "slice",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "slice-display",
-      title: "Slice Display",
-      value: state.sliceSelectionId === "new" ? state.sliceDisplayMode ?? "headless" : "new slices only",
-      titleWidth: options.titleWidth,
-      indent: 1,
-      focused: state.focus === "slice-display",
       selectable: true,
       scrollbar: "",
     },

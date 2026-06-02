@@ -26,6 +26,8 @@ test("waiting room start rows render configuration labels and join action", () =
 
   assert.deepEqual(rows.map((row) => row.id), [
     "new",
+    "launch-machine",
+    "launch-kernel",
     "provider",
     "model",
     "effort",
@@ -34,9 +36,10 @@ test("waiting room start rows render configuration labels and join action", () =
     "live-sync",
     "collaborators",
     "slice",
-    "slice-display",
     "join-header",
   ])
+  assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "local")
+  assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "local")
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
@@ -44,7 +47,6 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing)")
-  assert.equal(rows.find((row) => row.id === "slice-display")?.value, "new slices only")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })

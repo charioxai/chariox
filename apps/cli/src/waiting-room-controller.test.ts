@@ -581,7 +581,7 @@ test("deriveWaitingRoomKeyNavigationDecision moves focus and tracks release stat
   })
   assert.equal(focused.action, "navigate")
   if (focused.action === "navigate") {
-    assert.equal(focused.nextState.focus, "provider")
+    assert.equal(focused.nextState.focus, "launch-machine")
     assert.equal(focused.nextState.keyState.down, true)
   }
 

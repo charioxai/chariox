@@ -54,6 +54,7 @@ export type WaitingRoomActivationControllerDeps = {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   updateSlices?: (slice: SliceRecord) => void
@@ -233,6 +234,7 @@ export function createWaitingRoomActivationController(
       workspaceId: workspacePath,
       worktreeId: worktreePath,
       workspaceMount: worktreePath,
+      ...(launch.kernelRef && launch.kernelRef !== "local" ? { workerKernelRef: launch.kernelRef } : {}),
     })
     deps.updateSlices?.(slice)
     const started = await deps.startSlice(slice.id)

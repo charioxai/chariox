@@ -9,6 +9,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
+import { waitingRoomLaunchPlacement } from "./waiting-room-runtime-placement.js"
 import { waitingRoomSessions } from "./waiting-room-session-rows.js"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import {
@@ -42,7 +43,12 @@ export function waitingRoomChoice(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
-  const slices = waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId })
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  const slices = waitingRoomSlices(remote, {
+    worktreeSelectionId: state.worktreeSelectionId,
+    selectedMachineRef: placement.machineRef,
+    selectedKernelRef: placement.kernelRef,
+  })
   const allSlices = waitingRoomAllSlices(remote)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
@@ -53,6 +59,9 @@ export function waitingRoomChoice(
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),
     sliceCreate: selectedWaitingRoomSliceCreateMode(state.sliceSelectionId, state.sliceDisplayMode),
+    machineRef: placement.machineRef,
+    kernelRef: placement.kernelRef,
+    workerKernelRef: placement.workerKernelRef,
     providerId: state.providerId,
     model,
     effort: state.effort,

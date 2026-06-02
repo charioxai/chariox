@@ -109,10 +109,11 @@ export async function executeAgentCommand(
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--kernel <kernel-ref>|--slice off|new|<slice-ref>] [--slice-display headless|headed]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
       }
-      if (parsedSpawn.options.kernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] --kernel <kernel-ref> uses the worker kernel default directory" }
+      const remoteKernelRef = parsedSpawn.options.kernelRef ?? parsedSpawn.options.machineRef
+      if (remoteKernelRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
+        return { ok: false, message: "usage: agent spawn [alias] [model] --machine/--kernel <ref> uses the worker kernel default directory" }
       }
       if (
         parsedSpawn.options.sliceRef
@@ -130,6 +131,7 @@ export async function executeAgentCommand(
         effectiveWorktree,
         deps,
         parsedSpawn.options.sliceDisplayMode,
+        remoteKernelRef,
       )
       const response = await deps.client.send(spawnAgentRequest(
         sessionId,
@@ -140,7 +142,7 @@ export async function executeAgentCommand(
         context.effort,
         undefined,
         undefined,
-        parsedSpawn.options.kernelRef,
+        remoteKernelRef,
         undefined,
         sliceRef,
       ))
@@ -148,7 +150,7 @@ export async function executeAgentCommand(
       const placement = agent.remote_execution
         ? sliceRef
           ? ` in slice ${sliceRef}`
-          : ` on ${parsedSpawn.options.kernelRef ?? agent.remote_execution.worker_machine_id}`
+          : ` on ${remoteKernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
         `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,

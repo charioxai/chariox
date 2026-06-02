@@ -26,7 +26,8 @@ test("waiting room slices sort by display label and project options", () => {
   assert.deepEqual(slices.map((entry) => formatWaitingRoomSliceLabel(entry)), ["beta", "slice-a", "zeta"])
   assert.deepEqual(waitingRoomSliceOptions(slices).map((option) => option.id), [
     "none",
-    "new",
+    "new:headless",
+    "new:headed",
     "slice-b",
     "slice-a",
     "slice-z",
@@ -53,10 +54,12 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
   assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, auth missing)")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
-  assert.equal(formatWaitingRoomSliceSelection("new", slices), "new")
-  assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new")
-  assert.equal(cycleWaitingRoomSliceSelectionId("new", slices, 1), "slice-1")
-  assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "new")
+  assert.equal(formatWaitingRoomSliceSelection("new", slices), "new headless")
+  assert.equal(formatWaitingRoomSliceSelection("new", slices, "headed"), "new headed")
+  assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new:headless")
+  assert.equal(cycleWaitingRoomSliceSelectionId("new", slices, 1), "new:headed")
+  assert.equal(cycleWaitingRoomSliceSelectionId("new:headed", slices, 1), "slice-1")
+  assert.equal(cycleWaitingRoomSliceSelectionId("slice-1", slices, -1), "new:headed")
 })
 
 test("waiting room slice labels keep aliases and extracted auth identities visible", () => {

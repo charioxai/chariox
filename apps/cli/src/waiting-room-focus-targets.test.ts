@@ -15,6 +15,8 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
 
   assert.deepEqual(targets.map((target) => target.focus), [
     "new",
+    "launch-machine",
+    "launch-kernel",
     "provider",
     "model",
     "effort",
@@ -23,7 +25,6 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "live-sync",
     "collaborators",
     "slice",
-    "slice-display",
     "join-sessions",
     "session",
     "session",

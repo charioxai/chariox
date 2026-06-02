@@ -11,7 +11,14 @@ import {
   type ThemeRegistry,
 } from "./theme-registry.js"
 import { waitingRoomEfforts, waitingRoomModel } from "./waiting-room-choice.js"
-import { cycleWaitingRoomSliceSelectionId, waitingRoomSlices } from "./waiting-room-slices.js"
+import {
+  cycleWaitingRoomSliceSelection,
+  waitingRoomSlices,
+} from "./waiting-room-slices.js"
+import {
+  cycleWaitingRoomLaunchKernel,
+  cycleWaitingRoomLaunchMachine,
+} from "./waiting-room-runtime-placement.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
@@ -85,6 +92,12 @@ export function cycleWaitingRoomFocusedValue(
       worktreeSelectionId: cycleWaitingRoomWorktreeSelectionId(state.worktreeSelectionId, delta),
     }
   }
+  if (state.focus === "launch-machine") {
+    return context.normalizeState(cycleWaitingRoomLaunchMachine(state, remote, delta))
+  }
+  if (state.focus === "launch-kernel") {
+    return context.normalizeState(cycleWaitingRoomLaunchKernel(state, remote, delta))
+  }
   if (state.focus === "live-sync") {
     const modes: readonly WaitingRoomState["workspaceLiveSyncMode"][] = ["off", "managed", "tracked"]
     const index = Math.max(0, modes.indexOf(state.workspaceLiveSyncMode))
@@ -94,21 +107,15 @@ export function cycleWaitingRoomFocusedValue(
     }
   }
   if (state.focus === "slice") {
-    return {
-      ...state,
-      sliceSelectionId: cycleWaitingRoomSliceSelectionId(
-        state.sliceSelectionId,
-        waitingRoomSlices(remote, { worktreeSelectionId: state.worktreeSelectionId }),
-        delta,
-      ),
-    }
-  }
-  if (state.focus === "slice-display" && state.sliceSelectionId === "new") {
-    const sliceDisplayMode: NonNullable<WaitingRoomState["sliceDisplayMode"]> = state.sliceDisplayMode === "headed" ? "headless" : "headed"
-    return {
-      ...state,
-      sliceDisplayMode,
-    }
+    return cycleWaitingRoomSliceSelection(
+      state,
+      waitingRoomSlices(remote, {
+        worktreeSelectionId: state.worktreeSelectionId,
+        selectedMachineRef: state.selectedMachineRef,
+        selectedKernelRef: state.selectedKernelRef,
+      }),
+      delta,
+    )
   }
   return state
 }

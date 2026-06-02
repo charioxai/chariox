@@ -30,6 +30,8 @@ export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
   model: string
   effort: string
+  machineRef?: string | null
+  kernelRef?: string | null
   workspaceLiveSyncMode?: "off" | "managed" | "tracked"
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
@@ -252,6 +254,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
+    ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
@@ -301,6 +304,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
       provider: choice.providerId ?? options.currentProvider,
       model: choice.model?.id ?? options.currentModel,
       effort: choice.effort,
+      ...(choice.workerKernelRef ? { machineRef: choice.machineRef, kernelRef: choice.kernelRef } : {}),
       workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
       ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
       ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),

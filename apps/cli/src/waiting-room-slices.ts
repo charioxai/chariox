@@ -1,11 +1,14 @@
 import type { SliceRecord } from "./cli-types.js"
 import { formatSliceProviderAuth, formatSliceRelayLabel } from "./slice-format.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 
 export type WaitingRoomSliceScope = {
   workspacePath?: string | null | undefined
   worktreeSelectionId?: string | null | undefined
   worktreePath?: string | null | undefined
+  selectedMachineRef?: string | null | undefined
+  selectedKernelRef?: string | null | undefined
 }
 
 export function waitingRoomSlices(
@@ -14,7 +17,7 @@ export function waitingRoomSlices(
 ) {
   const worktreePath = selectedWaitingRoomWorktreePath(scope.worktreeSelectionId, scope.worktreePath)
   return (remote.slices ?? [])
-    .filter((slice) => sliceCompatibleWithScope(slice, scope.workspacePath, worktreePath))
+    .filter((slice) => sliceCompatibleWithScope(slice, scope.workspacePath, worktreePath, scope.selectedMachineRef, scope.selectedKernelRef))
     .slice()
     .sort((left, right) => formatWaitingRoomSliceLabel(left).localeCompare(formatWaitingRoomSliceLabel(right)))
 }
@@ -22,15 +25,19 @@ export function waitingRoomSlices(
 export function waitingRoomSliceOptions(slices: SliceRecord[]) {
   return [
     { id: "none", slice: null },
-    { id: "new", slice: null },
+    { id: "new:headless", slice: null },
+    { id: "new:headed", slice: null },
     ...slices.map((slice) => ({ id: slice.id, slice })),
   ]
 }
 
 export function normalizeWaitingRoomSliceSelectionId(selectionId: string | null | undefined, slices: SliceRecord[]) {
   const normalized = selectionId?.trim() || "none"
-  if (normalized === "none" || normalized === "new") {
-    return normalized
+  if (normalized === "none") {
+    return "none"
+  }
+  if (normalized === "new" || normalized === "new:headless" || normalized === "new:headed") {
+    return "new"
   }
   return waitingRoomSliceOptions(slices).some((option) => option.id === normalized)
     ? normalized
@@ -57,9 +64,13 @@ export function selectedWaitingRoomSliceCreateMode(
     : null
 }
 
-export function formatWaitingRoomSliceSelection(selectionId: string | null | undefined, slices: SliceRecord[]) {
+export function formatWaitingRoomSliceSelection(
+  selectionId: string | null | undefined,
+  slices: SliceRecord[],
+  displayMode: "headless" | "headed" | null | undefined = "headless",
+) {
   if (selectionId === "new") {
-    return "new"
+    return displayMode === "headed" ? "new headed" : "new headless"
   }
   const slice = waitingRoomSelectedSlice(selectionId, slices)
   return slice ? formatWaitingRoomSliceOption(slice) : "off"
@@ -105,17 +116,54 @@ export function cycleWaitingRoomSliceSelectionId(
   delta: number,
 ) {
   const options = waitingRoomSliceOptions(slices)
-  const index = Math.max(0, options.findIndex((option) => option.id === selectionId))
+  const currentId = selectionId === "new" ? "new:headless" : selectionId
+  const index = Math.max(0, options.findIndex((option) => option.id === currentId))
   return options[modulo(index + delta, options.length)]?.id ?? "none"
 }
 
-function sliceCompatibleWithScope(slice: SliceRecord, workspacePath: string | null | undefined, worktreePath: string) {
+export function cycleWaitingRoomSliceSelection(
+  state: WaitingRoomState,
+  slices: SliceRecord[],
+  delta: number,
+): WaitingRoomState {
+  const currentId = state.sliceSelectionId === "new"
+    ? state.sliceDisplayMode === "headed" ? "new:headed" : "new:headless"
+    : state.sliceSelectionId ?? "none"
+  const nextId = cycleWaitingRoomSliceSelectionId(currentId, slices, delta)
+  if (nextId === "new:headed" || nextId === "new:headless") {
+    return {
+      ...state,
+      sliceSelectionId: "new",
+      sliceDisplayMode: nextId === "new:headed" ? "headed" : "headless",
+    }
+  }
+  return {
+    ...state,
+    sliceSelectionId: nextId,
+  }
+}
+
+function sliceCompatibleWithScope(
+  slice: SliceRecord,
+  workspacePath: string | null | undefined,
+  worktreePath: string,
+  machineRef: string | null | undefined,
+  kernelRef: string | null | undefined,
+) {
   if (slice.workspace_id && workspacePath && slice.workspace_id !== workspacePath) {
     return false
   }
   const sliceWorktree = slice.worktree_id || slice.workspace_mount || ""
   if (sliceWorktree && worktreePath && sliceWorktree !== worktreePath) {
     return false
+  }
+  const selectedKernelRef = kernelRef?.trim()
+  const selectedMachineRef = machineRef?.trim()
+  if (selectedKernelRef && selectedKernelRef !== "local") {
+    return slice.worker_kernel_id === selectedKernelRef || slice.worker_kernel_ref === selectedKernelRef
+  }
+  if (selectedMachineRef && selectedMachineRef !== "local") {
+    return slice.worker_machine_id === selectedMachineRef
   }
   return true
 }

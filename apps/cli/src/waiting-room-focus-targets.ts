@@ -62,6 +62,8 @@ export function waitingRoomFocusTargets(
   const terminals = waitingRoomTerminals(remote)
   return [
     { focus: "new" as const, sessionIndex: 0 },
+    { focus: "launch-machine" as const, sessionIndex: 0 },
+    { focus: "launch-kernel" as const, sessionIndex: 0 },
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
@@ -70,7 +72,6 @@ export function waitingRoomFocusTargets(
     { focus: "live-sync" as const, sessionIndex: 0 },
     { focus: "collaborators" as const, sessionIndex: 0 },
     { focus: "slice" as const, sessionIndex: 0 },
-    { focus: "slice-display" as const, sessionIndex: 0 },
     ...(visibleSessions.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
     ...previewSessions.map((session) => ({
       focus: "session" as const,
