@@ -22,7 +22,7 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
   const workerRunId = agent.remote_execution?.active_worker_provider_run_id?.trim()
   if (sessionRunId && (!sessionRunAgentId || sessionRunAgentId !== agent.id)) {
     return [
-      `run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
+      `run /kernel health and /provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to ${agent.agent_ref}`,
     ]
   }
   if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {

@@ -259,7 +259,7 @@ test("agent summaries expose session and worker provider run pointers", () => {
       activeProviderRunId: "run-session",
       activeProviderRunAgentId: null,
     }),
-    /provider run next: run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to agent-remote/,
+    /provider run next: run \/kernel health and \/provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to agent-remote/,
   )
   assert.match(
     formatAgentInspectSummary(agent({

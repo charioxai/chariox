@@ -12,7 +12,7 @@ test("providerRunRecoveryActions reports mismatched session provider runs", () =
     activeProviderRunId: "run-1",
     activeProviderRunAgentId: "agent-2",
   }), [
-    "run /kernel health and /provider processes; close or relaunch the mismatched provider run before sending more prompts to A1",
+    "run /kernel health and /provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to A1",
   ])
 })
 

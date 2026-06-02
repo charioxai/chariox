@@ -161,7 +161,7 @@ test("native TUI runtime banner surfaces provider run recovery actions", () => {
     run: providerRun("session-run-1", { agent_instance_id: null }),
   })
   assert.match(mismatched, /provider run:   session-run-1/)
-  assert.match(mismatched, /provider next:  run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to A1/)
+  assert.match(mismatched, /provider next:  run \/kernel health and \/provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to A1/)
 
   const missingWorkerRun = formatNativeTuiRuntimeBanner({
     surface: "opencode native-tui",

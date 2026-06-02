@@ -432,7 +432,7 @@ test("executeShellCommand does not infer provider run ownership from focused age
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent: agent-1/)
   assert.match(result.message ?? "", /provider run: session=session-run-2 owned_by=agent-2/)
-  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/provider processes; close or relaunch the mismatched provider run before sending more prompts to agent-1/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel health and \/provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to agent-1/)
 })
 
 test("executeShellCommand context reports missing active remote worker provider run", async () => {
