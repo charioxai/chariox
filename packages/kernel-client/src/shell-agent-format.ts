@@ -119,7 +119,8 @@ function formatAgentListPlacement(agent: AgentInstance, slice: SliceRecord | nul
     return "local"
   }
   if (slice) {
-    return `slice ${slice.name || slice.id}`
+    const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
+    return `slice ${slice.name || slice.id}${run}`
   }
   const machine = remote.worker_machine_id ? `@${remote.worker_machine_id}` : ""
   const run = remote.active_worker_provider_run_id ? ` run ${remote.active_worker_provider_run_id}` : ""
