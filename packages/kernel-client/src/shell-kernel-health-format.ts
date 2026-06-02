@@ -73,8 +73,8 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    const target = firstAgent ? `agent ${firstAgent}` : "the affected agent"
-    lines.push(`  next: inspect ${target} and stop duplicate provider runs before sending more prompts`)
+    const target = firstAgent ?? "<agent>"
+    lines.push(`  next: run /agent inspect ${target}; run /provider processes; stop duplicate provider runs before sending more prompts`)
   }
 
   if (providerRuns.multi_interface_agent_bindings.length > 0) {
@@ -84,8 +84,8 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    const target = firstAgent ? `agent ${firstAgent}` : "the affected agent"
-    lines.push(`  next: inspect ${target} and close the extra native TUI or Arroba provider run before sending more prompts`)
+    const target = firstAgent ?? "<agent>"
+    lines.push(`  next: run /agent inspect ${target}; run /provider processes; close the extra native TUI or Arroba provider run before sending more prompts`)
   }
 
   if (providerCatalog.expired) {
