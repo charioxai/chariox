@@ -484,7 +484,7 @@ test("kernel health formatter gives worker-connectivity guidance for aggregate m
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /remote extension sync issues: failed=0 stale=0 missing=1 pending_revoke=0/)
-  assert.match(rendered, /next: run \/extension sync-status <agent>; check worker connectivity; use \/extension sync-retry <agent> after worker connectivity is healthy/)
+  assert.match(rendered, /next: home keeps stale home-proxy calls blocked; run \/extension sync-status <agent>; check worker connectivity; use \/extension sync-retry <agent> after worker connectivity is healthy/)
 })
 
 test("kernel health formatter reports workspace live sync and collision issues", () => {

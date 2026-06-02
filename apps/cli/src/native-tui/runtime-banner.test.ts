@@ -53,7 +53,7 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(banner, /ext boundary:   home validates every call; credentials never leave home/)
   assert.match(banner, /remote ext sync: pending/)
-  assert.match(banner, /ext sync next:  wait for the worker manifest update; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
+  assert.match(banner, /ext sync next:  home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)

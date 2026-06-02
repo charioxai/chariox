@@ -618,7 +618,7 @@ test("executeShellCommand makes pending remote extension sync retryable", async 
   assert.equal(statusResult.ok, true)
   assert.match(statusResult.message ?? "", /agent-1 remote extension sync: pending/)
   assert.match(statusResult.message ?? "", /manifest hash: pending-hash/)
-  assert.match(statusResult.message ?? "", /next: wait for the worker manifest update; run \/extension sync-status agent-1; run \/machine kernels machine-1 if it does not settle; use \/extension sync-retry agent-1 after worker connectivity is healthy/)
+  assert.match(statusResult.message ?? "", /next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-1; run \/machine kernels machine-1 if it does not settle; use \/extension sync-retry agent-1 after worker connectivity is healthy/)
 })
 
 test("executeShellCommand manages script environments and script extensions", async () => {

@@ -291,13 +291,13 @@ export function remoteExtensionSyncNextAction(
   }
   if (!status || status.state === "pending" || status.state === "syncing") {
     return workerMachineId
-      ? `wait for the worker manifest update; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
-      : `wait for the worker manifest update; run /extension sync-status ${agentRef} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      ? `home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status ${agentRef} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   if (status.state === "failed" || status.state === "stale" || status.state === "missing") {
     return workerMachineId
-      ? `run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
-      : `run /extension sync-status ${agentRef}; check worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      ? `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; check worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   return null
 }

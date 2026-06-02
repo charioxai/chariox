@@ -338,7 +338,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 
   if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0) {
     lines.push(`remote extension sync settling: syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents}`)
-    lines.push("  next: run /extension sync-status <agent> and retry after worker connectivity is healthy")
+    lines.push("  next: home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status <agent> and retry after worker connectivity is healthy")
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
