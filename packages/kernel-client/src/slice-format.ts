@@ -119,6 +119,21 @@ export function formatSliceProviderAuthStatus(slice: SliceRecordLike): string | 
   return `auth missing ${formatSliceProviderList(coverage.providers)}`
 }
 
+export function formatSliceProviderAuthReadiness(slice: SliceRecordLike): string {
+  const coverage = sliceProviderAuthCoverage(slice)
+  const parts = [
+    coverage.missingProviders.length > 0 ? `missing ${formatSliceProviderList(coverage.missingProviders)}` : "",
+    coverage.staleProviders.length > 0 ? `refresh ${formatSliceProviderList(coverage.staleProviders)}` : "",
+  ].filter(Boolean)
+  if (parts.length > 0) {
+    return parts.join("; ")
+  }
+  if (coverage.providers.length > 0) {
+    return `ready ${formatSliceProviderList(coverage.providers)}`
+  }
+  return "no provider targets"
+}
+
 export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {
   const identity = entry.email
     || entry.account_id

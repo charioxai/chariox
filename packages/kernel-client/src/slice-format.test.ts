@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
   formatSliceProviderAuthStatus,
   formatSliceScope,
   sliceProviderAuthCoverage,
@@ -87,6 +88,37 @@ test("slice formatter summarizes partial provider auth status", () => {
     }),
     "auth opencode:openai=configured, opencode:opencode=not_configured/state=not_configured; refresh opencode:opencode",
   )
+})
+
+test("slice formatter summarizes provider auth readiness for scanning", () => {
+  assert.equal(
+    formatSliceProviderAuthReadiness({
+      providers: ["codex", "claude"],
+      provider_auth: [
+        { provider: "codex", state: "configured" },
+        { provider: "claude", state: "authenticated" },
+      ],
+    }),
+    "ready codex, claude",
+  )
+  assert.equal(
+    formatSliceProviderAuthReadiness({
+      providers: ["codex", "opencode:openai"],
+      provider_auth: [{ provider: "codex", state: "configured" }],
+    }),
+    "missing opencode:openai",
+  )
+  assert.equal(
+    formatSliceProviderAuthReadiness({
+      providers: ["opencode"],
+      provider_auth: [
+        { provider: "opencode:openai", state: "configured" },
+        { provider: "opencode:opencode", state: "not_configured" },
+      ],
+    }),
+    "refresh opencode:opencode",
+  )
+  assert.equal(formatSliceProviderAuthReadiness({ providers: [], provider_auth: [] }), "no provider targets")
 })
 
 test("slice formatter resolves worktree scope in display order", () => {

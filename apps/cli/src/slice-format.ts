@@ -4,6 +4,7 @@ export {
   formatSliceOperation,
   formatSliceProviderAuth,
   formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
   formatSliceProviderAuthStatus,
   formatSliceProviderList,
   formatSliceRelayLabel,

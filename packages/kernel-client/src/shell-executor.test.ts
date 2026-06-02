@@ -1238,7 +1238,8 @@ test("executeShellCommand renders slice account recovery hints", async () => {
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
-  assert.match(result.message ?? "", /providers=codex auth=-/)
+  assert.match(result.message ?? "", /auth_status=missing codex/)
+  assert.match(result.message ?? "", /providers=codex auth_status=missing codex auth=-/)
   assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex or \/slice auth login linux-a codex/)
   assert.equal(doctor.ok, false)
   assert.match(doctor.message ?? "", /fail provider accounts: none/)
@@ -1343,6 +1344,8 @@ test("executeShellCommand renders concrete or placeholder slice stale-auth recov
   const result = await executeShellCommand(parseShellCommand("slice list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /linux-a[\s\S]*auth_status=refresh codex/)
+  assert.match(result.message ?? "", /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
   assert.match(result.message ?? "", /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
   assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
 })

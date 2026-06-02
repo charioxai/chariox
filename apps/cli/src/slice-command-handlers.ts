@@ -9,6 +9,7 @@ import {
   formatSliceDiagnostics,
   formatSliceOperation,
   formatSliceProviderAuth,
+  formatSliceProviderAuthReadiness,
   formatSliceProviderList,
   formatSliceRelayLabel,
   formatSliceScope,
@@ -125,12 +126,13 @@ function formatSlice(slice: SliceRecord): string {
   const display = slice.display_endpoint?.url ? ` screen=${slice.display_endpoint.url}` : ""
   const providers = (slice.providers ?? []).join(",") || "-"
   const auth = (slice.provider_auth ?? []).map((entry) => formatSliceProviderAuth(entry)).join(",") || "-"
+  const authStatus = formatSliceProviderAuthReadiness(slice)
   const worker = slice.worker_kernel_id ?? slice.worker_kernel_ref
   const worktree = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice, { includeUrl: true, emptyLabel: "none" })
   const diagnostics = formatSliceDiagnostics(slice)
   const next = sliceProviderAuthNextAction(slice)
-  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth=${auth}${diagnostics}${next ? ` next=${next}` : ""}${display}`
+  return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth_status=${authStatus} auth=${auth}${diagnostics}${next ? ` next=${next}` : ""}${display}`
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {

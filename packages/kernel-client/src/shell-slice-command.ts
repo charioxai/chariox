@@ -21,6 +21,7 @@ import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./she
 import { resolveShellAgent } from "./shell-agent-resolver.js"
 import {
   formatSliceProviderAuth,
+  formatSliceProviderAuthReadiness,
   formatSliceProviderList,
   formatSliceRelayLabel,
   sliceProviderAuthCoverage,
@@ -312,11 +313,12 @@ function formatSlice(slice: SliceRecord): string {
   const auth = (slice.provider_auth ?? [])
     .map((entry) => formatSliceProviderAuth(entry))
     .join(",") || "-"
+  const authStatus = formatSliceProviderAuthReadiness(slice)
   const agents = slice.agent_ids?.length ?? 0
   const scope = slice.worktree_id ? ` worktree=${slice.worktree_id}` : ""
   const diagnostics = formatSliceDiagnostics(slice)
   const next = sliceNextAction(slice)
-  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth=${auth}${diagnostics}${display}${next ? ` next=${next}` : ""}`
+  return `${formatSliceLabel(slice)} status=${slice.status} backend=${slice.backend} os=${slice.os} display_mode=${slice.display_mode ?? "headless"} worker=${slice.worker_kernel_id ?? slice.worker_kernel_ref} relay=${relay} agents=${agents}${scope} providers=${providers} auth_status=${authStatus} auth=${auth}${diagnostics}${display}${next ? ` next=${next}` : ""}`
 }
 
 function formatSliceDoctor(slice: SliceRecord): string {

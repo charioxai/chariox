@@ -30,7 +30,8 @@ test("slice command list renders lifecycle scope and provider auth details", asy
   assert.match(harness.notices.at(-1) ?? "", /linux-dev id=slice-1 status=running display=headed/)
   assert.match(harness.notices.at(-1) ?? "", /worktree=\/repo\/feature agents=1 sessions=2/)
   assert.match(harness.notices.at(-1) ?? "", /worker=kernel-slice relay=shared:wss:\/\/relay.example\/slice/)
-  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth=codex:work \(acct-1\),claude:user@example.com\/org=Team\/plan=pro/)
+  assert.match(harness.notices.at(-1) ?? "", /auth_status=ready codex, claude/)
+  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth_status=ready codex, claude auth=codex:work \(acct-1\),claude:user@example.com\/org=Team\/plan=pro/)
   assert.equal(harness.footers.at(-1)?.message, "listed 1 slice")
 })
 
@@ -48,7 +49,8 @@ test("slice command list renders provider account recovery hints", async () => {
 
   await handleSliceSlashCommand(harness.deps, command("list"))
 
-  assert.match(harness.notices.at(-1) ?? "", /providers=codex auth=-/)
+  assert.match(harness.notices.at(-1) ?? "", /auth_status=missing codex/)
+  assert.match(harness.notices.at(-1) ?? "", /providers=codex auth_status=missing codex auth=-/)
   assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
 })
 
@@ -66,7 +68,8 @@ test("slice command list keeps provider placeholder for multi-provider recovery 
 
   await handleSliceSlashCommand(harness.deps, command("list"))
 
-  assert.match(harness.notices.at(-1) ?? "", /providers=codex,opencode:openai auth=-/)
+  assert.match(harness.notices.at(-1) ?? "", /auth_status=missing codex, opencode:openai/)
+  assert.match(harness.notices.at(-1) ?? "", /providers=codex,opencode:openai auth_status=missing codex, opencode:openai auth=-/)
   assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev <provider> or \/slice auth login linux-dev <provider>/)
 })
 
@@ -94,6 +97,8 @@ test("slice command list renders concrete or placeholder stale-auth recovery hin
   await handleSliceSlashCommand(harness.deps, command("list"))
 
   const notice = harness.notices.at(-1) ?? ""
+  assert.match(notice, /linux-a[\s\S]*auth_status=refresh codex/)
+  assert.match(notice, /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
   assert.match(notice, /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
   assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
 })
