@@ -127,7 +127,7 @@ export async function handleAgentSpawnCommand(
       model: model ?? null,
       effort,
       worktreeId,
-      machineRef: remoteRef,
+      machineRef: sliceRef ? undefined : remoteRef,
       worktreePlacement: remoteGitPlacement,
       sliceRef,
     })

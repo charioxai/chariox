@@ -111,6 +111,59 @@ test("agent spawn command can create and start a new slice", async () => {
   assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree /workspace-feature · worker machine-slice")
 })
 
+test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: () => {},
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    createSlice: async (options) => {
+      calls.push(`create:${options.workerKernelRef}:${options.worktreeId}`)
+      return slice({ id: "slice-created", display_mode: options.displayMode, worktree_id: options.worktreeId })
+    },
+    startSlice: async (sliceRef) => {
+      calls.push(`start:${sliceRef}`)
+      return slice({ id: sliceRef, display_mode: "headless" })
+    },
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async () => {
+      throw new Error("slice spawn should not launch locally")
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (_provider, _alias, _model, _effort, _worktreeId, machineRef, _worktreePlacement, sliceRef) => {
+      calls.push(`spawn:${machineRef ?? "none"}:${sliceRef}`)
+      const nextAgent = agent({
+        id: "agent-slice",
+        agent_ref: "agent-slice",
+        remote_execution: {
+          worker_kernel_id: "kernel-slice",
+          worker_machine_id: "machine-slice",
+          execution_lease_id: "lease-slice",
+          leased_agent_id: "worker-agent",
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4", "--kernel", "kernel-worker", "--slice", "new"])
+
+  assert.deepEqual(calls, [
+    "create:kernel-worker:/workspace",
+    "start:slice-created",
+    "spawn:none:slice-created",
+  ])
+})
+
 test("agent spawn command can create a headed slice with separate display option", async () => {
   let currentSession = session()
   const calls: string[] = []
