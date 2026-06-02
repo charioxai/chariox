@@ -434,6 +434,10 @@ test("provider processes teardown reports blocked daemon-tracked processes", asy
     formatSessionList: () => "",
   })
 
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes teardown", value: "processes teardown" })
+  assert.equal(flashedMessage, "usage: /provider processes teardown <provider>")
+  assert.deepEqual(notices, [])
+
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes teardown codex", value: "processes teardown codex" })
   assert.equal(flashedMessage, "no safe provider processes to tear down")
   assert.match(notices[0]!, /blocked provider processes:/)

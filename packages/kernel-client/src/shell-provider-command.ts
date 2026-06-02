@@ -53,7 +53,10 @@ export async function executeProviderCommand(
   if (action === "processes") {
     const subcommand = providerArg
     if (subcommand === "teardown") {
-      const provider = rest[0] ?? null
+      const provider = rest[0]?.trim() || null
+      if (!provider) {
+        return { ok: false, message: "usage: provider processes teardown <provider>" }
+      }
       const response = await deps.client.send(teardownProviderProcessesRequest(provider))
       const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
       return { ok: true, message: processes.length === 0 ? "no safe provider processes to tear down" : `tore down ${processes.length} provider process(es)\n${formatProviderProcesses(processes)}`, data: { processes } }

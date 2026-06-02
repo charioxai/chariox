@@ -191,7 +191,12 @@ async function handleProviderProcessesCommand(
   parts: string[],
 ): Promise<void> {
   if (parts[1] === "teardown") {
-    await teardownProviderProcesses(deps, parts[2] ?? null)
+    const provider = parts[2]?.trim() || null
+    if (!provider) {
+      deps.flashFooter("usage: /provider processes teardown <provider>", "error")
+      return
+    }
+    await teardownProviderProcesses(deps, provider)
     return
   }
   await listProviderProcesses(deps, parts[1] ?? null)
