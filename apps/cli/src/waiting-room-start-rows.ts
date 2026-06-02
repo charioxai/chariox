@@ -191,9 +191,9 @@ function formatVariantValue(effort: string, fallback = false) {
 }
 
 function formatWorkspaceLiveSyncMode(mode: WaitingRoomState["workspaceLiveSyncMode"]) {
-  if (mode === "managed") return "managed (selected worktree; other repos unrestricted)"
-  if (mode === "tracked") return "tracked (turn-end selected worktree; other repos unrestricted)"
-  return "off (default; no sync)"
+  if (mode === "managed") return "managed (selected workspace/worktree only; other repos unrestricted)"
+  if (mode === "tracked") return "tracked (turn-end; selected workspace/worktree only; other repos unrestricted)"
+  return "off (default; all repos unrestricted)"
 }
 
 function formatWaitingRoomModelLabel(
