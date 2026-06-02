@@ -6,20 +6,18 @@ use serde_json::{json, Value};
 
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
 
-use super::CODEX_MCP_TOKEN_ENV;
-
 pub(super) fn append_runtime_mcp_overrides(
     overrides: &mut BTreeMap<String, Value>,
     server_url: &str,
-    _auth_token: &str,
+    auth_token: &str,
 ) {
     overrides.insert(
         "mcp_servers.arroba.url".to_string(),
         json!(server_url.to_string()),
     );
     overrides.insert(
-        "mcp_servers.arroba.bearer_token_env_var".to_string(),
-        json!(CODEX_MCP_TOKEN_ENV),
+        "mcp_servers.arroba.http_headers.Authorization".to_string(),
+        json!(format!("Bearer {auth_token}")),
     );
     overrides.insert("mcp_servers.arroba.required".to_string(), json!(true));
     overrides.insert(
