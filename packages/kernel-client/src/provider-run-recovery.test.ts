@@ -27,7 +27,7 @@ test("providerRunRecoveryActions reports missing active remote worker runs", () 
       },
     },
   }), [
-    "run /kernel remote-runtime and /machine kernels hetzner; reconnect or relaunch the remote/slice worker if no active worker run appears",
+    "run /kernel remote-runtime and /machine kernels hetzner; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent if no active worker run appears",
   ])
 })
 
@@ -53,10 +53,10 @@ test("providerRunRecoveryActions stays quiet for healthy local and remote runs",
 test("remoteWorkerProviderRunRecoveryAction formats specific and fallback actions", () => {
   assert.equal(
     remoteWorkerProviderRunRecoveryAction("A1", "hetzner"),
-    "run /kernel remote-runtime; run /agent inspect A1; run /machine kernels hetzner; reconnect or relaunch the remote/slice worker",
+    "run /kernel remote-runtime; run /agent inspect A1; run /machine kernels hetzner; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent",
   )
   assert.equal(
     remoteWorkerProviderRunRecoveryAction(null, null),
-    "run /kernel remote-runtime; run /agent inspect <agent>; reconnect or relaunch the remote/slice worker",
+    "run /kernel remote-runtime; run /agent inspect <agent>; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent",
   )
 })

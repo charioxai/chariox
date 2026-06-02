@@ -273,7 +273,7 @@ test("agent summaries expose session and worker provider run pointers", () => {
         leased_agent_id: "leased-agent-1",
       },
     })),
-    /provider run next: run \/kernel remote-runtime and \/machine kernels machine-worker; reconnect or relaunch the remote\/slice worker if no active worker run appears/,
+    /provider run next: run \/kernel remote-runtime and \/machine kernels machine-worker; reconnect or relaunch the remote\/slice worker before sending prompts to that remote\/slice agent if no active worker run appears/,
   )
   assert.doesNotMatch(
     formatAgentListSummary([remoteAgent], [], {

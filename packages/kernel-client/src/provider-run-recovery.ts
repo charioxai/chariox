@@ -28,7 +28,7 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
   if (agent.remote_execution && (agent.state === "Working" || agent.is_processing) && !workerRunId) {
     const worker = agent.remote_execution.worker_machine_id?.trim() || "<worker-machine>"
     return [
-      `run /kernel remote-runtime and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker if no active worker run appears`,
+      `run /kernel remote-runtime and /machine kernels ${worker}; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent if no active worker run appears`,
     ]
   }
   return []
@@ -37,5 +37,5 @@ export function providerRunRecoveryActions(context: ProviderRunRecoveryContext):
 export function remoteWorkerProviderRunRecoveryAction(agentRef?: string | null, workerMachineId?: string | null): string {
   const agent = agentRef?.trim() || "<agent>"
   const worker = workerMachineId?.trim()
-  return `run /kernel remote-runtime; run /agent inspect ${agent}${worker ? `; run /machine kernels ${worker}` : ""}; reconnect or relaunch the remote/slice worker`
+  return `run /kernel remote-runtime; run /agent inspect ${agent}${worker ? `; run /machine kernels ${worker}` : ""}; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent`
 }

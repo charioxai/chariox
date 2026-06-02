@@ -477,7 +477,7 @@ test("executeShellCommand context reports missing active remote worker provider 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /agent placement: remote \(worker=hetzner, kernel=worker-kernel, lease=lease-1, leased_agent=leased-agent-1\)/)
   assert.match(result.message ?? "", /provider run: none/)
-  assert.match(result.message ?? "", /provider run next: run \/kernel remote-runtime and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker if no active worker run appears/)
+  assert.match(result.message ?? "", /provider run next: run \/kernel remote-runtime and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker before sending prompts to that remote\/slice agent if no active worker run appears/)
 })
 
 test("executeShellCommand lists sessions with home kernel ownership", async () => {
