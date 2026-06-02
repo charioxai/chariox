@@ -143,9 +143,49 @@ fn format_remote_mcp_unavailable_message(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "remote agent `{}` requires MCPs that are not available in worker Arroba. Install the matching MCP definition in the worker project or user registry, then retry.\n{}",
+        "remote agent `{}` requires MCPs that are not available in worker Arroba. Install the matching MCP definition in the worker project or user registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{}",
         leased_agent.id, details
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_remote_mcp_unavailable_message;
+    use crate::execution_lease::LeasedAgent;
+    use crate::transport::relay_peer::{RemoteMcpAvailability, RemoteMcpAvailabilityStatus};
+
+    #[test]
+    fn remote_lease_mcp_unavailable_message_names_worker_local_and_home_proxy_recovery() {
+        let leased_agent = LeasedAgent::new(
+            "leased-agent-1".to_string(),
+            "lease-1".to_string(),
+            "home-agent-1".to_string(),
+            "codex".to_string(),
+            None,
+            None,
+            None,
+            None,
+            "worker-session-1".to_string(),
+            "worker-agent-1".to_string(),
+            "attachment-1".to_string(),
+        );
+        let unavailable = vec![RemoteMcpAvailability {
+            name: "filesystem".to_string(),
+            expected_hash: "hash-1".to_string(),
+            status: RemoteMcpAvailabilityStatus::MissingEnv {
+                names: vec!["FS_ROOT".to_string()],
+            },
+        }];
+        let message = format_remote_mcp_unavailable_message(&leased_agent, &unavailable);
+        assert!(message.contains("remote agent `leased-agent-1` requires MCPs"));
+        assert!(message.contains(
+            "Install the matching MCP definition in the worker project or user registry"
+        ));
+        assert!(message.contains("expose the home MCP as a home-proxy extension"));
+        assert!(message.contains(
+            "- filesystem expected hash hash-1: missing environment variable(s) on worker: FS_ROOT"
+        ));
+    }
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {

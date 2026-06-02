@@ -111,7 +111,7 @@ pub(super) fn format_remote_mcp_unavailable(
             .collect::<Vec<_>>()
             .join("\n");
     format!(
-        "remote MCP unavailable on worker. Install the matching MCP definition in the worker project or user registry, then retry.\n{details}"
+        "remote MCP unavailable on worker. Install the matching MCP definition in the worker project or user registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{details}"
     )
 }
 
@@ -130,4 +130,28 @@ pub(super) fn package_granted_skills(
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_remote_mcp_unavailable;
+    use crate::transport::relay_peer::{RemoteMcpAvailability, RemoteMcpAvailabilityStatus};
+
+    #[test]
+    fn remote_mcp_unavailable_message_names_worker_local_and_home_proxy_recovery() {
+        let entry = RemoteMcpAvailability {
+            name: "filesystem".to_string(),
+            expected_hash: "hash-1".to_string(),
+            status: RemoteMcpAvailabilityStatus::MissingCommand {
+                command: "fs-mcp".to_string(),
+            },
+        };
+        let message = format_remote_mcp_unavailable(&[&entry]);
+        assert!(message.contains(
+            "Install the matching MCP definition in the worker project or user registry"
+        ));
+        assert!(message.contains("expose the home MCP as a home-proxy extension"));
+        assert!(message
+            .contains("- filesystem expected hash hash-1: missing command `fs-mcp` on worker"));
+    }
 }
