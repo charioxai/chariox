@@ -1721,7 +1721,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(syncResult.message ?? "", /rule ignored\/\*\*/)
   assert.match(syncResult.message ?? "", /force-exclude \.git\/\*\*/)
   assert.match(syncTargetsResult.message ?? "", /group shared-repo \(workspace-link-1\) targets=1 ready=1 degraded=0 conflicts=0/)
-  assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo/)
+  assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo machine=machine-1 kernel=kernel-1/)
   assert.match(syncTargetsResult.message ?? "", /next=inspect workspace sync conflicts/)
   assert.match(syncConflictsResult.message ?? "", /src\/app\.ts source=agent-1 target=local:\/repo: reconcile target/)
   assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)

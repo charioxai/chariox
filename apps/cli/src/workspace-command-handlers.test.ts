@@ -83,7 +83,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[0] ?? "", /Next: inspect \/workspace sync conflicts, ask an agent to reconcile, then rerun \/workspace sync status/)
   assert.match(notices[0] ?? "", /Rules: ignored\/\*\*, \*\.secret/)
   assert.match(notices[0] ?? "", /Force excludes: \.git\/\*\*, \.arroba\/\*\*/)
-  assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main/)
+  assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main machine=machine-2 kernel=kernel-2/)
   assert.match(notices[1] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.match(notices[1] ?? "", /Next: inspect \/workspace sync conflicts/)
   assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)

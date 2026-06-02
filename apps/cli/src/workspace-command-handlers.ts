@@ -328,7 +328,8 @@ function formatWorkspaceLiveSyncTargets(status: WorkspaceLiveSyncStatus): string
   ))
   const targets = status.targets.map((target) => {
     const branch = target.branch ? ` branch=${target.branch}` : ""
-    return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}`
+    const runtime = ` machine=${target.machine_id || "-"} kernel=${target.kernel_id || "-"}`
+    return `- ${target.status} ${target.link_name}: ${target.user_id} ${target.repo_root}${branch}${runtime}`
   })
   const lines = groups.concat(targets)
   if (lines.length === 0) {
