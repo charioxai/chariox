@@ -41,7 +41,8 @@ export function kernelRemoteRuntimeReadiness(health: DaemonHealthProjection): Ke
 }
 
 function remoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
-  return workspaceRemoteRuntimeHardIssueCount(health)
+  return providerRunRuntimeIssueCount(health)
+    + workspaceRemoteRuntimeHardIssueCount(health)
     + sliceLifecycleIssueCount(health)
     + remoteExecutionIssueCount(health)
     + remoteExtensionSyncHardIssueCount(health)
@@ -68,8 +69,10 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const liveSyncManagedMode = liveSync.managed_mode
   const workspaceIdentity = liveSync.workspace_identity
   const externalChanges = liveSync.external_changes
+  const providerRunIssues = providerRunInvariantIssueCount(health)
   const lines = [
     "remote runtime",
+    `provider run invariants: duplicate=${health.provider_runs.duplicate_arroba_agent_bindings.length} mixed=${health.provider_runs.multi_interface_agent_bindings.length} orphaned=${health.provider_runs.orphaned_active_runs.length} pointer=${health.provider_runs.session_active_run_mismatches.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
@@ -83,6 +86,9 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
+  if (providerRunIssues > 0 || health.provider_run_actor.enqueue_rejections > 0) {
+    appendRemoteRuntimeProviderRunIssues(lines, health)
+  }
   appendRemoteRuntimeIssues(lines, health)
   const readiness = kernelRemoteRuntimeReadiness(health)
   if (readiness.state === "ok") {
@@ -137,10 +143,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   ]
 
   const providerRunInvariantIssues =
-    providerRuns.duplicate_arroba_agent_bindings.length
-    + providerRuns.multi_interface_agent_bindings.length
-    + providerRuns.orphaned_active_runs.length
-    + providerRuns.session_active_run_mismatches.length
+    providerRunInvariantIssueCount(health)
   if (providerRunInvariantIssues === 0) {
     lines.push("provider run invariants: ok")
   }
@@ -413,6 +416,8 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 }
 
 function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): string {
+  const providerRuns = health.provider_runs
+  const providerRunActor = health.provider_run_actor
   const remoteExecution = health.remote_execution
   const sliceLifecycle = health.slice_lifecycle
   const remoteExtensionSync = health.remote_extension_sync
@@ -443,7 +448,65 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     && liveSync.external_changes.live_watcher_scan_errors === 0
     ? "selected-workspace-only"
     : `attention identity_changed=${liveSync.workspace_identity.identity_changed_provider_runs} invalid=${liveSync.workspace_identity.invalid_provider_runs} external_changes=${liveSync.external_changes.externally_changed_artifacts} scan_errors=${liveSync.external_changes.live_watcher_scan_errors}`
-  return `remote runtime invariants: worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
+  const providerRunIssues = providerRunInvariantIssueCount(health)
+  const providerRunsSummary = providerRunIssues === 0 && providerRunActor.enqueue_rejections === 0
+    ? "ok"
+    : `attention duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${providerRunActor.enqueue_rejections}`
+  return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
+}
+
+function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHealthProjection): void {
+  const providerRuns = health.provider_runs
+  const actorRejects = health.provider_run_actor.enqueue_rejections
+  lines.push(`provider run issues: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${actorRejects}`)
+  for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
+    lines.push(`  duplicate session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+  }
+  for (const conflict of providerRuns.multi_interface_agent_bindings) {
+    lines.push(`  mixed session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+  }
+  for (const issue of providerRuns.orphaned_active_runs) {
+    lines.push(`  orphaned run=${issue.provider_run_id} session=${issue.session_id} agent=${issue.agent_id ?? "-"}: ${issue.details}`)
+  }
+  for (const issue of providerRuns.session_active_run_mismatches) {
+    lines.push(`  pointer session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
+  }
+  if (actorRejects > 0) {
+    lines.push(`  actor rejected ${actorRejects} command${actorRejects === 1 ? "" : "s"}`)
+  }
+  lines.push(`  next: ${remoteRuntimeProviderRunNextAction(health)}`)
+}
+
+function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): string {
+  const providerRuns = health.provider_runs
+  const duplicate = providerRuns.duplicate_arroba_agent_bindings[0]
+  if (duplicate) {
+    return `run /agent inspect ${duplicate.agent_id || "<agent>"}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
+  }
+  const mixed = providerRuns.multi_interface_agent_bindings[0]
+  if (mixed) {
+    return `run /agent inspect ${mixed.agent_id || "<agent>"}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
+  }
+  const orphaned = providerRuns.orphaned_active_runs[0]
+  if (orphaned) {
+    return `refresh the session; stop or relaunch provider run ${orphaned.provider_run_id || "<provider-run>"} if it stays active`
+  }
+  const pointer = providerRuns.session_active_run_mismatches[0]
+  if (pointer) {
+    return `inspect session ${pointer.session_id || "<session>"} and relaunch the affected agent to restore one active run pointer`
+  }
+  return "wait for provider-run command queues to drain; inspect duplicate/stuck provider runs if rejections continue"
+}
+
+function providerRunRuntimeIssueCount(health: DaemonHealthProjection): number {
+  return providerRunInvariantIssueCount(health) + providerRunActorHealthIssueCount(health)
+}
+
+function providerRunInvariantIssueCount(health: DaemonHealthProjection): number {
+  return health.provider_runs.duplicate_arroba_agent_bindings.length
+    + health.provider_runs.multi_interface_agent_bindings.length
+    + health.provider_runs.orphaned_active_runs.length
+    + health.provider_runs.session_active_run_mismatches.length
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {

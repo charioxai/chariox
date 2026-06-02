@@ -155,7 +155,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.doesNotMatch(rendered, /remote extension runtime:/)
-  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
@@ -363,7 +363,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   const rendered = formatKernelHealth(unhealthy)
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
-  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=attention starting=0 stopping=0 in_progress=0 unhealthy=0 failed_ops=0 auth_missing=1 auth_unconfigured=1; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=attention starting=0 stopping=0 in_progress=0 unhealthy=0 failed_ops=0 auth_missing=1 auth_unconfigured=1; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
   assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex before sending prompts to agents in that slice/)
@@ -399,7 +399,7 @@ test("kernel health formatter reports remote execution issues", () => {
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /remote execution: remote_agents=2 active=1 missing_worker_runs=1 malformed=1/)
-  assert.match(rendered, /remote runtime invariants: worker_runs=attention missing_worker_runs=1 malformed=1; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=attention missing_worker_runs=1 malformed=1; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /remote execution issues: missing_worker_runs=1 malformed=1/)
   assert.match(rendered, /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run worktree=\/repo: active remote agent has no active worker provider run id/)
   assert.match(rendered, /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch/)
@@ -744,13 +744,13 @@ test("kernel remote-runtime command opens health projection with remote footer",
   assert.match(notices.at(-1) ?? "", /^remote runtime/)
   assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
-  assert.match(notices.at(-1) ?? "", /remote runtime invariants: worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(notices.at(-1) ?? "", /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(notices.at(-1) ?? "", /workspace live sync:/)
   assert.doesNotMatch(notices.at(-1) ?? "", /provider runs: projected=/)
   assert.deepEqual(flashes.at(-1), { message: "remote runtime: ok", tone: "info" })
 })
 
-test("kernel remote-runtime formatter counts only remote runtime blockers", () => {
+test("kernel remote-runtime formatter treats provider-run invariants as blockers", () => {
   const unhealthy = health({
     provider_runs: {
       projected_runs: 2,
@@ -770,11 +770,15 @@ test("kernel remote-runtime formatter counts only remote runtime blockers", () =
   const rendered = formatKernelRemoteRuntimeHealth(unhealthy)
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
-  assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 0)
+  assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
   assert.match(rendered, /^remote runtime/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
-  assert.match(rendered, /remote runtime readiness: ok/)
-  assert.doesNotMatch(rendered, /duplicate Arroba provider run bindings/)
+  assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)
+  assert.match(rendered, /duplicate session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
+  assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
+  assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
 })
 
 test("kernel remote-runtime formatter reports slice operations as degraded attention", () => {
@@ -803,7 +807,7 @@ test("kernel remote-runtime formatter reports slice operations as degraded atten
     issueCount: 0,
     attentionCount: 2,
   })
-  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=attention starting=1 stopping=1 in_progress=2 unhealthy=0 failed_ops=0 auth_missing=0 auth_unconfigured=0; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=attention starting=1 stopping=1 in_progress=2 unhealthy=0 failed_ops=0 auth_missing=0 auth_unconfigured=0; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /slice operations settling: starting=1 stopping=1 in_progress=2/)
   assert.match(rendered, /next: wait for the slice operation to finish; run \/slice doctor <slice> and inspect \/slice logs <slice> if it does not settle/)
   assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
@@ -837,7 +841,7 @@ test("kernel remote-runtime formatter reports settling manifests as degraded att
     attentionCount: 2,
   })
   assert.match(rendered, /remote extension sync settling: syncing=1 pending=1/)
-  assert.match(rendered, /remote runtime invariants: worker_runs=ok; slices=ok; manifests=attention syncing=1 pending=1 failed=0 stale=0 missing=0 pending_revoke=0; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=attention syncing=1 pending=1 failed=0 stale=0 missing=0 pending_revoke=0; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
   assert.doesNotMatch(rendered, /support bundle:/)
 
