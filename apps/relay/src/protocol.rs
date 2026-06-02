@@ -66,6 +66,8 @@ pub struct DaemonRegistration {
     #[serde(default)]
     pub available_providers: Vec<String>,
     #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    #[serde(default)]
     pub accepting_remote_leases: bool,
     #[serde(default)]
     pub leased_agent_count: u32,
@@ -81,6 +83,8 @@ pub struct RelayMachinePresence {
     pub kernel_count: usize,
     #[serde(default)]
     pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +100,8 @@ pub struct RelayKernelPresence {
     #[serde(default)]
     pub available_providers: Vec<String>,
     #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub accepting_remote_leases: bool,
@@ -104,6 +110,26 @@ pub struct RelayKernelPresence {
     #[serde(default)]
     pub local_session_count: u32,
     pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProviderAccountSummary {
+    pub provider: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +311,7 @@ mod tests {
                 public_key: "public-key".to_string(),
                 capabilities: vec!["kernel_ws".to_string()],
                 available_providers: vec!["opencode".to_string()],
+                provider_accounts: Vec::new(),
                 accepting_remote_leases: false,
                 leased_agent_count: 0,
                 local_session_count: 1,

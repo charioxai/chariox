@@ -191,6 +191,46 @@ test("waiting room start rows include selected slice provider account", () => {
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (acct-123...cdef)")
 })
 
+test("waiting room start rows include selected worker kernel provider account", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({
+      providerId: "opencode",
+      selectedMachineRef: "machine-worker",
+      selectedKernelRef: "kernel-worker",
+    }),
+    {
+      providerId: "opencode",
+      model: modelOptions[0] ?? null,
+      effort: "high",
+    },
+    {
+      modelOptions,
+      remote: {
+        machines: [{
+          machine_id: "machine-worker",
+          display_name: "worker",
+          kernel_count: 1,
+          available_providers: ["opencode"],
+        }],
+        kernels: [{
+          kernel_id: "kernel-worker",
+          machine_id: "machine-worker",
+          available_providers: ["opencode"],
+          provider_accounts: [{ provider: "opencode:openai", state: "configured", alias: "worker-openai" }],
+        }],
+      },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (worker-openai)")
+})
+
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",

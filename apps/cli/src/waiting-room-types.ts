@@ -1,5 +1,6 @@
 import type { SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
+import type { ProviderAccountSummary } from "@arroba/kernel-client"
 import type { ThemeName } from "./theme-registry.js"
 
 export type WaitingRoomFocus =
@@ -62,6 +63,7 @@ export type WaitingRoomRemoteMachine = {
   online?: boolean
   kernel_count: number
   available_providers?: string[]
+  provider_accounts?: ProviderAccountSummary[]
   pending?: boolean
 }
 
@@ -72,6 +74,7 @@ export type WaitingRoomRemoteKernel = {
   kernel_alias?: string | null
   relay_alias?: string | null
   available_providers?: string[]
+  provider_accounts?: ProviderAccountSummary[]
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number

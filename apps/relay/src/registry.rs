@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use tokio::sync::mpsc;
@@ -7,7 +7,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::auth::DEFAULT_RELAY_REALM_ID;
 use crate::protocol::{
     DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayKernelPresence,
-    RelayMachinePresence,
+    RelayMachinePresence, RelayProviderAccountSummary,
 };
 
 pub(crate) type RelaySender = mpsc::Sender<Message>;
@@ -137,6 +137,11 @@ impl RelayRegistry {
                     .collect::<Vec<_>>();
                 available_providers.sort();
                 available_providers.dedup();
+                let provider_accounts = dedup_provider_accounts(
+                    registrations
+                        .iter()
+                        .flat_map(|registration| registration.provider_accounts.iter().cloned()),
+                );
                 let machine_alias = registrations
                     .iter()
                     .min_by_key(|registration| normalized_kernel_started_at_ms(registration))
@@ -147,6 +152,7 @@ impl RelayRegistry {
                     machine_id,
                     kernel_count: registrations.len(),
                     available_providers,
+                    provider_accounts,
                 }
             })
             .collect()
@@ -213,6 +219,7 @@ impl RelayRegistry {
                 .clone()
                 .or_else(|| registration.daemon_alias.clone()),
             available_providers: registration.available_providers.clone(),
+            provider_accounts: registration.provider_accounts.clone(),
             capabilities: registration.capabilities.clone(),
             accepting_remote_leases: registration.accepting_remote_leases,
             leased_agent_count: registration.leased_agent_count,
@@ -257,6 +264,41 @@ impl RelayRegistry {
             })
             .collect()
     }
+}
+
+fn dedup_provider_accounts(
+    accounts: impl IntoIterator<Item = RelayProviderAccountSummary>,
+) -> Vec<RelayProviderAccountSummary> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for account in accounts {
+        let key = (
+            account.provider.clone(),
+            account.alias.clone(),
+            account.email.clone(),
+            account.account_id.clone(),
+            account.auth_type.clone(),
+            account.state.clone(),
+        );
+        if seen.insert(key) {
+            deduped.push(account);
+        }
+    }
+    deduped.sort_by(|left, right| {
+        (
+            left.provider.as_str(),
+            left.alias.as_deref().unwrap_or(""),
+            left.email.as_deref().unwrap_or(""),
+            left.account_id.as_deref().unwrap_or(""),
+        )
+            .cmp(&(
+                right.provider.as_str(),
+                right.alias.as_deref().unwrap_or(""),
+                right.email.as_deref().unwrap_or(""),
+                right.account_id.as_deref().unwrap_or(""),
+            ))
+    });
+    deduped
 }
 
 fn normalized_kernel_started_at_ms(registration: &DaemonRegistration) -> u64 {

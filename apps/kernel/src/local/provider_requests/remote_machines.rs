@@ -48,6 +48,7 @@ pub(crate) fn remote_machine_records(
             pending: false,
             kernel_count: 0,
             available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
         });
     }
 
@@ -89,6 +90,7 @@ fn remote_machine_record(
         pending: !approved,
         kernel_count: machine.kernel_count,
         available_providers: machine.available_providers,
+        provider_accounts: machine.provider_accounts,
     }
 }
 
@@ -170,7 +172,11 @@ pub(crate) fn forgotten_machine_record(
             .map(|machine| machine.kernel_count)
             .unwrap_or(0),
         available_providers: live
-            .map(|machine| machine.available_providers)
+            .as_ref()
+            .map(|machine| machine.available_providers.clone())
+            .unwrap_or_default(),
+        provider_accounts: live
+            .map(|machine| machine.provider_accounts)
             .unwrap_or_default(),
     }
 }

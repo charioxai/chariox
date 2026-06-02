@@ -13,6 +13,17 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                     machine_alias: Some("workstation".to_string()),
                     kernel_count: 1,
                     available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                    provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+                        provider: "codex".to_string(),
+                        state: "configured".to_string(),
+                        auth_type: Some("chatgpt".to_string()),
+                        account_id: Some("acct-remote-1".to_string()),
+                        email: None,
+                        organization_id: None,
+                        organization_name: None,
+                        subscription_type: None,
+                        alias: Some("remote-codex".to_string()),
+                    }],
                 }],
                 &host_machine_id,
             ),
@@ -23,6 +34,17 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                 relay_alias: Some("mbp".to_string()),
                 kernel_alias: Some("default".to_string()),
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+                    provider: "codex".to_string(),
+                    state: "configured".to_string(),
+                    auth_type: Some("chatgpt".to_string()),
+                    account_id: Some("acct-remote-1".to_string()),
+                    email: None,
+                    organization_id: None,
+                    organization_name: None,
+                    subscription_type: None,
+                    alias: Some("remote-codex".to_string()),
+                }],
                 capabilities: vec!["kernel_ws".to_string()],
                 accepting_remote_leases: true,
                 leased_agent_count: 2,
@@ -48,6 +70,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(machine.machine_alias.as_deref(), Some("workstation"));
     assert_eq!(machine.display_name, "workstation");
     assert_eq!(machine.available_providers, vec!["codex", "opencode"]);
+    assert_eq!(machine.provider_accounts[0].alias.as_deref(), Some("remote-codex"));
 
     let kernels = match harness
         .dispatch(LocalDaemonRequest::ListRemoteMachineKernels(
@@ -63,5 +86,9 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(kernels.len(), 1);
     assert_eq!(kernels[0].kernel_id, "daemon-1");
     assert_eq!(kernels[0].available_providers, vec!["codex", "opencode"]);
+    assert_eq!(
+        kernels[0].provider_accounts[0].account_id.as_deref(),
+        Some("acct-remote-1")
+    );
     assert!(kernels[0].accepting_remote_leases);
 }

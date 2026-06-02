@@ -386,18 +386,21 @@ mod tests {
                 machine_alias: Some("home".to_string()),
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
+                provider_accounts: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-a".to_string(),
                 machine_alias: Some("builder-west".to_string()),
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                provider_accounts: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-b".to_string(),
                 machine_alias: None,
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
+                provider_accounts: Vec::new(),
             },
         ];
 
@@ -432,12 +435,14 @@ mod tests {
                 machine_alias: Some("home".to_string()),
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
+                provider_accounts: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote".to_string(),
                 machine_alias: Some("builder".to_string()),
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                provider_accounts: Vec::new(),
             },
         ];
 

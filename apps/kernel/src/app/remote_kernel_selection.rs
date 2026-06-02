@@ -244,6 +244,7 @@ mod tests {
                 .iter()
                 .map(|provider| provider.to_string())
                 .collect(),
+            provider_accounts: Vec::new(),
             accepting_remote_leases,
             leased_agent_count: 0,
             local_session_count: 0,

@@ -334,6 +334,7 @@ pub async fn send_peer_request_via_temporary_connection(
             public_key: config.relay_public_key.clone(),
             capabilities: vec!["relay_peer_transport".to_string()],
             available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,

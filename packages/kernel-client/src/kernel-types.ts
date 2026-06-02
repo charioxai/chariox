@@ -977,6 +977,7 @@ export type RemoteMachineRecord = {
   pending: boolean
   kernel_count: number
   available_providers?: string[]
+  provider_accounts?: ProviderAccountSummary[]
 }
 
 export type SliceRecord = {
@@ -1116,10 +1117,23 @@ export type RelayKernelPresence = {
   relay_alias?: string | null
   kernel_alias?: string | null
   available_providers?: string[]
+  provider_accounts?: ProviderAccountSummary[]
   capabilities?: string[]
   accepting_remote_leases?: boolean
   leased_agent_count?: number
   local_session_count?: number
+}
+
+export type ProviderAccountSummary = {
+  provider: string
+  state: string
+  auth_type?: string | null
+  account_id?: string | null
+  email?: string | null
+  organization_id?: string | null
+  organization_name?: string | null
+  subscription_type?: string | null
+  alias?: string | null
 }
 
 export type WaitingRoomInventorySnapshot = {
@@ -1275,7 +1289,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 101
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 102
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

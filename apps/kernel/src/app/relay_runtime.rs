@@ -1,4 +1,6 @@
-use arroba_relay::protocol::DaemonRegistration;
+use std::path::PathBuf;
+
+use arroba_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
 use tokio::runtime::{Handle, Runtime};
 
 use crate::app::DaemonApp;
@@ -7,6 +9,26 @@ use crate::error::DaemonError;
 impl DaemonApp {
     pub fn relay_registration(&mut self) -> DaemonRegistration {
         let available_providers = self.providers.registry().registered_adapter_keys();
+        let provider_accounts = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home_dir| crate::slice_provider_auth::inspect_home_provider_auth(&home_dir))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|account| RelayProviderAccountSummary {
+                provider: account.provider,
+                state: serde_json::to_value(account.state)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                auth_type: account.auth_type,
+                account_id: account.account_id,
+                email: account.email,
+                organization_id: account.organization_id,
+                organization_name: account.organization_name,
+                subscription_type: account.subscription_type,
+                alias: account.alias,
+            })
+            .collect();
         DaemonRegistration {
             auth_token: self.config.relay_token.clone().unwrap_or_default(),
             daemon_id: self.config.daemon_id.clone(),
@@ -24,6 +46,7 @@ impl DaemonApp {
                 "execution_lease_management".to_string(),
             ],
             available_providers,
+            provider_accounts,
             accepting_remote_leases: self.config.accept_remote_leases,
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,

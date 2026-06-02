@@ -19,7 +19,9 @@ use crate::session::{
 };
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
-use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
+use arroba_relay::protocol::{
+    RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
+};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -43,8 +45,9 @@ use super::{
     ListWorkspaceLinksRequest, LocalDaemonRequest, LocalDaemonResponse,
     NativeProviderInteractionResolution, PollRuntimeNoticesRequest, PushWorkspaceBranchRequest,
     QueryRecallRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RequestNativeProviderInteractionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
+    RemoteMachineTrustStatus, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    RequestNativeProviderInteractionRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    RespondToInteractionRequest,
     ResumeWorkflowRunRequest, RevokeSessionInviteRequest, RunShellCapabilityRequest,
     SemanticRecallMatch, SemanticSearchRecallRequest, SendTerminalInputRequest,
     SetUserConfigValueRequest, SetWorkflowNodeCanCompleteRunRequest,

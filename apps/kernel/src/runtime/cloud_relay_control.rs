@@ -1,4 +1,5 @@
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use arroba_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
@@ -64,6 +65,7 @@ pub(crate) fn cloud_kernel_presence_body(
     config: &DaemonConfig,
     profile: &PersistedCloudRelayProfile,
     online: bool,
+    registration: Option<&DaemonRegistration>,
 ) -> Option<serde_json::Value> {
     let machine_id = profile.machine_id.clone()?;
     if !cloud_relay_profile_has_runtime_credentials(profile) {
@@ -109,6 +111,12 @@ pub(crate) fn cloud_kernel_presence_body(
         serde_json::json!({
             "host": config.kernel_websocket_host,
             "port": config.kernel_websocket_port,
+            "available_providers": registration
+                .map(|registration| registration.available_providers.clone())
+                .unwrap_or_default(),
+            "provider_accounts": registration
+                .map(|registration| registration.provider_accounts.clone())
+                .unwrap_or_default(),
         }),
     );
     Some(serde_json::Value::Object(body))
@@ -225,7 +233,7 @@ mod tests {
 
     #[test]
     fn presence_body_requires_machine_and_uses_machine_credentials_first() {
-        let body = cloud_kernel_presence_body(&config(Some(profile())), &profile(), true)
+        let body = cloud_kernel_presence_body(&config(Some(profile())), &profile(), true, None)
             .expect("presence body should build");
         assert_eq!(body["machineCredential"], "machine-secret");
         assert_eq!(body["status"], "ONLINE");
@@ -240,6 +248,7 @@ mod tests {
             &config(Some(session_profile.clone())),
             &session_profile,
             false,
+            None,
         )
         .expect("session token presence body should build");
         assert_eq!(body["sessionToken"], "session-token");
@@ -248,8 +257,56 @@ mod tests {
         let mut no_machine = profile();
         no_machine.machine_id = None;
         assert_eq!(
-            cloud_kernel_presence_body(&config(Some(no_machine.clone())), &no_machine, true),
+            cloud_kernel_presence_body(&config(Some(no_machine.clone())), &no_machine, true, None),
             None
+        );
+    }
+
+    #[test]
+    fn presence_body_includes_sanitized_provider_account_metadata() {
+        let registration = DaemonRegistration {
+            auth_token: "relay-token".to_string(),
+            daemon_id: "kernel-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            machine_alias: None,
+            os_name: None,
+            kernel_started_at_ms: 0,
+            daemon_alias: None,
+            kernel_alias: None,
+            public_key: "public".to_string(),
+            capabilities: Vec::new(),
+            available_providers: vec!["opencode".to_string()],
+            provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+                provider: "opencode:openai".to_string(),
+                state: "configured".to_string(),
+                auth_type: Some("oauth".to_string()),
+                account_id: Some("acct-1".to_string()),
+                email: None,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: None,
+                alias: Some("worker-openai".to_string()),
+            }],
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+        };
+        let body = cloud_kernel_presence_body(
+            &config(Some(profile())),
+            &profile(),
+            true,
+            Some(&registration),
+        )
+        .expect("presence body should build");
+
+        assert_eq!(body["metadata"]["available_providers"][0], "opencode");
+        assert_eq!(
+            body["metadata"]["provider_accounts"][0]["alias"],
+            "worker-openai"
+        );
+        assert_eq!(
+            body["metadata"]["provider_accounts"][0]["account_id"],
+            "acct-1"
         );
     }
 }

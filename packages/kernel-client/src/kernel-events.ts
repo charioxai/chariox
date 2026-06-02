@@ -1,4 +1,4 @@
-import type { WorkflowDesignOpForwarded, WorkflowRun } from "./kernel-types.js"
+import type { ProviderAccountSummary, WorkflowDesignOpForwarded, WorkflowRun } from "./kernel-types.js"
 
 export type KernelEvent =
   | {
@@ -52,6 +52,7 @@ export type KernelEvent =
       pending: boolean
       kernel_count: number
       available_providers?: string[]
+      provider_accounts?: ProviderAccountSummary[]
     }>
   }
   | {

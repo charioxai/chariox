@@ -1248,6 +1248,7 @@ mod tests {
             public_key: "public-key".to_string(),
             capabilities: Vec::new(),
             available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,

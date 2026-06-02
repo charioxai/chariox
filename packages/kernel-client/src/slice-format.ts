@@ -107,18 +107,26 @@ export function formatSliceBackendProviderAccount(
   slice: SliceRecordLike,
   provider: string,
 ): string | null {
+  return formatProviderAccountForBackend(slice.provider_auth ?? [], provider, slice.providers ?? [])
+}
+
+export function formatProviderAccountForBackend(
+  accounts: readonly SliceProviderAuthLike[] | null | undefined,
+  provider: string,
+  advertisedProviders: readonly string[] | null | undefined = undefined,
+): string | null {
   const providerId = provider.trim()
   if (!providerId) {
     return null
   }
-  const account = (slice.provider_auth ?? []).find((entry) => sliceProviderMatches(entry.provider, providerId))
+  const account = (accounts ?? []).find((entry) => sliceProviderMatches(entry.provider, providerId))
   if (account) {
     return account.alias?.trim()
       || account.email?.trim()
       || shortAccountId(account.account_id)
       || (sliceAuthNeedsAttention(account.state) ? "auth missing" : "auth configured")
   }
-  const targeted = sliceProviderNames(slice.providers ?? []).some((target) => sliceProviderMatches(target, providerId))
+  const targeted = sliceProviderNames(advertisedProviders ?? []).some((target) => sliceProviderMatches(target, providerId))
   return targeted ? "auth missing" : null
 }
 

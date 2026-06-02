@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatProviderAccountForBackend,
   formatSliceBackendProviderAccount,
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
@@ -40,6 +41,19 @@ test("slice formatter resolves backend provider account labels", () => {
   assert.equal(formatSliceBackendProviderAccount(slice, "claude"), "auth missing")
   assert.equal(formatSliceBackendProviderAccount({ providers: ["codex"], provider_auth: [] }, "codex"), "auth missing")
   assert.equal(formatSliceBackendProviderAccount(slice, "unknown"), null)
+})
+
+test("provider account formatter resolves backend labels without a slice", () => {
+  assert.equal(
+    formatProviderAccountForBackend(
+      [{ provider: "codex", state: "configured", alias: "worker-codex" }],
+      "codex",
+      ["codex"],
+    ),
+    "worker-codex",
+  )
+  assert.equal(formatProviderAccountForBackend([], "codex", ["codex"]), "auth missing")
+  assert.equal(formatProviderAccountForBackend([], "claude", ["codex"]), null)
 })
 
 test("slice formatter preserves provider auth attention states", () => {
