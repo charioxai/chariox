@@ -4,8 +4,10 @@ import test from "node:test"
 import type { DaemonHealthProjection } from "@arroba/kernel-client"
 import {
   formatKernelHealth,
+  formatKernelRemoteRuntimeHealth,
   handleKernelSlashCommand,
   kernelHealthIssueCount,
+  kernelRemoteRuntimeIssueCount,
 } from "./kernel-command-handlers.js"
 import { makeSession } from "./command-actions-test-support.js"
 
@@ -661,11 +663,38 @@ test("kernel remote-runtime command opens health projection with remote footer",
     transitionToNoSession: () => {},
   }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
 
-  assert.match(notices.at(-1) ?? "", /^kernel health/)
+  assert.match(notices.at(-1) ?? "", /^remote runtime/)
   assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(notices.at(-1) ?? "", /workspace live sync:/)
+  assert.doesNotMatch(notices.at(-1) ?? "", /provider runs: projected=/)
   assert.deepEqual(flashes.at(-1), { message: "remote runtime: ok", tone: "info" })
+})
+
+test("kernel remote-runtime formatter counts only remote runtime blockers", () => {
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 2,
+      active_runs: 2,
+      arroba_active_runs: 2,
+      native_tui_active_runs: 0,
+      duplicate_arroba_agent_bindings: [{
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider_run_ids: ["provider-run-1", "provider-run-2"],
+      }],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+  const rendered = formatKernelRemoteRuntimeHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 0)
+  assert.match(rendered, /^remote runtime/)
+  assert.match(rendered, /remote runtime readiness: ok/)
+  assert.doesNotMatch(rendered, /duplicate Arroba provider run bindings/)
 })
 
 test("kernel health command reports multi-interface provider-run bindings", async () => {

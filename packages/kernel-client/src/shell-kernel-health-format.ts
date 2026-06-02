@@ -20,6 +20,44 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + commandLaneHealthIssueCount(health)
 }
 
+export function kernelRemoteRuntimeIssueCount(health: DaemonHealthProjection): number {
+  return workspaceHealthIssueCount(health)
+    + sliceLifecycleIssueCount(health)
+    + remoteExecutionIssueCount(health)
+    + remoteExtensionSyncIssueCount(health)
+}
+
+export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {
+  const sliceLifecycle = health.slice_lifecycle
+  const remoteExecution = health.remote_execution
+  const remoteExtensionSync = health.remote_extension_sync
+  const workspaceCoordination = health.workspace_coordination
+  const liveSync = health.workspace_live_sync
+  const liveSyncManagedMode = liveSync.managed_mode
+  const workspaceIdentity = liveSync.workspace_identity
+  const externalChanges = liveSync.external_changes
+  const lines = [
+    "remote runtime",
+    `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
+    `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
+    `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
+    ...(remoteExtensionSync.home_proxy_grants > 0
+      ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
+      : []),
+    `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
+    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
+    `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
+  ]
+
+  appendRemoteRuntimeIssues(lines, health)
+  if (kernelRemoteRuntimeIssueCount(health) === 0) {
+    lines.push("remote runtime readiness: ok")
+  } else {
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+  }
+  return lines.join("\n")
+}
+
 export function formatKernelHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
   const providerCatalog = health.provider_catalog
@@ -146,6 +184,35 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push(`terminal stream trimmed pending output for ${terminalStream.trimmed_pending_output_recipients} recipient${terminalStream.trimmed_pending_output_recipients === 1 ? "" : "s"}`)
     lines.push("  next: refresh the terminal session to receive a fresh projection snapshot")
   }
+
+  appendRemoteRuntimeIssues(lines, health)
+
+  if (health.projection_invariants.mismatches.length === 0) {
+    lines.push(`projection invariants: ok (${health.projection_invariants.checked_sessions} session${health.projection_invariants.checked_sessions === 1 ? "" : "s"}, ${health.projection_invariants.checked_agents} agent${health.projection_invariants.checked_agents === 1 ? "" : "s"})`)
+  } else {
+    lines.push("projection invariant mismatches:")
+    for (const mismatch of health.projection_invariants.mismatches) {
+      lines.push(`  ${mismatch.kind} session=${mismatch.session_id} agent=${mismatch.agent_id ?? "-"}: ${mismatch.details}`)
+    }
+    lines.push("  next: refresh the session; restart the kernel if the invariant mismatch persists")
+  }
+
+  if (kernelHealthIssueCount(health) > 0) {
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+  }
+
+  return lines.join("\n")
+}
+
+function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjection): void {
+  const sliceLifecycle = health.slice_lifecycle
+  const remoteExecution = health.remote_execution
+  const remoteExtensionSync = health.remote_extension_sync
+  const workspaceCoordination = health.workspace_coordination
+  const liveSync = health.workspace_live_sync
+  const liveSyncManagedMode = liveSync.managed_mode
+  const workspaceIdentity = liveSync.workspace_identity
+  const externalChanges = liveSync.external_changes
 
   if (
     sliceLifecycle.issues.length > 0
@@ -287,22 +354,6 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
     lines.push("  next: check workspace paths and permissions, then refresh workspace live sync status")
   }
-
-  if (health.projection_invariants.mismatches.length === 0) {
-    lines.push(`projection invariants: ok (${health.projection_invariants.checked_sessions} session${health.projection_invariants.checked_sessions === 1 ? "" : "s"}, ${health.projection_invariants.checked_agents} agent${health.projection_invariants.checked_agents === 1 ? "" : "s"})`)
-  } else {
-    lines.push("projection invariant mismatches:")
-    for (const mismatch of health.projection_invariants.mismatches) {
-      lines.push(`  ${mismatch.kind} session=${mismatch.session_id} agent=${mismatch.agent_id ?? "-"}: ${mismatch.details}`)
-    }
-    lines.push("  next: refresh the session; restart the kernel if the invariant mismatch persists")
-  }
-
-  if (kernelHealthIssueCount(health) > 0) {
-    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
-  }
-
-  return lines.join("\n")
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {

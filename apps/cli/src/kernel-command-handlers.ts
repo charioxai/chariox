@@ -2,13 +2,17 @@ import type { RuntimeSession } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
   formatKernelHealth,
+  formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
+  kernelRemoteRuntimeIssueCount,
   type DaemonHealthProjection,
 } from "@arroba/kernel-client"
 
 export {
   formatKernelHealth,
+  formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
+  kernelRemoteRuntimeIssueCount,
 }
 
 type FooterTone = "info" | "error"
@@ -43,9 +47,10 @@ export async function handleKernelSlashCommand(
       return
     }
     const health = await deps.getDaemonHealth()
-    const issueCount = kernelHealthIssueCount(health)
-    deps.appendNotice(formatKernelHealth(health))
-    const label = subcommand === "remote-runtime" || subcommand === "runtime" ? "remote runtime" : "kernel health"
+    const remoteRuntime = subcommand === "remote-runtime" || subcommand === "runtime"
+    const issueCount = remoteRuntime ? kernelRemoteRuntimeIssueCount(health) : kernelHealthIssueCount(health)
+    deps.appendNotice(remoteRuntime ? formatKernelRemoteRuntimeHealth(health) : formatKernelHealth(health))
+    const label = remoteRuntime ? "remote runtime" : "kernel health"
     deps.flashFooter(
       issueCount === 0
         ? `${label}: ok`

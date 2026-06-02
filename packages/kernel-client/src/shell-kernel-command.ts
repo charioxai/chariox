@@ -3,7 +3,9 @@ import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest, 
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import {
   formatKernelHealth,
+  formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
+  kernelRemoteRuntimeIssueCount,
 } from "./shell-kernel-health-format.js"
 
 type ShellKernelClient = {
@@ -24,10 +26,14 @@ export async function executeKernelCommand(
     const response = await deps.client.send(getDaemonHealthRequest())
     const payload = expectVariant<{ projection: DaemonHealthProjection }>(response, "DaemonHealth")
     const runtimeContext = await kernelHealthRuntimeContext(context, deps)
-    const issueCount = kernelHealthIssueCount(payload.projection)
+    const remoteRuntime = action === "remote-runtime" || action === "runtime"
+    const issueCount = remoteRuntime ? kernelRemoteRuntimeIssueCount(payload.projection) : kernelHealthIssueCount(payload.projection)
     return {
       ok: issueCount === 0,
-      message: [runtimeContext, formatKernelHealth(payload.projection)].filter(Boolean).join("\n"),
+      message: [
+        runtimeContext,
+        remoteRuntime ? formatKernelRemoteRuntimeHealth(payload.projection) : formatKernelHealth(payload.projection),
+      ].filter(Boolean).join("\n"),
       data: payload.projection,
     }
   }
