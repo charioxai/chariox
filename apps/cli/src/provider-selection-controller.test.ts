@@ -22,6 +22,23 @@ test("provider selection controller applies detached model selection to waiting 
   })
 })
 
+test("provider selection controller marks detached selections from local provider fallback", async () => {
+  const harness = createHarness({
+    attached: false,
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+  })
+
+  await harness.controller.applyModelSelection("opencode/gpt-5.4")
+  await harness.controller.applyVariantSelection("high")
+  await harness.controller.applyProviderSelection("codex")
+
+  assert.deepEqual(harness.footerMessages().map((message) => message.message), [
+    "selected model opencode/gpt-5.4 (local provider list)",
+    "selected variant high (local provider list)",
+    "Codex selected (local provider list)",
+  ])
+})
+
 test("provider selection controller updates attached agent variants", async () => {
   const harness = createHarness({
     attached: true,
@@ -40,6 +57,22 @@ test("provider selection controller updates attached agent variants", async () =
     message: "variant set to high",
     tone: "info",
   })
+})
+
+test("provider selection controller marks attached profile updates from local provider fallback", async () => {
+  const harness = createHarness({
+    attached: true,
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+    currentSelection: { provider: "opencode", model: "opencode/gpt-5.4", effort: "medium" },
+  })
+
+  await harness.controller.applyModelSelection("opencode/gpt-5.4")
+  await harness.controller.applyVariantSelection("high")
+
+  assert.deepEqual(harness.footerMessages().map((message) => message.message), [
+    "model set to opencode/gpt-5.4 (local provider list)",
+    "variant set to high (local provider list)",
+  ])
 })
 
 test("provider selection controller blocks model changes controlled by native TUI", async () => {
@@ -122,13 +155,14 @@ function createHarness(options: {
   providerRun?: RuntimeProviderRun | null
   preferences?: ArrobaPreferences
   authStatus?: ProviderAuthStatus
+  providerCatalog?: ReturnType<typeof fallbackProviderCatalog>
   updateAgentProfile?: (
     sessionId: string,
     agentId: string,
     profile: { provider: BackendProviderId; model: string; effort: string },
   ) => Promise<{ session: RuntimeSession }>
 } = {}) {
-  const catalog = fallbackProviderCatalog()
+  const catalog = options.providerCatalog ?? fallbackProviderCatalog()
   let waitingRoomState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium", "opencode", DEFAULT_THEME_REGISTRY)
   let defaults = { provider: "opencode" as BackendProviderId, model: "opencode/gpt-5.4", effort: "medium" }
   let providerRun = options.providerRun ?? null

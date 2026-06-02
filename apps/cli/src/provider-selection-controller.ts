@@ -9,6 +9,7 @@ import {
   backendProviderLabel,
   isBackendProviderId,
   normalizeBackendProviderId,
+  providerCatalogIsLocalFallback,
   selectConfiguredModel,
   selectConfiguredVariant,
   type BackendProviderId,
@@ -99,11 +100,13 @@ export function createProviderSelectionController(
   return {
     async applyModelSelection(modelId) {
       const currentSelection = deps.currentProviderSelection()
+      const catalog = deps.providerCatalog()
+      const localFallback = providerCatalogIsLocalFallback(catalog)
       const decision = deriveWaitingRoomModelSelectionDecision({
         modelId,
         state: deps.waitingRoomState(),
         sessions: deps.availableSessions(),
-        catalog: deps.providerCatalog(),
+        catalog,
         themeRegistry: deps.themeRegistry(),
         currentProvider: normalizeBackendProviderId(currentSelection.provider),
         configuredEffort: currentSelection.effort,
@@ -114,23 +117,25 @@ export function createProviderSelectionController(
       }
       deps.reconcileWaitingRoom(decision.nextState)
       if (!deps.isAttached()) {
-        deps.flashFooter(`selected model ${decision.selectedModelId}`, "info")
+        deps.flashFooter(selectionMessage(`selected model ${decision.selectedModelId}`, localFallback), "info")
         return
       }
       const updated = await updateFocusedAgentProfile(decision.launch, "model is controlled by the provider-native TUI for this agent")
       if (updated) {
-        deps.flashFooter(`model set to ${decision.selectedModelId}`, "info")
+        deps.flashFooter(selectionMessage(`model set to ${decision.selectedModelId}`, localFallback), "info")
       }
     },
     async applyVariantSelection(variant) {
       const currentSelection = deps.currentProviderSelection()
+      const catalog = deps.providerCatalog()
+      const localFallback = providerCatalogIsLocalFallback(catalog)
       const decision = deriveWaitingRoomVariantSelectionDecision({
         variant,
         currentModelId: currentSelection.model,
         currentProviderId: normalizeBackendProviderId(currentSelection.provider),
         state: deps.waitingRoomState(),
         sessions: deps.availableSessions(),
-        catalog: deps.providerCatalog(),
+        catalog,
         themeRegistry: deps.themeRegistry(),
       })
       if (decision.kind === "error") {
@@ -139,12 +144,12 @@ export function createProviderSelectionController(
       }
       deps.reconcileWaitingRoom(decision.nextState)
       if (!deps.isAttached()) {
-        deps.flashFooter(`selected variant ${decision.selectedVariant}`, "info")
+        deps.flashFooter(selectionMessage(`selected variant ${decision.selectedVariant}`, localFallback), "info")
         return
       }
       const updated = await updateFocusedAgentProfile(decision.launch, "variant is controlled by the provider-native TUI for this agent")
       if (updated) {
-        deps.flashFooter(`variant set to ${decision.selectedVariant}`, "info")
+        deps.flashFooter(selectionMessage(`variant set to ${decision.selectedVariant}`, localFallback), "info")
       }
     },
     async applyProviderSelection(providerId) {
@@ -152,10 +157,12 @@ export function createProviderSelectionController(
         deps.flashFooter(`unknown provider: ${providerId}`, "error")
         return
       }
+      const catalog = deps.providerCatalog()
+      const localFallback = providerCatalogIsLocalFallback(catalog)
       const defaults = deps.defaults()
       const saved = deps.preferences().providers?.[providerId]
       const selected = selectConfiguredModel(
-        deps.providerCatalog(),
+        catalog,
         saved?.model ?? defaults.model,
         providerId,
       )
@@ -205,7 +212,11 @@ export function createProviderSelectionController(
           })
         }
       }
-      deps.flashFooter(`${backendProviderLabel(providerId)} selected`, "info")
+      deps.flashFooter(selectionMessage(`${backendProviderLabel(providerId)} selected`, localFallback), "info")
     },
   }
+}
+
+function selectionMessage(message: string, localFallback: boolean) {
+  return localFallback ? `${message} (local provider list)` : message
 }
