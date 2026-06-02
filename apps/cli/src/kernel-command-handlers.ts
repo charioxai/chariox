@@ -5,6 +5,7 @@ import {
   formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
   kernelRemoteRuntimeIssueCount,
+  kernelRemoteRuntimeReadiness,
   type DaemonHealthProjection,
 } from "@arroba/kernel-client"
 
@@ -13,6 +14,7 @@ export {
   formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
   kernelRemoteRuntimeIssueCount,
+  kernelRemoteRuntimeReadiness,
 }
 
 type FooterTone = "info" | "error"
@@ -48,13 +50,21 @@ export async function handleKernelSlashCommand(
     }
     const health = await deps.getDaemonHealth()
     const remoteRuntime = subcommand === "remote-runtime" || subcommand === "runtime"
-    const issueCount = remoteRuntime ? kernelRemoteRuntimeIssueCount(health) : kernelHealthIssueCount(health)
+    const remoteReadiness = remoteRuntime ? kernelRemoteRuntimeReadiness(health) : null
+    const issueCount = remoteReadiness?.attentionCount ?? kernelHealthIssueCount(health)
     deps.appendNotice(remoteRuntime ? formatKernelRemoteRuntimeHealth(health) : formatKernelHealth(health))
     const label = remoteRuntime ? "remote runtime" : "kernel health"
-    deps.flashFooter(
-      issueCount === 0
+    const footerMessage = remoteReadiness
+      ? remoteReadiness.state === "ok"
         ? `${label}: ok`
-        : `${label}: ${issueCount} issue${issueCount === 1 ? "" : "s"}`,
+        : remoteReadiness.state === "degraded"
+          ? `${label}: degraded (${remoteReadiness.attentionCount} attention)`
+          : `${label}: ${remoteReadiness.issueCount} issue${remoteReadiness.issueCount === 1 ? "" : "s"}`
+      : issueCount === 0
+        ? `${label}: ok`
+        : `${label}: ${issueCount} issue${issueCount === 1 ? "" : "s"}`
+    deps.flashFooter(
+      footerMessage,
       issueCount === 0 ? "info" : "error",
     )
     return

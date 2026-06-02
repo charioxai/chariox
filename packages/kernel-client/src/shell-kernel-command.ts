@@ -5,7 +5,7 @@ import {
   formatKernelHealth,
   formatKernelRemoteRuntimeHealth,
   kernelHealthIssueCount,
-  kernelRemoteRuntimeIssueCount,
+  kernelRemoteRuntimeReadiness,
 } from "./shell-kernel-health-format.js"
 
 type ShellKernelClient = {
@@ -27,7 +27,8 @@ export async function executeKernelCommand(
     const payload = expectVariant<{ projection: DaemonHealthProjection }>(response, "DaemonHealth")
     const runtimeContext = await kernelHealthRuntimeContext(context, deps)
     const remoteRuntime = action === "remote-runtime" || action === "runtime"
-    const issueCount = remoteRuntime ? kernelRemoteRuntimeIssueCount(payload.projection) : kernelHealthIssueCount(payload.projection)
+    const remoteReadiness = remoteRuntime ? kernelRemoteRuntimeReadiness(payload.projection) : null
+    const issueCount = remoteReadiness?.attentionCount ?? kernelHealthIssueCount(payload.projection)
     return {
       ok: issueCount === 0,
       message: [

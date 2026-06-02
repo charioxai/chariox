@@ -175,6 +175,39 @@ test("executeShellCommand accepts kernel remote runtime aliases", async () => {
   assert.match(runtime.message ?? "", /workspace live sync:/)
 })
 
+test("executeShellCommand reports degraded remote runtime attention", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          remote_extension_sync: {
+            remote_agents: 2,
+            home_proxy_agents: 2,
+            home_proxy_grants: 3,
+            manifest_missing_agents: 0,
+            synced_agents: 0,
+            syncing_agents: 1,
+            pending_agents: 1,
+            failed_agents: 0,
+            stale_agents: 0,
+            pending_revoke_agents: 0,
+            issues: [],
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel remote-runtime"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /^remote runtime/)
+  assert.match(result.message ?? "", /remote extension sync settling: syncing=1 pending=1/)
+  assert.match(result.message ?? "", /remote runtime readiness: degraded \(2 attention\)/)
+  assert.doesNotMatch(result.message ?? "", /support bundle:/)
+})
+
 test("executeShellCommand renders attached session runtime context before kernel health", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

@@ -8,6 +8,7 @@ import {
   handleKernelSlashCommand,
   kernelHealthIssueCount,
   kernelRemoteRuntimeIssueCount,
+  kernelRemoteRuntimeReadiness,
 } from "./kernel-command-handlers.js"
 import { makeSession } from "./command-actions-test-support.js"
 
@@ -695,6 +696,49 @@ test("kernel remote-runtime formatter counts only remote runtime blockers", () =
   assert.match(rendered, /^remote runtime/)
   assert.match(rendered, /remote runtime readiness: ok/)
   assert.doesNotMatch(rendered, /duplicate Arroba provider run bindings/)
+})
+
+test("kernel remote-runtime formatter reports settling manifests as degraded attention", async () => {
+  const notices: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const settling = health({
+    remote_extension_sync: {
+      remote_agents: 2,
+      home_proxy_agents: 2,
+      home_proxy_grants: 3,
+      manifest_missing_agents: 0,
+      synced_agents: 0,
+      syncing_agents: 1,
+      pending_agents: 1,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+      issues: [],
+    },
+  })
+  const rendered = formatKernelRemoteRuntimeHealth(settling)
+
+  assert.equal(kernelRemoteRuntimeIssueCount(settling), 0)
+  assert.deepEqual(kernelRemoteRuntimeReadiness(settling), {
+    state: "degraded",
+    issueCount: 0,
+    attentionCount: 2,
+  })
+  assert.match(rendered, /remote extension sync settling: syncing=1 pending=1/)
+  assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
+  assert.doesNotMatch(rendered, /support bundle:/)
+
+  await handleKernelSlashCommand({
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+    getDaemonHealth: async () => settling,
+    transitionToNoSession: () => {},
+  }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
+
+  assert.match(notices.at(-1) ?? "", /remote runtime readiness: degraded \(2 attention\)/)
+  assert.deepEqual(flashes.at(-1), { message: "remote runtime: degraded (2 attention)", tone: "error" })
 })
 
 test("kernel health command reports multi-interface provider-run bindings", async () => {

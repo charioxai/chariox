@@ -21,10 +21,37 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
 }
 
 export function kernelRemoteRuntimeIssueCount(health: DaemonHealthProjection): number {
-  return workspaceHealthIssueCount(health)
+  return remoteRuntimeHardIssueCount(health)
+}
+
+export type KernelRemoteRuntimeReadiness = {
+  readonly state: "ok" | "degraded" | "blocked"
+  readonly issueCount: number
+  readonly attentionCount: number
+}
+
+export function kernelRemoteRuntimeReadiness(health: DaemonHealthProjection): KernelRemoteRuntimeReadiness {
+  const issueCount = remoteRuntimeHardIssueCount(health)
+  const attentionCount = issueCount + remoteRuntimeSettlingAttentionCount(health)
+  return {
+    state: issueCount > 0 ? "blocked" : attentionCount > 0 ? "degraded" : "ok",
+    issueCount,
+    attentionCount,
+  }
+}
+
+function remoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
+  return workspaceRemoteRuntimeHardIssueCount(health)
     + sliceLifecycleIssueCount(health)
     + remoteExecutionIssueCount(health)
-    + remoteExtensionSyncIssueCount(health)
+    + remoteExtensionSyncHardIssueCount(health)
+}
+
+function remoteRuntimeSettlingAttentionCount(health: DaemonHealthProjection): number {
+  return health.remote_extension_sync.stale_agents
+    + health.remote_extension_sync.pending_agents
+    + health.remote_extension_sync.syncing_agents
+    + health.workspace_live_sync.external_changes.live_watcher_scan_errors
 }
 
 export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {
@@ -50,9 +77,13 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   ]
 
   appendRemoteRuntimeIssues(lines, health)
-  if (kernelRemoteRuntimeIssueCount(health) === 0) {
+  const readiness = kernelRemoteRuntimeReadiness(health)
+  if (readiness.state === "ok") {
     lines.push("remote runtime readiness: ok")
+  } else if (readiness.state === "degraded") {
+    lines.push(`remote runtime readiness: degraded (${readiness.attentionCount} attention)`)
   } else {
+    lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
     lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
   }
   return lines.join("\n")
@@ -300,6 +331,11 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push(`  next: ${nextAction}`)
   }
 
+  if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0) {
+    lines.push(`remote extension sync settling: syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents}`)
+    lines.push("  next: run /extension sync-status <agent> and retry after worker connectivity is healthy")
+  }
+
   if (workspaceCoordination.worktree_collisions.length > 0) {
     lines.push("workspace worktree collisions:")
     for (const collision of workspaceCoordination.worktree_collisions) {
@@ -373,6 +409,18 @@ function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
     + (!managedMode.write_fence_supported && managedMode.unavailable_reason ? 1 : 0)
 }
 
+function workspaceRemoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
+  const externalChanges = health.workspace_live_sync.external_changes
+  const managedMode = health.workspace_live_sync.managed_mode
+  return health.workspace_coordination.worktree_collisions.length
+    + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
+    + health.workspace_live_sync.workspace_identity.invalid_provider_runs
+    + (externalChanges.issues.length > 0
+      ? externalChanges.issues.length
+      : externalChanges.externally_changed_artifacts)
+    + (!managedMode.write_fence_supported && managedMode.unavailable_reason ? 1 : 0)
+}
+
 function transportHealthIssueCount(health: DaemonHealthProjection): number {
   const transport = health.transport
   return transport.replay_gaps
@@ -411,6 +459,20 @@ function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
       + health.remote_extension_sync.manifest_missing_agents
       + health.remote_extension_sync.pending_revoke_agents
     )
+}
+
+function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): number {
+  if (health.remote_extension_sync.issues.length > 0) {
+    return health.remote_extension_sync.issues.filter((issue) => (
+      issue.pending_revoke
+      || issue.state === "failed"
+      || issue.state === "missing"
+      || issue.state === "manifest_missing"
+    )).length
+  }
+  return health.remote_extension_sync.failed_agents
+    + health.remote_extension_sync.manifest_missing_agents
+    + health.remote_extension_sync.pending_revoke_agents
 }
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {
