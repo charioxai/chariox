@@ -67,9 +67,10 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
       const liveSync = formatSessionLiveSyncLabel(session)
+      const remote = formatSessionRemoteActivity(session)
       const next = formatSessionActivityNext(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${next}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${remote}${next}${current}`
     }),
   ].join("\n")
 }
@@ -88,6 +89,16 @@ export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_dae
 export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {
   const mode = session.workspace_live_sync_mode
   return mode === "managed" || mode === "tracked" ? mode : "off"
+}
+
+function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">): string {
+  const remoteAgents = session.activity?.remote_agent_count ?? 0
+  const workerRunGaps = session.activity?.missing_worker_provider_run_count ?? 0
+  const parts = [
+    remoteAgents > 0 ? `${remoteAgents} remote ${remoteAgents === 1 ? "agent" : "agents"}` : "",
+    workerRunGaps > 0 ? `${workerRunGaps} worker run ${workerRunGaps === 1 ? "gap" : "gaps"}` : "",
+  ].filter(Boolean)
+  return parts.length ? ` - ${parts.join(", ")}` : ""
 }
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
