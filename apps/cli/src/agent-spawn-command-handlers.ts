@@ -11,6 +11,7 @@ import {
   type LocalGitWorktreeOptions,
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
+import { remoteKernelReadiness } from "./remote-kernel-readiness.js"
 
 type FooterTone = "info" | "error"
 
@@ -150,16 +151,22 @@ async function validateRemoteMachineSpawnTarget(
   if (kernels.length === 0) {
     throw new Error(`remote machine ${machineRef} has no live worker kernels; next: run /machine kernels ${machineRef} or choose another worker`)
   }
-  const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases !== false)
-  if (accepting.length === 0) {
+  const ready = kernels.filter((kernel) => remoteKernelReadiness(kernel) === "ready")
+  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "blocked")) {
     const kernelTargets = formatKernelTargets(kernels)
     throw new Error(`remote machine ${machineRef} has no kernel accepting remote agents; next: enable remote leases on ${kernelTargets} or choose another worker`)
   }
-  if (accepting.every((kernel) => (kernel.available_providers ?? []).length === 0)) {
-    const kernelTargets = formatKernelTargets(accepting)
+  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
+    const kernelTargets = formatKernelTargets(kernels)
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on ${kernelTargets} or choose another worker`)
   }
-  if (!accepting.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
+  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
+    throw new Error(`remote machine ${machineRef} has no kernel with known remote readiness; next: run /machine kernels ${machineRef}, refresh relay inventory, or choose another worker`)
+  }
+  if (ready.length === 0) {
+    throw new Error(`remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker`)
+  }
+  if (!ready.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider`)
   }
 }

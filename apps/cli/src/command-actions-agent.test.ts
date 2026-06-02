@@ -593,6 +593,33 @@ test("agent spawn with machine names workers without provider CLIs", async () =>
   assert.equal(flashedMessage, "remote machine worker has no accepting kernel with provider CLIs; next: configure provider CLIs on kernel kernel-worker or choose another worker")
 })
 
+test("agent spawn with machine blocks unknown worker readiness", async () => {
+  let spawnCount = 0
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    currentProviderId: () => "opencode",
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-worker",
+      machine_id: "machine-worker",
+      available_providers: ["opencode"],
+    }],
+    spawnAgent: async () => {
+      spawnCount += 1
+      throw new Error("should not spawn")
+    },
+    flashFooter: (message: string) => { flashedMessage = message },
+  }))
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review openai/gpt-5 --machine worker --dir /srv/project",
+    args: ["spawn", "review", "openai/gpt-5", "--machine", "worker", "--dir", "/srv/project"],
+  })
+
+  assert.equal(spawnCount, 0)
+  assert.equal(flashedMessage, "remote machine worker has no kernel with known remote readiness; next: run /machine kernels worker, refresh relay inventory, or choose another worker")
+})
+
 test("agent spawn with machine blocks workers without the selected provider", async () => {
   let spawnCount = 0
   let flashedMessage = ""
