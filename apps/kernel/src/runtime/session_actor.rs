@@ -49,7 +49,7 @@ mod tests {
         projected_config_update_absence_response, session_response_projection_action,
         SessionProjectionAction,
     };
-    use crate::agent::CreateAgentRequest;
+    use crate::agent::{AgentState, CreateAgentRequest};
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,

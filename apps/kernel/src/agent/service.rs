@@ -152,7 +152,12 @@ impl AgentService {
                 })?;
 
         let session_id = agent.session_id().to_string();
-        let was_focused = agent.state() == AgentState::Focused;
+        let session_focused_agent_id = sessions
+            .get_session(&session_id)?
+            .focused_agent_id()
+            .map(str::to_string);
+        let was_focused = agent.state() == AgentState::Focused
+            || session_focused_agent_id.as_deref() == Some(agent_id);
 
         // Remove the agent
         self.store.remove(agent_id);
@@ -171,8 +176,17 @@ impl AgentService {
                 }
             }
 
-            // If the destroyed agent was focused, focus the first remaining agent
-            if was_focused {
+            let focus_is_stale_after_destroy =
+                session_focused_agent_id
+                    .as_deref()
+                    .is_some_and(|focused_agent_id| {
+                        !remaining_agents
+                            .iter()
+                            .any(|agent| agent.id() == focused_agent_id)
+                    });
+
+            // If canonical focus now points at a removed/missing agent, focus the first remaining agent.
+            if was_focused || focus_is_stale_after_destroy {
                 if let Some(first) = remaining_agents.first() {
                     if let Some(stored) = self.store.get_mut(first.id()) {
                         stored.set_state(AgentState::Focused);
