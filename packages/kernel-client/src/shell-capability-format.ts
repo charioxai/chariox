@@ -262,7 +262,7 @@ function homeExtensionAuditNextAction(kind: string, payload: Record<string, unkn
   }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
-      return `run /extension sync-status ${agentRef}; use /extension sync-retry ${agentRef} after the worker/provider run is current`
+      return `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
     }
     return "verify the home grant, safety limit, and caller authority before retrying"
   }

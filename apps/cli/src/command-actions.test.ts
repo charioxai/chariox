@@ -180,7 +180,7 @@ test("formatHomeExtensionAuditEvents renders diagnostic context without payload 
       "  next: cached idempotent result was returned; no retry needed",
       "1970-01-01T00:00:02.000Z home_extension.invoke.denied denied",
       "  error: worker mismatch",
-      "  next: run /extension sync-status <agent>; use /extension sync-retry <agent> after the worker/provider run is current",
+      "  next: run /extension sync-status <agent>; inspect /agent inspect <agent>; retry only after the worker lease and provider run match the current home grant",
     ].join("\n"),
   )
 })
