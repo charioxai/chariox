@@ -17,6 +17,12 @@ impl KernelRuntimeOwnedState {
         }
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let target_agent = self.agent_store.get_agent(&target_agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id,
+                agent_id: target_agent_id,
+            });
+        }
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };

@@ -1,6 +1,65 @@
 use super::*;
 
 #[tokio::test]
+async fn prompt_submit_rejects_cross_session_agent_before_admission() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .expect("second session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            second_session.id(),
+            "cross-session-router-prompt",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let first_session_id = first_session.id().to_string();
+    let first_agent_id = first_agent.id().to_string();
+    let second_session_id = second_session.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: second_session_id.clone(),
+        attachment_id: attachment.id().to_string(),
+        target_agent_id: Some(first_agent_id.clone()),
+        prompt: "must not cross session boundary".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command = KernelCommand::from_local_request(
+        "cmd-cross-session-prompt-submit",
+        None,
+        None,
+        &prompt_request,
+    );
+
+    let error = router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect_err("prompt submission should reject an agent outside the requested session");
+
+    assert!(matches!(
+        error,
+        DaemonError::AgentNotInSession {
+            session_id,
+            agent_id,
+        } if session_id == second_session_id && agent_id == first_agent_id
+    ));
+    let app = app.lock().await;
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&first_session_id, &first_agent_id)
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(&second_session_id, &first_agent_id)
+        .is_none());
+}
+
+#[tokio::test]
 async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

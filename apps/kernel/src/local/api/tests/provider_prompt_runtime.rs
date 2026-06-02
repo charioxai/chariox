@@ -69,6 +69,50 @@ fn assert_native_tui_config_error(error: DaemonError, operation: &'static str) {
 }
 
 #[test]
+fn app_submit_prompt_rejects_agent_from_another_session() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .expect("second session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            second_session.id(),
+            "cross-session-prompt",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let error = app
+        .submit_prompt(
+            second_session.id(),
+            attachment.id(),
+            Some(first_agent.id()),
+            "must not cross session boundary",
+            Vec::new(),
+        )
+        .expect_err("prompt submission should reject an agent outside the requested session");
+
+    assert!(matches!(
+        error,
+        DaemonError::AgentNotInSession {
+            session_id,
+            agent_id,
+        } if session_id == second_session.id() && agent_id == first_agent.id()
+    ));
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(first_session.id(), first_agent.id())
+        .is_none());
+    assert!(app
+        .providers()
+        .get_latest_run_for_agent(second_session.id(), first_agent.id())
+        .is_none());
+}
+
+#[test]
 fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness

@@ -141,6 +141,12 @@ impl<'a> KernelAgentService<'a> {
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.clone(),
+                agent_id: target_agent_id,
+            });
+        }
         let remote_execution = target_agent.remote_execution().cloned();
         let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {
             (None, false)
