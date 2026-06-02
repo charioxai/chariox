@@ -125,7 +125,7 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox run run-1; auth opencode=backup \(api\)\/state=not_configured; 1 grant \(active tools home-proxy\); manifest stale abcdef12 error worker lagging next run \/extension sync-status agent-remote; run \/machine kernels slice-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy\]/)
+  assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox run run-1; auth opencode=backup \(api\)\/state=not_configured; refresh opencode; 1 grant \(active tools home-proxy\); manifest stale abcdef12 error worker lagging next run \/extension sync-status agent-remote; run \/machine kernels slice-machine; use \/extension sync-retry agent-remote after worker connectivity is healthy\]/)
   assert.deepEqual(requests, [
     { GetSessionState: { session_id: "session-1" } },
     { ListSlices: null },

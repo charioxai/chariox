@@ -16,6 +16,7 @@ export type SliceRecordLike = {
   readonly workspace_id?: string | null
   readonly worktree_id?: string | null
   readonly workspace_mount?: string | null
+  readonly providers?: readonly string[] | null
   readonly provider_auth?: readonly SliceProviderAuthLike[] | null
   readonly relay_endpoint?: {
     readonly url?: string | null
@@ -24,6 +25,15 @@ export type SliceRecordLike = {
   readonly last_operation?: string | null
   readonly last_operation_status?: string | null
   readonly last_error?: string | null
+}
+
+export type SliceProviderAuthCoverage = {
+  readonly providers: readonly string[]
+  readonly authProviders: readonly string[]
+  readonly missingProviders: readonly string[]
+  readonly staleProviders: readonly string[]
+  readonly hasHealthyCoverage: boolean
+  readonly needsAttention: boolean
 }
 
 export function formatSliceScope(slice: SliceRecordLike): string {
@@ -93,6 +103,22 @@ export function formatSliceProviderAccounts(slice: SliceRecordLike): string {
     .join(", ")
 }
 
+export function formatSliceProviderAuthStatus(slice: SliceRecordLike): string | null {
+  const coverage = sliceProviderAuthCoverage(slice)
+  const accounts = slice.provider_auth ?? []
+  if (accounts.length > 0) {
+    const gaps = [
+      coverage.missingProviders.length > 0 ? `missing ${formatSliceProviderList(coverage.missingProviders)}` : "",
+      coverage.staleProviders.length > 0 ? `refresh ${formatSliceProviderList(coverage.staleProviders)}` : "",
+    ].filter(Boolean)
+    return [`auth ${formatSliceProviderAccounts(slice)}`, ...gaps].join("; ")
+  }
+  if (coverage.providers.length === 0) {
+    return null
+  }
+  return `auth missing ${formatSliceProviderList(coverage.providers)}`
+}
+
 export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {
   const identity = entry.email
     || entry.account_id
@@ -104,6 +130,40 @@ export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {
   return identity
 }
 
-function sliceAuthNeedsAttention(state: string): boolean {
+export function sliceProviderAuthCoverage(slice: SliceRecordLike): SliceProviderAuthCoverage {
+  const providers = sliceProviderNames(slice.providers ?? [])
+  const authProviders = sliceProviderNames((slice.provider_auth ?? []).map((entry) => entry.provider))
+  const derivedProviders = providers.length > 0 ? providers : authProviders
+  const missingProviders = derivedProviders.filter((provider) => !authProviders.some((authProvider) => sliceProviderMatches(authProvider, provider)))
+  const staleProviders = sliceProviderNames((slice.provider_auth ?? [])
+    .filter((entry) => sliceAuthNeedsAttention(entry.state))
+    .map((entry) => entry.provider)
+    .filter((authProvider) => derivedProviders.some((provider) => sliceProviderMatches(authProvider, provider))))
+  return {
+    providers: derivedProviders,
+    authProviders,
+    missingProviders,
+    staleProviders,
+    hasHealthyCoverage: derivedProviders.length > 0 && missingProviders.length === 0 && staleProviders.length === 0,
+    needsAttention: derivedProviders.length === 0 || missingProviders.length > 0 || staleProviders.length > 0,
+  }
+}
+
+export function formatSliceProviderList(providers: readonly string[], limit = 3): string {
+  const names = sliceProviderNames(providers)
+  const visible = names.slice(0, limit).join(", ")
+  const suffix = names.length > limit ? `, +${names.length - limit} more` : ""
+  return `${visible}${suffix}`
+}
+
+export function sliceAuthNeedsAttention(state: string): boolean {
   return state !== "configured" && state !== "authenticated"
+}
+
+function sliceProviderNames(providers: readonly string[]): string[] {
+  return [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+}
+
+function sliceProviderMatches(authProvider: string, advertisedProvider: string): boolean {
+  return authProvider === advertisedProvider || authProvider.startsWith(`${advertisedProvider}:`)
 }

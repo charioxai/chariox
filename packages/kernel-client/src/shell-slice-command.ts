@@ -21,7 +21,9 @@ import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./she
 import { resolveShellAgent } from "./shell-agent-resolver.js"
 import {
   formatSliceProviderAuth,
+  formatSliceProviderList,
   formatSliceRelayLabel,
+  sliceProviderAuthCoverage,
 } from "./slice-format.js"
 
 type ShellKernelClient = {
@@ -360,19 +362,13 @@ function sliceNextAction(slice: SliceRecord): string | null {
   if ((slice.providers ?? []).length === 0) {
     return "configure provider CLIs inside the slice before spawning agents there"
   }
-  const providerNames = sliceProviderNames(slice.providers ?? [])
-  const authProviders = new Set((slice.provider_auth ?? []).map((entry) => entry.provider))
-  const missingProviders = providerNames.filter((provider) => !authProviders.has(provider))
-  const staleProviders = (slice.provider_auth ?? [])
-    .filter((entry) => entry.state === "unknown" || entry.state === "not_configured")
-    .map((entry) => entry.provider)
-    .filter((provider) => providerNames.includes(provider))
+  const coverage = sliceProviderAuthCoverage(slice)
   const actions = [
-    missingProviders.length > 0
-      ? `import or login provider accounts${formatSliceProviderActionTarget(missingProviders)} with ${formatSliceAuthImportCommand(slice, sliceProviderCommandArg(missingProviders))} or ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(missingProviders))}`
+    coverage.missingProviders.length > 0
+      ? `import or login provider accounts${formatSliceProviderActionTarget(coverage.missingProviders)} with ${formatSliceAuthImportCommand(slice, sliceProviderCommandArg(coverage.missingProviders))} or ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(coverage.missingProviders))}`
       : null,
-    staleProviders.length > 0
-      ? `refresh provider login${formatSliceProviderActionTarget(staleProviders)} with ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(staleProviders))}`
+    coverage.staleProviders.length > 0
+      ? `refresh provider login${formatSliceProviderActionTarget(coverage.staleProviders)} with ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(coverage.staleProviders))}`
       : null,
   ].filter((action): action is string => Boolean(action))
   if (actions.length > 0) {
@@ -382,16 +378,10 @@ function sliceNextAction(slice: SliceRecord): string | null {
 }
 
 function sliceProviderAuthHealthy(slice: SliceRecord): boolean {
-  const providers = sliceProviderNames(slice.providers ?? [])
-  if (providers.length === 0) {
+  if ((slice.providers ?? []).length === 0) {
     return false
   }
-  const healthyProviders = new Set(
-    (slice.provider_auth ?? [])
-      .filter((entry) => entry.state !== "unknown" && entry.state !== "not_configured")
-      .map((entry) => entry.provider),
-  )
-  return providers.every((provider) => healthyProviders.has(provider))
+  return sliceProviderAuthCoverage(slice).hasHealthyCoverage
 }
 
 function sliceProviderNames(providers: readonly string[]): string[] {
@@ -399,8 +389,8 @@ function sliceProviderNames(providers: readonly string[]): string[] {
 }
 
 function formatSliceProviderActionTarget(providers: readonly string[]): string {
-  const unique = sliceProviderNames(providers)
-  return unique.length > 0 ? ` for ${unique.join(",")}` : " for this slice"
+  const list = formatSliceProviderList(providers)
+  return list ? ` for ${list.replaceAll(", ", ",")}` : " for this slice"
 }
 
 function sliceProviderCommandArg(providers: readonly string[]): string {

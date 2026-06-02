@@ -7,7 +7,7 @@ import type {
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
-import { formatSliceProviderAccounts, formatSliceScope } from "./slice-format.js"
+import { formatSliceProviderAccounts, formatSliceProviderAuthStatus, formatSliceScope } from "./slice-format.js"
 import {
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
@@ -239,17 +239,7 @@ function formatAgentListSliceAuth(slice: SliceRecord | null): string | null {
   if (!slice) {
     return null
   }
-  const accounts = slice.provider_auth ?? []
-  if (accounts.length > 0) {
-    return `auth ${formatSliceProviderAccounts(slice)}`
-  }
-  const providers = (slice.providers ?? []).map((provider) => provider.trim()).filter(Boolean)
-  if (providers.length === 0) {
-    return null
-  }
-  const visible = providers.slice(0, 3).join(", ")
-  const suffix = providers.length > 3 ? `, +${providers.length - 3} more` : ""
-  return `auth missing ${visible}${suffix}`
+  return formatSliceProviderAuthStatus(slice)
 }
 
 function formatAgentListProviderRun(

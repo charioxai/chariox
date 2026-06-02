@@ -3,7 +3,9 @@ import test from "node:test"
 
 import {
   formatSliceProviderAccounts,
+  formatSliceProviderAuthStatus,
   formatSliceScope,
+  sliceProviderAuthCoverage,
 } from "./slice-format.js"
 
 test("slice formatter projects provider account identities", () => {
@@ -30,6 +32,60 @@ test("slice formatter preserves provider auth attention states", () => {
       }],
     }),
     "opencode=not_configured/state=not_configured",
+  )
+})
+
+test("slice formatter reports advertised provider auth coverage", () => {
+  assert.deepEqual(
+    sliceProviderAuthCoverage({
+      providers: ["codex", "opencode"],
+      provider_auth: [{ provider: "opencode:openai", state: "configured" }],
+    }),
+    {
+      providers: ["codex", "opencode"],
+      authProviders: ["opencode:openai"],
+      missingProviders: ["codex"],
+      staleProviders: [],
+      hasHealthyCoverage: false,
+      needsAttention: true,
+    },
+  )
+  assert.deepEqual(
+    sliceProviderAuthCoverage({
+      providers: ["opencode"],
+      provider_auth: [
+        { provider: "opencode:openai", state: "configured" },
+        { provider: "opencode:opencode", state: "unknown" },
+      ],
+    }),
+    {
+      providers: ["opencode"],
+      authProviders: ["opencode:openai", "opencode:opencode"],
+      missingProviders: [],
+      staleProviders: ["opencode:opencode"],
+      hasHealthyCoverage: false,
+      needsAttention: true,
+    },
+  )
+})
+
+test("slice formatter summarizes partial provider auth status", () => {
+  assert.equal(
+    formatSliceProviderAuthStatus({
+      providers: ["codex", "opencode"],
+      provider_auth: [{ provider: "codex", state: "configured", alias: "daily" }],
+    }),
+    "auth codex=daily (configured); missing opencode",
+  )
+  assert.equal(
+    formatSliceProviderAuthStatus({
+      providers: ["opencode"],
+      provider_auth: [
+        { provider: "opencode:openai", state: "configured" },
+        { provider: "opencode:opencode", state: "not_configured" },
+      ],
+    }),
+    "auth opencode:openai=configured, opencode:opencode=not_configured/state=not_configured; refresh opencode:opencode",
   )
 })
 
