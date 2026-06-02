@@ -399,11 +399,18 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 
 function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): string {
   const remoteExecution = health.remote_execution
+  const sliceLifecycle = health.slice_lifecycle
   const remoteExtensionSync = health.remote_extension_sync
   const liveSync = health.workspace_live_sync
   const workerRuns = remoteExecution.missing_active_worker_runs === 0 && remoteExecution.malformed_bindings === 0
     ? "ok"
     : `attention missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`
+  const slices = sliceLifecycle.unhealthy_slices === 0
+    && sliceLifecycle.failed_operations === 0
+    && sliceLifecycle.provider_auth_missing_slices === 0
+    && sliceLifecycle.provider_auth_unconfigured_slices === 0
+    ? "ok"
+    : `attention unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`
   const manifests = remoteExtensionSync.manifest_missing_agents === 0
     && remoteExtensionSync.failed_agents === 0
     && remoteExtensionSync.pending_revoke_agents === 0
@@ -418,7 +425,7 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     && liveSync.external_changes.live_watcher_scan_errors === 0
     ? "selected-workspace-only"
     : `attention identity_changed=${liveSync.workspace_identity.identity_changed_provider_runs} invalid=${liveSync.workspace_identity.invalid_provider_runs} external_changes=${liveSync.external_changes.externally_changed_artifacts} scan_errors=${liveSync.external_changes.live_watcher_scan_errors}`
-  return `remote runtime invariants: worker_runs=${workerRuns}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
+  return `remote runtime invariants: worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {
