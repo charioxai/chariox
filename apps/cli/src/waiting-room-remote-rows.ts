@@ -5,6 +5,7 @@ import type {
   WaitingRoomRow,
   WaitingRoomState,
 } from "./waiting-room-types.js"
+import { remoteKernelReadiness, remoteKernelReadinessCounts } from "./remote-kernel-readiness.js"
 
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,
@@ -123,12 +124,12 @@ export function waitingRoomRemoteRows(
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
     const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
     const machineKernels = kernels.filter((kernel) => kernel.machine_id === machine.machine_id)
-    const leaseSummary = waitingRoomMachineLeaseSummary(machine, machineKernels)
+    const readinessSummary = waitingRoomMachineReadinessSummary(machine, machineKernels)
     const next = waitingRoomRemoteMachineNextAction(machine, machineKernels)
     rows.push({
       id: `machine:${machine.machine_id}`,
       title: `${label}${status !== "approved" ? ` (${status})` : ""}`,
-      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}${leaseSummary}${next ? ` · next: ${next}` : ""}`,
+      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}${readinessSummary}${next ? ` · next: ${next}` : ""}`,
       titleWidth,
       indent: 1,
       focused: state.focus === "machine" && state.machineIndex === index,
@@ -151,7 +152,7 @@ export function waitingRoomRemoteRows(
       const label = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
       const machine = kernel.machine_alias ?? kernel.machine_id
       const providers = (kernel.available_providers ?? []).join(",") || "no providers"
-      const status = waitingRoomRemoteKernelIsAttachable(kernel) ? "ready" : "inactive"
+      const status = remoteKernelReadiness(kernel)
       const next = waitingRoomRemoteKernelNextAction(kernel)
       rows.push({
         id: `remote-kernel:${kernel.kernel_id}`,
@@ -193,13 +194,18 @@ export function waitingRoomRemoteKernelCanDelete(kernel: WaitingRoomRemoteKernel
     && (kernel.local_session_count ?? 0) === 0
 }
 
-function waitingRoomMachineLeaseSummary(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[]): string {
+function waitingRoomMachineReadinessSummary(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[]): string {
   if (machine.online === false || machine.pending || machine.kernel_count === 0 || kernels.length === 0) {
     return ""
   }
-  const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases !== false).length
+  const counts = remoteKernelReadinessCounts(kernels)
   const leased = kernels.reduce((sum, kernel) => sum + (kernel.leased_agent_count ?? 0), 0)
-  return ` · accepting=${accepting}/${kernels.length} leased=${leased}`
+  const parts = [`ready=${counts.ready}/${kernels.length}`]
+  if (counts["needs-provider"] > 0) parts.push(`needs-provider=${counts["needs-provider"]}`)
+  if (counts.blocked > 0) parts.push(`blocked=${counts.blocked}`)
+  if (counts.unknown > 0) parts.push(`unknown=${counts.unknown}`)
+  parts.push(`leased=${leased}`)
+  return ` · ${parts.join(" ")}`
 }
 
 function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, kernels: readonly WaitingRoomRemoteKernel[] = []): string {
@@ -216,12 +222,18 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
   if ((machine.available_providers ?? []).length === 0) {
     return `configure provider CLIs on ${machineLabel}`
   }
-  if (kernels.length > 0 && kernels.every((kernel) => kernel.accepting_remote_leases === false)) {
+  if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "blocked")) {
     const [firstKernel] = kernels
     const kernelLabel = kernels.length === 1 && firstKernel
       ? waitingRoomRemoteKernelLabel(firstKernel)
       : "one of this machine's kernels"
     return `enable remote leases on ${kernelLabel} or choose another worker`
+  }
+  if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
+    return `configure provider CLIs on ${machineLabel}`
+  }
+  if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
+    return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
   }
   return ""
 }

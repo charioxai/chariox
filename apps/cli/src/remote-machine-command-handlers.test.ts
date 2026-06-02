@@ -12,6 +12,7 @@ test("remote machine command renders recovery hints", async () => {
   assert.match(harness.notices.at(0) ?? "", /cold id=machine-2 status=pending/)
   assert.match(harness.notices.at(0) ?? "", /next: approve with \/machine approve machine-2/)
   assert.match(harness.notices.at(1) ?? "", /cold-kernel id=kernel-2/)
+  assert.match(harness.notices.at(1) ?? "", /readiness=blocked/)
   assert.match(harness.notices.at(1) ?? "", /accepting_remote_leases=false/)
   assert.match(harness.notices.at(1) ?? "", /next: enable remote leases on cold-kernel or choose another worker/)
   assert.equal(harness.footers.at(0)?.message, "listed 2 live remote machine(s)")
@@ -27,6 +28,7 @@ test("remote machine command renders unknown lease state without a false recover
   await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
 
   assert.match(harness.notices.at(0) ?? "", /accepting_remote_leases=unknown/)
+  assert.match(harness.notices.at(0) ?? "", /readiness=unknown/)
   assert.doesNotMatch(harness.notices.at(0) ?? "", /enable remote leases/)
 })
 
