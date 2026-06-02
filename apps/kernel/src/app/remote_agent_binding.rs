@@ -11,7 +11,8 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::remote_kernel_selection::{
-    ensure_kernel_can_host_provider, kernel_presence_matches_ref, select_remote_kernel,
+    ensure_kernel_can_host_provider, kernel_presence_matches_ref,
+    no_remote_kernel_available_message, select_remote_kernel,
 };
 
 const REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS: usize = 20;
@@ -432,10 +433,12 @@ impl DaemonApp {
         let kernels = self.block_on_relay_future(
             relay_discovery::list_live_kernels_for_machine(relay_config, &machine_ref),
         )?;
+        let message = no_remote_kernel_available_message(&kernels, &machine_ref, provider);
         select_remote_kernel(kernels, &machine_ref, provider).ok_or_else(|| {
             DaemonError::NoRemoteKernelAvailable {
                 machine_ref,
                 provider: provider.to_string(),
+                message,
             }
         })
     }

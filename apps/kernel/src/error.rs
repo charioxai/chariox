@@ -160,10 +160,11 @@ pub enum DaemonError {
     ExecutionLeaseNotFound { lease_id: String },
     #[error("leased agent `{leased_agent_id}` was not found")]
     LeasedAgentNotFound { leased_agent_id: String },
-    #[error("no live remote kernel on machine `{machine_ref}` can host provider `{provider}`")]
+    #[error("{message}")]
     NoRemoteKernelAvailable {
         machine_ref: String,
         provider: String,
+        message: String,
     },
     #[error("attachment `{attachment_id}` was not found")]
     AttachmentNotFound { attachment_id: String },
