@@ -203,6 +203,8 @@ export type WaitingRoomSessionActivitySummary = {
   active_prompt_count: number
   queued_prompt_count: number
   error_agent_count: number
+  remote_agent_count?: number
+  missing_worker_provider_run_count?: number
 }
 
 export type WaitingRoomPublicItemActivitySummary = {

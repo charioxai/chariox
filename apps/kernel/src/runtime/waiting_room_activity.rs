@@ -91,6 +91,30 @@ pub(crate) fn waiting_room_session_activity_summary(
     if working_agent_count == 0 && active_prompt_count > 0 {
         working_agent_count = 1;
     }
+    let remote_agent_count = session
+        .agents()
+        .iter()
+        .filter(|agent| agent.remote_execution().is_some())
+        .count();
+    let missing_worker_provider_run_count = session
+        .agents()
+        .iter()
+        .filter(|agent| {
+            let Some(remote) = agent.remote_execution() else {
+                return false;
+            };
+            let active_worker_run_missing = remote
+                .active_worker_provider_run_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty();
+            active_worker_run_missing
+                && (agent.state() == AgentState::Working
+                    || agent.is_processing()
+                    || active_prompt_agent_ids.contains(agent.id()))
+        })
+        .count();
     WaitingRoomSessionActivitySummary {
         agent_count: session.agents().len(),
         working_agent_count,
@@ -101,6 +125,8 @@ pub(crate) fn waiting_room_session_activity_summary(
             .iter()
             .filter(|agent| agent.state() == AgentState::Error)
             .count(),
+        remote_agent_count,
+        missing_worker_provider_run_count,
         unread_idle_agent_count: session
             .agents()
             .iter()
@@ -116,7 +142,7 @@ pub(crate) fn waiting_room_session_activity_summary(
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::{AgentInstance, AgentState, GridPosition};
+    use crate::agent::{AgentInstance, AgentState, GridPosition, RemoteAgentBinding};
     use crate::runtime::waiting_room_activity::{
         waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
         waiting_room_workflow_activity_summary,
@@ -144,6 +170,25 @@ mod tests {
         );
         agent.set_state(state);
         agent.set_processing(processing);
+        agent
+    }
+
+    fn remote_agent(
+        id: &str,
+        state: AgentState,
+        processing: bool,
+        run_id: Option<&str>,
+    ) -> AgentInstance {
+        let mut agent = agent(id, state, processing);
+        agent.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: format!("lease-{id}"),
+            leased_agent_id: format!("leased-{id}"),
+            active_worker_provider_run_id: run_id.map(str::to_string),
+            relay_url: None,
+            relay_token: None,
+        }));
         agent
     }
 
@@ -240,6 +285,27 @@ mod tests {
         assert_eq!(summary.error_agent_count, 1);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
+    }
+
+    #[test]
+    fn session_activity_summarizes_remote_worker_run_blockers() {
+        let session = session_with_agents(vec![
+            remote_agent("remote-working-missing", AgentState::Working, false, None),
+            remote_agent("remote-processing-empty", AgentState::Idle, true, Some("")),
+            remote_agent("remote-idle-missing", AgentState::Idle, false, None),
+            remote_agent(
+                "remote-working-ready",
+                AgentState::Working,
+                false,
+                Some("worker-run"),
+            ),
+            agent("local-working", AgentState::Working, false),
+        ]);
+
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+        assert_eq!(summary.remote_agent_count, 4);
+        assert_eq!(summary.missing_worker_provider_run_count, 2);
     }
 
     #[test]

@@ -28,6 +28,8 @@ test("waiting room session rows render active sessions with stable columns", () 
         active_prompt_count: 0,
         queued_prompt_count: 0,
         error_agent_count: 0,
+        remote_agent_count: 1,
+        missing_worker_provider_run_count: 1,
       },
     }),
   ]
@@ -44,7 +46,8 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.value, "Working")
   assert.equal(rows[1]?.columns?.[1]?.trim(), "home-kernel@home-machine")
   assert.equal(rows[1]?.columns?.[2]?.trim(), "managed")
-  assert.equal(rows[1]?.columns?.[3]?.trim(), "2026-01-02 10:00 UTC")
+  assert.equal(rows[1]?.columns?.[3]?.trim(), "run /kernel health")
+  assert.equal(rows[1]?.columns?.[4]?.trim(), "2026-01-02 10:00 UTC")
   assert.equal(rows[1]?.focused, true)
 })
 

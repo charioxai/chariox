@@ -41,6 +41,8 @@ export type SessionActivitySummary = {
   active_prompt_count: number
   queued_prompt_count: number
   error_agent_count: number
+  remote_agent_count?: number
+  missing_worker_provider_run_count?: number
 }
 
 export type SessionBootstrapDecision =
@@ -63,8 +65,9 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
       const liveSync = formatSessionLiveSyncLabel(session)
+      const next = formatSessionActivityNext(session)
       const current = session.id === currentSessionId ? " current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${next}${current}`
     }),
   ].join("\n")
 }
@@ -83,6 +86,12 @@ export function formatSessionHomeLabel(session: Pick<SessionListEntry, "host_dae
 export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "workspace_live_sync_mode">): string {
   const mode = session.workspace_live_sync_mode
   return mode === "managed" || mode === "tracked" ? mode : "off"
+}
+
+function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
+  return (session.activity?.missing_worker_provider_run_count ?? 0) > 0
+    ? " - next run /kernel health"
+    : ""
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {

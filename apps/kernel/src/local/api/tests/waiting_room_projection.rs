@@ -425,6 +425,8 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
     assert_eq!(summary.activity.active_prompt_count, 1);
     assert_eq!(summary.activity.queued_prompt_count, 0);
     assert_eq!(summary.activity.error_agent_count, 0);
+    assert_eq!(summary.activity.remote_agent_count, 0);
+    assert_eq!(summary.activity.missing_worker_provider_run_count, 0);
 
     let serialized =
         serde_json::to_value(summary).expect("public session summary should serialize");

@@ -24,6 +24,15 @@ test("formatSessionList renders aliases, attachment counts, and current session 
           status: "Active",
           created_at_ms: 2,
           attachment_ids: ["attachment-1", "attachment-2"],
+          activity: {
+            agent_count: 2,
+            working_agent_count: 1,
+            active_prompt_count: 1,
+            queued_prompt_count: 0,
+            error_agent_count: 0,
+            remote_agent_count: 1,
+            missing_worker_provider_run_count: 1,
+          },
         },
         {
           id: "session-1",
@@ -39,7 +48,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
     ),
     [
       "Sessions",
-      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked current",
+      "- `support` (`session-2`) - active - 2 CLIs - arroba - home home-kernel-1@home-machine-1 - sync tracked - next run /kernel health current",
       "- `session-1` - ended - 0 CLIs - demo - sync off",
     ].join("\n"),
   )

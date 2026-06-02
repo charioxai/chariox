@@ -70,6 +70,10 @@ pub struct WaitingRoomSessionActivitySummary {
     pub queued_prompt_count: usize,
     pub error_agent_count: usize,
     #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub remote_agent_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub missing_worker_provider_run_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
     pub unread_idle_agent_count: usize,
 }
 
