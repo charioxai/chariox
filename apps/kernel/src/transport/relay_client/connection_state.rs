@@ -18,6 +18,7 @@ use super::RelayOutgoingSender;
 #[derive(Debug)]
 pub struct RelayClientState {
     pub(super) connected: bool,
+    pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
@@ -34,6 +35,10 @@ impl RelayClientState {
         self.outgoing_tx.clone()
     }
 
+    pub(crate) fn connected_relay_url(&self) -> Option<String> {
+        self.connected_relay_url.clone()
+    }
+
     pub(crate) fn upsert_display_tunnel(&mut self, target: RelayDisplayTunnelTarget) {
         self.display_tunnels
             .insert(target.tunnel_id.clone(), target);
@@ -41,6 +46,19 @@ impl RelayClientState {
 
     pub(crate) fn remove_display_tunnel(&mut self, tunnel_id: &str) {
         self.display_tunnels.remove(tunnel_id);
+    }
+
+    pub(crate) fn remove_display_tunnels_for_slice(&mut self, slice_id: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.display_tunnels.retain(|tunnel_id, target| {
+            if target.slice_id == slice_id {
+                removed.push(tunnel_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
     }
 
     pub(crate) fn display_tunnel(
@@ -79,8 +97,13 @@ impl RelayClientState {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_set_connected_sender(&mut self, outgoing_tx: RelayOutgoingSender) {
+    pub(crate) fn test_set_connected_sender(
+        &mut self,
+        outgoing_tx: RelayOutgoingSender,
+        relay_url: impl Into<String>,
+    ) {
         self.connected = true;
+        self.connected_relay_url = Some(relay_url.into());
         self.outgoing_tx = Some(outgoing_tx);
     }
 }
@@ -103,6 +126,7 @@ impl Default for RelayClientState {
     fn default() -> Self {
         Self {
             connected: false,
+            connected_relay_url: None,
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
@@ -115,9 +139,11 @@ impl Default for RelayClientState {
 pub(super) async fn set_connected(
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: RelayOutgoingSender,
+    relay_url: String,
 ) {
     let mut guard = state.write().await;
     guard.connected = true;
+    guard.connected_relay_url = Some(relay_url);
     guard.outgoing_tx = Some(outgoing_tx);
 }
 
@@ -178,6 +204,7 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
     let pending_peer = {
         let mut guard = state.write().await;
         guard.connected = false;
+        guard.connected_relay_url = None;
         guard.outgoing_tx = None;
         guard.display_tunnels.clear();
         guard.display_streams.clear();

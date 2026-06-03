@@ -197,6 +197,7 @@ async fn import_all_provider_auth_for_started_slice(
 pub(super) async fn execute_stop_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.stop")?;
@@ -243,6 +244,7 @@ pub(super) async fn execute_stop_slice_request(
         return Err(error);
     }
     let slice = runtime_state.mark_slice_stopped(&request.slice_ref)?;
+    revoke_display_tunnels_for_slice(relay_state, &slice.id).await;
     runtime_state.record_slice_audit_event(&slice, "stop", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStopped { slice })
 }
@@ -250,6 +252,7 @@ pub(super) async fn execute_stop_slice_request(
 pub(super) async fn execute_delete_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.delete")?;
@@ -298,6 +301,7 @@ pub(super) async fn execute_delete_slice_request(
         }
     }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
+    revoke_display_tunnels_for_slice(relay_state, &slice.id).await;
     runtime_state.record_slice_audit_event(&slice, "delete", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceDeleted { slice })
 }
@@ -312,7 +316,7 @@ pub(super) async fn execute_get_slice_display_endpoint_request(
     let endpoint = match relay_state {
         Some(relay_state) => tunneled_display_endpoint(
             endpoint.clone(),
-            &config_projection.snapshot().relay_url,
+            config_projection.snapshot().relay_url,
             relay_state,
         )
         .await
@@ -324,22 +328,22 @@ pub(super) async fn execute_get_slice_display_endpoint_request(
 
 async fn tunneled_display_endpoint(
     local_endpoint: SliceDisplayEndpoint,
-    relay_url: &Option<String>,
+    config_relay_url: Option<String>,
     relay_state: Arc<RwLock<RelayClientState>>,
 ) -> Option<SliceDisplayEndpoint> {
     if local_endpoint.access != SliceDisplayEndpointAccess::Local {
         return None;
     }
-    let relay_url = relay_url.as_deref()?;
-    let relay_base_url = relay_display_base_url(relay_url)?;
     let local_base_url = local_display_base_url(&local_endpoint.url)?;
     let now_ms = crate::session::unix_epoch_ms();
     let expires_at_ms = now_ms.saturating_add(DISPLAY_TUNNEL_TTL_MS);
     let tunnel_id = format!("display-{}", random_hex_id());
-    let tunnel_url = relay_display_endpoint_url(&relay_base_url, &tunnel_id, &local_endpoint)?;
-    let outgoing_tx = {
+    let (outgoing_tx, tunnel_url) = {
         let mut guard = relay_state.write().await;
         guard.prune_expired_display_tunnels(now_ms);
+        let relay_url = guard.connected_relay_url().or(config_relay_url)?;
+        let relay_base_url = relay_display_base_url(&relay_url)?;
+        let tunnel_url = relay_display_endpoint_url(&relay_base_url, &tunnel_id, &local_endpoint)?;
         let outgoing_tx = guard.outgoing_sender()?;
         guard.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: tunnel_id.clone(),
@@ -347,7 +351,7 @@ async fn tunneled_display_endpoint(
             local_base_url,
             expires_at_ms,
         });
-        outgoing_tx
+        (outgoing_tx, tunnel_url)
     };
     if outgoing_tx
         .try_send(RelayEnvelope::DaemonDisplayTunnelRegister {
@@ -370,6 +374,28 @@ async fn tunneled_display_endpoint(
         expires_at_ms: Some(expires_at_ms),
         capabilities: local_endpoint.capabilities,
     })
+}
+
+async fn revoke_display_tunnels_for_slice(
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
+    slice_id: &str,
+) {
+    let Some(relay_state) = relay_state else {
+        return;
+    };
+    let (outgoing_tx, tunnel_ids) = {
+        let mut guard = relay_state.write().await;
+        (
+            guard.outgoing_sender(),
+            guard.remove_display_tunnels_for_slice(slice_id),
+        )
+    };
+    let Some(outgoing_tx) = outgoing_tx else {
+        return;
+    };
+    for tunnel_id in tunnel_ids {
+        let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke { tunnel_id });
+    }
 }
 
 fn relay_display_base_url(relay_url: &str) -> Option<url::Url> {
@@ -444,13 +470,13 @@ mod display_endpoint_tests {
     async fn display_endpoint_returns_tunnel_when_wss_relay_is_connected() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
         let mut state = RelayClientState::default();
-        state.test_set_connected_sender(outgoing_tx);
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
         let relay_state = Arc::new(RwLock::new(state));
         let local = local_novnc_endpoint();
 
         let endpoint = tunneled_display_endpoint(
             local,
-            &Some("wss://relay.example.test".to_string()),
+            Some("wss://relay.example.test".to_string()),
             Arc::clone(&relay_state),
         )
         .await
@@ -481,16 +507,48 @@ mod display_endpoint_tests {
     async fn display_endpoint_does_not_tunnel_without_hosted_wss_relay() {
         let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
         let mut state = RelayClientState::default();
-        state.test_set_connected_sender(outgoing_tx);
+        state.test_set_connected_sender(outgoing_tx, "ws://127.0.0.1:43130");
         let relay_state = Arc::new(RwLock::new(state));
 
         assert!(tunneled_display_endpoint(
             local_novnc_endpoint(),
-            &Some("ws://127.0.0.1:43130".to_string()),
+            Some("ws://127.0.0.1:43130".to_string()),
             relay_state,
         )
         .await
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn revoking_slice_display_tunnels_keeps_other_slices_registered() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
+        state.upsert_display_tunnel(test_tunnel("display-a", "slice-1"));
+        state.upsert_display_tunnel(test_tunnel("display-b", "slice-1"));
+        state.upsert_display_tunnel(test_tunnel("display-c", "slice-2"));
+        let relay_state = Arc::new(RwLock::new(state));
+
+        revoke_display_tunnels_for_slice(Some(Arc::clone(&relay_state)), "slice-1").await;
+
+        let mut revoked = Vec::new();
+        for _ in 0..2 {
+            match outgoing_rx
+                .recv()
+                .await
+                .expect("slice tunnel revoke should be queued")
+            {
+                RelayEnvelope::DaemonDisplayTunnelRevoke { tunnel_id } => revoked.push(tunnel_id),
+                other => panic!("unexpected relay envelope: {other:?}"),
+            }
+        }
+        revoked.sort();
+        assert_eq!(revoked, vec!["display-a", "display-b"]);
+        assert!(relay_state
+            .read()
+            .await
+            .display_tunnel("display-c", crate::session::unix_epoch_ms())
+            .is_some());
     }
 
     fn local_novnc_endpoint() -> SliceDisplayEndpoint {
@@ -506,6 +564,15 @@ mod display_endpoint_tests {
                 "keyboard".to_string(),
                 "mouse".to_string(),
             ],
+        }
+    }
+
+    fn test_tunnel(tunnel_id: &str, slice_id: &str) -> RelayDisplayTunnelTarget {
+        RelayDisplayTunnelTarget {
+            tunnel_id: tunnel_id.to_string(),
+            slice_id: slice_id.to_string(),
+            local_base_url: "http://127.0.0.1:5901/".to_string(),
+            expires_at_ms: crate::session::unix_epoch_ms().saturating_add(60_000),
         }
     }
 }

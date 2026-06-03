@@ -44,10 +44,11 @@ pub(crate) async fn execute_slice_request(
             execute_start_slice_request(runtime_state, config_projection, request).await
         }
         LocalDaemonRequest::StopSlice(request) => {
-            execute_stop_slice_request(runtime_state, config_projection, request).await
+            execute_stop_slice_request(runtime_state, config_projection, relay_state, request).await
         }
         LocalDaemonRequest::DeleteSlice(request) => {
-            execute_delete_slice_request(runtime_state, config_projection, request).await
+            execute_delete_slice_request(runtime_state, config_projection, relay_state, request)
+                .await
         }
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
             execute_import_slice_provider_auth_request(runtime_state, config_projection, request)

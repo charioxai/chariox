@@ -171,7 +171,7 @@ pub async fn run_daemon_relay_connector(
                         "connect_to_registration_ms": connect_started.elapsed().as_millis(),
                     }),
                 );
-                set_connected(&state, outgoing_tx.clone()).await;
+                set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
                 publish_cloud_presence(&router, true, "relay registration sent").await;
                 let mut last_cloud_presence_publish = Instant::now();
                 let mut inventory_refresh_task = Some(spawn_remote_inventory_projection_refresh(
