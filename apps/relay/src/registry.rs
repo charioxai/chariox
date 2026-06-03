@@ -78,6 +78,13 @@ pub(crate) struct DisplayTunnelRegistration {
     pub(crate) capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum DisplayTunnelLookup {
+    Active { daemon_sender: Option<RelaySender> },
+    Expired,
+    Missing,
+}
+
 #[derive(Debug, Default)]
 pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
@@ -150,6 +157,22 @@ impl RelayRegistry {
             .filter(|registration| registration.expires_at_ms > now_ms)
     }
 
+    pub(crate) fn display_tunnel_lookup(
+        &self,
+        tunnel_id: &str,
+        now_ms: u64,
+    ) -> DisplayTunnelLookup {
+        let Some(registration) = self.display_tunnels.get(tunnel_id) else {
+            return DisplayTunnelLookup::Missing;
+        };
+        if registration.expires_at_ms <= now_ms {
+            return DisplayTunnelLookup::Expired;
+        }
+        DisplayTunnelLookup::Active {
+            daemon_sender: self.resolve_daemon_sender(&registration.daemon_key),
+        }
+    }
+
     pub(crate) fn prune_expired_display_tunnels(&mut self, now_ms: u64) -> usize {
         let before = self.display_tunnels.len();
         self.display_tunnels
@@ -162,6 +185,24 @@ impl RelayRegistry {
         self.display_tunnels
             .retain(|_, registration| registration.daemon_key != *daemon_key);
         before.saturating_sub(self.display_tunnels.len())
+    }
+
+    pub(crate) fn resolve_daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {
+        let registration = self.daemons.get(daemon_key)?;
+        let peer_addr = self.daemon_peers.get(daemon_key)?;
+        let peer = self.peers.get(peer_addr)?;
+        if peer.role == RelayConnectionRole::Daemon
+            && peer.realm_id.as_deref() == Some(daemon_key.realm_id.as_str())
+            && peer
+                .daemon_registration
+                .as_ref()
+                .map(|candidate| candidate.daemon_id.as_str())
+                == Some(registration.daemon_id.as_str())
+        {
+            Some(peer.sender.clone())
+        } else {
+            None
+        }
     }
 
     pub fn connected_peer(&self, peer_addr: &SocketAddr) -> Option<ConnectedPeer> {

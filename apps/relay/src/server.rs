@@ -9,7 +9,9 @@ use crate::auth::RelayAuthVerifier;
 use crate::config::RelayConfig;
 
 mod connection;
+mod display;
 use connection::handle_connection;
+use display::{handle_display_connection, is_display_http_request};
 
 pub use crate::registry::{ConnectedPeer, RelayRegistry};
 
@@ -76,7 +78,11 @@ impl RelayServer {
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
                     tokio::spawn(async move {
-                        let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
+                        if is_display_http_request(&stream).await {
+                            let _ = handle_display_connection(stream, peer_addr, registry).await;
+                        } else {
+                            let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
+                        }
                     });
                 }
             }
@@ -107,6 +113,8 @@ mod tests {
     use crate::registry::DaemonKey;
     use futures_util::{SinkExt, StreamExt};
     use std::collections::BTreeMap;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
     use tokio::time::{sleep, timeout, Duration};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -607,6 +615,114 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn display_http_route_resolves_registered_tunnel_state() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let missing = display_http_get(addr, "/display/missing/vnc.html").await;
+        assert!(missing.starts_with("HTTP/1.1 404 Not Found"));
+
+        {
+            let mut guard = registry.write().await;
+            guard.register_display_tunnel(
+                DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-expired"),
+                "expired".to_string(),
+                1,
+                Vec::new(),
+            );
+            guard.register_display_tunnel(
+                DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-disconnected"),
+                "disconnected".to_string(),
+                u64::MAX,
+                Vec::new(),
+            );
+        }
+        let expired = display_http_get(addr, "/display/expired/vnc.html").await;
+        assert!(expired.starts_with("HTTP/1.1 410 Gone"));
+
+        let disconnected = display_http_get(addr, "/display/disconnected/vnc.html").await;
+        assert!(disconnected.starts_with("HTTP/1.1 502 Bad Gateway"));
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect to relay");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-live", "machine-1", "macOS", 10),
+                })
+                .expect("register envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegister {
+                    registration: RelayDisplayTunnelRegistration {
+                        tunnel_id: "live".to_string(),
+                        expires_at_ms: u64::MAX,
+                        capabilities: vec!["view".to_string()],
+                    },
+                })
+                .expect("display tunnel register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display tunnel register should send");
+        let _ = daemon_socket.next().await;
+
+        let live = display_http_get(addr, "/display/live/vnc.html").await;
+        assert!(live.starts_with("HTTP/1.1 501 Not Implemented"));
+        assert!(live.contains("display stream forwarding is not implemented"));
+
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    async fn display_http_get(addr: std::net::SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .expect("display HTTP connection should open");
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nhost: relay.test\r\n\r\n").as_bytes())
+            .await
+            .expect("display HTTP request should write");
+        let mut response = String::new();
+        timeout(Duration::from_secs(2), stream.read_to_string(&mut response))
+            .await
+            .expect("display HTTP response should complete")
+            .expect("display HTTP response should read");
+        response
     }
 
     #[tokio::test(flavor = "multi_thread")]
