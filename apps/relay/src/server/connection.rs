@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -816,6 +816,67 @@ pub(crate) async fn handle_connection(
                                 )?;
                             }
                         }
+                        RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before display tunnel registration"
+                                        .to_string(),
+                                );
+                                break;
+                            };
+                            let tunnel_id = registration.tunnel_id.clone();
+                            let expires_at_ms = registration.expires_at_ms;
+                            let error = if tunnel_id.trim().is_empty() {
+                                Some(relay_error(
+                                    "invalid_display_tunnel",
+                                    "display tunnel id must not be empty",
+                                    false,
+                                ))
+                            } else if expires_at_ms <= current_unix_ms() {
+                                Some(relay_error(
+                                    "display_tunnel_expired",
+                                    "display tunnel expiry must be in the future",
+                                    false,
+                                ))
+                            } else {
+                                let mut guard = registry.write().await;
+                                guard.prune_expired_display_tunnels(current_unix_ms());
+                                guard.register_display_tunnel(
+                                    current_daemon_key,
+                                    tunnel_id.clone(),
+                                    expires_at_ms,
+                                    registration.capabilities,
+                                );
+                                None
+                            };
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::DaemonDisplayTunnelRegistered {
+                                    tunnel_id,
+                                    expires_at_ms,
+                                    error,
+                                },
+                            )?;
+                        }
+                        RelayEnvelope::DaemonDisplayTunnelRevoke { tunnel_id } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before display tunnel revocation"
+                                        .to_string(),
+                                );
+                                break;
+                            };
+                            let mut guard = registry.write().await;
+                            guard.prune_expired_display_tunnels(current_unix_ms());
+                            if guard
+                                .display_tunnel(&tunnel_id, current_unix_ms())
+                                .is_some_and(|tunnel| tunnel.daemon_key == current_daemon_key)
+                            {
+                                guard.revoke_display_tunnel(&tunnel_id);
+                            }
+                        }
                         RelayEnvelope::DaemonEvent {
                             subscription_id,
                             event_id,
@@ -849,6 +910,10 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::DaemonPeerResponse { .. }
                         | RelayEnvelope::DaemonIncomingPeerRequest { .. }
                         | RelayEnvelope::DaemonIncomingPeerEvent { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelRegistered { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelOpen { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelClose { .. }
                         | RelayEnvelope::ClientResponse { .. }
                         | RelayEnvelope::DaemonRequest { .. }
                         | RelayEnvelope::DaemonSubscribe { .. }
@@ -1081,6 +1146,7 @@ async fn remove_peer(
         }
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
+        guard.remove_display_tunnels_for_daemon(daemon_key);
         let daemon_subscriptions = guard
             .subscriptions
             .iter()
@@ -1194,6 +1260,13 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
         message: message.to_string(),
         retryable,
     }
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn relay_log(level: &str, event: &str, fields: Value) {

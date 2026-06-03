@@ -101,7 +101,8 @@ mod tests {
         DEFAULT_RELAY_REALM_ID,
     };
     use crate::protocol::{
-        ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayEnvelope, RelayMetadataQuery,
+        ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayDisplayTunnelRegistration,
+        RelayEnvelope, RelayMetadataQuery,
     };
     use crate::registry::DaemonKey;
     use futures_util::{SinkExt, StreamExt};
@@ -483,6 +484,129 @@ mod tests {
             }
         }
         Err(last_error.expect("connect retry should record an error"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_display_tunnel_registration_is_tracked_revoked_and_disconnected() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect to relay");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-1", "machine-1", "macOS", 10),
+                })
+                .expect("register envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegister {
+                    registration: RelayDisplayTunnelRegistration {
+                        tunnel_id: "display-opaque-1".to_string(),
+                        expires_at_ms: u64::MAX,
+                        capabilities: vec!["view".to_string(), "keyboard".to_string()],
+                    },
+                })
+                .expect("display tunnel register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display tunnel register should send");
+
+        let registered_payload = match daemon_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected display tunnel registration response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&registered_payload)
+            .expect("display tunnel registration response should decode")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegistered {
+                tunnel_id,
+                expires_at_ms,
+                error: None,
+            } => {
+                assert_eq!(tunnel_id, "display-opaque-1");
+                assert_eq!(expires_at_ms, u64::MAX);
+            }
+            other => panic!("unexpected display tunnel registration envelope: {other:?}"),
+        }
+
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.display_tunnel_count(), 1);
+        }
+
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRevoke {
+                    tunnel_id: "display-opaque-1".to_string(),
+                })
+                .expect("display tunnel revoke should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display tunnel revoke should send");
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(registry.read().await.display_tunnel_count(), 0);
+
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegister {
+                    registration: RelayDisplayTunnelRegistration {
+                        tunnel_id: "display-opaque-2".to_string(),
+                        expires_at_ms: u64::MAX,
+                        capabilities: vec!["view".to_string()],
+                    },
+                })
+                .expect("display tunnel register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("second display tunnel register should send");
+        let _ = daemon_socket.next().await;
+        assert_eq!(registry.read().await.display_tunnel_count(), 1);
+
+        daemon_socket
+            .close(None)
+            .await
+            .expect("daemon should close");
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(registry.read().await.display_tunnel_count(), 0);
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
     }
 
     #[tokio::test(flavor = "multi_thread")]

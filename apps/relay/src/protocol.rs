@@ -149,6 +149,20 @@ pub struct ClientTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelRegistration {
+    pub tunnel_id: String,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelStreamChunk {
+    pub stream_id: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayError {
     pub code: String,
     pub message: String,
@@ -218,6 +232,28 @@ pub enum RelayEnvelope {
         #[serde(default)]
         caller_identity: Option<RelayCallerIdentity>,
         encrypted_event: EncryptedRelayPayload,
+    },
+    DaemonDisplayTunnelRegister {
+        registration: RelayDisplayTunnelRegistration,
+    },
+    DaemonDisplayTunnelRegistered {
+        tunnel_id: String,
+        expires_at_ms: u64,
+        error: Option<RelayError>,
+    },
+    DaemonDisplayTunnelRevoke {
+        tunnel_id: String,
+    },
+    DaemonDisplayTunnelOpen {
+        stream_id: String,
+        tunnel_id: String,
+    },
+    DaemonDisplayTunnelChunk {
+        chunk: RelayDisplayTunnelStreamChunk,
+    },
+    DaemonDisplayTunnelClose {
+        stream_id: String,
+        error: Option<RelayError>,
     },
     ClientRequest {
         request_id: String,
@@ -321,5 +357,45 @@ mod tests {
         assert!(json.contains("\"kind\":\"daemon_register\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
+    }
+
+    #[test]
+    fn serializes_display_tunnel_envelopes() {
+        let register = RelayEnvelope::DaemonDisplayTunnelRegister {
+            registration: RelayDisplayTunnelRegistration {
+                tunnel_id: "display-opaque-1".to_string(),
+                expires_at_ms: 42,
+                capabilities: vec!["view".to_string(), "keyboard".to_string()],
+            },
+        };
+        let chunk = RelayEnvelope::DaemonDisplayTunnelChunk {
+            chunk: RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: "aGVsbG8".to_string(),
+            },
+        };
+        let close = RelayEnvelope::DaemonDisplayTunnelClose {
+            stream_id: "stream-1".to_string(),
+            error: None,
+        };
+
+        let json = serde_json::to_value([register, chunk, close])
+            .expect("display tunnel envelopes should serialize");
+        assert_eq!(
+            json.pointer("/0/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_register"))
+        );
+        assert_eq!(
+            json.pointer("/0/registration/tunnel_id"),
+            Some(&serde_json::json!("display-opaque-1"))
+        );
+        assert_eq!(
+            json.pointer("/1/chunk/data"),
+            Some(&serde_json::json!("aGVsbG8"))
+        );
+        assert_eq!(
+            json.pointer("/2/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_close"))
+        );
     }
 }

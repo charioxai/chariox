@@ -71,6 +71,13 @@ pub(crate) struct ActiveSubscription {
     pub(crate) daemon_key: DaemonKey,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DisplayTunnelRegistration {
+    pub(crate) daemon_key: DaemonKey,
+    pub(crate) expires_at_ms: u64,
+    pub(crate) capabilities: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
@@ -79,6 +86,7 @@ pub struct RelayRegistry {
     pub(crate) pending_requests: BTreeMap<String, PendingClientRequest>,
     pub(crate) pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
+    pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
 }
 
 impl RelayRegistry {
@@ -105,6 +113,55 @@ impl RelayRegistry {
 
     pub fn subscription_count(&self) -> usize {
         self.subscriptions.len()
+    }
+
+    pub fn display_tunnel_count(&self) -> usize {
+        self.display_tunnels.len()
+    }
+
+    pub(crate) fn register_display_tunnel(
+        &mut self,
+        daemon_key: DaemonKey,
+        tunnel_id: String,
+        expires_at_ms: u64,
+        capabilities: Vec<String>,
+    ) {
+        self.display_tunnels.insert(
+            tunnel_id,
+            DisplayTunnelRegistration {
+                daemon_key,
+                expires_at_ms,
+                capabilities,
+            },
+        );
+    }
+
+    pub(crate) fn revoke_display_tunnel(&mut self, tunnel_id: &str) -> bool {
+        self.display_tunnels.remove(tunnel_id).is_some()
+    }
+
+    pub(crate) fn display_tunnel(
+        &self,
+        tunnel_id: &str,
+        now_ms: u64,
+    ) -> Option<&DisplayTunnelRegistration> {
+        self.display_tunnels
+            .get(tunnel_id)
+            .filter(|registration| registration.expires_at_ms > now_ms)
+    }
+
+    pub(crate) fn prune_expired_display_tunnels(&mut self, now_ms: u64) -> usize {
+        let before = self.display_tunnels.len();
+        self.display_tunnels
+            .retain(|_, registration| registration.expires_at_ms > now_ms);
+        before.saturating_sub(self.display_tunnels.len())
+    }
+
+    pub(crate) fn remove_display_tunnels_for_daemon(&mut self, daemon_key: &DaemonKey) -> usize {
+        let before = self.display_tunnels.len();
+        self.display_tunnels
+            .retain(|_, registration| registration.daemon_key != *daemon_key);
+        before.saturating_sub(self.display_tunnels.len())
     }
 
     pub fn connected_peer(&self, peer_addr: &SocketAddr) -> Option<ConnectedPeer> {
@@ -306,5 +363,50 @@ fn normalized_kernel_started_at_ms(registration: &DaemonRegistration) -> u64 {
         u64::MAX
     } else {
         registration.kernel_started_at_ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_tunnels_are_scoped_to_daemon_and_expire() {
+        let mut registry = RelayRegistry::default();
+        let daemon_key = DaemonKey::new("realm-1", "daemon-1");
+        registry.register_display_tunnel(
+            daemon_key.clone(),
+            "tunnel-1".to_string(),
+            1_000,
+            vec!["view".to_string(), "keyboard".to_string()],
+        );
+
+        let tunnel = registry
+            .display_tunnel("tunnel-1", 999)
+            .expect("unexpired tunnel should resolve");
+        assert_eq!(tunnel.daemon_key, daemon_key);
+        assert_eq!(tunnel.capabilities, vec!["view", "keyboard"]);
+        assert!(registry.display_tunnel("tunnel-1", 1_000).is_none());
+
+        registry.prune_expired_display_tunnels(1_000);
+        assert_eq!(registry.display_tunnel_count(), 0);
+    }
+
+    #[test]
+    fn display_tunnels_revoke_and_disconnect_with_their_daemon() {
+        let mut registry = RelayRegistry::default();
+        let daemon_a = DaemonKey::new("realm-1", "daemon-a");
+        let daemon_b = DaemonKey::new("realm-1", "daemon-b");
+        registry.register_display_tunnel(daemon_a.clone(), "a-1".to_string(), 10_000, Vec::new());
+        registry.register_display_tunnel(daemon_a.clone(), "a-2".to_string(), 10_000, Vec::new());
+        registry.register_display_tunnel(daemon_b.clone(), "b-1".to_string(), 10_000, Vec::new());
+
+        assert!(registry.revoke_display_tunnel("a-1"));
+        assert!(!registry.revoke_display_tunnel("missing"));
+        assert_eq!(registry.display_tunnel_count(), 2);
+
+        assert_eq!(registry.remove_display_tunnels_for_daemon(&daemon_a), 1);
+        assert!(registry.display_tunnel("a-2", 1).is_none());
+        assert!(registry.display_tunnel("b-1", 1).is_some());
     }
 }
