@@ -157,6 +157,22 @@ pub struct RelayDisplayTunnelRegistration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelOpenRequest {
+    pub stream_id: String,
+    pub tunnel_id: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RelayDisplayTunnelHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDisplayTunnelStreamChunk {
     pub stream_id: String,
     pub data: String,
@@ -245,8 +261,7 @@ pub enum RelayEnvelope {
         tunnel_id: String,
     },
     DaemonDisplayTunnelOpen {
-        stream_id: String,
-        tunnel_id: String,
+        request: RelayDisplayTunnelOpenRequest,
     },
     DaemonDisplayTunnelChunk {
         chunk: RelayDisplayTunnelStreamChunk,
@@ -368,6 +383,18 @@ mod tests {
                 capabilities: vec!["view".to_string(), "keyboard".to_string()],
             },
         };
+        let open = RelayEnvelope::DaemonDisplayTunnelOpen {
+            request: RelayDisplayTunnelOpenRequest {
+                stream_id: "stream-1".to_string(),
+                tunnel_id: "display-opaque-1".to_string(),
+                method: "GET".to_string(),
+                path: "/vnc.html?autoconnect=true".to_string(),
+                headers: vec![RelayDisplayTunnelHeader {
+                    name: "accept".to_string(),
+                    value: "text/html".to_string(),
+                }],
+            },
+        };
         let chunk = RelayEnvelope::DaemonDisplayTunnelChunk {
             chunk: RelayDisplayTunnelStreamChunk {
                 stream_id: "stream-1".to_string(),
@@ -379,7 +406,7 @@ mod tests {
             error: None,
         };
 
-        let json = serde_json::to_value([register, chunk, close])
+        let json = serde_json::to_value([register, open, chunk, close])
             .expect("display tunnel envelopes should serialize");
         assert_eq!(
             json.pointer("/0/kind"),
@@ -390,11 +417,23 @@ mod tests {
             Some(&serde_json::json!("display-opaque-1"))
         );
         assert_eq!(
-            json.pointer("/1/chunk/data"),
+            json.pointer("/1/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_open"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/path"),
+            Some(&serde_json::json!("/vnc.html?autoconnect=true"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/headers/0/name"),
+            Some(&serde_json::json!("accept"))
+        );
+        assert_eq!(
+            json.pointer("/2/chunk/data"),
             Some(&serde_json::json!("aGVsbG8"))
         );
         assert_eq!(
-            json.pointer("/2/kind"),
+            json.pointer("/3/kind"),
             Some(&serde_json::json!("daemon_display_tunnel_close"))
         );
     }
