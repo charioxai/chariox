@@ -6,11 +6,12 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::auth::DEFAULT_RELAY_REALM_ID;
 use crate::protocol::{
-    DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayKernelPresence,
-    RelayMachinePresence, RelayProviderAccountSummary,
+    DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayDisplayTunnelHeader,
+    RelayError, RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
 };
 
 pub(crate) type RelaySender = mpsc::Sender<Message>;
+pub(crate) type DisplayStreamSender = mpsc::Sender<DisplayStreamEvent>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PeerHandle {
@@ -80,9 +81,32 @@ pub(crate) struct DisplayTunnelRegistration {
 
 #[derive(Debug, Clone)]
 pub(crate) enum DisplayTunnelLookup {
-    Active { daemon_sender: Option<RelaySender> },
+    Active {
+        daemon_key: DaemonKey,
+        daemon_sender: Option<RelaySender>,
+    },
     Expired,
     Missing,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DisplayStreamEvent {
+    ResponseStart {
+        status: u16,
+        headers: Vec<RelayDisplayTunnelHeader>,
+    },
+    Chunk {
+        data: String,
+    },
+    Close {
+        error: Option<RelayError>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingDisplayStream {
+    pub(crate) daemon_key: DaemonKey,
+    pub(crate) sender: DisplayStreamSender,
 }
 
 #[derive(Debug, Default)]
@@ -94,6 +118,7 @@ pub struct RelayRegistry {
     pub(crate) pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
     pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
+    pub(crate) pending_display_streams: BTreeMap<String, PendingDisplayStream>,
 }
 
 impl RelayRegistry {
@@ -169,6 +194,7 @@ impl RelayRegistry {
             return DisplayTunnelLookup::Expired;
         }
         DisplayTunnelLookup::Active {
+            daemon_key: registration.daemon_key.clone(),
             daemon_sender: self.resolve_daemon_sender(&registration.daemon_key),
         }
     }
@@ -187,6 +213,13 @@ impl RelayRegistry {
         before.saturating_sub(self.display_tunnels.len())
     }
 
+    pub(crate) fn remove_display_streams_for_daemon(&mut self, daemon_key: &DaemonKey) -> usize {
+        let before = self.pending_display_streams.len();
+        self.pending_display_streams
+            .retain(|_, stream| stream.daemon_key != *daemon_key);
+        before.saturating_sub(self.pending_display_streams.len())
+    }
+
     pub(crate) fn resolve_daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {
         let registration = self.daemons.get(daemon_key)?;
         let peer_addr = self.daemon_peers.get(daemon_key)?;
@@ -203,6 +236,31 @@ impl RelayRegistry {
         } else {
             None
         }
+    }
+
+    pub(crate) fn insert_pending_display_stream(
+        &mut self,
+        stream_id: String,
+        daemon_key: DaemonKey,
+        sender: DisplayStreamSender,
+    ) {
+        self.pending_display_streams
+            .insert(stream_id, PendingDisplayStream { daemon_key, sender });
+    }
+
+    pub(crate) fn remove_pending_display_stream(&mut self, stream_id: &str) {
+        self.pending_display_streams.remove(stream_id);
+    }
+
+    pub(crate) fn display_stream_sender_for_daemon(
+        &self,
+        stream_id: &str,
+        daemon_key: &DaemonKey,
+    ) -> Option<DisplayStreamSender> {
+        self.pending_display_streams
+            .get(stream_id)
+            .filter(|stream| stream.daemon_key == *daemon_key)
+            .map(|stream| stream.sender.clone())
     }
 
     pub fn connected_peer(&self, peer_addr: &SocketAddr) -> Option<ConnectedPeer> {

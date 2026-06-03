@@ -18,8 +18,8 @@ use crate::protocol::{
     RelayMetadataQuery,
 };
 use crate::registry::{
-    ActiveSubscription, DaemonKey, PeerHandle, PendingClientRequest, PendingDaemonPeerRequest,
-    PendingRequestKind, RelayRegistry, RelaySender,
+    ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle, PendingClientRequest,
+    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
 };
 
 const RELAY_OUTGOING_QUEUE_CAPACITY: usize = 1024;
@@ -877,6 +877,74 @@ pub(crate) async fn handle_connection(
                                 guard.revoke_display_tunnel(&tunnel_id);
                             }
                         }
+                        RelayEnvelope::DaemonDisplayTunnelResponseStart { response } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before display tunnel responses"
+                                        .to_string(),
+                                );
+                                break;
+                            };
+                            let sender = {
+                                let guard = registry.read().await;
+                                guard.display_stream_sender_for_daemon(
+                                    &response.stream_id,
+                                    &current_daemon_key,
+                                )
+                            };
+                            if let Some(sender) = sender {
+                                let _ = sender
+                                    .send(DisplayStreamEvent::ResponseStart {
+                                        status: response.status,
+                                        headers: response.headers,
+                                    })
+                                    .await;
+                            }
+                        }
+                        RelayEnvelope::DaemonDisplayTunnelChunk { chunk } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before display tunnel chunks".to_string(),
+                                );
+                                break;
+                            };
+                            let sender = {
+                                let guard = registry.read().await;
+                                guard.display_stream_sender_for_daemon(
+                                    &chunk.stream_id,
+                                    &current_daemon_key,
+                                )
+                            };
+                            if let Some(sender) = sender {
+                                let _ = sender
+                                    .send(DisplayStreamEvent::Chunk { data: chunk.data })
+                                    .await;
+                            }
+                        }
+                        RelayEnvelope::DaemonDisplayTunnelClose { stream_id, error } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before display tunnel close".to_string(),
+                                );
+                                break;
+                            };
+                            let sender = {
+                                let mut guard = registry.write().await;
+                                let sender = guard
+                                    .display_stream_sender_for_daemon(
+                                        &stream_id,
+                                        &current_daemon_key,
+                                    );
+                                guard.remove_pending_display_stream(&stream_id);
+                                sender
+                            };
+                            if let Some(sender) = sender {
+                                let _ = sender.send(DisplayStreamEvent::Close { error }).await;
+                            }
+                        }
                         RelayEnvelope::DaemonEvent {
                             subscription_id,
                             event_id,
@@ -912,8 +980,6 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::DaemonIncomingPeerEvent { .. }
                         | RelayEnvelope::DaemonDisplayTunnelRegistered { .. }
                         | RelayEnvelope::DaemonDisplayTunnelOpen { .. }
-                        | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
-                        | RelayEnvelope::DaemonDisplayTunnelClose { .. }
                         | RelayEnvelope::ClientResponse { .. }
                         | RelayEnvelope::DaemonRequest { .. }
                         | RelayEnvelope::DaemonSubscribe { .. }
@@ -1147,6 +1213,7 @@ async fn remove_peer(
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
         guard.remove_display_tunnels_for_daemon(daemon_key);
+        guard.remove_display_streams_for_daemon(daemon_key);
         let daemon_subscriptions = guard
             .subscriptions
             .iter()

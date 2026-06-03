@@ -173,6 +173,14 @@ pub struct RelayDisplayTunnelOpenRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelResponseStart {
+    pub stream_id: String,
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RelayDisplayTunnelHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDisplayTunnelStreamChunk {
     pub stream_id: String,
     pub data: String,
@@ -262,6 +270,9 @@ pub enum RelayEnvelope {
     },
     DaemonDisplayTunnelOpen {
         request: RelayDisplayTunnelOpenRequest,
+    },
+    DaemonDisplayTunnelResponseStart {
+        response: RelayDisplayTunnelResponseStart,
     },
     DaemonDisplayTunnelChunk {
         chunk: RelayDisplayTunnelStreamChunk,
@@ -395,6 +406,16 @@ mod tests {
                 }],
             },
         };
+        let start = RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: "stream-1".to_string(),
+                status: 200,
+                headers: vec![RelayDisplayTunnelHeader {
+                    name: "content-type".to_string(),
+                    value: "text/plain".to_string(),
+                }],
+            },
+        };
         let chunk = RelayEnvelope::DaemonDisplayTunnelChunk {
             chunk: RelayDisplayTunnelStreamChunk {
                 stream_id: "stream-1".to_string(),
@@ -406,7 +427,7 @@ mod tests {
             error: None,
         };
 
-        let json = serde_json::to_value([register, open, chunk, close])
+        let json = serde_json::to_value([register, open, start, chunk, close])
             .expect("display tunnel envelopes should serialize");
         assert_eq!(
             json.pointer("/0/kind"),
@@ -429,11 +450,23 @@ mod tests {
             Some(&serde_json::json!("accept"))
         );
         assert_eq!(
-            json.pointer("/2/chunk/data"),
+            json.pointer("/2/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_response_start"))
+        );
+        assert_eq!(
+            json.pointer("/2/response/status"),
+            Some(&serde_json::json!(200))
+        );
+        assert_eq!(
+            json.pointer("/2/response/headers/0/value"),
+            Some(&serde_json::json!("text/plain"))
+        );
+        assert_eq!(
+            json.pointer("/3/chunk/data"),
             Some(&serde_json::json!("aGVsbG8"))
         );
         assert_eq!(
-            json.pointer("/3/kind"),
+            json.pointer("/4/kind"),
             Some(&serde_json::json!("daemon_display_tunnel_close"))
         );
     }

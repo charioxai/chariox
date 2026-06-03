@@ -79,7 +79,7 @@ impl RelayServer {
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
                     tokio::spawn(async move {
                         if is_display_http_request(&stream).await {
-                            let _ = handle_display_connection(stream, peer_addr, registry).await;
+                            let _ = handle_display_connection(stream, peer_addr, registry, relay_request_counter).await;
                         } else {
                             let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
                         }
@@ -107,8 +107,9 @@ mod tests {
         DEFAULT_RELAY_REALM_ID,
     };
     use crate::protocol::{
-        ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayDisplayTunnelRegistration,
-        RelayEnvelope, RelayMetadataQuery,
+        ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayDisplayTunnelHeader,
+        RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope,
+        RelayMetadataQuery,
     };
     use crate::registry::DaemonKey;
     use futures_util::{SinkExt, StreamExt};
@@ -700,9 +701,70 @@ mod tests {
             .expect("display tunnel register should send");
         let _ = daemon_socket.next().await;
 
-        let live = display_http_get(addr, "/display/live/vnc.html").await;
-        assert!(live.starts_with("HTTP/1.1 501 Not Implemented"));
-        assert!(live.contains("display stream forwarding is not implemented"));
+        let response_task =
+            tokio::spawn(async move { display_http_get(addr, "/display/live/vnc.html").await });
+        let open_payload = match daemon_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected display tunnel open request: {other:?}"),
+        };
+        let stream_id = match serde_json::from_str::<RelayEnvelope>(&open_payload)
+            .expect("display tunnel open should decode")
+        {
+            RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
+                assert_eq!(request.tunnel_id, "live");
+                assert_eq!(request.method, "GET");
+                assert_eq!(request.path, "/display/live/vnc.html");
+                request.stream_id
+            }
+            other => panic!("unexpected display tunnel open envelope: {other:?}"),
+        };
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelResponseStart {
+                    response: crate::protocol::RelayDisplayTunnelResponseStart {
+                        stream_id: stream_id.clone(),
+                        status: 200,
+                        headers: vec![RelayDisplayTunnelHeader {
+                            name: "content-type".to_string(),
+                            value: "text/plain".to_string(),
+                        }],
+                    },
+                })
+                .expect("display response start should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display response start should send");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelChunk {
+                    chunk: RelayDisplayTunnelStreamChunk {
+                        stream_id: stream_id.clone(),
+                        data: "aGVsbG8=".to_string(),
+                    },
+                })
+                .expect("display chunk should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display chunk should send");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelClose {
+                    stream_id,
+                    error: None,
+                })
+                .expect("display close should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display close should send");
+        let live = response_task
+            .await
+            .expect("display response task should join");
+        assert!(live.starts_with("HTTP/1.1 200 OK"));
+        assert!(live.contains("content-type: text/plain"));
+        assert!(live.ends_with("\r\n\r\nhello"));
 
         let _ = daemon_socket.close(None).await;
         let _ = shutdown_tx.send(());
