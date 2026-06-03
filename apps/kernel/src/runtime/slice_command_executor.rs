@@ -9,6 +9,9 @@ use crate::local::{
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+use crate::transport::relay_client::RelayClientState;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use lifecycle::{
     execute_create_slice_request, execute_delete_slice_request,
@@ -24,6 +27,7 @@ use provider_auth::{
 pub(crate) async fn execute_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -61,7 +65,13 @@ pub(crate) async fn execute_slice_request(
             execute_set_slice_provider_auth_alias_request(runtime_state, request).await
         }
         LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
-            execute_get_slice_display_endpoint_request(runtime_state, request).await
+            execute_get_slice_display_endpoint_request(
+                runtime_state,
+                config_projection,
+                relay_state,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::GetSliceLogs(request) => {
             execute_get_slice_logs_request(runtime_state, config_projection, request).await

@@ -112,6 +112,7 @@ mod tests {
         RelayMetadataQuery,
     };
     use crate::registry::DaemonKey;
+    use base64::Engine as _;
     use futures_util::{SinkExt, StreamExt};
     use std::collections::BTreeMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -741,6 +742,7 @@ mod tests {
                     chunk: RelayDisplayTunnelStreamChunk {
                         stream_id: stream_id.clone(),
                         data: "aGVsbG8=".to_string(),
+                        message_kind: None,
                     },
                 })
                 .expect("display chunk should serialize")
@@ -785,6 +787,153 @@ mod tests {
             .expect("display HTTP response should complete")
             .expect("display HTTP response should read");
         response
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn display_websocket_route_bridges_browser_and_daemon_frames() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&relay_url)
+            .await
+            .expect("daemon should connect to relay");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-live", "machine-1", "macOS", 10),
+                })
+                .expect("register envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegister {
+                    registration: RelayDisplayTunnelRegistration {
+                        tunnel_id: "live".to_string(),
+                        expires_at_ms: u64::MAX,
+                        capabilities: vec!["view".to_string(), "keyboard".to_string()],
+                    },
+                })
+                .expect("display tunnel register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display tunnel register should send");
+        let _ = daemon_socket.next().await;
+
+        let browser_url = format!("ws://{}:{}/display/live/websockify", addr.ip(), addr.port());
+        let browser_task = tokio::spawn(async move {
+            connect_async(browser_url)
+                .await
+                .expect("browser display websocket should connect")
+                .0
+        });
+        let open_payload = match daemon_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected display tunnel websocket open: {other:?}"),
+        };
+        let stream_id = match serde_json::from_str::<RelayEnvelope>(&open_payload)
+            .expect("display websocket open should decode")
+        {
+            RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
+                assert_eq!(request.tunnel_id, "live");
+                assert_eq!(request.path, "/display/live/websockify");
+                assert!(request
+                    .headers
+                    .iter()
+                    .any(|header| header.name.eq_ignore_ascii_case("upgrade")
+                        && header.value.eq_ignore_ascii_case("websocket")));
+                request.stream_id
+            }
+            other => panic!("unexpected display tunnel open envelope: {other:?}"),
+        };
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelResponseStart {
+                    response: crate::protocol::RelayDisplayTunnelResponseStart {
+                        stream_id: stream_id.clone(),
+                        status: 101,
+                        headers: Vec::new(),
+                    },
+                })
+                .expect("display websocket response start should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display websocket response start should send");
+        let mut browser_socket = browser_task.await.expect("browser task should join");
+
+        browser_socket
+            .send(Message::Binary(Vec::from("from-browser").into()))
+            .await
+            .expect("browser frame should send");
+        let client_chunk_payload = match daemon_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected display tunnel client chunk: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&client_chunk_payload)
+            .expect("display client chunk should decode")
+        {
+            RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
+                assert_eq!(chunk.stream_id, stream_id);
+                assert_eq!(chunk.message_kind.as_deref(), Some("binary"));
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(chunk.data)
+                    .expect("chunk data should decode");
+                assert_eq!(decoded, b"from-browser");
+            }
+            other => panic!("unexpected display client chunk envelope: {other:?}"),
+        };
+
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelChunk {
+                    chunk: RelayDisplayTunnelStreamChunk {
+                        stream_id: stream_id.clone(),
+                        data: base64::engine::general_purpose::STANDARD.encode("from-daemon"),
+                        message_kind: Some("binary".to_string()),
+                    },
+                })
+                .expect("display daemon chunk should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display daemon chunk should send");
+        match browser_socket.next().await {
+            Some(Ok(Message::Binary(data))) => assert_eq!(data.as_ref(), b"from-daemon"),
+            other => panic!("unexpected browser display frame: {other:?}"),
+        }
+
+        let _ = browser_socket.close(None).await;
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -5,10 +5,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
+use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 use crate::protocol::{
     RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest, RelayEnvelope, RelayError,
@@ -78,7 +82,7 @@ pub(crate) async fn handle_display_connection(
                 guard.insert_pending_display_stream(stream_id.clone(), daemon_key, event_tx);
             }
             let result = forward_display_http_stream(
-                &mut stream,
+                stream,
                 &registry,
                 daemon_sender,
                 request,
@@ -101,6 +105,7 @@ struct DisplayHttpRequest {
     method: String,
     path: String,
     headers: Vec<RelayDisplayTunnelHeader>,
+    websocket_key: Option<String>,
 }
 
 async fn read_display_request(stream: &mut TcpStream) -> Result<DisplayHttpRequest, u16> {
@@ -126,7 +131,7 @@ async fn read_display_request(stream: &mut TcpStream) -> Result<DisplayHttpReque
 }
 
 async fn forward_display_http_stream(
-    stream: &mut TcpStream,
+    mut stream: TcpStream,
     registry: &Arc<RwLock<RelayRegistry>>,
     daemon_sender: RelaySender,
     request: DisplayHttpRequest,
@@ -134,6 +139,7 @@ async fn forward_display_http_stream(
     tunnel_id: String,
     mut event_rx: mpsc::Receiver<DisplayStreamEvent>,
 ) -> Result<(), std::io::Error> {
+    let websocket_key = request.websocket_key.clone();
     let open = RelayEnvelope::DaemonDisplayTunnelOpen {
         request: RelayDisplayTunnelOpenRequest {
             stream_id: stream_id.clone(),
@@ -148,12 +154,12 @@ async fn forward_display_http_stream(
         Ok(Some(DisplayStreamEvent::ResponseStart { status, headers })) => (status, headers),
         Ok(Some(DisplayStreamEvent::Close { error })) => {
             let message = display_stream_error_message(error.as_ref());
-            write_response(stream, 502, &message).await?;
+            write_response(&mut stream, 502, &message).await?;
             return Ok(());
         }
         Ok(Some(DisplayStreamEvent::Chunk { .. })) => {
             write_response(
-                stream,
+                &mut stream,
                 502,
                 "display tunnel sent data before response headers",
             )
@@ -161,7 +167,7 @@ async fn forward_display_http_stream(
             return Ok(());
         }
         Ok(None) => {
-            write_response(stream, 502, "display tunnel closed before response").await?;
+            write_response(&mut stream, 502, "display tunnel closed before response").await?;
             return Ok(());
         }
         Err(_) => {
@@ -169,14 +175,27 @@ async fn forward_display_http_stream(
                 .write()
                 .await
                 .remove_pending_display_stream(&stream_id);
-            write_response(stream, 504, "display tunnel response timed out").await?;
+            write_response(&mut stream, 504, "display tunnel response timed out").await?;
             return Ok(());
         }
     };
-    write_response_start(stream, start.0, &start.1).await?;
+    if let Some(key) = websocket_key {
+        if start.0 != 101 {
+            write_response(
+                &mut stream,
+                502,
+                "display tunnel websocket handshake failed",
+            )
+            .await?;
+            return Ok(());
+        }
+        return forward_display_websocket_stream(stream, daemon_sender, stream_id, key, event_rx)
+            .await;
+    }
+    write_response_start(&mut stream, start.0, &start.1).await?;
     loop {
         match tokio::time::timeout(DISPLAY_STREAM_IDLE_TIMEOUT, event_rx.recv()).await {
-            Ok(Some(DisplayStreamEvent::Chunk { data })) => {
+            Ok(Some(DisplayStreamEvent::Chunk { data, .. })) => {
                 let decoded = BASE64_STANDARD
                     .decode(data.as_bytes())
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -189,6 +208,98 @@ async fn forward_display_http_stream(
     }
     let _ = stream.shutdown().await;
     Ok(())
+}
+
+async fn forward_display_websocket_stream(
+    mut stream: TcpStream,
+    daemon_sender: RelaySender,
+    stream_id: String,
+    websocket_key: String,
+    mut event_rx: mpsc::Receiver<DisplayStreamEvent>,
+) -> Result<(), std::io::Error> {
+    write_websocket_handshake(&mut stream, &websocket_key).await?;
+    let websocket = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+    let (mut browser_write, mut browser_read) = websocket.split();
+    loop {
+        tokio::select! {
+            browser_message = browser_read.next() => {
+                match browser_message {
+                    Some(Ok(Message::Binary(data))) => {
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary")).await?;
+                    }
+                    Some(Ok(Message::Text(data))) => {
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text")).await?;
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        let _ = send_envelope(
+                            &daemon_sender,
+                            &RelayEnvelope::DaemonDisplayTunnelClientClose {
+                                stream_id: stream_id.clone(),
+                                error: None,
+                            },
+                        ).await;
+                        break;
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = browser_write.send(Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Frame(_))) => {}
+                    Some(Err(error)) => {
+                        let _ = send_envelope(
+                            &daemon_sender,
+                            &RelayEnvelope::DaemonDisplayTunnelClientClose {
+                                stream_id: stream_id.clone(),
+                                error: Some(relay_error("display_browser_websocket_failed", &error.to_string(), true)),
+                            },
+                        ).await;
+                        break;
+                    }
+                }
+            }
+            event = tokio::time::timeout(DISPLAY_STREAM_IDLE_TIMEOUT, event_rx.recv()) => {
+                match event {
+                    Ok(Some(DisplayStreamEvent::Chunk { data, message_kind })) => {
+                        let decoded = BASE64_STANDARD
+                            .decode(data.as_bytes())
+                            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                        let message = match message_kind.as_deref() {
+                            Some("text") => Message::Text(String::from_utf8_lossy(&decoded).to_string().into()),
+                            _ => Message::Binary(decoded.into()),
+                        };
+                        if browser_write.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Some(DisplayStreamEvent::Close { .. })) | Ok(None) | Err(_) => {
+                        let _ = browser_write.close().await;
+                        break;
+                    }
+                    Ok(Some(DisplayStreamEvent::ResponseStart { .. })) => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn send_display_client_chunk(
+    sender: &RelaySender,
+    stream_id: &str,
+    data: &[u8],
+    message_kind: Option<&str>,
+) -> Result<(), std::io::Error> {
+    send_envelope(
+        sender,
+        &RelayEnvelope::DaemonDisplayTunnelClientChunk {
+            chunk: crate::protocol::RelayDisplayTunnelStreamChunk {
+                stream_id: stream_id.to_string(),
+                data: BASE64_STANDARD.encode(data),
+                message_kind: message_kind.map(|value| value.to_string()),
+            },
+        },
+    )
+    .await
 }
 
 async fn send_envelope(
@@ -207,6 +318,14 @@ fn display_stream_error_message(error: Option<&RelayError>) -> String {
     error
         .map(|error| format!("display tunnel failed: {}", error.message))
         .unwrap_or_else(|| "display tunnel closed before response".to_string())
+}
+
+fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
+    RelayError {
+        code: code.to_string(),
+        message: message.to_string(),
+        retryable,
+    }
 }
 
 fn display_request_path(buffer: &[u8]) -> Option<&str> {
@@ -245,12 +364,36 @@ fn parse_display_request(buffer: &[u8]) -> Option<DisplayHttpRequest> {
             })
         })
         .filter(|header| !header.name.is_empty())
-        .collect();
+        .collect::<Vec<_>>();
+    let websocket_key = websocket_request_key(&headers);
     Some(DisplayHttpRequest {
         method,
         path,
         headers,
+        websocket_key,
     })
+}
+
+fn websocket_request_key(headers: &[RelayDisplayTunnelHeader]) -> Option<String> {
+    let upgrade = header_value(headers, "upgrade")?;
+    if !upgrade.eq_ignore_ascii_case("websocket") {
+        return None;
+    }
+    let connection = header_value(headers, "connection")?;
+    if !connection
+        .split(',')
+        .any(|value| value.trim().eq_ignore_ascii_case("upgrade"))
+    {
+        return None;
+    }
+    header_value(headers, "sec-websocket-key").map(str::to_string)
+}
+
+fn header_value<'a>(headers: &'a [RelayDisplayTunnelHeader], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.as_str())
 }
 
 fn display_tunnel_id(path: &str) -> Option<&str> {
@@ -296,6 +439,20 @@ async fn write_response_start(
         }
     }
     response.push_str("\r\n");
+    stream.write_all(response.as_bytes()).await
+}
+
+async fn write_websocket_handshake(
+    stream: &mut TcpStream,
+    key: &str,
+) -> Result<(), std::io::Error> {
+    let mut hasher = Sha1::new();
+    hasher.update(key.trim().as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let accept = BASE64_STANDARD.encode(hasher.finalize());
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\ncache-control: no-store\r\n\r\n"
+    );
     stream.write_all(response.as_bytes()).await
 }
 
@@ -371,5 +528,16 @@ mod tests {
         assert_eq!(request.path, "/display/tunnel-1/vnc.html");
         assert_eq!(request.headers[0].name, "host");
         assert_eq!(request.headers[1].value, "text/html");
+        assert_eq!(request.websocket_key, None);
+    }
+
+    #[test]
+    fn parse_display_request_detects_websocket_upgrade() {
+        let request = parse_display_request(
+            b"GET /display/tunnel-1/websockify HTTP/1.1\r\nhost: relay.test\r\nconnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nsec-websocket-key: abc\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert_eq!(request.websocket_key.as_deref(), Some("abc"));
     }
 }

@@ -1,0 +1,571 @@
+//! Relay display tunnel handling for daemon-owned local display endpoints.
+
+use super::*;
+
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
+use std::io::Read;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+
+const DISPLAY_PROXY_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+pub(super) async fn handle_display_tunnel_open(
+    state: Arc<RwLock<RelayClientState>>,
+    outgoing_tx: RelayOutgoingSender,
+    request: RelayDisplayTunnelOpenRequest,
+) {
+    let stream_id = request.stream_id.clone();
+    let target = {
+        let guard = state.read().await;
+        guard.display_tunnel(&request.tunnel_id, crate::session::unix_epoch_ms())
+    };
+    if display_request_is_websocket(&request) {
+        if let Some(target) = target {
+            handle_display_tunnel_websocket(state, outgoing_tx, request, target).await;
+        } else {
+            close_display_tunnel_stream(
+                &outgoing_tx,
+                stream_id,
+                relay_error(
+                    "display_tunnel_not_found",
+                    "display tunnel is not registered or has expired",
+                    false,
+                ),
+            );
+        }
+        return;
+    }
+    let result = match target {
+        Some(target) => {
+            tokio::task::spawn_blocking(move || proxy_display_request(&target, &request))
+                .await
+                .map_err(|error| relay_error("display_proxy_join_failed", &error.to_string(), true))
+                .and_then(|result| result)
+        }
+        None => Err(relay_error(
+            "display_tunnel_not_found",
+            "display tunnel is not registered or has expired",
+            false,
+        )),
+    };
+    match result {
+        Ok(response) => {
+            let _ = send_outgoing_envelope(
+                &outgoing_tx,
+                RelayEnvelope::DaemonDisplayTunnelResponseStart {
+                    response: RelayDisplayTunnelResponseStart {
+                        stream_id: stream_id.clone(),
+                        status: response.status,
+                        headers: response.headers,
+                    },
+                },
+            );
+            let _ = send_outgoing_envelope(
+                &outgoing_tx,
+                RelayEnvelope::DaemonDisplayTunnelChunk {
+                    chunk: RelayDisplayTunnelStreamChunk {
+                        stream_id: stream_id.clone(),
+                        data: BASE64_STANDARD.encode(response.body),
+                        message_kind: None,
+                    },
+                },
+            );
+            let _ = send_outgoing_envelope(
+                &outgoing_tx,
+                RelayEnvelope::DaemonDisplayTunnelClose {
+                    stream_id,
+                    error: None,
+                },
+            );
+        }
+        Err(error) => {
+            close_display_tunnel_stream(&outgoing_tx, stream_id, error);
+        }
+    }
+}
+
+fn close_display_tunnel_stream(
+    outgoing_tx: &RelayOutgoingSender,
+    stream_id: String,
+    error: RelayError,
+) {
+    let _ = send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelClose {
+            stream_id,
+            error: Some(error),
+        },
+    );
+}
+
+async fn handle_display_tunnel_websocket(
+    state: Arc<RwLock<RelayClientState>>,
+    outgoing_tx: RelayOutgoingSender,
+    request: RelayDisplayTunnelOpenRequest,
+    target: RelayDisplayTunnelTarget,
+) {
+    let stream_id = request.stream_id.clone();
+    let (client_tx, client_rx) = mpsc::channel(128);
+    state
+        .write()
+        .await
+        .insert_display_stream(stream_id.clone(), client_tx);
+    let result = proxy_display_websocket(&outgoing_tx, &target, &request, client_rx).await;
+    state.write().await.remove_display_stream(&stream_id);
+    match result {
+        Ok(()) => {
+            let _ = send_outgoing_envelope(
+                &outgoing_tx,
+                RelayEnvelope::DaemonDisplayTunnelClose {
+                    stream_id,
+                    error: None,
+                },
+            );
+        }
+        Err(error) => {
+            let _ = send_outgoing_envelope(
+                &outgoing_tx,
+                RelayEnvelope::DaemonDisplayTunnelClose {
+                    stream_id,
+                    error: Some(error),
+                },
+            );
+        }
+    }
+}
+
+struct DisplayProxyResponse {
+    status: u16,
+    headers: Vec<RelayDisplayTunnelHeader>,
+    body: Vec<u8>,
+}
+
+fn proxy_display_request(
+    target: &RelayDisplayTunnelTarget,
+    request: &RelayDisplayTunnelOpenRequest,
+) -> Result<DisplayProxyResponse, RelayError> {
+    let url = local_display_url(target, &request.path)?;
+    let mut builder = ureq::request(&request.method, url.as_str());
+    for header in request
+        .headers
+        .iter()
+        .filter(|header| forward_request_header(&header.name))
+    {
+        builder = builder.set(header.name.as_str(), header.value.as_str());
+    }
+    match builder.call() {
+        Ok(response) => response_to_proxy(response),
+        Err(ureq::Error::Status(_, response)) => response_to_proxy(response),
+        Err(error) => Err(relay_error(
+            "display_proxy_failed",
+            &error.to_string(),
+            true,
+        )),
+    }
+}
+
+async fn proxy_display_websocket(
+    outgoing_tx: &RelayOutgoingSender,
+    target: &RelayDisplayTunnelTarget,
+    request: &RelayDisplayTunnelOpenRequest,
+    mut client_rx: mpsc::Receiver<RelayDisplayTunnelClientEvent>,
+) -> Result<(), RelayError> {
+    let url = local_display_websocket_url(target, &request.path)?;
+    let (local_socket, _) = tokio_tungstenite::connect_async(url.as_str())
+        .await
+        .map_err(|error| {
+            relay_error("display_websocket_connect_failed", &error.to_string(), true)
+        })?;
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: request.stream_id.clone(),
+                status: 101,
+                headers: Vec::new(),
+            },
+        },
+    )
+    .map_err(|error| relay_error("display_websocket_start_failed", &error.to_string(), true))?;
+    let (mut local_write, mut local_read) = local_socket.split();
+    loop {
+        tokio::select! {
+            local_message = local_read.next() => {
+                match local_message {
+                    Some(Ok(Message::Binary(data))) => {
+                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_ref(), Some("binary"))?;
+                    }
+                    Some(Ok(Message::Text(data))) => {
+                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_str().as_bytes(), Some("text"))?;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = local_write.send(Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Frame(_))) => {}
+                    Some(Err(error)) => {
+                        return Err(relay_error("display_websocket_read_failed", &error.to_string(), true));
+                    }
+                }
+            }
+            client_event = client_rx.recv() => {
+                match client_event {
+                    Some(RelayDisplayTunnelClientEvent::Chunk(chunk)) => {
+                        let decoded = BASE64_STANDARD
+                            .decode(chunk.data.as_bytes())
+                            .map_err(|error| relay_error("display_websocket_chunk_invalid", &error.to_string(), false))?;
+                        let message = match chunk.message_kind.as_deref() {
+                            Some("text") => Message::Text(String::from_utf8_lossy(&decoded).to_string().into()),
+                            _ => Message::Binary(decoded.into()),
+                        };
+                        local_write
+                            .send(message)
+                            .await
+                            .map_err(|error| relay_error("display_websocket_write_failed", &error.to_string(), true))?;
+                    }
+                    Some(RelayDisplayTunnelClientEvent::Close) | None => {
+                        let _ = local_write.close().await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn send_display_chunk(
+    outgoing_tx: &RelayOutgoingSender,
+    stream_id: &str,
+    data: &[u8],
+    message_kind: Option<&str>,
+) -> Result<(), RelayError> {
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelChunk {
+            chunk: RelayDisplayTunnelStreamChunk {
+                stream_id: stream_id.to_string(),
+                data: BASE64_STANDARD.encode(data),
+                message_kind: message_kind.map(|value| value.to_string()),
+            },
+        },
+    )
+    .map_err(|error| {
+        relay_error(
+            "display_websocket_chunk_send_failed",
+            &error.to_string(),
+            true,
+        )
+    })
+}
+
+fn local_display_url(
+    target: &RelayDisplayTunnelTarget,
+    display_path: &str,
+) -> Result<url::Url, RelayError> {
+    let mut base = url::Url::parse(&target.local_base_url)
+        .map_err(|error| relay_error("display_target_invalid", &error.to_string(), false))?;
+    let prefix = format!("/display/{}", target.tunnel_id);
+    let path_and_query = display_path
+        .strip_prefix(prefix.as_str())
+        .filter(|value| value.is_empty() || value.starts_with('/') || value.starts_with('?'))
+        .ok_or_else(|| {
+            relay_error(
+                "display_path_invalid",
+                "display request path does not match the registered tunnel",
+                false,
+            )
+        })?;
+    let local_path = if path_and_query.is_empty() {
+        "/"
+    } else {
+        path_and_query
+    };
+    let (path, query) = local_path
+        .split_once('?')
+        .map(|(path, query)| (path, Some(query)))
+        .unwrap_or((local_path, None));
+    base.set_path(if path.is_empty() { "/" } else { path });
+    base.set_query(query);
+    Ok(base)
+}
+
+fn local_display_websocket_url(
+    target: &RelayDisplayTunnelTarget,
+    display_path: &str,
+) -> Result<url::Url, RelayError> {
+    let mut url = local_display_url(target, display_path)?;
+    match url.scheme() {
+        "http" => url.set_scheme("ws").map_err(|_| {
+            relay_error(
+                "display_websocket_url_invalid",
+                "invalid websocket url",
+                false,
+            )
+        })?,
+        "https" => url.set_scheme("wss").map_err(|_| {
+            relay_error(
+                "display_websocket_url_invalid",
+                "invalid websocket url",
+                false,
+            )
+        })?,
+        _ => {
+            return Err(relay_error(
+                "display_websocket_url_invalid",
+                "display websocket target must be http or https",
+                false,
+            ));
+        }
+    }
+    Ok(url)
+}
+
+fn display_request_is_websocket(request: &RelayDisplayTunnelOpenRequest) -> bool {
+    header_value(&request.headers, "upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && header_value(&request.headers, "connection").is_some_and(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+        })
+}
+
+fn header_value<'a>(headers: &'a [RelayDisplayTunnelHeader], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.as_str())
+}
+
+fn response_to_proxy(response: ureq::Response) -> Result<DisplayProxyResponse, RelayError> {
+    let status = response.status();
+    let headers = response
+        .headers_names()
+        .into_iter()
+        .filter(|name| forward_response_header(name))
+        .filter_map(|name| {
+            response
+                .header(&name)
+                .map(|value| RelayDisplayTunnelHeader {
+                    name,
+                    value: value.to_string(),
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut reader = response.into_reader();
+    let mut body = Vec::new();
+    reader
+        .by_ref()
+        .take(DISPLAY_PROXY_MAX_RESPONSE_BYTES.saturating_add(1))
+        .read_to_end(&mut body)
+        .map_err(|error| relay_error("display_proxy_read_failed", &error.to_string(), true))?;
+    if body.len() as u64 > DISPLAY_PROXY_MAX_RESPONSE_BYTES {
+        return Err(relay_error(
+            "display_proxy_response_too_large",
+            "display proxy response exceeded maximum size",
+            false,
+        ));
+    }
+    Ok(DisplayProxyResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn forward_request_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "host" | "connection" | "upgrade" | "sec-websocket-key" | "sec-websocket-version"
+    )
+}
+
+fn forward_response_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection" | "transfer-encoding" | "content-length"
+    )
+}
+
+fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
+    RelayError {
+        code: code.to_string(),
+        message: message.to_string(),
+        retryable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+    use tokio::time::{timeout, Duration};
+
+    #[test]
+    fn local_display_url_rewrites_relay_display_path_to_local_origin() {
+        let target = RelayDisplayTunnelTarget {
+            tunnel_id: "display-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            local_base_url: "http://127.0.0.1:5901".to_string(),
+            expires_at_ms: u64::MAX,
+        };
+
+        let url = local_display_url(&target, "/display/display-1/vnc.html?autoconnect=true")
+            .expect("url should rewrite");
+
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:5901/vnc.html?autoconnect=true"
+        );
+        assert!(local_display_url(&target, "/display/other/vnc.html").is_err());
+    }
+
+    #[test]
+    fn local_display_websocket_url_rewrites_to_ws_target() {
+        let target = RelayDisplayTunnelTarget {
+            tunnel_id: "display-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            local_base_url: "http://127.0.0.1:5901".to_string(),
+            expires_at_ms: u64::MAX,
+        };
+
+        let url = local_display_websocket_url(&target, "/display/display-1/websockify")
+            .expect("url should rewrite");
+
+        assert_eq!(url.as_str(), "ws://127.0.0.1:5901/websockify");
+    }
+
+    #[test]
+    fn display_request_is_websocket_requires_upgrade_headers() {
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "stream-1".to_string(),
+            tunnel_id: "display-1".to_string(),
+            method: "GET".to_string(),
+            path: "/display/display-1/websockify".to_string(),
+            headers: vec![
+                RelayDisplayTunnelHeader {
+                    name: "connection".to_string(),
+                    value: "keep-alive, Upgrade".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "upgrade".to_string(),
+                    value: "websocket".to_string(),
+                },
+            ],
+        };
+
+        assert!(display_request_is_websocket(&request));
+    }
+
+    #[tokio::test]
+    async fn display_websocket_proxy_bridges_local_socket_and_relay_chunks() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local websocket listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("local websocket listener should have addr");
+        let local_task = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("local websocket should accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("local websocket handshake should complete");
+            match socket.next().await {
+                Some(Ok(Message::Binary(data))) => assert_eq!(data.as_ref(), b"from-browser"),
+                other => panic!("unexpected local websocket input: {other:?}"),
+            }
+            socket
+                .send(Message::Binary(Vec::from("from-local").into()))
+                .await
+                .expect("local websocket output should send");
+            let _ = socket.close(None).await;
+        });
+
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: "display-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            local_base_url: format!("http://{addr}"),
+            expires_at_ms: u64::MAX,
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "stream-1".to_string(),
+            tunnel_id: "display-1".to_string(),
+            method: "GET".to_string(),
+            path: "/display/display-1/websockify".to_string(),
+            headers: vec![
+                RelayDisplayTunnelHeader {
+                    name: "connection".to_string(),
+                    value: "Upgrade".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "upgrade".to_string(),
+                    value: "websocket".to_string(),
+                },
+            ],
+        };
+        let handle = tokio::spawn(handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            request,
+        ));
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("response start should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response }) => {
+                assert_eq!(response.stream_id, "stream-1");
+                assert_eq!(response.status, 101);
+            }
+            other => panic!("unexpected display websocket response start: {other:?}"),
+        }
+
+        let sender = state
+            .read()
+            .await
+            .display_stream_sender("stream-1")
+            .expect("display stream should be registered");
+        sender
+            .send(RelayDisplayTunnelClientEvent::Chunk(
+                RelayDisplayTunnelStreamChunk {
+                    stream_id: "stream-1".to_string(),
+                    data: BASE64_STANDARD.encode("from-browser"),
+                    message_kind: Some("binary".to_string()),
+                },
+            ))
+            .await
+            .expect("client chunk should send");
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("daemon chunk should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk }) => {
+                assert_eq!(chunk.stream_id, "stream-1");
+                assert_eq!(chunk.message_kind.as_deref(), Some("binary"));
+                assert_eq!(
+                    BASE64_STANDARD
+                        .decode(chunk.data)
+                        .expect("display chunk should decode"),
+                    b"from-local"
+                );
+            }
+            other => panic!("unexpected display websocket chunk: {other:?}"),
+        }
+
+        handle.await.expect("display websocket proxy should finish");
+        local_task
+            .await
+            .expect("local websocket task should finish");
+    }
+}

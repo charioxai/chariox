@@ -919,7 +919,10 @@ pub(crate) async fn handle_connection(
                             };
                             if let Some(sender) = sender {
                                 let _ = sender
-                                    .send(DisplayStreamEvent::Chunk { data: chunk.data })
+                                    .send(DisplayStreamEvent::Chunk {
+                                        data: chunk.data,
+                                        message_kind: chunk.message_kind,
+                                    })
                                     .await;
                             }
                         }
@@ -980,6 +983,8 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::DaemonIncomingPeerEvent { .. }
                         | RelayEnvelope::DaemonDisplayTunnelRegistered { .. }
                         | RelayEnvelope::DaemonDisplayTunnelOpen { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelClientChunk { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelClientClose { .. }
                         | RelayEnvelope::ClientResponse { .. }
                         | RelayEnvelope::DaemonRequest { .. }
                         | RelayEnvelope::DaemonSubscribe { .. }

@@ -114,7 +114,13 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
             | LocalDaemonRequest::GetSliceLogs(_)
             | LocalDaemonRequest::ListSliceAudit(_)) => {
-                execute_slice_request(&self.runtime_state, &self.config_projection, request).await
+                execute_slice_request(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    Some(Arc::clone(&self.relay_state)),
+                    request,
+                )
+                .await
             }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {

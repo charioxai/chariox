@@ -155,6 +155,31 @@ pub(super) async fn handle_incoming_envelope(
             )
             .await?;
         }
+        RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
+            let state = Arc::clone(state);
+            let outgoing_tx = outgoing_tx.clone();
+            tokio::spawn(async move {
+                handle_display_tunnel_open(state, outgoing_tx, request).await;
+            });
+        }
+        RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
+            let sender = {
+                let guard = state.read().await;
+                guard.display_stream_sender(&chunk.stream_id)
+            };
+            if let Some(sender) = sender {
+                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Chunk(chunk));
+            }
+        }
+        RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, .. } => {
+            let sender = {
+                let guard = state.read().await;
+                guard.display_stream_sender(&stream_id)
+            };
+            if let Some(sender) = sender {
+                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Close);
+            }
+        }
         RelayEnvelope::ClientMetadataResponse { .. } => {}
         RelayEnvelope::Close { reason } => {
             return Err(DaemonError::LocalTransport {

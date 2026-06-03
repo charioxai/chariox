@@ -9,7 +9,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
+use arroba_relay::protocol::{
+    ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
+    RelayDisplayTunnelResponseStart, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
+};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -28,6 +31,7 @@ mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
+mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
@@ -42,6 +46,7 @@ use connection_state::{
     publish_cloud_presence, publish_offline_and_set_disconnected, set_connected,
 };
 use daemon_requests::handle_daemon_request;
+use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope};
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::handle_incoming_envelope;
@@ -62,6 +67,8 @@ use subscriptions::{
 };
 
 pub use connection_state::RelayClientState;
+pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
+pub(crate) use connection_state::RelayDisplayTunnelTarget;
 pub use connector::run_daemon_relay_connector;
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;

@@ -97,6 +97,7 @@ pub(crate) enum DisplayStreamEvent {
     },
     Chunk {
         data: String,
+        message_kind: Option<String>,
     },
     Close {
         error: Option<RelayError>,

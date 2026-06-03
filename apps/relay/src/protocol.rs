@@ -184,6 +184,8 @@ pub struct RelayDisplayTunnelResponseStart {
 pub struct RelayDisplayTunnelStreamChunk {
     pub stream_id: String,
     pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +278,13 @@ pub enum RelayEnvelope {
     },
     DaemonDisplayTunnelChunk {
         chunk: RelayDisplayTunnelStreamChunk,
+    },
+    DaemonDisplayTunnelClientChunk {
+        chunk: RelayDisplayTunnelStreamChunk,
+    },
+    DaemonDisplayTunnelClientClose {
+        stream_id: String,
+        error: Option<RelayError>,
     },
     DaemonDisplayTunnelClose {
         stream_id: String,
@@ -420,15 +429,35 @@ mod tests {
             chunk: RelayDisplayTunnelStreamChunk {
                 stream_id: "stream-1".to_string(),
                 data: "aGVsbG8".to_string(),
+                message_kind: None,
             },
+        };
+        let client_chunk = RelayEnvelope::DaemonDisplayTunnelClientChunk {
+            chunk: RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: "d29ybGQ".to_string(),
+                message_kind: Some("binary".to_string()),
+            },
+        };
+        let client_close = RelayEnvelope::DaemonDisplayTunnelClientClose {
+            stream_id: "stream-1".to_string(),
+            error: None,
         };
         let close = RelayEnvelope::DaemonDisplayTunnelClose {
             stream_id: "stream-1".to_string(),
             error: None,
         };
 
-        let json = serde_json::to_value([register, open, start, chunk, close])
-            .expect("display tunnel envelopes should serialize");
+        let json = serde_json::to_value([
+            register,
+            open,
+            start,
+            chunk,
+            client_chunk,
+            client_close,
+            close,
+        ])
+        .expect("display tunnel envelopes should serialize");
         assert_eq!(
             json.pointer("/0/kind"),
             Some(&serde_json::json!("daemon_display_tunnel_register"))
@@ -467,6 +496,18 @@ mod tests {
         );
         assert_eq!(
             json.pointer("/4/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_client_chunk"))
+        );
+        assert_eq!(
+            json.pointer("/4/chunk/message_kind"),
+            Some(&serde_json::json!("binary"))
+        );
+        assert_eq!(
+            json.pointer("/5/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_client_close"))
+        );
+        assert_eq!(
+            json.pointer("/6/kind"),
             Some(&serde_json::json!("daemon_display_tunnel_close"))
         );
     }

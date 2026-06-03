@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::runtime::router::CommandRouter;
+
+use arroba_relay::protocol::RelayDisplayTunnelStreamChunk;
 
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
@@ -19,12 +21,82 @@ pub struct RelayClientState {
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
+    pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
+    pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
 }
 
 impl RelayClientState {
     pub fn connected(&self) -> bool {
         self.connected
     }
+
+    pub(crate) fn outgoing_sender(&self) -> Option<RelayOutgoingSender> {
+        self.outgoing_tx.clone()
+    }
+
+    pub(crate) fn upsert_display_tunnel(&mut self, target: RelayDisplayTunnelTarget) {
+        self.display_tunnels
+            .insert(target.tunnel_id.clone(), target);
+    }
+
+    pub(crate) fn remove_display_tunnel(&mut self, tunnel_id: &str) {
+        self.display_tunnels.remove(tunnel_id);
+    }
+
+    pub(crate) fn display_tunnel(
+        &self,
+        tunnel_id: &str,
+        now_ms: u64,
+    ) -> Option<RelayDisplayTunnelTarget> {
+        self.display_tunnels
+            .get(tunnel_id)
+            .filter(|target| target.expires_at_ms > now_ms)
+            .cloned()
+    }
+
+    pub(crate) fn prune_expired_display_tunnels(&mut self, now_ms: u64) {
+        self.display_tunnels
+            .retain(|_, target| target.expires_at_ms > now_ms);
+    }
+
+    pub(crate) fn insert_display_stream(
+        &mut self,
+        stream_id: String,
+        sender: mpsc::Sender<RelayDisplayTunnelClientEvent>,
+    ) {
+        self.display_streams.insert(stream_id, sender);
+    }
+
+    pub(crate) fn remove_display_stream(&mut self, stream_id: &str) {
+        self.display_streams.remove(stream_id);
+    }
+
+    pub(crate) fn display_stream_sender(
+        &self,
+        stream_id: &str,
+    ) -> Option<mpsc::Sender<RelayDisplayTunnelClientEvent>> {
+        self.display_streams.get(stream_id).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_connected_sender(&mut self, outgoing_tx: RelayOutgoingSender) {
+        self.connected = true;
+        self.outgoing_tx = Some(outgoing_tx);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayDisplayTunnelTarget {
+    pub(crate) tunnel_id: String,
+    pub(crate) slice_id: String,
+    pub(crate) local_base_url: String,
+    pub(crate) expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RelayDisplayTunnelClientEvent {
+    Chunk(RelayDisplayTunnelStreamChunk),
+    Close,
 }
 
 impl Default for RelayClientState {
@@ -34,6 +106,8 @@ impl Default for RelayClientState {
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
+            display_tunnels: BTreeMap::new(),
+            display_streams: BTreeMap::new(),
         }
     }
 }
@@ -105,6 +179,8 @@ async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         let mut guard = state.write().await;
         guard.connected = false;
         guard.outgoing_tx = None;
+        guard.display_tunnels.clear();
+        guard.display_streams.clear();
         std::mem::take(&mut guard.pending_peer_requests)
     };
     for (_, sender) in pending_peer {
