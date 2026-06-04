@@ -364,24 +364,25 @@ async function main() {
 
     const setupClient = new LocalIpcClient(homeKernelUrl)
     await waitForRemoteMachine(setupClient, requests, workerMachineId, options.timeoutMs, options.pollMs)
-    await waitForRemoteKernel(setupClient, workerMachineId, options.timeoutMs, options.pollMs)
+    const workerKernel = await waitForRemoteKernel(setupClient, workerMachineId, options.timeoutMs, options.pollMs)
+    const workerKernelRef = workerKernel.kernel_id || workerKernel.daemon_id || workerKernel.kernel_alias || workerMachineId
     const created = unwrap(await setupClient.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated')
     sessionId = created.session.id
     const attachedSetup = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-${process.pid}`)
     attached = attachedSetup
     await setupClient.close().catch(() => {})
 
-    const spawned = unwrapVariant(await attached.client.send({
-      SpawnAgent: {
-        session_id: sessionId,
-        alias: 'remote-dev',
-        provider: 'dev-stub',
-        model: 'remote-restart-model',
-        effort: 'low',
-        worktree_id: workspace,
-        machine_ref: workerMachineId,
-      },
-    }), 'AgentSpawned')
+    const spawned = unwrapVariant(await attached.client.send(requests.spawnAgentRequest(
+      sessionId,
+      'dev-stub',
+      'remote-dev',
+      'remote-restart-model',
+      workspace,
+      'low',
+      undefined,
+      undefined,
+      workerKernelRef,
+    )), 'AgentSpawned')
     const remoteAgentId = spawned.agent.id
     const initialBinding = spawned.agent.remote_execution
     requireCondition(initialBinding?.leased_agent_id, 'remote agent did not receive a worker lease', spawned.agent)

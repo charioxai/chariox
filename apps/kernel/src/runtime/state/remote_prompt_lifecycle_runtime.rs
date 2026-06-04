@@ -2,6 +2,7 @@
 //!
 //! This module owns relay calls that settle or cancel an already-admitted remote prompt.
 
+use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding;
 use super::*;
 
 impl KernelRuntimeState {
@@ -138,6 +139,33 @@ impl KernelRuntimeState {
                     None,
                 )
             }
+            Err(error)
+                if remote_prompt_error_should_refresh_binding(&error)
+                    && remote_prompt_completion_should_wait_for_binding_repair(
+                        owned
+                            .agent_store
+                            .get_agent(target_agent_id)?
+                            .remote_execution(),
+                        &remote_execution,
+                    ) =>
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt completion waiting for stale binding repair",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": target_agent_id,
+                        "worker_kernel_id": remote_execution.worker_kernel_id,
+                        "leased_agent_id": remote_execution.leased_agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "complete remote prompt",
+                    message: "remote prompt worker binding is being repaired; retry completion"
+                        .to_string(),
+                });
+            }
             Err(error) => return Err(error),
             Ok(other) => {
                 return Err(DaemonError::LocalTransport {
@@ -257,6 +285,17 @@ fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool
     }
 }
 
+fn remote_prompt_completion_should_wait_for_binding_repair(
+    current_binding: Option<&crate::agent::RemoteAgentBinding>,
+    attempted_binding: &crate::agent::RemoteAgentBinding,
+) -> bool {
+    let Some(current_binding) = current_binding else {
+        return false;
+    };
+    current_binding.leased_agent_id != attempted_binding.leased_agent_id
+        || current_binding.active_worker_provider_run_id.is_none()
+}
+
 fn remote_git_turn_context_for_prompt(
     session_id: &str,
     agent_id: &str,
@@ -271,5 +310,56 @@ fn remote_git_turn_context_for_prompt(
             prompt.prompt(),
             prompt.attachments(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(
+        leased_agent_id: &str,
+        active_run: Option<&str>,
+    ) -> crate::agent::RemoteAgentBinding {
+        crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease".to_string(),
+            leased_agent_id: leased_agent_id.to_string(),
+            active_worker_provider_run_id: active_run.map(str::to_string),
+            relay_url: None,
+            relay_token: None,
+        }
+    }
+
+    #[test]
+    fn remote_completion_waits_when_binding_has_no_active_worker_run() {
+        let attempted = binding("leased-agent-old", None);
+
+        assert!(remote_prompt_completion_should_wait_for_binding_repair(
+            Some(&attempted),
+            &attempted,
+        ));
+    }
+
+    #[test]
+    fn remote_completion_waits_when_binding_already_changed() {
+        let attempted = binding("leased-agent-old", Some("worker-run-old"));
+        let current = binding("leased-agent-new", Some("worker-run-new"));
+
+        assert!(remote_prompt_completion_should_wait_for_binding_repair(
+            Some(&current),
+            &attempted,
+        ));
+    }
+
+    #[test]
+    fn remote_completion_does_not_wait_when_submitted_binding_matches() {
+        let attempted = binding("leased-agent-old", Some("worker-run-old"));
+
+        assert!(!remote_prompt_completion_should_wait_for_binding_repair(
+            Some(&attempted),
+            &attempted,
+        ));
     }
 }

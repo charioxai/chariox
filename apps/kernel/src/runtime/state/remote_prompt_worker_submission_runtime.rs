@@ -115,6 +115,10 @@ fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonE
     let Err(error) = result else {
         return false;
     };
+    remote_prompt_error_should_refresh_binding(error)
+}
+
+pub(super) fn remote_prompt_error_should_refresh_binding(error: &DaemonError) -> bool {
     match error {
         DaemonError::LeasedAgentNotFound { .. } | DaemonError::ExecutionLeaseNotFound { .. } => {
             true

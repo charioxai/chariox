@@ -263,19 +263,18 @@ async function initManagedTargetWorkspace(workspace, providers) {
   await initGitWorktree(workspace)
 }
 
-function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
-  if (!machineRef) return spawnAgentRequest(sessionId, provider, alias, model, worktreeId, effort)
-  return {
-    SpawnAgent: {
-      session_id: sessionId,
-      provider,
-      alias,
-      model,
-      effort,
-      worktree_id: worktreeId,
-      machine_ref: machineRef,
-    },
-  }
+function workspaceLiveSyncSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, kernelRef) {
+  return spawnAgentRequest(
+    sessionId,
+    provider,
+    alias,
+    model,
+    worktreeId,
+    effort,
+    undefined,
+    undefined,
+    kernelRef ?? undefined,
+  )
 }
 
 function modelForProvider(provider, options) {
@@ -316,7 +315,7 @@ async function spawnWorkspaceLiveSyncPhaseAgents({
   providers,
   modelForProvider,
   workspace,
-  machineRef,
+  kernelRef,
   spawnAgentRequest,
   aliasSuffix,
 }) {
@@ -332,10 +331,13 @@ async function spawnWorkspaceLiveSyncPhaseAgents({
         modelForProvider(provider),
         workspace,
         'low',
-        machineRef,
+        kernelRef,
       )),
       'AgentSpawned',
     )
+    if (kernelRef && !spawned.agent.remote_execution?.leased_agent_id) {
+      throw new Error(`agent ${spawned.agent.id} for provider ${provider} did not receive a remote lease`)
+    }
     agents.push({ provider, agent: spawned.agent, spawnedSessionId: spawned.session?.id ?? null })
   }
   return agents
@@ -355,6 +357,31 @@ async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionReques
     }
   }
   throw new Error('daemon did not become ready')
+}
+
+async function resolveRemoteWorkerKernelRef(client, requests, machineRef, providers, timeoutMs, pollMs) {
+  if (!machineRef) return null
+  const deadline = Date.now() + timeoutMs
+  let lastKernels = []
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = unwrapVariant(
+        await client.send(requests.listRemoteMachineKernelsRequest(machineRef)),
+        'RemoteMachineKernelsListed',
+      )
+      lastKernels = response.kernels || []
+      const kernel = lastKernels.find((candidate) => {
+        const available = candidate.available_providers || []
+        return candidate.accepting_remote_leases && providers.every((provider) => available.includes(provider))
+      })
+      if (kernel) return kernel.kernel_id || kernel.daemon_id || kernel.kernel_alias || machineRef
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise a worker kernel for providers ${providers.join(',')}; last=${JSON.stringify(lastKernels)} error=${lastError?.message ?? lastError}`)
 }
 
 async function fileExists(filePath) {
@@ -933,6 +960,7 @@ async function runLiveCollisionAndExternalChecks({
   agents,
   modelForProvider,
   machineRef,
+  kernelRef,
   workspace,
   outputsDir,
   historyDir,
@@ -957,7 +985,7 @@ async function runLiveCollisionAndExternalChecks({
         modelForProvider(colliderProvider),
         workspace,
         'low',
-        machineRef,
+        kernelRef,
       )),
       'AgentSpawned',
       'AgentSpawned',
@@ -1052,7 +1080,7 @@ async function runLiveCollisionAndExternalChecks({
           modelForProvider(provider),
           workspace,
           'low',
-          machineRef,
+          kernelRef,
         )),
         'AgentSpawned',
       ).agent
@@ -2030,6 +2058,14 @@ async function main() {
 
   const client = new LocalIpcClient(kernelUrl)
   const events = []
+  const workerKernelRef = await resolveRemoteWorkerKernelRef(
+    client,
+    requests,
+    options.machineRef,
+    options.providers,
+    options.timeoutMs,
+    options.pollMs,
+  )
   let sessionId = null
   try {
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
@@ -2059,7 +2095,7 @@ async function main() {
       providers: options.providers,
       modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
-      machineRef: options.machineRef,
+      kernelRef: workerKernelRef,
       spawnAgentRequest,
       aliasSuffix: 'positive',
     })
@@ -2070,7 +2106,7 @@ async function main() {
           providers: options.providers,
           modelForProvider: (provider) => modelForProvider(provider, options),
           workspace: targetWorkspace,
-          machineRef: options.machineRef,
+          kernelRef: workerKernelRef,
           spawnAgentRequest,
           aliasSuffix: 'target-origin',
         })
@@ -2552,7 +2588,7 @@ async function main() {
             modelForProvider(provider, options),
             workspace,
             'low',
-            options.machineRef,
+            workerKernelRef,
           )),
           'AgentSpawned',
         ).agent
@@ -2653,7 +2689,7 @@ async function main() {
       providers: options.providers,
       modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
-      machineRef: options.machineRef,
+      kernelRef: workerKernelRef,
       spawnAgentRequest,
       aliasSuffix: 'negative',
     }) : agents
@@ -2742,7 +2778,7 @@ async function main() {
       providers: options.providers,
       modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
-      machineRef: options.machineRef,
+      kernelRef: workerKernelRef,
       spawnAgentRequest,
       aliasSuffix: 'collision',
     }) : agents
@@ -2754,6 +2790,7 @@ async function main() {
       agents: collisionAgents,
       modelForProvider: (provider) => modelForProvider(provider, options),
       machineRef: options.machineRef,
+      kernelRef: workerKernelRef,
       workspace,
       outputsDir,
       historyDir,
