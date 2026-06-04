@@ -3,6 +3,10 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
+import {
+  formatAgentSubstituteSummary as formatSharedAgentSubstituteSummary,
+  type AgentInstance as SharedAgentInstance,
+} from "@arroba/kernel-client"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
 
 type FooterTone = "info" | "error"
@@ -179,19 +183,5 @@ function parseSubstitutionTimeoutMs(value: string | null | undefined): number | 
 }
 
 export function formatAgentSubstituteSummary(agent: AgentInstance): string {
-  const substitutes = agent.substitutes ?? []
-  const label = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
-  if (substitutes.length === 0) {
-    return `${label} has no substitutes`
-  }
-  const active = agent.active_substitute_index
-  const lines = substitutes.map((substitute, index) => {
-    const marker = active === index ? "*" : "-"
-    const variant = substitute.variant ? `/${substitute.variant}` : ""
-    return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
-  })
-  const timeout = agent.substitution_timeout_ms == null
-    ? "default"
-    : `${agent.substitution_timeout_ms}ms`
-  return `${label} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
+  return formatSharedAgentSubstituteSummary(agent as SharedAgentInstance)
 }

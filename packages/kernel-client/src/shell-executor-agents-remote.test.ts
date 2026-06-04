@@ -291,6 +291,11 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
     },
     substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
     active_substitute_index: 0,
+    last_substitution: {
+      substitute_index: 0,
+      reason: "Provider reported a substitutable resource limit: Insufficient balance",
+      activated_at_ms: 1_700_000_000_000,
+    },
   })
   const requests: unknown[] = []
   const fake = fakeClient((request) => {
@@ -365,6 +370,7 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(result.message ?? "", /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)
+  assert.match(result.message ?? "", /last substitution: Provider reported a substitutable resource limit: Insufficient balance/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
     { GetSessionState: { session_id: "session-1" } },

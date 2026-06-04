@@ -222,7 +222,10 @@ export function formatAgentSubstituteSummary(agent: AgentInstance): string {
     return `${marker} ${index}: ${substitute.provider}/${substitute.model}${variant}`
   })
   const timeout = agent.substitution_timeout_ms == null ? "default" : `${agent.substitution_timeout_ms}ms`
-  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}`
+  const footer = agent.last_substitution?.reason
+    ? `\nlast substitution: ${agent.last_substitution.reason}`
+    : ""
+  return `${formatAgentRef(agent)} substitutes (${substitutes.length}, timeout ${timeout}):\n${lines.join("\n")}${footer}`
 }
 
 function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null = null): string {

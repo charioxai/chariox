@@ -14,12 +14,17 @@ import {
 test("agent substitute summary marks active substitutes and timeout", () => {
   assert.equal(formatAgentSubstituteSummary(agent({
     active_substitute_index: 1,
+    last_substitution: {
+      substitute_index: 1,
+      reason: "Provider reported a substitutable resource limit: Insufficient balance",
+      activated_at_ms: 1_700_000_000_000,
+    },
     substitution_timeout_ms: 1500,
     substitutes: [
       { provider: "codex", model: "gpt-5.4", variant: "high" },
       { provider: "claude", model: "sonnet" },
     ],
-  })), "agent-1 substitutes (2, timeout 1500ms):\n- 0: codex/gpt-5.4/high\n* 1: claude/sonnet")
+  })), "agent-1 substitutes (2, timeout 1500ms):\n- 0: codex/gpt-5.4/high\n* 1: claude/sonnet\nlast substitution: Provider reported a substitutable resource limit: Insufficient balance")
 })
 
 test("agent substitute add parses profile flags and applies update", async () => {
