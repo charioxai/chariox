@@ -133,20 +133,22 @@ impl KernelRuntimeState {
     ) -> Result<bool, DaemonError> {
         super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
             .authorize_invocation_context(context)?;
-        let prefix = remote_extension_invocation_context_prefix(context, metadata);
+        let cancel_key = remote_extension_invocation_cancel_key(context, metadata);
         let in_flight = self
             .owned
             .remote_extension_invocations
             .lock()
             .await
             .iter()
-            .any(|(key, value)| key.starts_with(&prefix) && value.is_none());
+            .any(|(_, value)| {
+                value.invocation_id == metadata.invocation_id && value.result.is_none()
+            });
         if in_flight {
             self.owned
                 .remote_extension_cancellations
                 .lock()
                 .await
-                .insert(prefix);
+                .insert(cancel_key);
         }
         self.owned.durable_state_store.append_event(
             "home_extension.invoke.cancelled",
@@ -225,15 +227,15 @@ impl KernelRuntimeState {
         metadata: &crate::extension::RemoteExtensionInvocationMetadata,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
         let key = remote_extension_invocation_key(context, tool, metadata);
-        let prefix = remote_extension_invocation_context_prefix(context, metadata);
+        let cancel_key = remote_extension_invocation_cancel_key(context, metadata);
         let cancellations = self.owned.remote_extension_cancellations.lock().await;
-        if cancellations.contains(&key) || cancellations.contains(&prefix) {
+        if cancellations.contains(&cancel_key) {
             return Err(home_extension_cancelled_error(metadata));
         }
         drop(cancellations);
         let mut invocations = self.owned.remote_extension_invocations.lock().await;
         if let Some(existing) = invocations.get(&key) {
-            if let Some(cached) = existing {
+            if let Some(cached) = &existing.result {
                 if metadata.idempotency_key.is_some() {
                     return Ok(Some(cached.clone()));
                 }
@@ -253,7 +255,13 @@ impl KernelRuntimeState {
                 ),
             });
         }
-        invocations.insert(key, None);
+        invocations.insert(
+            key,
+            RemoteExtensionInvocationState {
+                invocation_id: metadata.invocation_id.clone(),
+                result: None,
+            },
+        );
         Ok(None)
     }
 
@@ -297,9 +305,9 @@ impl KernelRuntimeState {
         result: serde_json::Value,
     ) -> bool {
         let key = remote_extension_invocation_key(context, tool, metadata);
-        let prefix = remote_extension_invocation_context_prefix(context, metadata);
+        let cancel_key = remote_extension_invocation_cancel_key(context, metadata);
         let mut cancellations = self.owned.remote_extension_cancellations.lock().await;
-        let cancelled = cancellations.remove(&key) || cancellations.remove(&prefix);
+        let cancelled = cancellations.remove(&cancel_key);
         drop(cancellations);
         if cancelled {
             self.owned
@@ -309,11 +317,13 @@ impl KernelRuntimeState {
                 .remove(&key);
             return false;
         }
-        self.owned
-            .remote_extension_invocations
-            .lock()
-            .await
-            .insert(key, Some(result));
+        self.owned.remote_extension_invocations.lock().await.insert(
+            key,
+            RemoteExtensionInvocationState {
+                invocation_id: metadata.invocation_id.clone(),
+                result: Some(result),
+            },
+        );
         true
     }
 
@@ -324,7 +334,7 @@ impl KernelRuntimeState {
         metadata: &crate::extension::RemoteExtensionInvocationMetadata,
     ) {
         let key = remote_extension_invocation_key(context, tool, metadata);
-        let prefix = remote_extension_invocation_context_prefix(context, metadata);
+        let cancel_key = remote_extension_invocation_cancel_key(context, metadata);
         self.owned
             .remote_extension_invocations
             .lock()
@@ -334,12 +344,7 @@ impl KernelRuntimeState {
             .remote_extension_cancellations
             .lock()
             .await
-            .remove(&key);
-        self.owned
-            .remote_extension_cancellations
-            .lock()
-            .await
-            .remove(&prefix);
+            .remove(&cancel_key);
     }
 
     pub(in crate::runtime::state::tool_dispatch) async fn audit_home_runtime_tool_result(
@@ -491,6 +496,20 @@ fn remote_extension_invocation_context_prefix(
         context.leased_agent_id,
         context.worker_provider_run_id,
         base,
+    )
+}
+
+fn remote_extension_invocation_cancel_key(
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+) -> String {
+    format!(
+        "home_session={}|home_agent={}|leased_agent={}|worker_run={}|invocation={}",
+        context.home_session_id,
+        context.home_agent_id,
+        context.leased_agent_id,
+        context.worker_provider_run_id,
+        metadata.invocation_id,
     )
 }
 
@@ -754,9 +773,7 @@ mod tests {
             .remote_extension_cancellations
             .lock()
             .await
-            .insert(remote_extension_invocation_context_prefix(
-                &context, &metadata,
-            ));
+            .insert(remote_extension_invocation_cancel_key(&context, &metadata));
         assert!(
             !state
                 .complete_home_extension_invocation(
@@ -774,6 +791,68 @@ mod tests {
             .await
             .expect("cancelled invocation should not leave replay state behind")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn home_extension_cancellation_is_scoped_to_invocation_not_shared_idempotency_key() {
+        let state = test_runtime_state().await;
+        let context = context("agent-1");
+        let first_tool = tool("lookup");
+        let second_tool = tool("create_issue");
+        let mut first_metadata = metadata("invoke-cancel-first");
+        first_metadata.idempotency_key = Some("shared-cancel-idempotency-key".to_string());
+        let mut second_metadata = metadata("invoke-cancel-second");
+        second_metadata.idempotency_key = first_metadata.idempotency_key.clone();
+
+        assert!(state
+            .begin_home_extension_invocation(&context, &first_tool, &first_metadata)
+            .await
+            .expect("first invocation should start")
+            .is_none());
+        assert!(state
+            .begin_home_extension_invocation(&context, &second_tool, &second_metadata)
+            .await
+            .expect("second tool with same idempotency key should start independently")
+            .is_none());
+
+        state
+            .owned
+            .remote_extension_cancellations
+            .lock()
+            .await
+            .insert(remote_extension_invocation_cancel_key(
+                &context,
+                &first_metadata,
+            ));
+        assert!(
+            !state
+                .complete_home_extension_invocation(
+                    &context,
+                    &first_tool,
+                    &first_metadata,
+                    serde_json::json!({"tool": "lookup"}),
+                )
+                .await,
+            "cancelled invocation must not cache a replay result"
+        );
+        assert!(
+            state
+                .complete_home_extension_invocation(
+                    &context,
+                    &second_tool,
+                    &second_metadata,
+                    serde_json::json!({"tool": "create_issue"}),
+                )
+                .await,
+            "cancelling one tool call must not cancel another tool with the same idempotency key"
+        );
+
+        let replayed = state
+            .begin_home_extension_invocation(&context, &second_tool, &second_metadata)
+            .await
+            .expect("second invocation replay should be available")
+            .expect("second result should be cached");
+        assert_eq!(replayed, serde_json::json!({"tool": "create_issue"}));
     }
 
     #[test]

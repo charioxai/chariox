@@ -80,7 +80,7 @@ struct KernelRuntimeOwnedState {
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
-    remote_extension_invocations: Arc<Mutex<BTreeMap<String, Option<serde_json::Value>>>>,
+    remote_extension_invocations: Arc<Mutex<BTreeMap<String, RemoteExtensionInvocationState>>>,
     remote_extension_cancellations: Arc<Mutex<std::collections::BTreeSet<String>>>,
     remote_home_extension_inflight:
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
@@ -91,6 +91,12 @@ struct KernelRuntimeOwnedState {
 struct RemoteHomeExtensionInflightInvocation {
     context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
     metadata: crate::extension::RemoteExtensionInvocationMetadata,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteExtensionInvocationState {
+    invocation_id: String,
+    result: Option<serde_json::Value>,
 }
 
 mod agent_config_owned_state;
