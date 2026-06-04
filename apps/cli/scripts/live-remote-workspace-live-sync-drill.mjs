@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -314,22 +315,6 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-async function runWorkspaceLiveSyncChild(args, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
-    let stdout = ''
-    child.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk)
-      stdout += chunk.toString()
-    })
-    child.on('exit', (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(`remote workspace live sync drill child exited with code ${code}`))
-    })
-    child.on('error', reject)
-  })
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -533,7 +518,7 @@ async function main() {
       await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
     }
 
-    const stdout = await runWorkspaceLiveSyncChild([
+    const stdout = await runNodeDrillChild([
       path.join('apps', 'cli', 'scripts', 'live-workspace-live-sync-drill.mjs'),
       '--kernel', homeKernelUrl,
       '--no-spawn-daemon',
@@ -553,7 +538,7 @@ async function main() {
       ...(options.trackedBidirectional ? ['--tracked-bidirectional'] : []),
       ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
-    ], repoRoot)
+    ], repoRoot, { label: 'remote workspace live sync drill' })
 
     const trimmed = stdout.trim()
     const lastJsonIndex = trimmed.lastIndexOf('\n{')
