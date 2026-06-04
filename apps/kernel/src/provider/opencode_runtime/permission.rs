@@ -1,6 +1,6 @@
 //! OpenCode native permission request bridging into runtime interactions.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::DaemonError;
@@ -189,23 +189,31 @@ fn request_touches_unfenced_workspace_live_sync_root(
     ) {
         return false;
     }
+    let cwd = request.cwd.as_deref().map(Path::new);
     run.workspace_live_sync_roots().iter().any(|root| {
         request
-            .cwd
+            .command
             .as_deref()
-            .is_some_and(|cwd| path_text_touches_root(cwd, root))
-            || request
-                .command
-                .as_deref()
-                .is_some_and(|command| text_mentions_root_path(command, root))
+            .is_some_and(|command| text_mentions_root_path(command, root))
             || request
                 .patterns
                 .iter()
-                .any(|pattern| path_text_touches_root(pattern, root))
+                .any(|pattern| path_text_touches_root(pattern, root, cwd))
+            || (request.patterns.is_empty()
+                && request.permission != "bash"
+                && request
+                    .cwd
+                    .as_deref()
+                    .is_some_and(|cwd| path_text_touches_root(cwd, root, None)))
+            || (request.permission == "bash"
+                && request
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| bash_relative_write_touches_root(command, cwd, root)))
     })
 }
 
-fn path_text_touches_root(text: &str, root: &Path) -> bool {
+fn path_text_touches_root(text: &str, root: &Path, cwd: Option<&Path>) -> bool {
     if text_mentions_root_path(text, root) {
         return true;
     }
@@ -216,7 +224,15 @@ fn path_text_touches_root(text: &str, root: &Path) -> bool {
         .trim_end_matches('*')
         .trim_end_matches('/');
     let path = Path::new(trimmed);
-    path.is_absolute() && path.starts_with(root)
+    let resolved = if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        cwd.filter(|cwd| cwd.is_absolute())
+            .map(|cwd| cwd.join(path))
+    };
+    resolved
+        .as_deref()
+        .is_some_and(|path| normalize_path(path).starts_with(normalize_path(root)))
 }
 
 fn text_mentions_root_path(text: &str, root: &Path) -> bool {
@@ -238,6 +254,118 @@ fn text_mentions_root_path(text: &str, root: &Path) -> bool {
         remaining = &remaining[after_index..];
     }
     false
+}
+
+fn bash_relative_write_touches_root(command: &str, cwd: Option<&Path>, root: &Path) -> bool {
+    let Some(cwd) = cwd else {
+        return false;
+    };
+    if !path_text_touches_root(&cwd.display().to_string(), root, None) {
+        return false;
+    }
+    let tokens = shell_like_tokens(command);
+    tokens
+        .iter()
+        .enumerate()
+        .any(|(index, token)| match redirect_target_token(token) {
+            Some(target) => path_text_touches_root(target, root, Some(cwd)),
+            None if is_redirect_token(token) => tokens
+                .get(index + 1)
+                .is_some_and(|target| path_text_touches_root(target, root, Some(cwd))),
+            None if is_write_command(token) => write_command_operands_touch_root(
+                token,
+                tokens.get(index + 1..).unwrap_or(&[]),
+                cwd,
+                root,
+            ),
+            None => false,
+        })
+}
+
+fn shell_like_tokens(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for ch in command.chars() {
+        match quote {
+            Some(active) if ch == active => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch.is_whitespace() || matches!(ch, ';' | '&' | '|') => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn is_redirect_token(token: &str) -> bool {
+    matches!(
+        token,
+        ">" | ">>" | "<>" | ">|" | "1>" | "1>>" | "2>" | "2>>" | "&>"
+    )
+}
+
+fn redirect_target_token(token: &str) -> Option<&str> {
+    [">>", ">", "1>>", "1>", "2>>", "2>", "&>", ">|", "<>"]
+        .iter()
+        .find_map(|prefix| {
+            token
+                .strip_prefix(prefix)
+                .filter(|target| !target.is_empty())
+        })
+}
+
+fn is_write_command(token: &str) -> bool {
+    matches!(
+        token,
+        "touch" | "mkdir" | "rm" | "rmdir" | "mv" | "cp" | "install" | "tee" | "sed"
+    )
+}
+
+fn write_command_operands_touch_root(
+    command: &str,
+    operands: &[String],
+    cwd: &Path,
+    root: &Path,
+) -> bool {
+    let mut sed_in_place = command != "sed";
+    for operand in operands {
+        if operand == "--" {
+            continue;
+        }
+        if command == "sed" && (operand == "-i" || operand.starts_with("-i")) {
+            sed_in_place = true;
+            continue;
+        }
+        if operand.starts_with('-') {
+            continue;
+        }
+        if sed_in_place && path_text_touches_root(operand, root, Some(cwd)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn map_permission_resolution_to_opencode_response(
@@ -350,6 +478,51 @@ mod tests {
         );
 
         assert!(!request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_allows_explicit_outside_bash_from_protected_cwd() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "bash",
+            Some("printf x > /tmp/outside-repo/file.txt"),
+            Some("/tmp/arroba-workspace"),
+            &[],
+        );
+
+        assert!(!request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_rejects_relative_bash_write_from_protected_cwd() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "bash",
+            Some("printf x > src/main.rs"),
+            Some("/tmp/arroba-workspace"),
+            &[],
+        );
+
+        assert!(request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_rejects_relative_edit_pattern_from_protected_cwd() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "edit",
+            None,
+            Some("/tmp/arroba-workspace"),
+            &["src/main.rs"],
+        );
+
+        assert!(request_touches_unfenced_workspace_live_sync_root(
             &run, &request
         ));
     }
