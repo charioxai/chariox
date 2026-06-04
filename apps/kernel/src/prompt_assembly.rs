@@ -564,6 +564,12 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Do not interpret live sync as a global filesystem restriction"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("provider-native bash remains available for outside-repository writes"));
         assert!(!envelope
             .manifest
             .entries

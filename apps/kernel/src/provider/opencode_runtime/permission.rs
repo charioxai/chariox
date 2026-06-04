@@ -1,5 +1,6 @@
 //! OpenCode native permission request bridging into runtime interactions.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::DaemonError;
@@ -52,6 +53,21 @@ fn resolve_permission_interaction(
     native_interaction_bridge: Option<Arc<dyn ProviderNativeInteractionBridge>>,
     request: &OpenCodePermissionRequest,
 ) -> Result<&'static str, DaemonError> {
+    if request_touches_unfenced_workspace_live_sync_root(run, request) {
+        crate::logging::warn_with_fields(
+            "provider.opencode.permission",
+            "rejecting opencode native write request for protected workspace live sync root",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+                "request_id": request.id,
+                "permission": request.permission,
+                "patterns": request.patterns,
+                "cwd": request.cwd,
+            }),
+        );
+        return Ok("reject");
+    }
     let Some(bridge) = native_interaction_bridge else {
         return Ok("reject");
     };
@@ -160,6 +176,70 @@ fn resolve_permission_interaction(
     Ok(map_permission_resolution_to_opencode_response(&resolution))
 }
 
+fn request_touches_unfenced_workspace_live_sync_root(
+    run: &RuntimeProviderRun,
+    request: &OpenCodePermissionRequest,
+) -> bool {
+    if !run.requires_workspace_live_sync() || crate::provider::workspace_write_fence_active(run) {
+        return false;
+    }
+    if !matches!(
+        request.permission.as_str(),
+        "bash" | "edit" | "write" | "multiedit" | "apply_patch" | "external_directory"
+    ) {
+        return false;
+    }
+    run.workspace_live_sync_roots().iter().any(|root| {
+        request
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| path_text_touches_root(cwd, root))
+            || request
+                .command
+                .as_deref()
+                .is_some_and(|command| text_mentions_root_path(command, root))
+            || request
+                .patterns
+                .iter()
+                .any(|pattern| path_text_touches_root(pattern, root))
+    })
+}
+
+fn path_text_touches_root(text: &str, root: &Path) -> bool {
+    if text_mentions_root_path(text, root) {
+        return true;
+    }
+    let trimmed = text
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_end_matches('*')
+        .trim_end_matches('/');
+    let path = Path::new(trimmed);
+    path.is_absolute() && path.starts_with(root)
+}
+
+fn text_mentions_root_path(text: &str, root: &Path) -> bool {
+    let root_text = root.to_string_lossy();
+    let mut remaining = text;
+    while let Some(index) = remaining.find(root_text.as_ref()) {
+        let after_index = index + root_text.len();
+        let after = remaining[after_index..].chars().next();
+        if match after {
+            None => true,
+            Some(ch) => {
+                ch == '/'
+                    || ch.is_whitespace()
+                    || matches!(ch, '"' | '\'' | '`' | ',' | ';' | '&' | '|')
+            }
+        } {
+            return true;
+        }
+        remaining = &remaining[after_index..];
+    }
+    false
+}
+
 fn map_permission_resolution_to_opencode_response(
     resolution: &ProviderNativeInteractionResolution,
 ) -> &'static str {
@@ -183,5 +263,124 @@ fn humanize_permission_name(permission: &str) -> String {
                 None => "Permission".to_string(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use super::request_touches_unfenced_workspace_live_sync_root;
+    use crate::provider::opencode_client::OpenCodePermissionRequest;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+
+    fn request(
+        permission: &str,
+        command: Option<&str>,
+        cwd: Option<&str>,
+        patterns: &[&str],
+    ) -> OpenCodePermissionRequest {
+        OpenCodePermissionRequest {
+            id: "permission-1".to_string(),
+            session_id: "opencode-session-1".to_string(),
+            permission: permission.to_string(),
+            tool: Some(permission.to_string()),
+            command: command.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+            reason: None,
+            patterns: patterns.iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
+    fn run(protected_root: &str, fenced: bool) -> RuntimeProviderRun {
+        let mut pty_env = BTreeMap::new();
+        if fenced {
+            pty_env.insert(
+                "ARROBA_WORKSPACE_WRITE_FENCE".to_string(),
+                "macos-seatbelt".to_string(),
+            );
+        }
+        let request =
+            LaunchProviderRequest::new("session-1", "agent-1", "opencode", "opencode", "gpt-5.2")
+                .with_workspace_live_sync_managed()
+                .with_workspace_live_sync_roots(vec![PathBuf::from(protected_root)]);
+        RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "opencode:test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env,
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://127.0.0.1:1".to_string()),
+            },
+        )
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_rejects_native_bash_into_protected_root() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "bash",
+            Some("printf x > /tmp/arroba-workspace/src/main.rs"),
+            None,
+            &[],
+        );
+
+        assert!(request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_allows_native_bash_outside_protected_root() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "bash",
+            Some("printf x > /tmp/outside-repo/file.txt"),
+            Some("/tmp/outside-repo"),
+            &["/tmp/outside-repo/*"],
+        );
+
+        assert!(!request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn unfenced_workspace_live_sync_does_not_match_sibling_prefix() {
+        let run = run("/tmp/arroba-workspace", false);
+        let request = request(
+            "bash",
+            Some("printf x > /tmp/arroba-workspace-copy/file.txt"),
+            None,
+            &["/tmp/arroba-workspace-copy/*"],
+        );
+
+        assert!(!request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
+    }
+
+    #[test]
+    fn fenced_workspace_live_sync_defers_native_bash_policy_to_platform_fence() {
+        let run = run("/tmp/arroba-workspace", true);
+        let request = request(
+            "bash",
+            Some("printf x > /tmp/arroba-workspace/src/main.rs"),
+            None,
+            &[],
+        );
+
+        assert!(!request_touches_unfenced_workspace_live_sync_root(
+            &run, &request
+        ));
     }
 }

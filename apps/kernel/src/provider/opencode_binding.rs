@@ -208,6 +208,10 @@ fn opencode_prompt_should_disable_native_writes(run: &RuntimeProviderRun) -> boo
     run.requires_workspace_live_sync() && !opencode_workspace_live_sync_native_writes_allowed(run)
 }
 
+fn opencode_prompt_should_allow_native_bash(run: &RuntimeProviderRun) -> bool {
+    run.requires_workspace_live_sync() || workspace_write_fence_active(run)
+}
+
 fn opencode_permission_rules(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> serde_json::Value {
@@ -305,6 +309,7 @@ mod tests {
 
     use super::{
         next_opencode_message_id, opencode_prompt_should_disable_native_writes,
+        opencode_prompt_should_allow_native_bash,
         opencode_workspace_live_sync_native_writes_allowed,
         opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
         OpenCodeConfiguredDefaults, OpenCodeMessage,
@@ -443,6 +448,7 @@ mod tests {
 
         assert!(!opencode_workspace_live_sync_native_writes_allowed(&run));
         assert!(opencode_prompt_should_disable_native_writes(&run));
+        assert!(opencode_prompt_should_allow_native_bash(&run));
     }
 
     #[test]
@@ -558,7 +564,7 @@ pub(super) fn submit_opencode_prompt(
         run.variant(),
         run.execution_mode(),
         opencode_prompt_should_disable_native_writes(run),
-        workspace_write_fence_active(run),
+        opencode_prompt_should_allow_native_bash(run),
     )?;
     state.note_prompt_submitted(message_id);
     Ok(())
