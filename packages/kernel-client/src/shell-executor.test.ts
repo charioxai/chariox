@@ -195,7 +195,8 @@ test("executeShellCommand renders generic slice provider auth recovery without p
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /slice provider auth issues: missing=1 unconfigured=0/)
   assert.match(result.message ?? "", /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1: slice provider account needs login or import/)
-  assert.match(result.message ?? "", /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; open Slices and choose the missing provider account to login or import before sending prompts to agents in that slice/)
+  assert.match(result.message ?? "", /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; after provider discovery, use the matching \/slice auth login or \/slice auth import command before sending prompts to agents in that slice/)
+  assert.doesNotMatch(result.message ?? "", /open Slices and choose/)
   assert.doesNotMatch(result.message ?? "", /<provider>|provider-specific/)
 })
 
