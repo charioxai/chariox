@@ -11,6 +11,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const execFileAsync = promisify(execFile)
+const realHomeDir = os.homedir()
 
 async function loadCliModules(runtimeDir) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
@@ -112,9 +113,17 @@ function daemonEnv({
   codexPort,
   socketName,
   historyDir,
+  homeDir,
 }) {
   return {
     ...process.env,
+    HOME: homeDir,
+    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? path.join(realHomeDir, '.local', 'state'),
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
@@ -379,6 +388,8 @@ async function main() {
   const workerDaemonId = `workspace-live-sync-permission-worker-${process.pid}-${Date.now()}`
   const homeHistoryDir = path.join(rootDir, `${homeDaemonId}-history`)
   const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
+  const homeHomeDir = path.join(rootDir, `${homeDaemonId}-home`)
+  const workerHomeDir = path.join(rootDir, `${workerDaemonId}-home`)
 
   let relayChild = null
   let relayTunnel = null
@@ -438,6 +449,7 @@ async function main() {
         codexPort: ports.homeCodexPort,
         socketName: 'home.sock',
         historyDir: homeHistoryDir,
+        homeDir: homeHomeDir,
       }),
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -489,6 +501,7 @@ async function main() {
           codexPort: ports.workerCodexPort,
           socketName: 'worker.sock',
           historyDir: workerHistoryDir,
+          homeDir: workerHomeDir,
         }),
         stdio: ['ignore', 'ignore', 'inherit'],
       })
