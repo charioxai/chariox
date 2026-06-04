@@ -4,6 +4,14 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-06-04
 
+### Hosted relay and permission drill revalidation
+
+- Fixed `live-remote-workspace-live-sync-permission-drill.mjs` to isolate the home/worker daemon `HOME` roots while intentionally preserving provider auth/state paths (`CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and OpenCode `XDG_*` data/state/cache). This prevents the same-host remote permission drill from silently using the real Arroba config while still surfacing the real provider account state instead of a misleading missing-model error.
+- Revalidated remote Workspace Live Sync permission parity on current OSS `main` HEAD `1e76dfe2`: `pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill` passed locally, and the same drill with `--hetzner-worker` passed after fast-forwarding `/tmp/arroba-native-remote-validate` to `1e76dfe2` and rebuilding the remote kernel/relay with `/root/.cargo/bin/cargo`. Both runs proved synced-repo writes route through Workspace Live Sync while an outside repo remains provider-native and writable.
+- Confirmed current OpenCode Zen provider state is blocked before Arroba behavior by `Insufficient balance`; after the drill env fix, `workspace-live-sync:opencode-remote-permission-drill` reaches that real provider account error instead of `Model not found`.
+- Revalidated Scalingo hosted relay staging with `ARROBA_CLOUD_DEV_AUTH_SECRET` loaded from Scalingo: base hosted relay, hosted second-kernel home-owned script/MCP/connector projection, hosted multi-user collaboration, hosted token rotation, and hosted remote CLI all passed against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io`.
+- Fixed the hosted terminal-pairing drill after it exposed stale history API usage: `waitForHistoryText` now reads `GetSessionHistoryOutline` plus blob content instead of the removed flat `GetSessionHistory` request. The hosted terminal-pairing drill then passed with Codex `gpt-5.5` using the clean Hetzner validation checkout.
+
 ### Remote home extension local relay validation
 
 - Revalidated the local self-hosted relay remote home-extension matrix. `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed for a single user, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed for collab. Both runs proved that a remote worker without the local extension definition/credential can invoke home-owned script, MCP, and connector tools through the relay, and that home-side revoke enforcement blocks stale use.

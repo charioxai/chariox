@@ -625,13 +625,28 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
 async function waitForHistoryText(client, requests, sessionId, agentId, needle, timeoutMs, pollMs = 2_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const history = unwrap(
-      await client.send(requests.getSessionHistoryRequest(sessionId, 60, 120_000, null, agentId ?? null)),
-      "SessionHistory",
+    const outline = unwrap(
+      await client.send(requests.getSessionHistoryOutlineRequest(sessionId, agentId ? [agentId] : null, 8)),
+      "SessionHistoryOutline",
     )
-    const text = (history.entries ?? [])
-      .map((entry) => String(entry.entry?.text ?? entry.text ?? ""))
-      .join("")
+    const chunks = []
+    for (const agent of outline.agents ?? []) {
+      for (const turn of agent.turns ?? []) {
+        for (const entry of [turn.user_prompt, ...(turn.entries ?? []), turn.summary].filter(Boolean)) {
+          chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+        }
+        for (const blob of turn.blobs ?? []) {
+          const content = unwrap(
+            await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agent.agent_id, blob.blob_id)),
+            "SessionHistoryBlobContent",
+          )
+          for (const entry of content.entries ?? []) {
+            chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+          }
+        }
+      }
+    }
+    const text = chunks.join("")
     if (text.includes(needle)) return text
     await sleep(pollMs)
   }
