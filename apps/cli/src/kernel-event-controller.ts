@@ -59,7 +59,10 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.recordTurnActivity("terminal_record")
     const text = Buffer.from(record.bytes).toString("utf8")
     const recordAgentId = deps.resolveTerminalRecordAgentId(record)
-    if (recordAgentId && record.kind !== "prompt_echo") {
+    if (!recordAgentId) {
+      return
+    }
+    if (record.kind !== "prompt_echo") {
       deps.setStreamingAgentId(recordAgentId)
       if (record.kind !== "provider_status" || !isProviderIdleStatus(text)) {
         deps.markAgentBusy(recordAgentId)
@@ -120,7 +123,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     }
 
     const mainTranscriptAgentId = deps.visibleTranscriptAgentId()
-    const isVisibleRecord = !recordAgentId || recordAgentId === mainTranscriptAgentId
+    const isVisibleRecord = recordAgentId === mainTranscriptAgentId
     if (!isVisibleRecord) {
       if (recordAgentId) {
         switch (record.kind) {

@@ -96,6 +96,23 @@ test("off-focus agent output updates the agent pane and preview without mutating
   ])
 })
 
+test("unscoped terminal output records do not render into the visible transcript", () => {
+  const { deps, calls } = createDeps()
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: null,
+    kind: "provider_output",
+    merge_key: "reply-1",
+    bytes: [...Buffer.from("ambiguous\n", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+  ])
+})
+
 test("visible provider status updates activity and appends renderable status chunks", () => {
   const { deps, calls } = createDeps({
     resolveTerminalRecordAgentId: () => "agent-a",

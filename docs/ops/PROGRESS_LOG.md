@@ -10,6 +10,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Tightened the workflow console selected-agent trace the same way: provider-run-only terminal logs remain visible as logs, but they are not projected as selected-agent transcript entries unless the output carries the matching agent identity.
 - Revalidated in `/Users/miguel/arroba-cloud` with `pnpm --filter @arroba-cloud/web test -- output-pane-controller output-records terminal-reconnect-history workflow-console-model workflow-kernel-bridge`; the command built the web package and passed all 1632 web tests. `git diff --check` also passed.
 
+### TUI terminal output identity hardening
+
+- Hardened OSS TUI terminal output projection so kernel/provider `terminal_output` records no longer infer ownership from the current streaming agent, active prompt, processing agent, or focused agent. Records without explicit `agent_id` now count as daemon activity but do not mutate the visible transcript or split-agent panes.
+- Tightened Codex native TUI projection to require the record `agent_id` to match the attached native agent before forwarding output into the provider TUI.
+- Revalidated with `pnpm --filter @arroba/cli test -- terminal-record-agent-resolver kernel-event-controller native-tui-codex-kernel-output-projection`; the command linted, built, and passed 1214 CLI tests. `git diff --check` also passed.
+
 ### Remote home extension current-HEAD local validation
 
 - Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `6bea6275`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed. The runs covered home-owned script, MCP, and connector projection/execution from a remote worker, collaborator use of home grants, denial of collaborator authority over home grants, worker-local collision checks, and home-side revoke enforcement for stale projected tools.

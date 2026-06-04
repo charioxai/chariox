@@ -499,10 +499,6 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const resolveTerminalRecordAgentId = (record: TerminalOutputRecord) => {
     return resolveTerminalRecordAgentIdFromState({
       record,
-      streamingAgentId: streamingAgentId(),
-      activePromptAgentId: activePrompt()?.target_agent_id ?? null,
-      agents: sessionState().agents,
-      focusedAgentId: focusedAgentId(),
     })
   }
   const rendererFocusController = createCliRendererFocusController(renderer)

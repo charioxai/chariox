@@ -90,7 +90,7 @@ export function createCodexKernelOutputProjection(options: {
   const project = (records: TerminalOutputRecord[]) => {
     for (const record of records) {
       if (!projectedThreadId) continue
-      if (record.agent_id && record.agent_id !== options.agentId) continue
+      if (record.agent_id !== options.agentId) continue
       if (
         record.kind !== "prompt_echo"
         && record.kind !== "provider_output"
