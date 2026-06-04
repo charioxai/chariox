@@ -7,6 +7,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Remote home extension current-HEAD local validation
 
 - Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `6bea6275`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed. The runs covered home-owned script, MCP, and connector projection/execution from a remote worker, collaborator use of home grants, denial of collaborator authority over home grants, worker-local collision checks, and home-side revoke enforcement for stale projected tools.
+- Revalidated the actual-Hetzner worker remote home-extension matrix on current OSS `main` HEAD `1eadd763` using an isolated temporary Hetzner checkout instead of the shared `/tmp/arroba-native-remote-validate` path. Built `arroba-kernel` and `arroba-relay` in `/tmp/arroba-remote-home-extension-head-1780612416-73064`, then ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single --hetzner-repo /tmp/arroba-remote-home-extension-head-1780612416-73064` and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-collab --hetzner-repo /tmp/arroba-remote-home-extension-head-1780612416-73064`; both passed. The temporary checkout was removed after validation.
 
 ## 2026-06-04
 
