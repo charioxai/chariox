@@ -7,7 +7,10 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
   }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
-      return `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
+      if (isConcreteHomeExtensionAuditAgentRef(agentRef)) {
+        return `run /extension sync-status ${agentRef}; inspect /agent inspect ${agentRef}; retry only after the worker lease and provider run match the current home grant`
+      }
+      return "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant"
     }
     return "verify the home grant, safety limit, and caller authority before retrying"
   }
@@ -26,9 +29,13 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
 export function homeExtensionAuditAgentRef(payload: Record<string, unknown>): string {
   for (const key of ["agent_ref", "agent_id", "home_agent_id"]) {
     const value = payload[key]
-    if (typeof value === "string" && value.trim()) {
+    if (typeof value === "string" && isConcreteHomeExtensionAuditAgentRef(value.trim())) {
       return value.trim()
     }
   }
-  return "<agent>"
+  return "affected agent"
+}
+
+function isConcreteHomeExtensionAuditAgentRef(agentRef: string): boolean {
+  return Boolean(agentRef) && agentRef !== "affected agent" && !agentRef.startsWith("<")
 }

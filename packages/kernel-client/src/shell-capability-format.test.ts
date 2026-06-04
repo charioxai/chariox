@@ -45,6 +45,15 @@ test("home extension audit policy gives binding-specific recovery for worker den
     error: "worker mismatch",
     agent_ref: "agent-ref-1",
   }), "run /extension sync-status agent-ref-1; inspect /agent inspect agent-ref-1; retry only after the worker lease and provider run match the current home grant")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
+    status: "denied",
+    error: "worker mismatch",
+  }), "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.denied", {
+    status: "denied",
+    error: "worker mismatch",
+    agent_ref: "<agent>",
+  }), "identify the affected agent in /kernel remote-runtime or the home extension audit, then retry only after the worker lease and provider run match the current home grant")
 })
 
 test("home extension audit policy handles terminal invocation outcomes", () => {
@@ -67,5 +76,6 @@ test("home extension audit policy resolves stable agent references", () => {
   assert.equal(homeExtensionAuditAgentRef({ agent_ref: " agent-ref-1 " }), "agent-ref-1")
   assert.equal(homeExtensionAuditAgentRef({ agent_id: "agent-1" }), "agent-1")
   assert.equal(homeExtensionAuditAgentRef({ home_agent_id: "home-agent-1" }), "home-agent-1")
-  assert.equal(homeExtensionAuditAgentRef({}), "<agent>")
+  assert.equal(homeExtensionAuditAgentRef({}), "affected agent")
+  assert.equal(homeExtensionAuditAgentRef({ agent_ref: "<agent>" }), "affected agent")
 })

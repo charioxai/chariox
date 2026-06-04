@@ -57,6 +57,10 @@ test("remoteWorkerProviderRunRecoveryAction formats specific and fallback action
   )
   assert.equal(
     remoteWorkerProviderRunRecoveryAction(null, null),
-    "run /kernel remote-runtime; run /agent inspect <agent>; reconnect or relaunch the remote/slice worker before sending prompts to that remote/slice agent",
+    "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent",
+  )
+  assert.equal(
+    remoteWorkerProviderRunRecoveryAction("<agent>", "<worker-machine>"),
+    "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent",
   )
 })
