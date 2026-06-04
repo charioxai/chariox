@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-06-05
 
+### Web terminal output identity hardening
+
+- Hardened Arroba Cloud `main` commit `7d2d88e` so live `terminal_output` records no longer infer an agent from the selected or sole web terminal pane. Kernel/provider output without an explicit `agent_id` is skipped with diagnostics instead of being rendered into an arbitrary agent transcript.
+- Tightened the workflow console selected-agent trace the same way: provider-run-only terminal logs remain visible as logs, but they are not projected as selected-agent transcript entries unless the output carries the matching agent identity.
+- Revalidated in `/Users/miguel/arroba-cloud` with `pnpm --filter @arroba-cloud/web test -- output-pane-controller output-records terminal-reconnect-history workflow-console-model workflow-kernel-bridge`; the command built the web package and passed all 1632 web tests. `git diff --check` also passed.
+
 ### Remote home extension current-HEAD local validation
 
 - Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `6bea6275`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed. The runs covered home-owned script, MCP, and connector projection/execution from a remote worker, collaborator use of home grants, denial of collaborator authority over home grants, worker-local collision checks, and home-side revoke enforcement for stale projected tools.
