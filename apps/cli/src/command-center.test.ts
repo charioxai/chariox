@@ -128,9 +128,10 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(values.has("/slice stop "), true)
   assert.equal(values.has("/slice delete "), true)
   assert.equal(values.has("/slice auth login "), true)
-  assert.equal(items.find((item) => item.value === "/slice auth login ")?.description, "Start login for a slice-specific provider account")
-  assert.equal(items.find((item) => item.value === "/slice auth import ")?.description, "Import host provider auth into this slice account")
-  assert.equal(items.find((item) => item.value === "/slice auth alias ")?.description, "Set or clear a slice provider account alias")
+  assert.equal(items.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
+  assert.equal(items.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
+  assert.equal(items.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
+  assert.equal(items.find((item) => item.value === "/slice auth alias ")?.description, "Set an Arroba display alias when the provider account label is unclear")
 })
 
 test("buildCommandCenterItems filters model options", () => {
