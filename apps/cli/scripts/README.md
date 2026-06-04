@@ -24,6 +24,7 @@ Use `opencode/gpt-5.2` for OpenCode workspace live sync drills.
 Workspace Live Sync validation aliases:
 
 ```bash
+pnpm --filter @arroba/cli run workspace-live-sync:matrix-drill -- --dry-run
 pnpm --filter @arroba/cli run workspace-live-sync:managed-drill
 pnpm --filter @arroba/cli run workspace-live-sync:same-branch-tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:tracked-drill
@@ -33,6 +34,8 @@ pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-restart-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 ```
+
+`live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, Hetzner, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-hetzner`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs.
 
 OpenCode parity aliases use the same scenarios with explicit OpenCode Zen model selection:
 
