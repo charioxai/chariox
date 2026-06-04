@@ -111,6 +111,36 @@ socket.write(JSON.stringify(request) + "\\n");
   return response.data
 }
 
+async function waitForCliExit(child, label, timeoutMs = 15_000) {
+  if (!child) throw new Error(`${label} process was not started`)
+  if (child.exitCode != null || child.signalCode != null) {
+    if (child.exitCode === 0) return
+    throw new Error(`${label} exited with ${child.signalCode ?? child.exitCode}`)
+  }
+  const result = await Promise.race([
+    new Promise((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }))
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ])
+  if (!result) {
+    throw new Error(`${label} did not exit within ${timeoutMs}ms after automation exit`)
+  }
+  if (result.code !== 0) {
+    throw new Error(`${label} exited with ${result.signal ?? result.code}`)
+  }
+}
+
+async function endSessionIfPresent(client, requests, sessionId) {
+  try {
+    const listed = await client.send(requests.listSessionsRequest())
+    const sessions = listed?.SessionsListed?.sessions ?? listed?.sessions ?? []
+    if (sessions.some((session) => session.id === sessionId)) {
+      await client.send(requests.endSessionRequest(sessionId)).catch(() => {})
+    }
+  } catch {}
+}
+
 export async function runHostedRemoteCliPairingAssertions({
   requests,
   homeClient,
@@ -336,8 +366,10 @@ export async function runHostedRemoteCliPairingAssertions({
 
     await localAutomation.send("exit").catch(() => {})
     await remoteAutomation(remoteSocket, "exit", {}, { runSsh, shellQuote, assert }).catch(() => {})
-    await homeClient.send(requests.endSessionRequest(localSession.id)).catch(() => {})
-    await homeClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
+    await waitForCliExit(localCli, "local paired CLI")
+    await waitForCliExit(remoteCli, "remote paired CLI")
+    await endSessionIfPresent(homeClient, requests, localSession.id)
+    await endSessionIfPresent(homeClient, requests, remoteSession.id)
     log("remote-cli-pairing-pass", {
       host: remoteCliHost,
       localSessionId: localSession.id,
@@ -450,7 +482,8 @@ export async function runHostedRemoteCliAssertions({
       remoteSession,
     })
     await remoteAutomation(remoteSocket, "exit", {}, { runSsh, shellQuote, assert }).catch(() => {})
-    await verificationClient.send(requests.endSessionRequest(remoteSession.id)).catch(() => {})
+    await waitForCliExit(remoteCli, "remote CLI")
+    await endSessionIfPresent(verificationClient, requests, remoteSession.id)
     log("remote-cli-pass", {
       host: remoteCliHost,
       sessionId: remoteSession.id,

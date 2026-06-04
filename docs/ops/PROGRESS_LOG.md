@@ -11,6 +11,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Confirmed current OpenCode Zen provider state is blocked before Arroba behavior by `Insufficient balance`; after the drill env fix, `workspace-live-sync:opencode-remote-permission-drill` reaches that real provider account error instead of `Model not found`.
 - Revalidated Scalingo hosted relay staging with `ARROBA_CLOUD_DEV_AUTH_SECRET` loaded from Scalingo: base hosted relay, hosted second-kernel home-owned script/MCP/connector projection, hosted multi-user collaboration, hosted token rotation, and hosted remote CLI all passed against `https://arroba-cloud-staging.osc-fr1.scalingo.io` and `wss://195.201.123.115.sslip.io`.
 - Fixed the hosted terminal-pairing drill after it exposed stale history API usage: `waitForHistoryText` now reads `GetSessionHistoryOutline` plus blob content instead of the removed flat `GetSessionHistory` request. The hosted terminal-pairing drill then passed with Codex `gpt-5.5` using the clean Hetzner validation checkout.
+- Tightened hosted remote CLI drills so automation `/exit` must lead to a clean CLI process exit before the harness ends sessions or tears down SSH. This removes the previous cleanup race where a provider-backed terminal-pairing run could pass while the remote CLI later reported exit code `1`. Revalidated hosted remote CLI and hosted terminal pairing with Codex `gpt-5.5`; both now pass with local/remote CLI exit code `0`.
 
 ### Remote home extension local relay validation
 
