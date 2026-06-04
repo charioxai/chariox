@@ -23,6 +23,7 @@ function parseArgs(argv) {
     noSpawnDaemon: false,
     machineRef: null,
     rootDir: null,
+    historyDir: null,
     afterFixtureCommand: null,
     providerModels: {},
   }
@@ -44,6 +45,7 @@ function parseArgs(argv) {
     else if (arg === '--no-spawn-daemon') options.noSpawnDaemon = true
     else if (arg === '--machine-ref') options.machineRef = argv[++i]
     else if (arg === '--root-dir') options.rootDir = argv[++i]
+    else if (arg === '--history-dir') options.historyDir = argv[++i]
     else if (arg === '--after-fixture-command') options.afterFixtureCommand = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
@@ -57,6 +59,7 @@ function parseArgs(argv) {
         '  --no-spawn-daemon',
         '  --machine-ref <remote machine id or alias>',
         '  --root-dir <path>',
+        '  --history-dir <path>',
         '  --after-fixture-command <cmd>',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
@@ -250,8 +253,7 @@ async function pumpTerminalOutput(client, sessionId, attachmentId) {
   await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
 }
 
-async function readProviderLaunchFailure(rootDir) {
-  const historyDir = path.join(rootDir, 'history')
+async function readProviderLaunchFailure(historyDir) {
   let names = []
   try {
     names = await readdir(historyDir)
@@ -387,6 +389,7 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const outsideRepo = path.join(rootDir, 'outside-repo')
   const home = path.join(rootDir, 'home')
+  const historyDir = options.historyDir ?? path.join(rootDir, 'history')
   const automationSocket = path.join(os.tmpdir(), `amiop-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
@@ -399,7 +402,7 @@ async function main() {
     ARROBA_CODEX_PORT: String(ports.codexPort),
     ARROBA_DAEMON_ID: `workspace-live-sync-permission-drill-${process.pid}-${Date.now()}`,
     ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    ARROBA_SESSION_HISTORY_DIR: historyDir,
     ARROBA_TEST_TUI: '1',
   }
 
@@ -507,7 +510,7 @@ async function main() {
     const targetFileName = `${provider}-workspace-live-sync-permission.txt`
     const targetFilePath = path.join(workspace, targetFileName)
     const expectedContent = `workspace-live-sync-${provider}`
-    const launchFailureProbe = () => readProviderLaunchFailure(rootDir)
+    const launchFailureProbe = () => readProviderLaunchFailure(historyDir)
     await client.send(submitPromptRequest(
       sessionId,
       attachmentId,

@@ -535,6 +535,7 @@ async function main() {
         '--model', model,
         '--timeout-ms', String(options.timeoutMs),
         '--poll-ms', String(options.pollMs),
+        '--history-dir', homeHistoryDir,
         ...(childRootDir ? ['--root-dir', childRootDir] : []),
         ...(options.hetznerWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToHetznerCommand(options, childRootDir)] : []),
         ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
