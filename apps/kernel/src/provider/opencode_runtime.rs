@@ -306,6 +306,98 @@ mod tests {
     }
 
     #[test]
+    fn idle_after_completed_assistant_without_parent_completes_active_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+
+        let first = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("first drain should succeed");
+        assert_eq!(
+            first.completions,
+            vec![OpenCodeAssistantCompletion {
+                message_id: "message-1".to_string(),
+                completed_at_ms: 1,
+            }]
+        );
+        assert!(!first.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let second = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("second drain should succeed");
+        assert!(second.prompt_completed);
+        assert!(state.active_user_message_id.is_none());
+    }
+
+    #[test]
+    fn prompt_submission_clears_prior_unparented_assistant_completion() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user_1".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+        let first = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("first drain should succeed");
+        assert!(!first.prompt_completed);
+
+        state.note_prompt_submitted("msg_user_2".to_string());
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let second = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("second drain should succeed");
+        assert!(!second.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user_2"));
+    }
+
+    #[test]
     fn idle_status_without_submitted_prompt_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(

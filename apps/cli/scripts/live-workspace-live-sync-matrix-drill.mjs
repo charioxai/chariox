@@ -32,6 +32,9 @@ const MATRIX = [
   scenario('remote-managed-opencode', 'same-host remote managed OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-tracked-opencode', 'same-host remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-opencode-tracked-parity-target', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-permission-opencode', 'same-host remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--timeout-ms', '700000'], { remote: true, opencode: true }),
+  scenario('hetzner-managed-opencode', 'Hetzner remote managed OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
+  scenario('hetzner-tracked-opencode', 'Hetzner remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-opencode-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
+  scenario('hetzner-permission-opencode', 'Hetzner remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--hetzner-worker', '--timeout-ms', '700000'], { remote: true, hetzner: true, opencode: true }),
 ]
 
 function scenario(id, description, script, args, flags = {}) {

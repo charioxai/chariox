@@ -47,6 +47,7 @@ pnpm --filter @arroba/cli run workspace-live-sync:opencode-permission-drill
 pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-managed-drill
 pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-tracked-drill
 pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-permission-drill
+node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-opencode --include-hetzner --only hetzner-managed-opencode,hetzner-tracked-opencode,hetzner-permission-opencode --continue-on-failure
 ```
 
 ## Wrapper Scripts

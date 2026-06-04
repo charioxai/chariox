@@ -42,6 +42,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) event_subscription: OpenCodeEventSubscription,
     pub(super) last_status_kind: Option<String>,
     pub(super) last_completed_assistant_message_id: Option<String>,
+    pub(super) active_completed_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
 }
 
@@ -63,6 +64,7 @@ impl OpenCodeRuntimeState {
             event_subscription,
             last_status_kind: None,
             last_completed_assistant_message_id: None,
+            active_completed_assistant_message_id: None,
             active_user_message_id: None,
         }
     }
@@ -81,5 +83,6 @@ impl OpenCodeRuntimeState {
 
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
+        self.active_completed_assistant_message_id = None;
     }
 }
