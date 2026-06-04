@@ -569,7 +569,7 @@ mod tests {
             .contains("Do not interpret live sync as a global filesystem restriction"));
         assert!(envelope
             .hidden_system_context
-            .contains("provider-native bash remains available for outside-repository writes"));
+            .contains("use provider-native edit/write/patch or shell/bash tools normally"));
         assert!(!envelope
             .manifest
             .entries

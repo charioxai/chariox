@@ -180,11 +180,36 @@ fn opencode_workspace_live_sync_permission_rules(
     permission_level: crate::provider::AgentPermissionLevel,
 ) -> serde_json::Value {
     let native_action = opencode_permission_action(permission_level);
+    let native_write_action = if allow_native_writes {
+        native_action
+    } else {
+        "ask"
+    };
     let rules = vec![
         serde_json::json!({
             "permission": "edit",
             "pattern": "*",
-            "action": if allow_native_writes { native_action } else { "deny" }
+            "action": native_write_action
+        }),
+        serde_json::json!({
+            "permission": "write",
+            "pattern": "*",
+            "action": native_write_action
+        }),
+        serde_json::json!({
+            "permission": "multiedit",
+            "pattern": "*",
+            "action": native_write_action
+        }),
+        serde_json::json!({
+            "permission": "apply_patch",
+            "pattern": "*",
+            "action": native_write_action
+        }),
+        serde_json::json!({
+            "permission": "external_directory",
+            "pattern": "*",
+            "action": native_write_action
         }),
         serde_json::json!({
             "permission": "bash",
@@ -204,8 +229,8 @@ fn opencode_workspace_live_sync_native_writes_allowed(run: &RuntimeProviderRun) 
     run.tracks_workspace_live_sync() || workspace_write_fence_active(run)
 }
 
-fn opencode_prompt_should_disable_native_writes(run: &RuntimeProviderRun) -> bool {
-    run.requires_workspace_live_sync() && !opencode_workspace_live_sync_native_writes_allowed(run)
+fn opencode_prompt_should_disable_native_writes(_run: &RuntimeProviderRun) -> bool {
+    false
 }
 
 fn opencode_prompt_should_allow_native_bash(run: &RuntimeProviderRun) -> bool {
@@ -334,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_live_sync_permission_rules_block_direct_edit_but_keep_bash_available() {
+    fn workspace_live_sync_permission_rules_gate_native_writes_without_fence() {
         assert_eq!(
             opencode_workspace_live_sync_permission_rules(
                 false,
@@ -344,7 +369,27 @@ mod tests {
                 {
                     "permission": "edit",
                     "pattern": "*",
-                    "action": "deny"
+                    "action": "ask"
+                },
+                {
+                    "permission": "write",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "multiedit",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "apply_patch",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "external_directory",
+                    "pattern": "*",
+                    "action": "ask"
                 },
                 {
                     "permission": "bash",
@@ -374,6 +419,26 @@ mod tests {
                     "action": "allow"
                 },
                 {
+                    "permission": "write",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "multiedit",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "apply_patch",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "external_directory",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
                     "permission": "bash",
                     "pattern": "*",
                     "action": "allow"
@@ -397,6 +462,26 @@ mod tests {
             json!([
                 {
                     "permission": "edit",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "write",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "multiedit",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "apply_patch",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
+                    "permission": "external_directory",
                     "pattern": "*",
                     "action": "ask"
                 },
@@ -439,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn unfenced_managed_workspace_live_sync_disables_opencode_native_tools() {
+    fn unfenced_managed_workspace_live_sync_keeps_opencode_native_tools_kernel_gated() {
         let run = test_run(
             LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
                 .with_workspace_live_sync_managed(),
@@ -447,7 +532,7 @@ mod tests {
         );
 
         assert!(!opencode_workspace_live_sync_native_writes_allowed(&run));
-        assert!(opencode_prompt_should_disable_native_writes(&run));
+        assert!(!opencode_prompt_should_disable_native_writes(&run));
         assert!(opencode_prompt_should_allow_native_bash(&run));
     }
 
