@@ -17,6 +17,8 @@ use super::provider_output_fanout::ProviderOutputFanout;
 use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
 
+const PROVIDER_FIRST_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
@@ -57,6 +59,7 @@ pub(crate) fn pump_terminal_output_for_attachment(
     attachment_id: &str,
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
     reap_structured_prompt_jobs(app);
+    reap_provider_first_output_timeouts(app, session_id)?;
     crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)?;
     pump_session_active_prompt_outputs(app, session_id);
@@ -72,9 +75,133 @@ pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) -> Vec<String> {
     let sessions = app.sessions.list_sessions();
     let mut pumped_provider_run_ids = Vec::new();
     for session in sessions {
+        if let Err(error) = reap_provider_first_output_timeouts(app, session.id()) {
+            crate::logging::warn_with_fields(
+                "daemon.provider_output",
+                "provider first-output timeout reap failed",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
         pumped_provider_run_ids.extend(pump_session_active_prompt_outputs(app, session.id()));
     }
     pumped_provider_run_ids
+}
+
+fn reap_provider_first_output_timeouts(
+    app: &mut DaemonApp,
+    session_id: &str,
+) -> Result<(), DaemonError> {
+    let timed_out = app_first_output_timeout_candidates(app, session_id);
+    for timeout in timed_out {
+        let diagnostic = provider_first_output_timeout_diagnostic(timeout.elapsed_ms);
+        let run = app
+            .providers
+            .record_terminal_diagnostic(&timeout.provider_run_id, diagnostic.clone())?;
+        app.update_provider_run_projection(run);
+        app.record_notice(
+            session_id,
+            Some(&timeout.provider_run_id),
+            app.attachments.list_session_attachment_ids(session_id),
+            diagnostic.clone(),
+        );
+        crate::logging::warn_with_fields(
+            "daemon.provider",
+            "provider prompt produced no first output before timeout",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": timeout.agent_id,
+                "provider_run_id": timeout.provider_run_id,
+                "elapsed_ms": timeout.elapsed_ms,
+            }),
+        );
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        ProviderOutputPromptSettlement::new(
+            app,
+            provider_store,
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .fail_for_terminal_failure(session_id, &timeout.provider_run_id, &diagnostic)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppFirstOutputTimeoutCandidate {
+    provider_run_id: String,
+    agent_id: String,
+    elapsed_ms: u64,
+}
+
+fn app_first_output_timeout_candidates(
+    app: &DaemonApp,
+    session_id: &str,
+) -> Vec<AppFirstOutputTimeoutCandidate> {
+    let now_ms = crate::session::unix_epoch_ms();
+    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+    let prompt_activity = app.prompt_activity.read().clone();
+    let active_turns = app.active_turns.snapshot();
+    let Ok(session) = app.sessions.get_session(session_id) else {
+        return Vec::new();
+    };
+    active_turns
+        .into_values()
+        .filter(|turn| turn.session_id == session_id)
+        .filter(|turn| {
+            matches!(
+                turn.phase,
+                crate::app::ActiveTurnPhase::Accepted
+                    | crate::app::ActiveTurnPhase::AwaitingFirstOutput
+            )
+        })
+        .filter(|turn| {
+            prompt_activity
+                .get(&turn.provider_run_id)
+                .is_some_and(|activity| !activity.saw_response_content)
+        })
+        .filter(|turn| {
+            app.providers
+                .get_run(&turn.provider_run_id)
+                .is_ok_and(|run| {
+                    run.session_id() == session_id
+                        && run.agent_instance_id() == Some(turn.agent_id.as_str())
+                        && run.terminal_diagnostic().is_none()
+                        && matches!(
+                            run.state(),
+                            ProviderRunState::Starting
+                                | ProviderRunState::Running
+                                | ProviderRunState::Parked
+                        )
+                })
+        })
+        .filter(|turn| {
+            app.prompt_state_owner
+                .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+                .is_some_and(|prompt| prompt.id() == turn.prompt_id)
+        })
+        .filter_map(|turn| {
+            let elapsed_ms = now_ms.saturating_sub(turn.started_at_ms);
+            (elapsed_ms >= timeout_ms).then_some(AppFirstOutputTimeoutCandidate {
+                provider_run_id: turn.provider_run_id,
+                agent_id: turn.agent_id,
+                elapsed_ms,
+            })
+        })
+        .collect()
+}
+
+fn provider_first_output_timeout_diagnostic(elapsed_ms: u64) -> String {
+    format!(
+        "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
+        elapsed_ms / 1000
+    )
 }
 
 fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> Vec<String> {
@@ -173,6 +300,8 @@ impl<'a> ProviderOutputPump<'a> {
         request: ProviderOutputPumpRequest<'_>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         self.context.reap_structured_prompt_jobs();
+        self.context
+            .reap_provider_first_output_timeouts(request.session_id)?;
         if !request.initial_liveness_already_checked
             && self
                 .context
@@ -377,6 +506,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
 
     fn reap_structured_prompt_jobs(&mut self) {
         reap_structured_prompt_jobs(self.app);
+    }
+
+    fn reap_provider_first_output_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        reap_provider_first_output_timeouts(self.app, session_id)
     }
 
     fn reconcile_provider_run_exit(

@@ -183,6 +183,100 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
 }
 
 #[test]
+fn compatibility_output_pump_reaps_first_output_timeout() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-first-output-timeout",
+            "worktree-first-output-timeout",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-first-output-timeout",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "slow-structured",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "start but never answer\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    let prompt_id = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .expect("active prompt should exist")
+        .id()
+        .to_string();
+    let mut timed_out_turn = crate::app::ActiveTurnState::new(
+        session.id().to_string(),
+        agent.id().to_string(),
+        prompt_id,
+        run.id().to_string(),
+    )
+    .with_phase(crate::app::ActiveTurnPhase::AwaitingFirstOutput);
+    timed_out_turn.started_at_ms = crate::session::unix_epoch_ms().saturating_sub(11 * 60 * 1000);
+    app.active_turn_store().start(timed_out_turn);
+
+    let records = crate::app::provider_output::pump_terminal_output_for_attachment(
+        &mut app,
+        session.id(),
+        attachment.id(),
+    )
+    .expect("compatibility pump should reap silent timeout");
+
+    assert!(
+        records.is_empty(),
+        "first-output timeout emits a runtime notice, not provider output"
+    );
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_none(),
+        "silent provider timeout must close the active prompt"
+    );
+    let run = app
+        .providers()
+        .get_run(run.id())
+        .expect("provider run should still exist");
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
+    let notices = app
+        .terminal_mut()
+        .drain_notice_records(session.id(), attachment.id());
+    assert!(
+        notices.iter().any(|record| record
+            .message
+            .contains("Provider prompt produced no output")),
+        "timeout diagnostic should be visible to attached clients"
+    );
+}
+
+#[test]
 fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
