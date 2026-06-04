@@ -7,6 +7,7 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomControlActivationDecision,
+  deriveWaitingRoomCreateSessionDecision,
   deriveWaitingRoomDeleteDecision,
   deriveWaitingRoomKeyNavigationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -128,6 +129,57 @@ test("waiting room activation stages create-worktree selections for session crea
       }),
       "/workspace-created",
     )
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+test("waiting room activation blocks stale reusable slice selections for new sessions", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      {
+        id: "existing:/workspace",
+        kind: "existing",
+        label: "main",
+        path: "/workspace",
+        branch: "main",
+        isCurrent: true,
+      },
+    ],
+  })
+  const catalog = fallbackProviderCatalog()
+  try {
+    const state = {
+      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
+      sliceSelectionId: "deleted-slice",
+    }
+
+    const decision = deriveWaitingRoomActivationDecision({
+      state,
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+      remote: { slices: [] },
+    })
+    const explicitCreate = deriveWaitingRoomCreateSessionDecision({
+      state,
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+      remote: { slices: [] },
+    })
+
+    assert.deepEqual(decision, {
+      action: "error",
+      message: "Selected slice is unavailable for this worktree/kernel. Choose an available slice, new slice, or off.",
+    })
+    assert.deepEqual(explicitCreate, {
+      action: "error",
+      message: "Selected slice is unavailable for this worktree/kernel. Choose an available slice, new slice, or off.",
+    })
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }

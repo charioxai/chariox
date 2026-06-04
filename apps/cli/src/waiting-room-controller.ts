@@ -13,7 +13,9 @@ import {
   waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
+import { waitingRoomLaunchPlacement } from "./waiting-room-runtime-placement.js"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
+import { waitingRoomSliceSelectionUnavailable, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
@@ -270,6 +272,10 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
     }
+    const staleSlice = waitingRoomUnavailableSliceMessage(options.state, options.remote)
+    if (staleSlice) {
+      return { action: "error", message: staleSlice }
+    }
     return { action: "create", launch }
   }
 
@@ -298,6 +304,10 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
   }
+  const staleSlice = waitingRoomUnavailableSliceMessage(options.state, options.remote)
+  if (staleSlice) {
+    return { action: "error", message: staleSlice }
+  }
   return {
     action: "create",
     launch: {
@@ -310,6 +320,21 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
       ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
     },
   }
+}
+
+function waitingRoomUnavailableSliceMessage(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState | undefined,
+): string | null {
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  const slices = waitingRoomSlices(remote, {
+    worktreeSelectionId: state.worktreeSelectionId,
+    selectedMachineRef: placement.machineRef,
+    selectedKernelRef: placement.kernelRef,
+  })
+  return waitingRoomSliceSelectionUnavailable(state.sliceSelectionId, slices)
+    ? "Selected slice is unavailable for this worktree/kernel. Choose an available slice, new slice, or off."
+    : null
 }
 
 export function deriveWaitingRoomControlActivationDecision(options: {

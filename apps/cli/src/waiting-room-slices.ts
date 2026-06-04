@@ -39,9 +39,8 @@ export function normalizeWaitingRoomSliceSelectionId(selectionId: string | null 
   if (normalized === "new" || normalized === "new:headless" || normalized === "new:headed") {
     return "new"
   }
-  return waitingRoomSliceOptions(slices).some((option) => option.id === normalized)
-    ? normalized
-    : "none"
+  const slice = waitingRoomSelectedSlice(normalized, slices)
+  return slice?.id ?? normalized
 }
 
 export function waitingRoomSelectedSlice(selectionId: string | null | undefined, slices: SliceRecord[]) {
@@ -64,6 +63,15 @@ export function selectedWaitingRoomSliceCreateMode(
     : null
 }
 
+export function waitingRoomSliceSelectionUnavailable(selectionId: string | null | undefined, slices: SliceRecord[]) {
+  const normalized = selectionId?.trim() || "none"
+  return normalized !== "none"
+    && normalized !== "new"
+    && normalized !== "new:headless"
+    && normalized !== "new:headed"
+    && !waitingRoomSelectedSlice(normalized, slices)
+}
+
 export function formatWaitingRoomSliceSelection(
   selectionId: string | null | undefined,
   slices: SliceRecord[],
@@ -73,7 +81,10 @@ export function formatWaitingRoomSliceSelection(
     return displayMode === "headed" ? "new headed" : "new headless"
   }
   const slice = waitingRoomSelectedSlice(selectionId, slices)
-  return slice ? formatWaitingRoomSliceOption(slice) : "off"
+  if (slice) {
+    return formatWaitingRoomSliceOption(slice)
+  }
+  return waitingRoomSliceSelectionUnavailable(selectionId, slices) ? "reuse unavailable" : "off"
 }
 
 export function formatWaitingRoomSliceLabel(slice: SliceRecord) {

@@ -34,11 +34,12 @@ test("waiting room slices sort by display label and project options", () => {
   ])
 })
 
-test("waiting room slice selection normalizes ids without accepting labels", () => {
+test("waiting room slice selection normalizes ids and labels while preserving stale refs", () => {
   const slices = waitingRoomSlices({ slices: [slice({ id: "slice-1", name: "linux-dev" })] })
 
   assert.equal(normalizeWaitingRoomSliceSelectionId(" slice-1 ", slices), "slice-1")
-  assert.equal(normalizeWaitingRoomSliceSelectionId("linux-dev", slices), "none")
+  assert.equal(normalizeWaitingRoomSliceSelectionId("linux-dev", slices), "slice-1")
+  assert.equal(normalizeWaitingRoomSliceSelectionId("deleted-slice", slices), "deleted-slice")
   assert.equal(normalizeWaitingRoomSliceSelectionId(null, slices), "none")
 })
 
@@ -56,6 +57,7 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
   assert.equal(formatWaitingRoomSliceSelection("new", slices), "new headless")
   assert.equal(formatWaitingRoomSliceSelection("new", slices, "headed"), "new headed")
+  assert.equal(formatWaitingRoomSliceSelection("deleted-slice", slices), "reuse unavailable")
   assert.equal(cycleWaitingRoomSliceSelectionId("none", slices, 1), "new:headless")
   assert.equal(cycleWaitingRoomSliceSelectionId("new", slices, 1), "new:headed")
   assert.equal(cycleWaitingRoomSliceSelectionId("new:headed", slices, 1), "slice-1")
