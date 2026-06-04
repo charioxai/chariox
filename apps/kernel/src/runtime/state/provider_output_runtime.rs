@@ -6,6 +6,7 @@
 use super::*;
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: std::time::Duration = std::time::Duration::from_millis(50);
+const PROVIDER_FIRST_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl KernelRuntimeState {
     pub(super) async fn pump_owned_provider_output(
@@ -17,6 +18,7 @@ impl KernelRuntimeState {
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
+        self.reap_provider_first_output_timeouts(session_id).await?;
         if !initial_liveness_already_checked
             && self
                 .reconcile_provider_run_exit(session_id, provider_run_id)
@@ -183,6 +185,7 @@ impl KernelRuntimeState {
     > {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
+        self.reap_provider_first_output_timeouts(session_id).await?;
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
         let session = owned.session_store.get_session(session_id)?;
         let provider_run_ids = provider_run_ids_for_owned_output_pump(owned, &session);
@@ -218,6 +221,113 @@ impl KernelRuntimeState {
         let session = owned.session_snapshot(session_id).ok();
         Ok((records, session))
     }
+
+    async fn reap_provider_first_output_timeouts(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let timed_out = first_output_timeout_candidates(&self.owned, session_id);
+        for timeout in timed_out {
+            let diagnostic = format!(
+                "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
+                timeout.elapsed_ms / 1000
+            );
+            let run = self
+                .owned
+                .provider_store
+                .record_terminal_diagnostic(&timeout.provider_run_id, diagnostic.clone())?;
+            self.owned.provider_run_projection.update(run);
+            let recipients = self
+                .owned
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            self.owned.record_notice(
+                session_id,
+                Some(&timeout.provider_run_id),
+                recipients,
+                diagnostic.clone(),
+            );
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "provider prompt produced no first output before timeout",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": timeout.agent_id,
+                    "provider_run_id": timeout.provider_run_id,
+                    "elapsed_ms": timeout.elapsed_ms,
+                }),
+            );
+            self.fail_owned_provider_prompt(session_id, &timeout.provider_run_id, &diagnostic)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FirstOutputTimeoutCandidate {
+    provider_run_id: String,
+    agent_id: String,
+    elapsed_ms: u64,
+}
+
+fn first_output_timeout_candidates(
+    owned: &KernelRuntimeOwnedState,
+    session_id: &str,
+) -> Vec<FirstOutputTimeoutCandidate> {
+    let now_ms = crate::session::unix_epoch_ms();
+    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+    let prompt_activity = owned.prompt_activity.read().clone();
+    let active_turns = owned.active_turns.snapshot();
+    let Ok(session) = owned.session_store.get_session(session_id) else {
+        return Vec::new();
+    };
+    active_turns
+        .into_values()
+        .filter(|turn| turn.session_id == session_id)
+        .filter(|turn| {
+            matches!(
+                turn.phase,
+                crate::app::ActiveTurnPhase::Accepted
+                    | crate::app::ActiveTurnPhase::AwaitingFirstOutput
+            )
+        })
+        .filter(|turn| {
+            prompt_activity
+                .get(&turn.provider_run_id)
+                .is_some_and(|activity| !activity.saw_response_content)
+        })
+        .filter(|turn| {
+            owned
+                .provider_store
+                .get_run(&turn.provider_run_id)
+                .is_ok_and(|run| {
+                    run.session_id() == session_id
+                        && run.agent_instance_id() == Some(turn.agent_id.as_str())
+                        && run.terminal_diagnostic().is_none()
+                        && matches!(
+                            run.state(),
+                            crate::provider::ProviderRunState::Starting
+                                | crate::provider::ProviderRunState::Running
+                                | crate::provider::ProviderRunState::Parked
+                        )
+                })
+        })
+        .filter(|turn| {
+            owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &turn.agent_id)
+                .is_some_and(|prompt| prompt.id() == turn.prompt_id)
+        })
+        .filter_map(|turn| {
+            let elapsed_ms = now_ms.saturating_sub(turn.started_at_ms);
+            (elapsed_ms >= timeout_ms).then_some(FirstOutputTimeoutCandidate {
+                provider_run_id: turn.provider_run_id,
+                agent_id: turn.agent_id,
+                elapsed_ms,
+            })
+        })
+        .collect()
 }
 
 pub(super) fn provider_run_ids_for_owned_output_pump(
