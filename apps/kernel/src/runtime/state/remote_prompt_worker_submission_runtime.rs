@@ -141,6 +141,7 @@ fn remote_git_turn_context(
         home_agent_id: dispatch.agent_id.clone(),
         home_prompt_id: dispatch.prompt_id.clone(),
         home_turn_id: dispatch.prompt_id.clone(),
+        workspace_live_sync_mode: dispatch.workspace_live_sync_mode,
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             &dispatch.prompt,
             &dispatch.attachments,

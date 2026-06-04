@@ -67,6 +67,13 @@ impl KernelRuntimeOwnedState {
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
                     attachments: prompt.attachments().to_vec(),
+                    workspace_live_sync_mode: Some(
+                        crate::provider::provider_workspace_live_sync_mode_for_session(
+                            target_agent.provider(),
+                            &self.config_projection.snapshot(),
+                            Some(&session),
+                        ),
+                    ),
                     workflow_context: None,
                 })
             } else {

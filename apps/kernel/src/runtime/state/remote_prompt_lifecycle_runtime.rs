@@ -245,6 +245,7 @@ impl KernelRuntimeState {
                                 attachments,
                                 workflow_context,
                                 git_context: Some(remote_git_turn_context_for_prompt(
+                                    app,
                                     session_id,
                                     target_agent_id,
                                     started_next,
@@ -297,15 +298,30 @@ fn remote_prompt_completion_should_wait_for_binding_repair(
 }
 
 fn remote_git_turn_context_for_prompt(
+    app: &crate::app::DaemonApp,
     session_id: &str,
     agent_id: &str,
     prompt: &crate::session::PromptQueueItem,
 ) -> crate::transport::relay_peer::RemoteGitTurnContext {
+    let workspace_live_sync_mode =
+        app.sessions()
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                app.agents().get_agent(agent_id).ok().map(|agent| {
+                    crate::provider::provider_workspace_live_sync_mode_for_session(
+                        agent.provider(),
+                        app.config(),
+                        Some(&session),
+                    )
+                })
+            });
     crate::transport::relay_peer::RemoteGitTurnContext {
         home_session_id: session_id.to_string(),
         home_agent_id: agent_id.to_string(),
         home_prompt_id: prompt.id().to_string(),
         home_turn_id: prompt.id().to_string(),
+        workspace_live_sync_mode,
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             prompt.prompt(),
             prompt.attachments(),

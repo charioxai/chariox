@@ -8,6 +8,22 @@ use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{PromptAttachment, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
+fn remote_workspace_live_sync_mode_for_submission(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<crate::config::WorkspaceLiveSyncMode> {
+    let session = app.sessions().get_session(session_id).ok()?;
+    let agent = app.agents().get_agent(agent_id).ok()?;
+    Some(
+        crate::provider::provider_workspace_live_sync_mode_for_session(
+            agent.provider(),
+            app.config(),
+            Some(&session),
+        ),
+    )
+}
+
 impl<'a> KernelAgentService<'a> {
     pub(crate) fn submit_prepared_prompt_for_kernel(
         &mut self,
@@ -252,6 +268,11 @@ impl<'a> KernelAgentService<'a> {
                 source_attachment_id: prompt.source_attachment_id().to_string(),
                 prompt: prompt.prompt().to_string(),
                 attachments: prompt.attachments().to_vec(),
+                workspace_live_sync_mode: remote_workspace_live_sync_mode_for_submission(
+                    self.app,
+                    &submitted.admission.session_id,
+                    &submitted.admission.target_agent_id,
+                ),
                 workflow_context: None,
             });
         }

@@ -36,6 +36,13 @@ pub(super) fn dispatch_workflow_prompt(
 ) -> Result<(), DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+        let session = app.sessions().get_session(session_id)?;
+        let workspace_live_sync_mode =
+            crate::provider::provider_workspace_live_sync_mode_for_session(
+                target_agent.provider(),
+                app.config(),
+                Some(&session),
+            );
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(app)
             .remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
         let remote_extension_manifest = app.remote_extension_manifest_for_agent(&target_agent)?;
@@ -55,6 +62,7 @@ pub(super) fn dispatch_workflow_prompt(
                     home_agent_id: target_agent_id.to_string(),
                     home_prompt_id: prompt.id().to_string(),
                     home_turn_id: prompt.id().to_string(),
+                    workspace_live_sync_mode: Some(workspace_live_sync_mode),
                     prompt_summary: crate::prompt_transcript::render_prompt_transcript(
                         prompt.prompt(),
                         prompt.attachments(),

@@ -3,9 +3,12 @@ use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
+    RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
+    RelayProjectedOutputChunk, RelayProjectedPrompt,
 };
+use arroba_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
@@ -400,6 +403,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .get_agent(agent_id)?
                 .remote_execution()
                 .cloned();
+            if let Some(remote_execution) = remote_execution.as_ref() {
+                self.harvest_remote_completion_observations(remote_execution, provider_run_id);
+            }
             let completed = self
                 .app
                 .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
@@ -478,6 +484,73 @@ impl<'a> RemoteLeaseRuntime<'a> {
             crate::transport::flow_control::note_prompt_started(self.app, provider_run_id);
         }
         Ok(())
+    }
+
+    fn harvest_remote_completion_observations(
+        &mut self,
+        remote_execution: &crate::agent::RemoteAgentBinding,
+        provider_run_id: &str,
+    ) {
+        let relay_config = self.app.relay_config_for_remote_execution(remote_execution);
+        let response = self
+            .app
+            .block_on_relay_future(send_peer_request_via_temporary_connection(
+                &relay_config,
+                ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::ObserveLeasedGitAfter {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    provider_run_id: provider_run_id.to_string(),
+                },
+            ));
+        match response {
+            Ok(RelayPeerResponse::LeasedGitObserved {
+                git_observations,
+                workspace_live_sync_change,
+                ..
+            }) => {
+                if let Err(error) = crate::git_observer::append_observations(
+                    &self.app.operational_history_store(),
+                    git_observations,
+                ) {
+                    crate::logging::warn_with_fields(
+                        "daemon.git_observer",
+                        "failed to append projected remote git observations",
+                        serde_json::json!({
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                if let Some(change) = workspace_live_sync_change {
+                    self.app.fanout_remote_workspace_live_sync_change(
+                        change,
+                        Some(&remote_execution.worker_kernel_id),
+                    );
+                }
+            }
+            Ok(other) => crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "unexpected projected remote completion harvest response",
+                serde_json::json!({
+                    "worker_kernel_id": remote_execution.worker_kernel_id,
+                    "leased_agent_id": remote_execution.leased_agent_id,
+                    "response": format!("{other:?}"),
+                }),
+            ),
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "failed to harvest projected remote completion observations",
+                serde_json::json!({
+                    "worker_kernel_id": remote_execution.worker_kernel_id,
+                    "leased_agent_id": remote_execution.leased_agent_id,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
     }
 }
 

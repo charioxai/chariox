@@ -103,6 +103,7 @@ pub(super) async fn handle_daemon_peer_request(
             effort,
             execution_mode,
             permission_level,
+            workspace_live_sync_mode,
             worktree_id,
             worktree_placement,
         } => {
@@ -114,6 +115,7 @@ pub(super) async fn handle_daemon_peer_request(
                     effort,
                     execution_mode,
                     permission_level,
+                    workspace_live_sync_mode,
                     worktree_id,
                     worktree_placement,
                 )
@@ -344,6 +346,27 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ObserveLeasedGitAfter {
+            leased_agent_id,
+            provider_run_id,
+        } => match router
+            .relay_observe_leased_git_after(&leased_agent_id, &provider_run_id)
+            .await
+        {
+            Ok((git_observations, workspace_live_sync_change)) => {
+                RelayPeerResponse::LeasedGitObserved {
+                    provider_run_id,
+                    git_observations,
+                    workspace_live_sync_change,
+                }
+            }
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
         RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
             let cancellation = router.relay_cancel_leased_prompt(&leased_agent_id).await;
             match cancellation {

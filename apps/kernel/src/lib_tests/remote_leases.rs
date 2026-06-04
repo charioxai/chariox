@@ -50,6 +50,7 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
             None,
             None,
             None,
+            None,
             Some(worktree.display().to_string()),
             None,
         )
@@ -75,6 +76,68 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
 }
 
 #[test]
+fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .expect("execution lease should be created");
+    let worktree = std::env::temp_dir().join(format!(
+        "arroba-leased-agent-wls-mode-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "opencode",
+            Some("kimi2.5".to_string()),
+            None,
+            None,
+            None,
+            Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("leased agent should be created");
+    let backing_session = app
+        .sessions()
+        .get_session(&leased_agent.backing_session_id)
+        .expect("backing session should exist");
+    assert_eq!(
+        backing_session.workspace_live_sync_mode(),
+        Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+    );
+
+    let reused_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "opencode",
+            Some("kimi2.5".to_string()),
+            None,
+            None,
+            None,
+            Some(crate::config::WorkspaceLiveSyncMode::Managed),
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("leased agent should reuse backing session");
+    assert_eq!(
+        reused_agent.backing_session_id,
+        leased_agent.backing_session_id
+    );
+    let backing_session = app
+        .sessions()
+        .get_session(&reused_agent.backing_session_id)
+        .expect("backing session should exist");
+    assert_eq!(
+        backing_session.workspace_live_sync_mode(),
+        Some(crate::config::WorkspaceLiveSyncMode::Managed)
+    );
+}
+
+#[test]
 fn leased_agents_reject_missing_working_directory() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -91,6 +154,7 @@ fn leased_agents_reject_missing_working_directory() {
             &lease.id,
             "opencode",
             Some("kimi2.5".to_string()),
+            None,
             None,
             None,
             None,
@@ -138,6 +202,7 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
             None,
             None,
             None,
+            None,
             Some(target.display().to_string()),
             Some(GitWorktreePlacement {
                 target_directory: Some(target.display().to_string()),
@@ -173,6 +238,7 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
             &lease.id,
             "managed-dev-stub",
             Some("sonnet".to_string()),
+            None,
             None,
             None,
             None,
@@ -243,6 +309,7 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
             None,
             None,
             None,
+            None,
         )
         .expect("leased agent should be created");
 
@@ -291,6 +358,7 @@ fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
             &lease.id,
             "managed-dev-stub",
             Some("sonnet".to_string()),
+            None,
             None,
             None,
             None,

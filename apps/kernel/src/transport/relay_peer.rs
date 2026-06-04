@@ -92,6 +92,8 @@ pub struct RemoteGitTurnContext {
     pub home_agent_id: String,
     pub home_prompt_id: String,
     pub home_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     pub prompt_summary: String,
 }
 
@@ -174,6 +176,8 @@ pub enum RelayPeerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_level: Option<crate::provider::AgentPermissionLevel>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_placement: Option<GitWorktreePlacement>,
@@ -235,6 +239,10 @@ pub enum RelayPeerRequest {
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
+    },
+    ObserveLeasedGitAfter {
+        leased_agent_id: String,
+        provider_run_id: String,
     },
     CancelLeasedPrompt {
         leased_agent_id: String,
@@ -341,6 +349,13 @@ pub enum RelayPeerResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_live_sync_change: Option<crate::git_observer::WorkspaceLiveSyncChange>,
         completion: PromptCompletion,
+    },
+    LeasedGitObserved {
+        provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        git_observations: Vec<RemoteGitObservation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_live_sync_change: Option<crate::git_observer::WorkspaceLiveSyncChange>,
     },
     LeasedPromptCancelled {
         cancellation: PromptCancellation,

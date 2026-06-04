@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::*;
@@ -332,8 +332,61 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
-        self.owned
+        let mut results = self
+            .owned
             .workspace_live_sync_journal
-            .target_results_for_session(session_id)
+            .target_results_for_session(session_id);
+        match self.owned.durable_state_store.load_events_after(0) {
+            Ok(events) => {
+                for event in events {
+                    if event.kind != "workspace_live_sync.target_results_recorded"
+                        || event.subject_id.as_deref() != Some(session_id)
+                    {
+                        continue;
+                    }
+                    match event.payload.get("target_results").cloned().map(
+                        serde_json::from_value::<
+                            Vec<crate::git_observer::WorkspaceLiveSyncTargetResult>,
+                        >,
+                    ) {
+                        Some(Ok(mut persisted)) => results.append(&mut persisted),
+                        Some(Err(error)) => crate::logging::warn_with_fields(
+                            "daemon.workspace_live_sync",
+                            "failed to decode persisted workspace live sync target results",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "event_id": event.event_id,
+                                "error": error.to_string(),
+                            }),
+                        ),
+                        None => {}
+                    }
+                }
+            }
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.workspace_live_sync",
+                "failed to load persisted workspace live sync target results",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+        let mut seen = BTreeSet::new();
+        results
+            .into_iter()
+            .filter(|result| {
+                let key = serde_json::to_string(result).unwrap_or_else(|_| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        result.session_id,
+                        result.link_id,
+                        result.source_agent_id,
+                        result.target_repo_root
+                    )
+                });
+                seen.insert(key)
+            })
+            .collect()
     }
 }

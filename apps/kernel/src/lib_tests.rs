@@ -70,7 +70,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 108);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -148,8 +148,54 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 }
 
 #[test]
+fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
+
+    let spawn = RelayPeerRequest::SpawnLeasedAgent {
+        lease_id: "lease-1".to_string(),
+        provider: "codex".to_string(),
+        model: Some("gpt-5.5".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+        worktree_id: Some("/worker/repo".to_string()),
+        worktree_placement: None,
+    };
+    let submit = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        prompt: "edit a file".to_string(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            home_prompt_id: "prompt-1".to_string(),
+            home_turn_id: "prompt-1".to_string(),
+            workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            prompt_summary: "edit a file".to_string(),
+        }),
+        required_mcps: Vec::new(),
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+    };
+    let snapshot = serde_json::json!([spawn, submit]);
+    assert_eq!(
+        snapshot.pointer("/0/kind"),
+        Some(&serde_json::json!("spawn_leased_agent"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/workspace_live_sync_mode"),
+        Some(&serde_json::json!("tracked"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/git_context/workspace_live_sync_mode"),
+        Some(&serde_json::json!("tracked"))
+    );
+}
+
+#[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 108);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
 
     let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext {

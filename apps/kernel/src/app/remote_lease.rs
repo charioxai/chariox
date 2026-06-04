@@ -83,6 +83,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         effort: Option<String>,
         execution_mode: Option<crate::provider::AgentExecutionMode>,
         permission_level: Option<crate::provider::AgentPermissionLevel>,
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
         worktree_id: Option<String>,
         worktree_placement: Option<GitWorktreePlacement>,
     ) -> Result<LeasedAgent, DaemonError> {
@@ -151,12 +152,29 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && session.owner_user_id() == lease.owner_user_id
             });
         let session = match existing_session {
-            Some(session) => session,
-            None => self.app.sessions.create_session(
-                CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
+            Some(session) => {
+                if let Some(mode) = workspace_live_sync_mode {
+                    if session.workspace_live_sync_mode() != Some(mode) {
+                        self.app
+                            .sessions
+                            .write()
+                            .set_workspace_live_sync_mode(session.id(), mode)?
+                    } else {
+                        session
+                    }
+                } else {
+                    session
+                }
+            }
+            None => {
+                let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
                     .with_hidden(true)
-                    .with_owner_user_id(lease.owner_user_id.clone()),
-            )?,
+                    .with_owner_user_id(lease.owner_user_id.clone());
+                if let Some(mode) = workspace_live_sync_mode {
+                    request = request.with_workspace_live_sync_mode(mode);
+                }
+                self.app.sessions.create_session(request)?
+            }
         };
         let session_store = self.app.session_state_store();
         let attachment = {

@@ -34,6 +34,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let Some(worktree_path) = worktree_path else {
             return;
         };
+        let workspace_live_sync_tracked = git_context
+            .workspace_live_sync_mode
+            .is_some_and(|mode| mode == crate::config::WorkspaceLiveSyncMode::Tracked)
+            || provider_run.tracks_workspace_live_sync();
         let context = crate::git_observer::GitTurnContext {
             session_id: git_context.home_session_id,
             agent_id: git_context.home_agent_id,
@@ -47,7 +51,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             prompt_id: git_context.home_prompt_id,
             turn_id: git_context.home_turn_id,
             worktree_path,
-            workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
+            workspace_live_sync_tracked,
             machine_id: Some(lease.machine_id),
             prompt_summary: git_context.prompt_summary,
         };
@@ -97,14 +101,56 @@ impl<'a> RemoteLeaseRuntime<'a> {
             machine_id: before.machine_id.clone(),
             prompt_summary: before.prompt_summary.clone(),
         };
-        let Some(after) = crate::git_observer::capture_turn_snapshot(after_context) else {
-            return Ok((Vec::new(), None));
-        };
-        let tracked_change = if before.workspace_live_sync_tracked {
-            crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+        let retry_delays_ms: &[u64] = if before.workspace_live_sync_tracked {
+            &[50, 150, 300, 500]
         } else {
-            None
+            &[]
         };
+        let mut attempts = 0usize;
+        let (after, tracked_change) = loop {
+            let Some(after) = crate::git_observer::capture_turn_snapshot(after_context.clone())
+            else {
+                if attempts >= retry_delays_ms.len() {
+                    return Ok((Vec::new(), None));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
+                attempts += 1;
+                continue;
+            };
+            let tracked_change = if before.workspace_live_sync_tracked {
+                crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+            } else {
+                None
+            };
+            let should_retry = before.workspace_live_sync_tracked && tracked_change.is_none();
+            if !should_retry || attempts >= retry_delays_ms.len() {
+                break (after, tracked_change);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
+            attempts += 1;
+        };
+        if let Some(change) = tracked_change.as_ref() {
+            crate::logging::info_with_fields(
+                "daemon.workspace_live_sync",
+                "recorded remote tracked workspace live sync turn change",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "changed_path_count": change.changed_paths.len(),
+                    "retry_attempts": attempts,
+                }),
+            );
+        } else if before.workspace_live_sync_tracked {
+            crate::logging::info_with_fields(
+                "daemon.workspace_live_sync",
+                "remote tracked workspace live sync turn had no changed paths",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "retry_attempts": attempts,
+                    "before_status_fingerprint": before.status_fingerprint.as_str(),
+                    "after_status_fingerprint": after.status_fingerprint.as_str(),
+                }),
+            );
+        }
         Ok((
             crate::git_observer::observations_after_turn(before, after, candidates),
             tracked_change,

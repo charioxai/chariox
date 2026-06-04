@@ -9,6 +9,22 @@ use arroba_relay::protocol::ClientTarget;
 use super::super::KernelAgentService;
 use super::completion::{KernelPromptCompletionAdmission, KernelPromptOwnerCompletion};
 
+fn remote_workspace_live_sync_mode_for_agent(
+    app: &DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<crate::config::WorkspaceLiveSyncMode> {
+    let session = app.sessions().get_session(session_id).ok()?;
+    let agent = app.agents().get_agent(agent_id).ok()?;
+    Some(
+        crate::provider::provider_workspace_live_sync_mode_for_session(
+            agent.provider(),
+            app.config(),
+            Some(&session),
+        ),
+    )
+}
+
 fn remote_git_turn_context(
     dispatch: &KernelRemotePromptDispatch,
 ) -> crate::transport::relay_peer::RemoteGitTurnContext {
@@ -17,6 +33,7 @@ fn remote_git_turn_context(
         home_agent_id: dispatch.agent_id.clone(),
         home_prompt_id: dispatch.prompt_id.clone(),
         home_turn_id: dispatch.prompt_id.clone(),
+        workspace_live_sync_mode: dispatch.workspace_live_sync_mode,
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             &dispatch.prompt,
             &dispatch.attachments,
@@ -38,6 +55,7 @@ fn remote_dispatch_relay_config(
 }
 
 fn remote_git_turn_context_for_prompt(
+    app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
     prompt: &PromptQueueItem,
@@ -47,6 +65,9 @@ fn remote_git_turn_context_for_prompt(
         home_agent_id: agent_id.to_string(),
         home_prompt_id: prompt.id().to_string(),
         home_turn_id: prompt.id().to_string(),
+        workspace_live_sync_mode: remote_workspace_live_sync_mode_for_agent(
+            app, session_id, agent_id,
+        ),
         prompt_summary: crate::prompt_transcript::render_prompt_transcript(
             prompt.prompt(),
             prompt.attachments(),
@@ -195,12 +216,19 @@ impl<'a> KernelAgentService<'a> {
                 RelayPeerResponse::LeasedPromptCompleted {
                     provider_run_id,
                     git_observations,
+                    workspace_live_sync_change,
                     ..
                 } => {
                     let _ = crate::git_observer::append_observations(
                         &self.app.operational_history_store(),
                         git_observations,
                     )?;
+                    if let Some(change) = workspace_live_sync_change {
+                        self.app.fanout_remote_workspace_live_sync_change(
+                            change,
+                            Some(&remote_execution.worker_kernel_id),
+                        );
+                    }
                     provider_run_id
                 }
                 other => {
@@ -356,7 +384,7 @@ impl<'a> KernelAgentService<'a> {
                                 None
                             },
                             git_context: Some(remote_git_turn_context_for_prompt(
-                                session_id, agent_id, &peeked,
+                                self.app, session_id, agent_id, &peeked,
                             )),
                             required_mcps: Vec::new(),
                             remote_extension_manifest,

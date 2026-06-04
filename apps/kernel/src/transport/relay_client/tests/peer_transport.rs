@@ -535,6 +535,7 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
             effort: Some("medium".to_string()),
             execution_mode: None,
             permission_level: None,
+            workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
             worktree_id: None,
             worktree_placement: None,
         },

@@ -102,6 +102,7 @@ impl CommandRouter {
         effort: Option<String>,
         execution_mode: Option<crate::provider::AgentExecutionMode>,
         permission_level: Option<crate::provider::AgentPermissionLevel>,
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
         worktree_id: Option<String>,
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
@@ -113,6 +114,7 @@ impl CommandRouter {
             effort,
             execution_mode,
             permission_level,
+            workspace_live_sync_mode,
             worktree_id,
             worktree_placement,
         )

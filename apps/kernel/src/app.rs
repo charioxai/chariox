@@ -33,6 +33,7 @@ mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
+mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;

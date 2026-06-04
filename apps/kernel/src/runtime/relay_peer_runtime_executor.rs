@@ -87,6 +87,7 @@ pub(crate) async fn create_relay_leased_agent(
     effort: Option<String>,
     execution_mode: Option<AgentExecutionMode>,
     permission_level: Option<AgentPermissionLevel>,
+    workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     worktree_id: Option<String>,
     worktree_placement: Option<GitWorktreePlacement>,
 ) -> Result<LeasedAgent, DaemonError> {
@@ -98,6 +99,7 @@ pub(crate) async fn create_relay_leased_agent(
             effort,
             execution_mode,
             permission_level,
+            workspace_live_sync_mode,
             worktree_id,
             worktree_placement,
         )

@@ -55,15 +55,12 @@ fn dirty_change_after_turn(
     let repo_root = PathBuf::from(&before.repo_root);
     let worktree_path = PathBuf::from(&after.worktree_path);
     let revision = before.head_sha.as_deref().unwrap_or("HEAD");
-    let mut paths = before
+    let paths = before
         .workspace_live_sync_file_snapshots
         .keys()
         .chain(after.workspace_live_sync_file_snapshots.keys())
         .cloned()
         .collect::<BTreeSet<_>>();
-    for change in path_changes(&after.status_fingerprint, &worktree_path) {
-        paths.insert(change.path);
-    }
     let mut file_changes = Vec::new();
     for path in paths {
         let before_snapshot = before_file_snapshot(before, &repo_root, revision, &path);

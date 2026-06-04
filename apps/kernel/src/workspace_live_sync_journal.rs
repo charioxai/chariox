@@ -201,3 +201,129 @@ pub enum WorkspaceLiveSyncApplyStatus {
     SkippedConflict,
     FailedIo,
 }
+
+pub(crate) fn workspace_live_sync_notice_messages(
+    change: &WorkspaceLiveSyncChange,
+    target_results: &[WorkspaceLiveSyncTargetResult],
+) -> Vec<String> {
+    if target_results.is_empty() {
+        return Vec::new();
+    }
+    let mode_label = if change.status_fingerprint == "managed_workspace_live_sync" {
+        "managed"
+    } else {
+        "tracked turn"
+    };
+    let mut applied_targets = 0usize;
+    let mut rebased_count = 0usize;
+    let mut conflict_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut target_details = Vec::new();
+    let mut notices = Vec::new();
+    for target_result in target_results {
+        let mut target_has_applied = false;
+        for path_result in &target_result.path_results {
+            match path_result.status {
+                WorkspaceLiveSyncApplyStatus::Applied => {
+                    target_has_applied = true;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "applied",
+                    ));
+                }
+                WorkspaceLiveSyncApplyStatus::Rebased => {
+                    target_has_applied = true;
+                    rebased_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "rebased",
+                    ));
+                }
+                WorkspaceLiveSyncApplyStatus::SkippedConflict => {
+                    conflict_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "conflict",
+                    ));
+                    notices.push(format!(
+                        "Workspace live sync conflict: source agent `{}` changed `{}` but target user `{}` worktree `{}` could not apply it: {}. Next action: assign a resolver agent to reread and reconcile the target worktree.",
+                        change.agent_id,
+                        path_result.path,
+                        target_result.target_user_id,
+                        target_result.target_repo_root,
+                        path_result.message
+                    ));
+                }
+                WorkspaceLiveSyncApplyStatus::FailedIo => {
+                    failed_count += 1;
+                    target_details.push(workspace_live_sync_target_detail(
+                        target_result,
+                        path_result,
+                        "failed_io",
+                    ));
+                    notices.push(format!(
+                        "Workspace live sync failed: source agent `{}` changed `{}` but target user `{}` worktree `{}` could not apply it: {}. Next action: verify the target worktree is attached and writable, then ask a resolver agent to recheck and re-edit if needed.",
+                        change.agent_id,
+                        path_result.path,
+                        target_result.target_user_id,
+                        target_result.target_repo_root,
+                        path_result.message
+                    ));
+                }
+            }
+        }
+        if target_has_applied {
+            applied_targets += 1;
+        }
+    }
+    let next_action = if conflict_count > 0 || failed_count > 0 {
+        "review the listed conflict/failure notices and assign a resolver agent where needed"
+    } else {
+        "none"
+    };
+    notices.push(format!(
+        "Workspace live sync {} summary: source agent `{}` changed {} path{}; applied to {} target{}; rebased={}; conflicts={}; failed_io={}; target results: {}; Next action: {}.",
+        mode_label,
+        change.agent_id,
+        change.changed_paths.len(),
+        if change.changed_paths.len() == 1 { "" } else { "s" },
+        applied_targets,
+        if applied_targets == 1 { "" } else { "s" },
+        rebased_count,
+        conflict_count,
+        failed_count,
+        workspace_live_sync_target_details_summary(&target_details),
+        next_action
+    ));
+    notices
+}
+
+fn workspace_live_sync_target_detail(
+    target_result: &WorkspaceLiveSyncTargetResult,
+    path_result: &WorkspaceLiveSyncPathApplyResult,
+    status: &str,
+) -> String {
+    format!(
+        "target user `{}` worktree `{}` path `{}` {}",
+        target_result.target_user_id, target_result.target_repo_root, path_result.path, status
+    )
+}
+
+fn workspace_live_sync_target_details_summary(details: &[String]) -> String {
+    const MAX_DETAILS: usize = 6;
+    if details.is_empty() {
+        return "none".to_string();
+    }
+    let mut shown = details
+        .iter()
+        .take(MAX_DETAILS)
+        .cloned()
+        .collect::<Vec<_>>();
+    if details.len() > MAX_DETAILS {
+        shown.push(format!("{} more", details.len() - MAX_DETAILS));
+    }
+    shown.join("; ")
+}

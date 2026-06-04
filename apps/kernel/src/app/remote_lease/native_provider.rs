@@ -198,6 +198,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some(worktree.display().to_string()),
                 None,
             )
@@ -261,6 +262,7 @@ mod tests {
                 &lease.id,
                 "dev-stub",
                 Some("default".to_string()),
+                None,
                 None,
                 None,
                 None,
