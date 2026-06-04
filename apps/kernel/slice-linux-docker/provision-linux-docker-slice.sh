@@ -56,6 +56,37 @@ fail() {
   exit 1
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  local command_display="$*"
+  local timeout_marker="${TMPDIR:-/tmp}/arroba-slice-timeout.$$.$RANDOM"
+  rm -f "$timeout_marker"
+  "$@" &
+  local child=$!
+  (
+    sleep "$seconds"
+    if kill -0 "$child" >/dev/null 2>&1; then
+      : >"$timeout_marker"
+      kill "$child" >/dev/null 2>&1 || true
+      sleep 2
+      kill -9 "$child" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local watchdog=$!
+  local status=0
+  wait "$child" || status=$?
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+  if [[ -f "$timeout_marker" ]]; then
+    rm -f "$timeout_marker"
+    log "timed out after ${seconds}s: ${command_display}"
+    return 124
+  fi
+  rm -f "$timeout_marker"
+  return "$status"
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
@@ -68,7 +99,30 @@ EOF
 
 require_docker() {
   command -v docker >/dev/null || fail "docker is required"
-  docker info >/dev/null || fail "docker is not running"
+  run_with_timeout 20 docker info >/dev/null || fail "docker is not running"
+}
+
+container_exists() {
+  run_with_timeout 20 docker container inspect "$SLICE_NAME" >/dev/null 2>&1
+}
+
+container_running() {
+  local state
+  state="$(run_with_timeout 20 docker inspect -f '{{.State.Running}}' "$SLICE_NAME" 2>/dev/null)" || return 1
+  [[ "$state" == "true" ]]
+}
+
+wait_for_container_running() {
+  local attempts="${1:-6}"
+  local delay_seconds="${2:-5}"
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    if container_running; then
+      return 0
+    fi
+    sleep "$delay_seconds"
+  done
+  return 1
 }
 
 build_image() {
@@ -107,9 +161,10 @@ build_image() {
 }
 
 ensure_container() {
-  if [[ "$SLICE_RECREATE" == "1" ]] && docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  local created_container=0
+  if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
     log "recreating container $SLICE_NAME"
-    docker rm -f "$SLICE_NAME" >/dev/null
+    run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
   fi
   case "$SLICE_WORKSPACE_MOUNT_MODE" in
     rw|ro) ;;
@@ -120,13 +175,14 @@ ensure_container() {
     *) fail "ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
   esac
 
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  if container_exists; then
     log "container $SLICE_NAME already exists"
   else
     log "creating container $SLICE_NAME"
-    docker volume create "$SLICE_HOME_VOLUME" >/dev/null
+    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
     local docker_create_args=(
       --name "$SLICE_NAME"
+      --ulimit core=0:0
       -p "127.0.0.1:$SLICE_CODEX_PORT:$SLICE_CODEX_PORT"
       -p "127.0.0.1:$SLICE_OPENCODE_PORT:$SLICE_OPENCODE_PORT"
       -p "127.0.0.1:$SLICE_CODEX_PORT_RANGE:$SLICE_CODEX_PORT_RANGE"
@@ -149,32 +205,59 @@ ensure_container() {
     if [[ -n "$SLICE_DOCKER_CPUS" ]]; then
       docker_create_args+=(--cpus "$SLICE_DOCKER_CPUS")
     fi
-    docker create "${docker_create_args[@]}" "$SLICE_IMAGE" >/dev/null
+    local create_status=0
+    set +e
+    run_with_timeout 60 docker create "${docker_create_args[@]}" "$SLICE_IMAGE" >/dev/null
+    create_status=$?
+    set -e
+    if [[ "$create_status" -ne 0 ]]; then
+      if container_exists; then
+        log "docker create returned $create_status but container exists; continuing"
+      else
+        return "$create_status"
+      fi
+    fi
+    created_container=1
   fi
 
-  if ! docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
+  if ! container_running; then
     log "starting container $SLICE_NAME"
-    docker start "$SLICE_NAME" >/dev/null
+    local start_status=0
+    set +e
+    run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null
+    start_status=$?
+    set -e
+    if [[ "$start_status" -ne 0 ]]; then
+      if wait_for_container_running 6 5; then
+        log "docker start returned $start_status but container is running; continuing"
+      else
+        return "$start_status"
+      fi
+    fi
   fi
 
-  docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice"
-  docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
-  docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh"
-  docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh
+  if [[ "$created_container" == "1" ]]; then
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh"
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh
+  fi
 }
 
-exec_slice() {
+exec_slice_with_timeout() {
+  local seconds="$1"
+  shift
   local relay_env_args=()
   if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
     local cloud_relay_config_path="/tmp/arroba-slice-state/cloud-relay-config.json"
-    docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/arroba-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
+    run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/arroba-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
     relay_env_args+=(-e ARROBA_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
   fi
   relay_env_args+=(-e ARROBA_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")
   if [[ -n "$SLICE_RELAY_URL" ]]; then
     relay_env_args+=(-e ARROBA_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
-  docker exec \
+  run_with_timeout "$seconds" docker exec \
     -e ARROBA_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
     -e ARROBA_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
     -e ARROBA_SLICE_CODEX_PORT_RANGE="$SLICE_CODEX_PORT_RANGE" \
@@ -194,6 +277,10 @@ exec_slice() {
     "$@"
 }
 
+exec_slice() {
+  exec_slice_with_timeout 90 "$@"
+}
+
 copy_provider_auth_file() {
   local source_path="$1"
   local target_path="$2"
@@ -207,24 +294,21 @@ copy_provider_auth_file() {
   local target_dir
   target_dir="$(dirname "$target_path")"
   local backup_path="${target_path}.before-slice-auth-$(date +%Y%m%d%H%M%S)"
-  docker exec -u slice "$SLICE_NAME" bash -lc "
+  run_with_timeout 90 docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
     mkdir -p '$target_dir'
     if [[ -f '$target_path' ]]; then
       cp '$target_path' '$backup_path'
     fi
-  "
-  docker cp "$source_path" "$SLICE_NAME:$target_path"
-  docker exec -u root "$SLICE_NAME" bash -lc "
-    set -euo pipefail
-    chown slice:slice '$target_path'
+    umask 077
+    cat > '$target_path'
     chmod 600 '$target_path'
-  "
+  " <"$source_path"
   log "imported $label auth into $target_path"
 }
 
 trust_claude_slice_workspace() {
-  docker exec -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
+  if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
 const fs = require('fs')
 const file = '/home/slice/.claude.json'
 let data = {}
@@ -247,6 +331,10 @@ data.projects = projects
 fs.writeFileSync(file, JSON.stringify(data, null, 2))
 fs.chmodSync(file, 0o600)
 NODE"
+  then
+    log "Claude workspace trust update unavailable; continuing"
+    return 0
+  fi
   log "marked /workspace as trusted for Claude Code"
 }
 
@@ -341,7 +429,29 @@ remove_claude_auth() {
 }
 
 print_provider_auth_status() {
-  exec_slice bash -lc "echo '--- provider auth'; codex login status || true; opencode providers list || true; claude auth status --text || claude auth status || true"
+  if ! exec_slice_with_timeout 30 bash -lc "
+    set +e
+    probe() {
+      local label=\"\$1\"
+      shift
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 8s \"\$@\"
+        local status=\$?
+        if [[ \$status -eq 124 ]]; then
+          printf '%s probe timed out\\n' \"\$label\" >&2
+        fi
+        return \$status
+      fi
+      \"\$@\"
+      return \$?
+    }
+    echo '--- provider auth'
+    probe codex codex login status || true
+    probe opencode opencode providers list || true
+    probe claude claude auth status --text || probe claude claude auth status || true
+  "; then
+    log "provider auth status diagnostics unavailable"
+  fi
 }
 
 provider_login_command() {
@@ -370,7 +480,7 @@ start_provider_login() {
   local command_text
   command_text="$(provider_login_command)"
   log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
-  docker exec -u slice "$SLICE_NAME" bash -lc "
+  run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
     mkdir -p /opt/arroba-slice/logs
     rm -f '$log_file'
@@ -378,12 +488,59 @@ start_provider_login() {
     screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[arroba] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
   "
   sleep 3
-  docker exec -u slice "$SLICE_NAME" bash -lc "cat '$log_file' 2>/dev/null || true"
+  local login_output=""
+  login_output="$(run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "cat '$log_file' 2>/dev/null || true")" || true
+  if [[ -n "$login_output" ]]; then
+    printf '%s\n' "$login_output"
+  else
+    printf '[arroba] provider login started in screen session %s; open the slice screen or slice logs to continue\n' "$session_name"
+  fi
 }
 
 print_status() {
   log "container: $SLICE_NAME"
-  exec_slice bash -lc "set -e; echo '--- versions'; node --version; npm --version; codex --version || true; opencode --version || true; claude --version || true; chromium --version || true; tesseract --version | head -n 1 || true; echo '--- browser smoke'; chromium --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err || { cat /tmp/chromium-smoke.err; exit 1; }; grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=headless-ok; echo '--- desktop'; /opt/arroba-slice/slice-screen.sh status || true; echo '--- binaries'; ls -l /opt/arroba-slice/bin; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 /opt/arroba-slice/logs || true"
+  if ! exec_slice_with_timeout 30 bash -lc "
+    set +e
+    probe() {
+      local label=\"\$1\"
+      shift
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 8s \"\$@\"
+        local status=\$?
+        if [[ \$status -eq 124 ]]; then
+          printf '%s probe timed out\\n' \"\$label\" >&2
+        fi
+        return \$status
+      fi
+      \"\$@\"
+      return \$?
+    }
+    echo '--- versions'
+    probe node node --version || true
+    probe npm npm --version || true
+    probe codex codex --version || true
+    probe opencode opencode --version || true
+    probe claude claude --version || true
+    probe chromium chromium --version || true
+    probe tesseract tesseract --version | head -n 1 || true
+    echo '--- browser smoke'
+    if probe chromium-headless chromium --headless=new --no-sandbox --disable-gpu --dump-dom 'data:text/html,slice-browser-ok' >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err; then
+      grep -q 'slice-browser-ok' /tmp/chromium-smoke.out && echo chromium=headless-ok
+    else
+      cat /tmp/chromium-smoke.err 2>/dev/null || true
+      echo chromium=headless-unavailable
+    fi
+    echo '--- desktop'
+    probe slice-screen /opt/arroba-slice/slice-screen.sh status || true
+    echo '--- binaries'
+    probe binaries ls -l /opt/arroba-slice/bin || true
+    echo '--- processes'
+    probe processes pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true
+    echo '--- logs'
+    probe logs ls -1 /opt/arroba-slice/logs || true
+  "; then
+    log "status diagnostics unavailable"
+  fi
   print_provider_auth_status
 }
 
@@ -433,7 +590,7 @@ main() {
         import_provider_auth
       fi
       if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
-        exec_slice /opt/arroba-slice/slice-screen.sh start
+        exec_slice bash -lc "timeout 30s /opt/arroba-slice/slice-screen.sh start"
       fi
       if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
         exec_slice /opt/arroba-slice/start-runtime.sh
@@ -494,7 +651,7 @@ main() {
     start-desktop)
       require_docker
       ensure_container
-      exec_slice /opt/arroba-slice/slice-screen.sh start
+      exec_slice bash -lc "timeout 30s /opt/arroba-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker

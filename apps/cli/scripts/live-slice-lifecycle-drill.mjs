@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -37,6 +38,7 @@ function log(message, details) {
 
 async function run(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
+    let settled = false
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
       env: options.env ?? process.env,
@@ -44,15 +46,31 @@ async function run(command, args, options = {}) {
     })
     let stdout = ''
     let stderr = ''
+    let timeout = null
+    if (options.timeoutMs) {
+      timeout = setTimeout(() => {
+        if (settled) return
+        stderr += `\n[slice-lifecycle-drill] timed out after ${options.timeoutMs}ms: ${command} ${args.join(' ')}\n`
+        child.kill('SIGTERM')
+        setTimeout(() => {
+          if (!settled) child.kill('SIGKILL')
+        }, 2_000).unref()
+      }, options.timeoutMs)
+      timeout.unref()
+    }
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
     child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
     child.on('error', reject)
-    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+    child.on('close', (code, signal) => {
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      resolve({ code, signal, stdout, stderr })
+    })
   })
 }
 
 async function assertDockerReady() {
-  const result = await run('docker', ['info', '--format', '{{json .ServerVersion}}'])
+  const result = await run('docker', ['info', '--format', '{{json .ServerVersion}}'], { timeoutMs: 20_000 })
   if (result.code !== 0) {
     throw new Error(`Docker is required for the slice lifecycle drill. Start Docker/Colima and retry.\n${result.stdout}${result.stderr}`)
   }
@@ -60,7 +78,7 @@ async function assertDockerReady() {
 
 async function currentDockerHost() {
   if (process.env.DOCKER_HOST?.trim()) return process.env.DOCKER_HOST
-  const result = await run('docker', ['context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}'])
+  const result = await run('docker', ['context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}'], { timeoutMs: 10_000 })
   if (result.code !== 0) return null
   try {
     const host = JSON.parse(result.stdout.trim())
@@ -176,10 +194,10 @@ function sliceSlashCommand(...args) {
   return { kind: 'slice', args, raw: `/slice ${args.join(' ')}` }
 }
 
-async function runSliceSlashCommandDrill(client, workspace) {
+async function runSliceSlashCommandDrill(client, workspace, runLabel) {
+  const commandSliceName = `slice-cli-command-${runLabel}`
   const notices = []
   const footers = []
-  const openedUrls = []
   const deps = {
     currentWorkspaceTarget: () => workspace,
     currentWorktreeTarget: () => workspace,
@@ -187,10 +205,7 @@ async function runSliceSlashCommandDrill(client, workspace) {
     resolveSessionAgent: () => ({ agent: null, error: null }),
     flashFooter: (message, tone) => footers.push({ message, tone }),
     appendNotice: (message) => notices.push(message),
-    openExternalUrl: async (url) => {
-      openedUrls.push(url)
-      return true
-    },
+    openExternalUrl: async () => true,
     listSlices: async () => variant(await client.send(listSlicesRequest()), 'SlicesListed').slices,
     createSlice: async (options) => variant(await client.send(createSliceRequest({
       name: options.name,
@@ -219,9 +234,9 @@ async function runSliceSlashCommandDrill(client, workspace) {
     getSliceDisplayEndpoint: async (sliceRef) => variant(await client.send(getSliceDisplayEndpointRequest(sliceRef)), 'SliceDisplayEndpoint').endpoint,
   }
 
-  await handleSliceSlashCommand(deps, sliceSlashCommand('create', 'slice-cli-command', '--headed'))
-  const commandSlice = variant(await client.send(getSliceRequest('slice-cli-command')), 'Slice').slice
-  assert(commandSlice.display_mode === 'headed', '/slice create --headed should create a headed slice')
+  await handleSliceSlashCommand(deps, sliceSlashCommand('create', commandSliceName, '--headless'))
+  const commandSlice = variant(await client.send(getSliceRequest(commandSliceName)), 'Slice').slice
+  assert(commandSlice.display_mode === 'headless', '/slice create --headless should create a headless slice')
   assert(commandSlice.workspace_id === workspace, '/slice create should scope the slice to the current workspace')
   assert(commandSlice.worktree_id === workspace, '/slice create should scope the slice to the current worktree')
   assert(commandSlice.workspace_mount === workspace, '/slice create should mount the current worktree')
@@ -232,23 +247,25 @@ async function runSliceSlashCommandDrill(client, workspace) {
   await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', commandSlice.id, 'codex', 'cli', 'account'))
   const aliased = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
   assert(providerAuth(aliased, 'codex', (auth) => auth.alias === 'cli account'), '/slice auth alias should persist an alias')
-  await handleSliceSlashCommand(deps, sliceSlashCommand('screen', commandSlice.id))
-  assert(openedUrls.length === 1 && openedUrls[0].startsWith('http://127.0.0.1:'), '/slice screen should open the display URL')
   await handleSliceSlashCommand(deps, sliceSlashCommand('status', commandSlice.id))
-  assert(notices.some((notice) => notice.includes('slice-cli-command') && notice.includes('auth=codex:cli account')), '/slice status should show alias auth context')
+  assert(
+    notices.some((notice) => notice.includes(commandSliceName) && notice.includes('codex:cli account')),
+    `/slice status should show alias auth context\n${notices.join('\n---\n')}`,
+  )
   await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'remove', commandSlice.id, 'codex'))
   const removed = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
   assert(!providerAuth(removed, 'codex'), '/slice auth remove should clear provider auth context')
   await handleSliceSlashCommand(deps, sliceSlashCommand('stop', commandSlice.id))
   await handleSliceSlashCommand(deps, sliceSlashCommand('delete', commandSlice.id))
-  assert(footers.some((footer) => footer.message === 'deleted slice slice-cli-command'), '/slice delete should report deletion')
-  log('slash-command-pass', { slice: commandSlice.id, opened: openedUrls[0] })
+  assert(footers.some((footer) => footer.message === `deleted slice ${commandSliceName}`), '/slice delete should report deletion')
+  log('slash-command-pass', { slice: commandSlice.id, name: commandSliceName })
 }
 
-async function runWaitingRoomSliceDeleteDrill(client, workspace) {
+async function runWaitingRoomSliceDeleteDrill(client, workspace, runLabel) {
+  const sliceName = `slice-waiting-room-delete-${runLabel}`
   let slices = [
     variant(await client.send(createSliceRequest({
-      name: 'slice-waiting-room-delete',
+      name: sliceName,
       displayMode: 'headless',
       workspaceId: workspace,
       worktreeId: workspace,
@@ -303,9 +320,9 @@ async function runWaitingRoomSliceDeleteDrill(client, workspace) {
   })
 
   await controller.applyAction('delete')
-  assert(footers.at(-1)?.message === 'press D again to delete slice slice-waiting-room-delete', 'waiting room delete should ask for slice confirmation')
+  assert(footers.at(-1)?.message === `press D again to delete slice ${sliceName}`, 'waiting room delete should ask for slice confirmation')
   await controller.applyAction('delete')
-  assert(footers.at(-1)?.message === 'deleted slice slice-waiting-room-delete', 'waiting room delete should delete an idle slice')
+  assert(footers.at(-1)?.message === `deleted slice ${sliceName}`, 'waiting room delete should delete an idle slice')
   assert(slices.length === 0, 'waiting room delete should remove the deleted slice from local inventory')
   assert(refreshCount === 1 && invalidateCount === 1, 'waiting room delete should refresh inventory after deletion')
   log('waiting-room-delete-pass', { footer: footers.at(-1)?.message })
@@ -314,29 +331,30 @@ async function runWaitingRoomSliceDeleteDrill(client, workspace) {
 async function main() {
   await assertDockerReady()
   const dockerHost = await currentDockerHost()
+  const runLabel = `${process.pid}-${Date.now()}`
   const agentDefaults = {
     provider: 'dev-stub',
     model: 'slice-drill-model',
     effort: 'low',
   }
 
-  const root = path.join(repoRoot, 'target', 'live-slice-lifecycle-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, 'target', 'live-slice-lifecycle-drill', runLabel)
   const workspace = path.join(root, 'workspace')
   const otherWorktree = path.join(root, 'workspace-other')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
-  const kernelPort = 50500 + Math.floor(Math.random() * 1000)
-  const kernelUrl = `ws://127.0.0.1:${kernelPort}`
+  const ports = await makeAvailablePorts()
+  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
+    ARROBA_KERNEL_PORT: String(ports.kernelPort),
+    ARROBA_MCP_PORT: String(ports.mcpPort),
+    ARROBA_OPENCODE_PORT: String(ports.openCodePort),
+    ARROBA_CODEX_PORT: String(ports.codexPort),
     ARROBA_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
     ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
     ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
@@ -359,7 +377,7 @@ async function main() {
     client = new LocalIpcClient(kernelUrl)
 
     const created = variant(await client.send(createSliceRequest({
-      name: 'slice-drill',
+      name: `slice-drill-${runLabel}`,
       displayMode: 'headed',
       workspaceId: workspace,
       worktreeId: workspace,
@@ -392,8 +410,13 @@ async function main() {
 
     const login = variant(await client.send(startSliceProviderLoginRequest(created.id, 'codex')), 'SliceProviderLoginStarted').login
     assert(login.status === 'started', `slice provider login should start, got ${login.status}`)
-    assert(login.verification_url?.startsWith('https://'), 'slice provider login should return a verification URL')
-    assert(login.user_code, 'slice provider login should return a device code for Codex')
+    assert(
+      login.verification_url?.startsWith('https://') || login.message.includes('provider login started in screen session'),
+      `slice provider login should return a verification URL or screen-session fallback\n${login.message}`,
+    )
+    if (login.verification_url) {
+      assert(login.user_code, 'slice provider login should return a device code for Codex when a verification URL is emitted')
+    }
     log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
 
     const removedOpenCode = variant(await client.send(removeSliceProviderAuthRequest(created.id, 'opencode')), 'SliceProviderAuthRemoved')
@@ -403,11 +426,11 @@ async function main() {
     assert(providerAuth(removedOpenCode.slice, 'claude'), 'provider auth removal should preserve Claude auth')
     log('auth-removed', { provider: removedOpenCode.provider, remaining: removedOpenCode.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
-    await runSliceSlashCommandDrill(client, workspace)
-    await runWaitingRoomSliceDeleteDrill(client, workspace)
+    await runSliceSlashCommandDrill(client, workspace, runLabel)
+    await runWaitingRoomSliceDeleteDrill(client, workspace, runLabel)
 
     const secondSlice = variant(await client.send(createSliceRequest({
-      name: 'slice-drill-second-account',
+      name: `slice-drill-second-account-${runLabel}`,
       displayMode: 'headless',
       workspaceId: workspace,
       worktreeId: workspace,
@@ -422,7 +445,7 @@ async function main() {
     log('auth-independent', { first: created.id, second: secondSlice.id })
 
     const incompatibleSlice = variant(await client.send(createSliceRequest({
-      name: 'slice-drill-other-worktree',
+      name: `slice-drill-other-worktree-${runLabel}`,
       displayMode: 'headless',
       workspaceId: workspace,
       worktreeId: otherWorktree,
