@@ -101,6 +101,11 @@ function defaultModelForProvider(provider) {
   return 'gpt-5.4'
 }
 
+function cliModelForProvider(provider, model) {
+  if (provider === 'opencode' && model.startsWith('opencode/')) return model.slice('opencode/'.length)
+  return model
+}
+
 async function seedCodexAuth(home) {
   const sourceHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
   const sourceAuth = path.join(sourceHome, 'auth.json')
@@ -296,6 +301,30 @@ async function waitForSessionInteraction(client, sessionId, attachmentId, agentI
   throw new Error(`timed out waiting for session interaction containing ${containsText}${session ? `\n${JSON.stringify(session, null, 2)}` : ''}`)
 }
 
+async function allowOutsideRepoProviderPermissions(client, sessionId, attachmentId, agentId, outsideRepo, outsideExpectedContent, respondedInteractionIds, pollMs) {
+  const { getSessionStateRequest, respondToInteractionRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  await pumpTerminalOutput(client, sessionId, attachmentId)
+  const response = await client.send(getSessionStateRequest(sessionId))
+  const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
+  const session = payload.session ?? payload
+  const activeInteractions = session.active_interactions ?? []
+  const matchingInteractions = activeInteractions.filter((entry) => {
+    if (entry.agent_id !== agentId || entry.kind !== 'permission' || respondedInteractionIds.has(entry.id)) return false
+    const message = String(entry.message ?? '')
+    return message.includes(outsideRepo) || message.includes(outsideExpectedContent)
+  })
+  for (const interaction of matchingInteractions) {
+    log('answering-outside-repo-provider-interaction', {
+      interactionId: interaction.id,
+      level: interaction.level,
+      title: interaction.title,
+    })
+    respondedInteractionIds.add(interaction.id)
+    await client.send(respondToInteractionRequest(sessionId, interaction.id, 'allow_once'))
+    await sleep(pollMs)
+  }
+}
+
 async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -309,6 +338,31 @@ async function waitForFileContent(client, sessionId, attachmentId, filePath, exp
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for file ${filePath}`)
+}
+
+async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, agentId, outsideRepo, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
+  const deadline = Date.now() + timeoutMs
+  const respondedInteractionIds = new Set()
+  while (Date.now() < deadline) {
+    await allowOutsideRepoProviderPermissions(
+      client,
+      sessionId,
+      attachmentId,
+      agentId,
+      outsideRepo,
+      expectedContent,
+      respondedInteractionIds,
+      pollMs,
+    )
+    try {
+      const content = await readFile(filePath, 'utf8')
+      if (content.trim() === expectedContent) return content
+    } catch {}
+    const failure = failureProbe ? await failureProbe() : null
+    if (failure) throw new Error(failure)
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for outside repo file ${filePath}`)
 }
 
 async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef, timeoutMs, pollMs) {
@@ -328,6 +382,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
   const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
+  const cliModel = cliModelForProvider(provider, model)
   const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const outsideRepo = path.join(rootDir, 'outside-repo')
@@ -434,7 +489,7 @@ async function main() {
       '--workspace', workspace,
       '--worktree', workspace,
       '--provider', provider,
-      '--model', model,
+      '--model', cliModel,
       '--client-id', `workspace-live-sync-permission-drill-cli-${process.pid}`,
     ]
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -495,7 +550,18 @@ async function main() {
         'After the write succeeds, reply with exactly OUTSIDE_REPO_DIRECT_WRITE_DONE.',
       ].join(' '),
     ))
-    await waitForFileContent(client, sessionId, attachmentId, outsideFilePath, outsideExpectedContent, options.timeoutMs, options.pollMs, launchFailureProbe)
+    await waitForOutsideRepoFileContent(
+      client,
+      sessionId,
+      attachmentId,
+      agentId,
+      outsideRepo,
+      outsideFilePath,
+      outsideExpectedContent,
+      options.timeoutMs,
+      options.pollMs,
+      launchFailureProbe,
+    )
     log('outside-repo-direct-write-passed', { provider, outsideFilePath })
 
     succeeded = true
