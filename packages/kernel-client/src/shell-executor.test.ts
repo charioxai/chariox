@@ -159,6 +159,46 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
 })
 
+test("executeShellCommand renders generic slice provider auth recovery without placeholders", async () => {
+  const baseHealth = daemonHealth()
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          slice_lifecycle: {
+            ...baseHealth.slice_lifecycle,
+            total_slices: 1,
+            running_slices: 1,
+            provider_auth_missing_slices: 1,
+            provider_auth_issues: [{
+              slice_id: "slice-1",
+              name: "dev",
+              status: "running",
+              session_ids: ["session-1"],
+              agent_ids: ["agent-1"],
+              worktree_id: "/repo",
+              provider: "",
+              provider_auth_state: "",
+              alias: null,
+              identity: null,
+              details: "slice provider account needs login or import",
+            }],
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /slice provider auth issues: missing=1 unconfigured=0/)
+  assert.match(result.message ?? "", /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1: slice provider account needs login or import/)
+  assert.match(result.message ?? "", /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; open Slices and choose the missing provider account to login or import before sending prompts to agents in that slice/)
+  assert.doesNotMatch(result.message ?? "", /<provider>|provider-specific/)
+})
+
 test("executeShellCommand accepts kernel remote runtime aliases", async () => {
   const fake = fakeClient((request) => {
     assert.deepEqual(request, { GetDaemonHealth: null })

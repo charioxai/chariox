@@ -337,7 +337,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
       ? `use /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
       : provider
         ? `identify the affected slice, then use /slice auth login or /slice auth import for ${provider}`
-        : "use the provider-specific /slice auth login or /slice auth import command shown by /slice doctor"
+        : "open Slices and choose the missing provider account to login or import"
     lines.push(sliceRef
       ? `  next: run /slice doctor ${sliceRef}; inspect /slice audit ${sliceRef}; ${providerAction} before sending prompts to agents in that slice`
       : `  next: run /slice doctor for the affected slice; inspect /slice audit; ${providerAction} before sending prompts to slice-backed agents`)
