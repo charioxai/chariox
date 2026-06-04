@@ -1412,6 +1412,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --continue-on-failure` on OSS main `78ada11b` after the latest terminal/web slice-auth UX alignment. Local self-hosted relay passed both `local-single` and `local-collab`; each scenario validated home-owned script, MCP, and connector invocation from a worker agent plus revoke enforcement.
 - Aligned the web terminal command center slice-auth descriptions in `arroba-cloud` main `5fd0709` with the TUI/shell wording: import copies this machine's provider credentials into the slice, login starts provider authentication inside the slice for another account, remove purges slice-local credentials/account summaries, and alias is an Arroba display label fallback.
 
+### Home extension Hetzner revalidation
+
+- Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single,hetzner-collab --continue-on-failure` on OSS main `1fcb8edd`. Both Hetzner scenarios passed: single-user in 17.7s and collab in 15.9s. The drill validated home-owned script, MCP, and connector execution from a leased Hetzner worker agent, worker-local MCP collision rejection, revoke removing worker advertisement and blocking stale calls, and collaborator inability to grant, revoke, or request home-owned extensions.
+
 ### Slice provisioner reliability hardening
 
 - Re-ran `node apps/cli/scripts/live-slice-lifecycle-drill.mjs` locally. The first run exposed two lifecycle reliability issues: headed desktop startup failures surfaced as an unlabeled status 124, and slice provider-auth import/remove spent kernel response time on optional provider CLI status probes.
