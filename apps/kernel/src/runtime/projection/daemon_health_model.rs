@@ -273,33 +273,13 @@ impl SliceLifecycleHealthSnapshot {
             }
 
             if !slice.agent_ids.is_empty() {
-                if slice.provider_auth.is_empty() {
+                let expected_providers = slice_expected_auth_providers(slice);
+                let missing_providers = slice_missing_auth_providers(slice, &expected_providers);
+                if !missing_providers.is_empty()
+                    || (expected_providers.is_empty() && slice.provider_auth.is_empty())
+                {
                     snapshot.provider_auth_missing_slices += 1;
-                    snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
-                        slice_id: slice.id.clone(),
-                        name: slice.name.clone(),
-                        status: slice_status_key(&slice.status).to_string(),
-                        session_ids: slice.session_ids.clone(),
-                        agent_ids: slice.agent_ids.clone(),
-                        worktree_id: slice.worktree_id.clone(),
-                        provider: None,
-                        provider_auth_state: None,
-                        alias: None,
-                        identity: None,
-                        details: "slice has attached agents but no provider account configured"
-                            .to_string(),
-                    });
-                } else {
-                    let mut slice_has_unconfigured_auth = false;
-                    for auth in slice
-                        .provider_auth
-                        .iter()
-                        .filter(|auth| slice_provider_auth_needs_attention(&auth.state))
-                    {
-                        if !slice_has_unconfigured_auth {
-                            snapshot.provider_auth_unconfigured_slices += 1;
-                            slice_has_unconfigured_auth = true;
-                        }
+                    if expected_providers.is_empty() {
                         snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
                             slice_id: slice.id.clone(),
                             name: slice.name.clone(),
@@ -307,20 +287,124 @@ impl SliceLifecycleHealthSnapshot {
                             session_ids: slice.session_ids.clone(),
                             agent_ids: slice.agent_ids.clone(),
                             worktree_id: slice.worktree_id.clone(),
-                            provider: Some(auth.provider.clone()),
-                            provider_auth_state: Some(
-                                slice_provider_auth_state_key(&auth.state).to_string(),
-                            ),
-                            alias: auth.alias.clone(),
-                            identity: slice_provider_auth_identity(auth),
-                            details: "slice provider account needs login or import".to_string(),
+                            provider: None,
+                            provider_auth_state: None,
+                            alias: None,
+                            identity: None,
+                            details: "slice has attached agents but no provider account configured"
+                                .to_string(),
                         });
+                    } else {
+                        for provider in &missing_providers {
+                            snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
+                                slice_id: slice.id.clone(),
+                                name: slice.name.clone(),
+                                status: slice_status_key(&slice.status).to_string(),
+                                session_ids: slice.session_ids.clone(),
+                                agent_ids: slice.agent_ids.clone(),
+                                worktree_id: slice.worktree_id.clone(),
+                                provider: Some(provider.clone()),
+                                provider_auth_state: None,
+                                alias: None,
+                                identity: None,
+                                details: format!(
+                                    "slice has attached agents but no {provider} provider account configured"
+                                ),
+                            });
+                        }
                     }
+                }
+                let mut slice_has_unconfigured_auth = false;
+                for auth in slice.provider_auth.iter().filter(|auth| {
+                    slice_provider_auth_needs_attention(&auth.state)
+                        && slice_provider_auth_targets_expected_provider(
+                            &auth.provider,
+                            &expected_providers,
+                        )
+                }) {
+                    if !slice_has_unconfigured_auth {
+                        snapshot.provider_auth_unconfigured_slices += 1;
+                        slice_has_unconfigured_auth = true;
+                    }
+                    snapshot.provider_auth_issues.push(SliceProviderAuthIssue {
+                        slice_id: slice.id.clone(),
+                        name: slice.name.clone(),
+                        status: slice_status_key(&slice.status).to_string(),
+                        session_ids: slice.session_ids.clone(),
+                        agent_ids: slice.agent_ids.clone(),
+                        worktree_id: slice.worktree_id.clone(),
+                        provider: Some(auth.provider.clone()),
+                        provider_auth_state: Some(
+                            slice_provider_auth_state_key(&auth.state).to_string(),
+                        ),
+                        alias: auth.alias.clone(),
+                        identity: slice_provider_auth_identity(auth),
+                        details: "slice provider account needs login or import".to_string(),
+                    });
                 }
             }
         }
         snapshot
     }
+}
+
+fn slice_expected_auth_providers(slice: &SliceRecord) -> Vec<String> {
+    let providers = normalized_provider_names(&slice.providers);
+    if providers.is_empty() {
+        normalized_provider_names(
+            &slice
+                .provider_auth
+                .iter()
+                .map(|auth| auth.provider.clone())
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        providers
+    }
+}
+
+fn slice_missing_auth_providers(slice: &SliceRecord, expected_providers: &[String]) -> Vec<String> {
+    if expected_providers.is_empty() {
+        return Vec::new();
+    }
+    expected_providers
+        .iter()
+        .filter(|provider| {
+            !slice
+                .provider_auth
+                .iter()
+                .any(|auth| slice_provider_matches(&auth.provider, provider))
+        })
+        .cloned()
+        .collect()
+}
+
+fn normalized_provider_names(providers: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for provider in providers {
+        let provider = provider.trim();
+        if !provider.is_empty() && !normalized.iter().any(|entry| entry == provider) {
+            normalized.push(provider.to_string());
+        }
+    }
+    normalized
+}
+
+fn slice_provider_auth_targets_expected_provider(
+    auth_provider: &str,
+    expected_providers: &[String],
+) -> bool {
+    expected_providers.is_empty()
+        || expected_providers
+            .iter()
+            .any(|provider| slice_provider_matches(auth_provider, provider))
+}
+
+fn slice_provider_matches(auth_provider: &str, advertised_provider: &str) -> bool {
+    auth_provider == advertised_provider
+        || auth_provider
+            .strip_prefix(advertised_provider)
+            .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 fn slice_provider_auth_needs_attention(state: &SliceProviderAuthState) -> bool {
@@ -1212,7 +1296,11 @@ mod tests {
         assert_eq!(snapshot.provider_auth_issues.len(), 2);
         assert_eq!(
             snapshot.provider_auth_issues[0].details,
-            "slice has attached agents but no provider account configured"
+            "slice has attached agents but no codex provider account configured"
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[0].provider.as_deref(),
+            Some("codex")
         );
         assert_eq!(
             snapshot.provider_auth_issues[1].provider.as_deref(),
@@ -1227,6 +1315,44 @@ mod tests {
         assert_eq!(
             snapshot.provider_auth_issues[1].identity.as_deref(),
             Some("work")
+        );
+    }
+
+    #[test]
+    fn slice_lifecycle_health_reports_partial_provider_auth_coverage() {
+        let mut partial_auth = slice_record(
+            "slice-partial-auth",
+            "dev-partial-auth",
+            crate::slice::SliceStatus::Running,
+            None,
+            None,
+        );
+        partial_auth.providers = vec!["codex".to_string(), "opencode".to_string()];
+        partial_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: "codex".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+            auth_type: Some("chatgpt".to_string()),
+            account_id: Some("acct-1".to_string()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: Some("work".to_string()),
+            source: "slice".to_string(),
+        }];
+
+        let snapshot = SliceLifecycleHealthSnapshot::from_slices(&[partial_auth]);
+
+        assert_eq!(snapshot.provider_auth_missing_slices, 1);
+        assert_eq!(snapshot.provider_auth_unconfigured_slices, 0);
+        assert_eq!(snapshot.provider_auth_issues.len(), 1);
+        assert_eq!(
+            snapshot.provider_auth_issues[0].provider.as_deref(),
+            Some("opencode")
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[0].details,
+            "slice has attached agents but no opencode provider account configured"
         );
     }
 

@@ -26,9 +26,28 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
   assert.deepEqual(rows.slice(1).map((row) => row.id), ["slice:slice-a", "slice:slice-b"])
   assert.equal(rows[1]?.title, "alpha")
   assert.equal(rows[1]?.value, "running headed 1 agent relay shared /repo auth codex work (acct-1)")
-  assert.equal(rows[2]?.value, "stopped headless 0 agents - auth missing")
+  assert.equal(rows[2]?.value, "stopped headless 0 agents - auth missing codex")
   assert.equal(rows[1]?.focused, true)
   assert.equal(rows[1]?.selectable, true)
+})
+
+test("waiting room slice rows show partial provider auth coverage", () => {
+  const rows = waitingRoomSliceRows({ focus: "slice-entry", sliceIndex: 0 }, {
+    slices: [
+      slice({
+        id: "slice-a",
+        name: "alpha",
+        status: "running",
+        providers: ["codex", "opencode", "claude"],
+        provider_auth: [
+          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1" },
+          { provider: "claude", state: "unknown" },
+        ],
+      }),
+    ],
+  }, 16)
+
+  assert.equal(rows[1]?.value, "running headless 0 agents - auth codex work (acct-1),claude unknown/state=unknown,missing opencode,refresh claude")
 })
 
 test("waiting room slice rows show empty and loading states", () => {

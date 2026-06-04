@@ -53,7 +53,7 @@ test("waiting room slice selection resolves refs, labels, and cycling", () => {
 
   assert.equal(waitingRoomSelectedSlice("linux-dev", slices)?.id, "slice-1")
   assert.equal(selectedWaitingRoomSliceRef("slice-2", slices), "slice-2")
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, auth missing)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, auth missing codex)")
   assert.equal(formatWaitingRoomSliceSelection("none", slices), "off")
   assert.equal(formatWaitingRoomSliceSelection("new", slices), "new headless")
   assert.equal(formatWaitingRoomSliceSelection("new", slices, "headed"), "new headed")
@@ -95,7 +95,7 @@ test("waiting room slice labels do not infer shared relay when private flag is m
     ],
   })
 
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, relay unknown, auth missing)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headless, 0 agents, relay unknown, auth missing codex)")
 })
 
 test("waiting room slices filter reusable slices by selected worktree", () => {
@@ -121,10 +121,31 @@ test("waiting room slices filter reusable slices by selected worktree", () => {
     })
 
     assert.deepEqual(slices.map((entry) => entry.id), ["feature-slice"])
-    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent, auth missing)")
+    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent, auth missing codex)")
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
+})
+
+test("waiting room slice labels show partial and stale provider auth coverage", () => {
+  const slices = waitingRoomSlices({
+    slices: [
+      slice({
+        id: "slice-1",
+        name: "linux-dev",
+        providers: ["codex", "opencode", "claude"],
+        provider_auth: [
+          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1" },
+          { provider: "claude", state: "not_configured" },
+        ],
+      }),
+    ],
+  })
+
+  assert.equal(
+    formatWaitingRoomSliceSelection("slice-1", slices),
+    "linux-dev (running, headless, 0 agents, codex work (acct-1), claude not_configured/state=not_configured, missing opencode, refresh claude)",
+  )
 })
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

@@ -1,5 +1,11 @@
 import type { SliceRecord } from "./cli-types.js"
-import { formatSliceProviderAuth, formatSliceRelayLabel, formatSliceScope } from "./slice-format.js"
+import {
+  formatSliceProviderAuth,
+  formatSliceProviderList,
+  formatSliceRelayLabel,
+  formatSliceScope,
+  sliceProviderAuthCoverage,
+} from "./slice-format.js"
 import { formatWaitingRoomSliceLabel } from "./waiting-room-slices.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
@@ -87,15 +93,25 @@ function formatSliceStatus(slice: SliceRecord): string {
 function waitingRoomSliceAuthDetail(slice: SliceRecord): string {
   const authEntries = slice.provider_auth ?? []
   if (authEntries.length === 0) {
-    return (slice.providers ?? []).length > 0 ? "missing" : "providers missing"
+    const coverage = sliceProviderAuthCoverage(slice)
+    return coverage.providers.length > 0
+      ? `missing ${formatSliceProviderList(coverage.providers)}`
+      : "providers missing"
   }
-  return authEntries
+  const coverage = sliceProviderAuthCoverage(slice)
+  const details = authEntries
     .map((entry) => formatSliceProviderAuth(entry, {
       separator: " ",
       includeOrgPlan: false,
     }))
     .filter(Boolean)
-    .join(",")
+  if (coverage.missingProviders.length > 0) {
+    details.push(`missing ${formatSliceProviderList(coverage.missingProviders)}`)
+  }
+  if (coverage.staleProviders.length > 0) {
+    details.push(`refresh ${formatSliceProviderList(coverage.staleProviders)}`)
+  }
+  return details.join(",")
 }
 
 function waitingRoomLoadingText(frame = 0) {

@@ -1,5 +1,10 @@
 import type { SliceRecord } from "./cli-types.js"
-import { formatSliceProviderAuth, formatSliceRelayLabel } from "./slice-format.js"
+import {
+  formatSliceProviderAuth,
+  formatSliceProviderList,
+  formatSliceRelayLabel,
+  sliceProviderAuthCoverage,
+} from "./slice-format.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 
@@ -110,15 +115,25 @@ export function formatWaitingRoomSliceOption(slice: SliceRecord) {
 function waitingRoomSliceAuthDetail(slice: SliceRecord): string {
   const authEntries = slice.provider_auth ?? []
   if (authEntries.length === 0) {
-    return (slice.providers ?? []).length > 0 ? "auth missing" : "providers missing"
+    const coverage = sliceProviderAuthCoverage(slice)
+    return coverage.providers.length > 0
+      ? `auth missing ${formatSliceProviderList(coverage.providers)}`
+      : "providers missing"
   }
-  return authEntries
+  const coverage = sliceProviderAuthCoverage(slice)
+  const details = authEntries
     .map((entry) => formatSliceProviderAuth(entry, {
       separator: " ",
       includeOrgPlan: false,
     }))
     .filter(Boolean)
-    .join(", ")
+  if (coverage.missingProviders.length > 0) {
+    details.push(`missing ${formatSliceProviderList(coverage.missingProviders)}`)
+  }
+  if (coverage.staleProviders.length > 0) {
+    details.push(`refresh ${formatSliceProviderList(coverage.staleProviders)}`)
+  }
+  return details.join(", ")
 }
 
 export function cycleWaitingRoomSliceSelectionId(

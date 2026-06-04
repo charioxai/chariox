@@ -46,7 +46,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
-  assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing)")
+  assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })
