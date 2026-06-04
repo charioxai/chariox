@@ -122,16 +122,20 @@ async function terminateChild(child, signal = "SIGTERM") {
 async function closeClient(client, label) {
   if (!client) return
   let timedOut = false
+  let timeout = null
   await Promise.race([
     client.close().catch(() => {}),
-    sleep(2_000).then(() => {
-      timedOut = true
-      log("client-close-timeout", { label })
+    new Promise((resolve) => {
+      timeout = setTimeout(() => {
+        timedOut = true
+        resolve()
+      }, 2_000)
     }),
   ])
+  if (timeout) clearTimeout(timeout)
   if (timedOut) {
-    client.controlWebsocket?.terminate?.()
-    client.eventWebsocket?.terminate?.()
+    log("client-close-timeout", { label })
+    client.destroy?.()
   }
 }
 

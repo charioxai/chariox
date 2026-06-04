@@ -42,6 +42,7 @@ const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
 const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
+const IPC_CLIENT_CLOSE_TIMEOUT_MS = 1_500
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
@@ -231,6 +232,36 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.clearRuntimeTransportState("kernel client closed")
+    let timedOut = false
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      Promise.all([
+        this.closeWebSocket("control"),
+        this.closeWebSocket("event"),
+      ]).then(() => undefined),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true
+          resolve()
+        }, IPC_CLIENT_CLOSE_TIMEOUT_MS)
+      }),
+    ])
+    if (timeout) {
+      clearTimeout(timeout)
+    }
+    if (timedOut) {
+      this.destroy()
+    }
+  }
+
+  destroy(): void {
+    this.clearRuntimeTransportState("kernel client destroyed")
+    this.destroyWebSocket("control")
+    this.destroyWebSocket("event")
+  }
+
+  private clearRuntimeTransportState(pendingMessage: string): void {
     this.activeKernelSubscription = null
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
@@ -238,10 +269,7 @@ export class LocalIpcClient {
     this.clearKernelHeartbeat("event")
     this.controlRelayDaemonPublicKey = null
     this.eventRelayDaemonPublicKey = null
-    await Promise.all([
-      this.closeWebSocket("control"),
-      this.closeWebSocket("event"),
-    ])
+    this.rejectPending(pendingMessage)
   }
 
   private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
@@ -788,5 +816,16 @@ export class LocalIpcClient {
       socket.once("close", finish)
       socket.close()
     })
+  }
+
+  private destroyWebSocket(lane: KernelSocketLane): void {
+    const socket = this.getWebSocket(lane)
+    this.setWebSocket(lane, null)
+    this.setWebSocketConnectPromise(lane, null)
+    this.setRelayDaemonPublicKey(lane, null)
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      this.setSuppressNextCloseEvent(lane, true)
+      socket.terminate()
+    }
   }
 }
