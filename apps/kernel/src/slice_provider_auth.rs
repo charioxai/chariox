@@ -63,7 +63,12 @@ pub fn inspect_home_provider_auth(home_dir: &Path) -> Vec<SliceProviderAuthSumma
             summaries.push(summary);
         }
     }
-    summaries
+    if let Ok(text) = std::fs::read_to_string(home_dir.join(".claude").join("stats-cache.json")) {
+        if let Some(summary) = parse_claude_status_cache_json(&text) {
+            summaries.push(summary);
+        }
+    }
+    merge_provider_auth_summaries(summaries)
 }
 
 pub fn parse_codex_auth_json(text: &str) -> Option<SliceProviderAuthSummary> {
@@ -135,6 +140,26 @@ pub fn parse_opencode_auth_json(text: &str) -> Vec<SliceProviderAuthSummary> {
 
 pub fn parse_claude_status_json(text: &str) -> Option<SliceProviderAuthSummary> {
     let value: Value = serde_json::from_str(text).ok()?;
+    parse_claude_status_value(&value)
+}
+
+pub fn parse_claude_status_cache_json(text: &str) -> Option<SliceProviderAuthSummary> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    find_claude_status_value(&value)
+}
+
+fn find_claude_status_value(value: &Value) -> Option<SliceProviderAuthSummary> {
+    if let Some(summary) = parse_claude_status_value(value) {
+        return Some(summary);
+    }
+    match value {
+        Value::Array(items) => items.iter().find_map(find_claude_status_value),
+        Value::Object(object) => object.values().find_map(find_claude_status_value),
+        _ => None,
+    }
+}
+
+fn parse_claude_status_value(value: &Value) -> Option<SliceProviderAuthSummary> {
     if value.get("loggedIn").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -205,6 +230,87 @@ pub fn parse_claude_settings_json(text: &str) -> Option<SliceProviderAuthSummary
     })
 }
 
+pub fn merge_provider_auth_summaries(
+    summaries: Vec<SliceProviderAuthSummary>,
+) -> Vec<SliceProviderAuthSummary> {
+    let mut merged: Vec<SliceProviderAuthSummary> = Vec::new();
+    for summary in summaries {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|existing| existing.provider == summary.provider)
+        {
+            merge_provider_auth_summary(existing, summary);
+        } else {
+            merged.push(summary);
+        }
+    }
+    merged
+}
+
+fn merge_provider_auth_summary(
+    existing: &mut SliceProviderAuthSummary,
+    candidate: SliceProviderAuthSummary,
+) {
+    let candidate_is_better =
+        provider_auth_summary_quality(&candidate) > provider_auth_summary_quality(existing);
+    if candidate_is_better {
+        let previous = existing.clone();
+        *existing = candidate;
+        fill_missing_provider_auth_fields(existing, previous);
+    } else {
+        fill_missing_provider_auth_fields(existing, candidate);
+    }
+}
+
+fn fill_missing_provider_auth_fields(
+    target: &mut SliceProviderAuthSummary,
+    fallback: SliceProviderAuthSummary,
+) {
+    fill_missing(&mut target.auth_type, fallback.auth_type);
+    fill_missing(&mut target.account_id, fallback.account_id);
+    fill_missing(&mut target.email, fallback.email);
+    fill_missing(&mut target.organization_id, fallback.organization_id);
+    fill_missing(&mut target.organization_name, fallback.organization_name);
+    fill_missing(&mut target.subscription_type, fallback.subscription_type);
+    fill_missing(&mut target.alias, fallback.alias);
+    if !target.source.contains(&fallback.source) {
+        target.source = format!("{}+{}", target.source, fallback.source);
+    }
+}
+
+fn fill_missing(target: &mut Option<String>, fallback: Option<String>) {
+    if target.is_none() {
+        *target = fallback;
+    }
+}
+
+fn provider_auth_summary_quality(summary: &SliceProviderAuthSummary) -> u8 {
+    state_quality(&summary.state) + identity_quality(summary)
+}
+
+fn state_quality(state: &SliceProviderAuthState) -> u8 {
+    match state {
+        SliceProviderAuthState::Unknown => 0,
+        SliceProviderAuthState::NotConfigured => 1,
+        SliceProviderAuthState::Configured => 2,
+        SliceProviderAuthState::Authenticated => 4,
+    }
+}
+
+fn identity_quality(summary: &SliceProviderAuthSummary) -> u8 {
+    [
+        summary.alias.as_ref(),
+        summary.email.as_ref(),
+        summary.account_id.as_ref(),
+        summary.organization_id.as_ref(),
+        summary.organization_name.as_ref(),
+        summary.subscription_type.as_ref(),
+    ]
+    .into_iter()
+    .filter(|value| value.is_some())
+    .count() as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +334,7 @@ mod tests {
     #[test]
     fn opencode_parser_extracts_multiple_provider_accounts() {
         let summaries = parse_opencode_auth_json(
-            r#"{"openai":{"type":"oauth","accountId":"acct-1"},"opencode":{"type":"api"}}"#,
+            r#"{"openai":{"type":"oauth","accountId":"acct-1","accessToken":"secret-token"},"opencode":{"type":"api","apiKey":"secret-key"}}"#,
         );
 
         assert_eq!(summaries.len(), 2);
@@ -236,6 +342,9 @@ mod tests {
         assert_eq!(summaries[0].account_id.as_deref(), Some("acct-1"));
         assert_eq!(summaries[1].provider, "opencode:opencode");
         assert_eq!(summaries[1].auth_type.as_deref(), Some("api"));
+        let serialized = serde_json::to_string(&summaries).unwrap();
+        assert!(!serialized.contains("secret-token"));
+        assert!(!serialized.contains("secret-key"));
     }
 
     #[test]
@@ -254,12 +363,67 @@ mod tests {
     #[test]
     fn claude_settings_parser_extracts_account_when_cli_status_is_unavailable() {
         let summary = parse_claude_settings_json(
-            r#"{"userID":"user-1","oauthAccount":{"accountUuid":"acct-1","organizationUuid":"org-1","billingType":"stripe_subscription"}}"#,
+            r#"{"userID":"user-1","oauthAccount":{"accountUuid":"acct-1","organizationUuid":"org-1","billingType":"stripe_subscription","accessToken":"secret-token"}}"#,
         )
         .expect("claude settings should parse");
 
         assert_eq!(summary.provider, "claude");
         assert_eq!(summary.account_id.as_deref(), Some("user-1"));
         assert_eq!(summary.organization_id.as_deref(), Some("org-1"));
+        assert!(!serde_json::to_string(&summary)
+            .unwrap()
+            .contains("secret-token"));
+    }
+
+    #[test]
+    fn claude_status_cache_parser_finds_nested_authenticated_identity() {
+        let summary = parse_claude_status_cache_json(
+            r#"{"cache":{"auth":{"loggedIn":true,"authMethod":"claude.ai","email":"user@example.com","orgId":"org-1","orgName":"Example Org","subscriptionType":"team","refreshToken":"secret"}}}"#,
+        )
+        .expect("nested claude status cache should parse");
+
+        assert_eq!(summary.provider, "claude");
+        assert_eq!(summary.state, SliceProviderAuthState::Authenticated);
+        assert_eq!(summary.email.as_deref(), Some("user@example.com"));
+        assert_eq!(summary.organization_name.as_deref(), Some("Example Org"));
+        assert!(!serde_json::to_string(&summary).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn home_provider_auth_merges_claude_settings_with_status_cache() {
+        let home = unique_test_home("slice-provider-auth-claude-merge");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"userID":"user-1","oauthAccount":{"organizationUuid":"org-1","billingType":"pro"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".claude").join("stats-cache.json"),
+            r#"{"auth":{"loggedIn":true,"authMethod":"claude.ai","email":"user@example.com","orgName":"Example Org"}}"#,
+        )
+        .unwrap();
+
+        let summaries = inspect_home_provider_auth(&home);
+        let claude = summaries
+            .iter()
+            .find(|summary| summary.provider == "claude")
+            .expect("claude summary should be present");
+
+        assert_eq!(claude.state, SliceProviderAuthState::Authenticated);
+        assert_eq!(claude.email.as_deref(), Some("user@example.com"));
+        assert_eq!(claude.account_id.as_deref(), Some("user-1"));
+        assert_eq!(claude.organization_id.as_deref(), Some("org-1"));
+        assert_eq!(claude.organization_name.as_deref(), Some("Example Org"));
+
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    fn unique_test_home(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }
