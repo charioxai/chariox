@@ -251,6 +251,9 @@ fn local_request_api_manages_session_workspace_links() {
     assert!(enrollment_notice.message.contains(
         "Mode choice: managed requires provider write fencing; tracked syncs at turn end"
     ));
+    assert!(enrollment_notice
+        .message
+        .contains("live sync mode is unchanged"));
     assert!(enrollment_notice.message.contains("workspace sync managed"));
     assert!(enrollment_notice.message.contains("workspace sync tracked"));
 

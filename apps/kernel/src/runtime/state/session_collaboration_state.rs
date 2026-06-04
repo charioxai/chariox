@@ -292,7 +292,7 @@ impl KernelRuntimeState {
                 "tracked mode is active; switch with `workspace sync managed` when provider write enforcement is supported"
             }
             crate::config::WorkspaceLiveSyncMode::Unrestricted => {
-                "enable with `workspace sync managed` when provider write fencing is supported, or `workspace sync tracked` for turn-end fanout"
+                "live sync mode is unchanged; choose `workspace sync managed` or `workspace sync tracked` to start syncing this session"
             }
         };
         self.owned.record_notice(
