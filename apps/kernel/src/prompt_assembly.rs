@@ -13,6 +13,8 @@ const PROMPT_REGISTRY_VERSION: &str = "1";
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
     include_str!("provider/workspace_live_sync_instructions.md");
+const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
+    include_str!("provider/workspace_live_sync_tracked_instructions.md");
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
@@ -205,6 +207,8 @@ impl PromptAssemblyService {
         }
         let execution_template = if run.requires_workspace_live_sync() {
             "runtime/workspace-live-sync"
+        } else if run.tracks_workspace_live_sync() {
+            "runtime/workspace-live-sync-tracked"
         } else {
             "runtime/native-permissions"
         };
@@ -309,6 +313,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
     vec![
         BundledPromptTemplate::new("runtime/base", RUNTIME_BASE),
         BundledPromptTemplate::new("runtime/workspace-live-sync", RUNTIME_WORKSPACE_LIVE_SYNC),
+        BundledPromptTemplate::new(
+            "runtime/workspace-live-sync-tracked",
+            RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED,
+        ),
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new(
@@ -379,12 +387,18 @@ mod tests {
     }
 
     fn test_run(workspace_live_sync: bool) -> RuntimeProviderRun {
-        let request = LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4");
-        let request = if workspace_live_sync {
-            request.with_workspace_live_sync_managed()
+        test_run_with_live_sync_mode(if workspace_live_sync {
+            crate::config::WorkspaceLiveSyncMode::Managed
         } else {
-            request
-        };
+            crate::config::WorkspaceLiveSyncMode::Unrestricted
+        })
+    }
+
+    fn test_run_with_live_sync_mode(
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4");
+        let request = request.with_workspace_live_sync_mode(mode);
         RuntimeProviderRun::new(
             "provider-run",
             &request,
@@ -412,6 +426,10 @@ mod tests {
             .expect("defaults should materialize");
 
         assert!(root.join("runtime").join("base.md").exists());
+        assert!(root
+            .join("runtime")
+            .join("workspace-live-sync-tracked.md")
+            .exists());
         assert!(root.join("workflow").join("turn.md").exists());
         let base = fs::read_to_string(root.join("runtime").join("base.md"))
             .expect("base prompt should read");
@@ -570,6 +588,51 @@ mod tests {
         assert!(envelope
             .hidden_system_context
             .contains("use provider-native edit/write/patch or shell/bash tools normally"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_uses_tracked_template() {
+        let root = temp_prompt_root("workspace-live-sync-tracked");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run_with_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+                "visible",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("provider-native edits inside the selected synced roots are allowed"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Other repositories outside the synced roots are not part of live sync"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains("Direct filesystem writes inside those roots are unavailable"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
         assert!(!envelope
             .manifest
             .entries
