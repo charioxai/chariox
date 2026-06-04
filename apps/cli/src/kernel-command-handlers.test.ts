@@ -491,8 +491,8 @@ test("kernel health formatter avoids placeholder provider recovery when only agg
   const rendered = formatKernelHealth(unhealthy)
 
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
-  assert.match(rendered, /next: run \/slice doctor for the affected slice; inspect \/slice audit; use the provider-specific \/slice auth login or \/slice auth import command shown by \/slice doctor before sending prompts to slice-backed agents/)
-  assert.doesNotMatch(rendered, /<provider>/)
+  assert.match(rendered, /next: run \/slice list to identify affected slices; run \/slice doctor and inspect \/slice audit before choosing a provider account to login or import/)
+  assert.doesNotMatch(rendered, /<provider>|provider-specific/)
 })
 
 test("kernel health formatter avoids placeholder slice recovery when only aggregate lifecycle counts are available", () => {
@@ -661,7 +661,8 @@ test("kernel health formatter gives worker-connectivity guidance for aggregate m
 
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.match(rendered, /remote extension sync issues: failed=0 stale=0 missing=1 pending_revoke=0/)
-  assert.match(rendered, /next: home keeps stale home-proxy calls blocked; run \/kernel remote-runtime or open Extensions to identify affected agents, then retry sync after worker connectivity is healthy/)
+  assert.match(rendered, /next: home keeps stale home-proxy calls blocked; run \/kernel remote-runtime to identify affected agents, then use \/extension sync-status and \/extension sync-retry after worker connectivity is healthy/)
+  assert.doesNotMatch(rendered, /open Extensions/)
   assert.doesNotMatch(rendered, /\/extension sync-status <agent>/)
 })
 
