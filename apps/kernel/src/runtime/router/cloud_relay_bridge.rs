@@ -30,7 +30,8 @@ impl CommandRouter {
             return Ok(());
         };
         let registration = self.relay_registration().await;
-        let Some(body) = cloud_kernel_presence_body(&config, profile, online, Some(&registration)) else {
+        let Some(body) = cloud_kernel_presence_body(&config, profile, online, Some(&registration))
+        else {
             return Ok(());
         };
         let _: serde_json::Value =

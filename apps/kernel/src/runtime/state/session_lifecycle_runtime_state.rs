@@ -32,7 +32,8 @@ impl KernelRuntimeState {
             self.create_sliced_session_response(request, worker_kernel_ref)
                 .await?
         } else if let Some(kernel_ref) = kernel_ref {
-            self.create_remote_session_response(request, kernel_ref).await?
+            self.create_remote_session_response(request, kernel_ref)
+                .await?
         } else {
             self.owned.create_session_response(request)?
         };

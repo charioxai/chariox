@@ -70,7 +70,10 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(machine.machine_alias.as_deref(), Some("workstation"));
     assert_eq!(machine.display_name, "workstation");
     assert_eq!(machine.available_providers, vec!["codex", "opencode"]);
-    assert_eq!(machine.provider_accounts[0].alias.as_deref(), Some("remote-codex"));
+    assert_eq!(
+        machine.provider_accounts[0].alias.as_deref(),
+        Some("remote-codex")
+    );
 
     let kernels = match harness
         .dispatch(LocalDaemonRequest::ListRemoteMachineKernels(

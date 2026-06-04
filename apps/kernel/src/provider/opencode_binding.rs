@@ -308,8 +308,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        next_opencode_message_id, opencode_prompt_should_disable_native_writes,
-        opencode_prompt_should_allow_native_bash,
+        next_opencode_message_id, opencode_prompt_should_allow_native_bash,
+        opencode_prompt_should_disable_native_writes,
         opencode_workspace_live_sync_native_writes_allowed,
         opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
         OpenCodeConfiguredDefaults, OpenCodeMessage,
