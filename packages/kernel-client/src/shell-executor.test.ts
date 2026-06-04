@@ -1309,7 +1309,7 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.match(result.message ?? "", /providers=codex auth_status=missing codex auth=-/)
   assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex or \/slice auth login linux-a codex/)
   assert.equal(doctor.ok, false)
-  assert.match(doctor.message ?? "", /fail provider accounts: none/)
+  assert.match(doctor.message ?? "", /fail provider accounts: missing codex/)
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
 })
 
@@ -1354,7 +1354,7 @@ test("executeShellCommand requires slice auth coverage for every advertised prov
 
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /ok provider CLIs: codex,opencode:openai/)
-  assert.match(result.message ?? "", /fail provider accounts: codex:codex@example.com/)
+  assert.match(result.message ?? "", /fail provider accounts: codex:codex@example.com; missing opencode:openai/)
   assert.match(result.message ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-a opencode:openai or \/slice auth login linux-a opencode:openai/)
 })
 

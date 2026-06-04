@@ -376,7 +376,7 @@ function formatSliceDoctor(slice: SliceRecord): string {
     doctorCheck("display", slice.display_mode !== "headed" || Boolean(slice.display_endpoint?.url), slice.display_endpoint?.url ?? slice.display_mode ?? "headless"),
     doctorCheck("last operation", slice.last_operation_status !== "failed", formatSliceOperation(slice) || "none"),
     doctorCheck("provider CLIs", providers.length > 0, providers.join(",") || "none"),
-    doctorCheck("provider accounts", sliceProviderAuthHealthy(slice), providerAuth.map((entry) => formatSliceProviderAuth(entry)).join(",") || "none"),
+    doctorCheck("provider accounts", sliceProviderAuthHealthy(slice), formatSliceProviderAuthDoctorDetail(slice)),
   ]
   return [`slice doctor ${formatSliceLabel(slice)}`, ...checks, ...sliceDoctorNextActions(slice)].join("\n")
 }
@@ -463,6 +463,27 @@ function sliceProviderAuthHealthy(slice: SliceRecord): boolean {
     return false
   }
   return sliceProviderAuthCoverage(slice).hasHealthyCoverage
+}
+
+function formatSliceProviderAuthDoctorDetail(slice: SliceRecord): string {
+  const coverage = sliceProviderAuthCoverage(slice)
+  const accounts = (slice.provider_auth ?? [])
+    .map((entry) => formatSliceProviderAuth(entry))
+    .join(",")
+  const gaps = [
+    coverage.missingProviders.length > 0 ? `missing ${formatSliceProviderList(coverage.missingProviders)}` : null,
+    coverage.staleProviders.length > 0 ? `refresh ${formatSliceProviderList(coverage.staleProviders)}` : null,
+  ].filter((gap): gap is string => Boolean(gap))
+  if (accounts && gaps.length > 0) {
+    return `${accounts}; ${gaps.join("; ")}`
+  }
+  if (accounts) {
+    return accounts
+  }
+  if (gaps.length > 0) {
+    return gaps.join("; ")
+  }
+  return "none"
 }
 
 function sliceProviderNames(providers: readonly string[]): string[] {
