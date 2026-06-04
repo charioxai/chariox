@@ -6,7 +6,6 @@
 use super::*;
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: std::time::Duration = std::time::Duration::from_millis(50);
-const PROVIDER_FIRST_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl KernelRuntimeState {
     pub(super) async fn pump_owned_provider_output(
@@ -228,10 +227,8 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let timed_out = first_output_timeout_candidates(&self.owned, session_id);
         for timeout in timed_out {
-            let diagnostic = format!(
-                "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
-                timeout.elapsed_ms / 1000
-            );
+            let diagnostic =
+                crate::app::provider_first_output_timeout_diagnostic(timeout.elapsed_ms);
             let run = self
                 .owned
                 .provider_store
@@ -264,40 +261,20 @@ impl KernelRuntimeState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FirstOutputTimeoutCandidate {
-    provider_run_id: String,
-    agent_id: String,
-    elapsed_ms: u64,
-}
-
 fn first_output_timeout_candidates(
     owned: &KernelRuntimeOwnedState,
     session_id: &str,
-) -> Vec<FirstOutputTimeoutCandidate> {
-    let now_ms = crate::session::unix_epoch_ms();
-    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+) -> Vec<crate::app::ProviderFirstOutputTimeoutCandidate> {
     let prompt_activity = owned.prompt_activity.read().clone();
     let active_turns = owned.active_turns.snapshot();
     let Ok(session) = owned.session_store.get_session(session_id) else {
         return Vec::new();
     };
-    active_turns
-        .into_values()
-        .filter(|turn| turn.session_id == session_id)
-        .filter(|turn| {
-            matches!(
-                turn.phase,
-                crate::app::ActiveTurnPhase::Accepted
-                    | crate::app::ActiveTurnPhase::AwaitingFirstOutput
-            )
-        })
-        .filter(|turn| {
-            prompt_activity
-                .get(&turn.provider_run_id)
-                .is_some_and(|activity| !activity.saw_response_content)
-        })
-        .filter(|turn| {
+    crate::app::provider_first_output_timeout_candidates(
+        session_id,
+        active_turns.into_values(),
+        &prompt_activity,
+        |turn| {
             owned
                 .provider_store
                 .get_run(&turn.provider_run_id)
@@ -312,22 +289,14 @@ fn first_output_timeout_candidates(
                                 | crate::provider::ProviderRunState::Parked
                         )
                 })
-        })
-        .filter(|turn| {
+        },
+        |turn| {
             owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &turn.agent_id)
                 .is_some_and(|prompt| prompt.id() == turn.prompt_id)
-        })
-        .filter_map(|turn| {
-            let elapsed_ms = now_ms.saturating_sub(turn.started_at_ms);
-            (elapsed_ms >= timeout_ms).then_some(FirstOutputTimeoutCandidate {
-                provider_run_id: turn.provider_run_id,
-                agent_id: turn.agent_id,
-                elapsed_ms,
-            })
-        })
-        .collect()
+        },
+    )
 }
 
 pub(super) fn provider_run_ids_for_owned_output_pump(

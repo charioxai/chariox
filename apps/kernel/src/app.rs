@@ -14,6 +14,7 @@ mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 mod provider_activation;
+mod provider_first_output_watchdog;
 mod provider_focus;
 mod provider_launch_policy;
 mod provider_launch_request;
@@ -81,6 +82,10 @@ pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
+pub(crate) use provider_first_output_watchdog::{
+    provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
+    ProviderFirstOutputTimeoutCandidate,
+};
 pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,

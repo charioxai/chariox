@@ -17,8 +17,6 @@ use super::provider_output_fanout::ProviderOutputFanout;
 use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
 
-const PROVIDER_FIRST_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
@@ -96,7 +94,7 @@ fn reap_provider_first_output_timeouts(
 ) -> Result<(), DaemonError> {
     let timed_out = app_first_output_timeout_candidates(app, session_id);
     for timeout in timed_out {
-        let diagnostic = provider_first_output_timeout_diagnostic(timeout.elapsed_ms);
+        let diagnostic = crate::app::provider_first_output_timeout_diagnostic(timeout.elapsed_ms);
         let run = app
             .providers
             .record_terminal_diagnostic(&timeout.provider_run_id, diagnostic.clone())?;
@@ -133,40 +131,20 @@ fn reap_provider_first_output_timeouts(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AppFirstOutputTimeoutCandidate {
-    provider_run_id: String,
-    agent_id: String,
-    elapsed_ms: u64,
-}
-
 fn app_first_output_timeout_candidates(
     app: &DaemonApp,
     session_id: &str,
-) -> Vec<AppFirstOutputTimeoutCandidate> {
-    let now_ms = crate::session::unix_epoch_ms();
-    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+) -> Vec<crate::app::ProviderFirstOutputTimeoutCandidate> {
     let prompt_activity = app.prompt_activity.read().clone();
     let active_turns = app.active_turns.snapshot();
     let Ok(session) = app.sessions.get_session(session_id) else {
         return Vec::new();
     };
-    active_turns
-        .into_values()
-        .filter(|turn| turn.session_id == session_id)
-        .filter(|turn| {
-            matches!(
-                turn.phase,
-                crate::app::ActiveTurnPhase::Accepted
-                    | crate::app::ActiveTurnPhase::AwaitingFirstOutput
-            )
-        })
-        .filter(|turn| {
-            prompt_activity
-                .get(&turn.provider_run_id)
-                .is_some_and(|activity| !activity.saw_response_content)
-        })
-        .filter(|turn| {
+    crate::app::provider_first_output_timeout_candidates(
+        session_id,
+        active_turns.into_values(),
+        &prompt_activity,
+        |turn| {
             app.providers
                 .get_run(&turn.provider_run_id)
                 .is_ok_and(|run| {
@@ -180,27 +158,12 @@ fn app_first_output_timeout_candidates(
                                 | ProviderRunState::Parked
                         )
                 })
-        })
-        .filter(|turn| {
+        },
+        |turn| {
             app.prompt_state_owner
                 .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
                 .is_some_and(|prompt| prompt.id() == turn.prompt_id)
-        })
-        .filter_map(|turn| {
-            let elapsed_ms = now_ms.saturating_sub(turn.started_at_ms);
-            (elapsed_ms >= timeout_ms).then_some(AppFirstOutputTimeoutCandidate {
-                provider_run_id: turn.provider_run_id,
-                agent_id: turn.agent_id,
-                elapsed_ms,
-            })
-        })
-        .collect()
-}
-
-fn provider_first_output_timeout_diagnostic(elapsed_ms: u64) -> String {
-    format!(
-        "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
-        elapsed_ms / 1000
+        },
     )
 }
 
