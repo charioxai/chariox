@@ -7,6 +7,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Remote home extension local relay validation
 
 - Revalidated the local self-hosted relay remote home-extension matrix. `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed for a single user, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed for collab. Both runs proved that a remote worker without the local extension definition/credential can invoke home-owned script, MCP, and connector tools through the relay, and that home-side revoke enforcement blocks stale use.
+- Fast-forwarded the Hetzner validation checkout `/tmp/arroba-native-remote-validate` to current OSS `main` HEAD `9e681bf0`, rebuilt the remote kernel and relay with the rustup stable toolchain, and revalidated the actual-Hetzner worker matrix. `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single` and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-collab` both passed, covering the same home-owned script/MCP/connector execution and revoke enforcement with the worker kernel on Hetzner.
 
 ### Hetzner OpenCode Workspace Live Sync validation
 
