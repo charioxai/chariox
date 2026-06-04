@@ -332,6 +332,40 @@ test("kernel health formatter reports slice lifecycle issues", () => {
   assert.match(rendered, /next: run \/slice doctor slice-1, inspect \/slice logs slice-1, and check \/slice audit slice-1 before restarting or deleting the slice/)
 })
 
+test("kernel health formatter reports slice storage recovery directly", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 1,
+      running_slices: 0,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 1,
+      attached_agents: 0,
+      failed_operations: 1,
+      in_progress_operations: 0,
+      issues: [{
+        slice_id: "slice-1",
+        name: "dev",
+        status: "unhealthy",
+        last_operation: "start",
+        last_operation_status: "failed",
+        last_error: "slice storage preflight failed for desktop: /home/slice has 0MiB free, needs 256MiB",
+        session_ids: [],
+        agent_ids: [],
+        worktree_id: "/repo",
+      }],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.match(rendered, /slice storage preflight failed for desktop/)
+  assert.match(rendered, /next: free Docker\/Colima disk or delete unused slice containers\/volumes; then run \/slice start slice-1 or recreate the slice if startup still fails/)
+})
+
 test("kernel health formatter renders lifecycle issues without failed counters", () => {
   const unhealthy = health({
     slice_lifecycle: {

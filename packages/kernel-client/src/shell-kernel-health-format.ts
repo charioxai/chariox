@@ -299,11 +299,15 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
           : ""
       lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${operation}${operationStatus}${worktree}${agents}${detail}`)
     }
-    const firstSlice = sliceLifecycle.issues[0]?.slice_id
+    const firstIssue = sliceLifecycle.issues[0]
+    const firstSlice = firstIssue?.slice_id
     const sliceTarget = firstSlice ? ` ${firstSlice}` : ""
+    const storageRecovery = firstIssue ? sliceStorageRecoveryAction(firstIssue.last_error) : ""
     lines.push(
       hasStoppedSliceWithAgents
         ? `  next: run /slice start${sliceTarget} for stopped slices or move attached agents to a running slice`
+        : storageRecovery
+          ? `  next: ${storageRecovery}; then run /slice start${sliceTarget} or recreate the slice if startup still fails`
         : `  next: run /slice doctor${sliceTarget}, inspect /slice logs${sliceTarget}, and check /slice audit${sliceTarget} before restarting or deleting the slice`,
     )
   }
@@ -433,6 +437,18 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
     lines.push("  next: check workspace paths and permissions, then refresh workspace live sync status")
   }
+}
+
+function sliceStorageRecoveryAction(lastError?: string | null): string {
+  const normalized = lastError?.toLowerCase() ?? ""
+  if (
+    normalized.includes("no space left on device")
+    || normalized.includes("slice storage preflight failed")
+    || normalized.includes("needs more free space")
+  ) {
+    return "free Docker/Colima disk or delete unused slice containers/volumes"
+  }
+  return ""
 }
 
 function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): string {
