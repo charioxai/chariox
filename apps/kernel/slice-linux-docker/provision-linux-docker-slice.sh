@@ -20,6 +20,7 @@ SLICE_START_DESKTOP="${ARROBA_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${ARROBA_SLICE_START_PROVIDER_SERVERS:-1}"
 SLICE_START_RUNTIME="${ARROBA_SLICE_START_RUNTIME:-0}"
 SLICE_IMPORT_PROVIDER_AUTH="${ARROBA_SLICE_IMPORT_PROVIDER_AUTH:-0}"
+SLICE_MIN_FREE_MB="${ARROBA_SLICE_MIN_FREE_MB:-256}"
 SLICE_CODEX_PORT="${ARROBA_SLICE_CODEX_PORT:-43252}"
 SLICE_OPENCODE_PORT="${ARROBA_SLICE_OPENCODE_PORT:-43140}"
 SLICE_CODEX_PORT_RANGE="${ARROBA_SLICE_CODEX_PORT_RANGE:-43260-43279}"
@@ -123,6 +124,33 @@ wait_for_container_running() {
     sleep "$delay_seconds"
   done
   return 1
+}
+
+available_mb_for_path() {
+  local path="$1"
+  run_with_timeout 20 docker exec -u slice "$SLICE_NAME" df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+require_slice_free_space() {
+  local phase="$1"
+  shift
+  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]+$ ]] || fail "ARROBA_SLICE_MIN_FREE_MB must be a non-negative integer"
+  local paths=("$@")
+  local path
+  for path in "${paths[@]}"; do
+    local available_mb=""
+    available_mb="$(available_mb_for_path "$path" || true)"
+    if [[ ! "$available_mb" =~ ^[0-9]+$ ]]; then
+      log "slice storage preflight unavailable for $path during $phase; continuing"
+      continue
+    fi
+    if (( available_mb < SLICE_MIN_FREE_MB )); then
+      log "slice storage preflight failed for $phase: $path has ${available_mb}MiB free, needs ${SLICE_MIN_FREE_MB}MiB"
+      run_with_timeout 10 docker exec -u slice "$SLICE_NAME" df -h "${paths[@]}" >&2 || true
+      fail "slice $phase needs more free space in the Docker/Colima slice filesystem. Free Docker disk or delete unused slice containers/volumes, then retry."
+    fi
+    log "slice storage preflight ok for $phase: $path has ${available_mb}MiB free"
+  done
 }
 
 build_image() {
@@ -380,6 +408,7 @@ NODE"
 
 import_provider_auth() {
   ensure_container
+  require_slice_free_space "provider-auth" /home/slice /tmp
   case "$SLICE_AUTH_PROVIDER" in
     all)
       import_codex_auth
@@ -513,6 +542,7 @@ provider_login_command() {
 
 start_provider_login() {
   ensure_container
+  require_slice_free_space "provider-login" /home/slice /tmp
   local safe_provider
   safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
   local session_name="arroba-slice-login-${safe_provider}"
@@ -630,9 +660,11 @@ main() {
         import_provider_auth
       fi
       if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
+        require_slice_free_space "desktop" /home/slice /tmp
         run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
       fi
       if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
+        require_slice_free_space "runtime" /home/slice /tmp
         run_required_phase runtime exec_slice /opt/arroba-slice/start-runtime.sh
       fi
       if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
@@ -691,6 +723,7 @@ main() {
     start-desktop)
       require_docker
       ensure_container
+      require_slice_free_space "desktop" /home/slice /tmp
       run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
       ;;
     validate-screen)
@@ -702,11 +735,13 @@ main() {
     start-runtime)
       require_docker
       ensure_container
+      require_slice_free_space "runtime" /home/slice /tmp
       exec_slice /opt/arroba-slice/start-runtime.sh
       ;;
     start-providers)
       require_docker
       ensure_container
+      require_slice_free_space "provider-servers" /home/slice /tmp
       exec_slice /opt/arroba-slice/start-providers.sh
       ;;
     shell)
