@@ -108,6 +108,7 @@ function printHelp() {
     '- negative: agents are asked to write directly without Arroba; direct output files must not appear',
     '- collision: two agents attempt the same text edit area; exactly one write may land',
     '- external changes: non-overlap stale edits rebase, overlapping stale edits are rejected',
+    '- tracked mode: direct writes inside the selected worktree sync at turn end, while direct writes to the sibling repo must remain allowed and unsynced',
     '',
     'Options:',
     `  --kernel ${DEFAULT_KERNEL}`,
@@ -233,6 +234,7 @@ async function runAfterFixtureCommand(command, context) {
     ...process.env,
     ARROBA_WORKSPACE_LIVE_SYNC_ROOT: context.rootDir,
     ARROBA_WORKSPACE_LIVE_SYNC_WORKSPACE: context.workspace,
+    ARROBA_WORKSPACE_LIVE_SYNC_SIBLING_WORKSPACE: context.siblingWorkspace,
     ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACE: context.targetWorkspace,
     ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACES: JSON.stringify(context.targetWorkspaces),
     ARROBA_WORKSPACE_LIVE_SYNC_MODE: context.mode,
@@ -1679,6 +1681,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
   targetOriginAgent,
   spawnedSessionId,
   workspace,
+  siblingWorkspace,
   targetWorkspace,
   targetWorkspaces,
   historyDir,
@@ -1743,6 +1746,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
 
   const completionSinceMs = Date.now()
   const marker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_DONE`
+  const siblingWritePath = path.join(siblingWorkspace, `${provider}-tracked-sibling.txt`)
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is a live Arroba workspace live sync tracked-mode drill.',
     'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
@@ -1754,6 +1758,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     `Modify outputs/${provider}-tracked-rebase.txt so it becomes exactly "alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n".`,
     `Modify outputs/${provider}-tracked-conflict.txt so it becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
     `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
+    `Create ../sibling-repo/${provider}-tracked-sibling.txt containing exactly "${provider}-tracked-sibling\\n"; this sibling repo is outside the synced workspace and must remain writable.`,
     `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
 
@@ -1768,6 +1773,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
       path.join(workspace, 'outputs', `${provider}-tracked-added.txt`),
       path.join(workspace, 'outputs', `${provider}-tracked-renamed.txt`),
       path.join(workspace, 'ignored', `${provider}-ignored.txt`),
+      siblingWritePath,
     ],
     forbiddenFiles: [],
     timeoutMs,
@@ -1782,6 +1788,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
+  await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)
   await waitForAgentsIdle({
     client,
     sessionId: session.id,
@@ -1918,6 +1925,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
       outsideTurnSourceFileExists: await fileExists(outsideTurnPath),
       outsideTurnTargetFileExists: await fileExists(outsideTurnTargetPaths[0]),
       outsideTurnTargetFileExistsByTarget: Object.fromEntries(await Promise.all(outsideTurnTargetPaths.map(async (targetPath) => [targetPath, await fileExists(targetPath)]))),
+      siblingRepoWriteContent: await readFile(siblingWritePath, 'utf8'),
       sourceHeadBefore,
       sourceHeadAfter,
       targetHeadBefore: targetHeadsBefore[targetWorkspace],
@@ -1984,6 +1992,9 @@ async function main() {
   }
   if (options.mode === 'tracked') {
     await initTrackedWorkspace(workspace, options.providers[0])
+    await mkdir(siblingWorkspace, { recursive: true })
+    await writeFile(path.join(siblingWorkspace, 'README.md'), 'sibling repo\n', 'utf8')
+    await initGitWorktree(siblingWorkspace)
     for (const target of targetWorkspaces) {
       await initTrackedWorkspace(target, options.providers[0], options.targetBranch)
     }
@@ -2201,6 +2212,7 @@ async function main() {
         targetOriginAgent: targetOriginAgents[0],
         spawnedSessionId: agents[0].spawnedSessionId,
         workspace,
+        siblingWorkspace,
         targetWorkspace,
         targetWorkspaces,
         historyDir,
