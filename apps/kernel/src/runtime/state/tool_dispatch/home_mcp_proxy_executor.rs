@@ -64,7 +64,7 @@ impl KernelRuntimeState {
         .and_then(super::home_extension_execution_policy::enforce_home_extension_json_result_limit);
         if let Ok(value) = &result {
             let completed = self
-                .complete_home_extension_invocation(&metadata, value.clone())
+                .complete_home_extension_invocation(&context, &tool, &metadata, value.clone())
                 .await;
             if !completed {
                 let error = super::home_extension_execution_policy::home_extension_cancelled_error(
@@ -93,7 +93,8 @@ impl KernelRuntimeState {
             )
             .await?;
         } else {
-            self.forget_home_extension_invocation(&metadata).await;
+            self.forget_home_extension_invocation(&context, &tool, &metadata)
+                .await;
             if let Err(error) = &result {
                 self.append_home_mcp_proxy_result_audit_event(
                     "home_extension.invoke.completed",
