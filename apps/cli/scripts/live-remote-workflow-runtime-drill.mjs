@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -307,22 +308,6 @@ async function waitForRemoteMachine(client, machineRef) {
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-async function runWorkflowChild(args, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
-    let stdout = ''
-    child.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk)
-      stdout += chunk.toString()
-    })
-    child.on('exit', (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(`workflow drill child exited with code ${code}`))
-    })
-    child.on('error', reject)
-  })
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -444,7 +429,9 @@ async function main() {
       '--poll-interval-ms', String(options.pollIntervalMs),
     ]
     if (options.noEarlyPass) workflowArgs.push('--no-early-pass')
-    const stdout = await runWorkflowChild(workflowArgs, repoRoot)
+    const stdout = await runNodeDrillChild(workflowArgs, repoRoot, {
+      label: 'remote workflow runtime drill',
+    })
 
     const trimmed = stdout.trim()
     const lastJsonIndex = trimmed.lastIndexOf('\n{')

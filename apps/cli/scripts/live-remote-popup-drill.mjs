@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -221,22 +222,6 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-async function runChild(args, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('node', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
-    let stdout = ''
-    child.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk)
-      stdout += chunk.toString()
-    })
-    child.on('exit', (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(`remote popup drill child exited with code ${code}`))
-    })
-    child.on('error', reject)
-  })
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -362,7 +347,7 @@ async function main() {
       } finally {
         await workerClient.close().catch(() => {})
       }
-      await runChild([
+      await runNodeDrillChild([
         path.join('apps', 'cli', 'scripts', 'live-popup-drill.mjs'),
         '--kernel', homeKernelUrl,
         '--no-spawn-daemon',
@@ -372,7 +357,7 @@ async function main() {
         '--timeout-ms', String(options.timeoutMs),
         '--poll-ms', String(options.pollMs),
         ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
-      ], repoRoot)
+      ], repoRoot, { label: 'remote popup drill' })
       results.push({ provider, model, status: 'passed' })
     }
 
