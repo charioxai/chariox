@@ -395,13 +395,15 @@ function sliceDoctorHealthy(slice: SliceRecord): boolean {
 function sliceDoctorNextActions(slice: SliceRecord): string[] {
   const scope = slice.worktree_id || slice.workspace_mount || slice.workspace_id || "missing"
   const next = sliceNextAction(slice)
+  const storageRecovery = sliceStorageRecoveryAction(slice)
   const actions = [
-    slice.status === "unhealthy" ? "inspect slice logs and audit, then try slice start or recreate the slice" : null,
+    storageRecovery,
+    slice.status === "unhealthy" && !storageRecovery ? "inspect slice logs and audit, then try slice start or recreate the slice" : null,
     slice.status === "running" && !slice.worker_kernel_id ? "wait for worker discovery; restart the slice if no worker appears" : null,
     slice.status === "running" && !slice.relay_endpoint?.url ? "check relay connectivity and restart the slice if the relay endpoint stays missing" : null,
     scope === "missing" ? "create or reuse a slice scoped to the selected worktree before spawning agents into it" : null,
     slice.display_mode === "headed" && !slice.display_endpoint?.url ? "start the slice screen service or recreate as headless if a display is not needed" : null,
-    slice.last_operation_status === "failed" ? "inspect slice logs and audit, then retry the failed operation after fixing the reported error" : null,
+    slice.last_operation_status === "failed" && !storageRecovery ? "inspect slice logs and audit, then retry the failed operation after fixing the reported error" : null,
     next,
   ].filter((action): action is string => Boolean(action))
   const unique = [...new Set(actions)]
@@ -409,6 +411,10 @@ function sliceDoctorNextActions(slice: SliceRecord): string[] {
 }
 
 function sliceNextAction(slice: SliceRecord): string | null {
+  const storageRecovery = sliceStorageRecoveryAction(slice)
+  if (storageRecovery) {
+    return storageRecovery
+  }
   if (slice.status === "unhealthy") {
     return "inspect logs and audit, then start or delete/recreate the slice"
   }
@@ -437,6 +443,19 @@ function sliceNextAction(slice: SliceRecord): string | null {
     return actions.join("; ")
   }
   return null
+}
+
+function sliceStorageRecoveryAction(slice: SliceRecord): string | null {
+  if (!slice.last_error) {
+    return null
+  }
+  const normalized = slice.last_error.toLowerCase()
+  const storageFailure = normalized.includes("no space left on device")
+    || normalized.includes("slice storage preflight failed")
+    || normalized.includes("needs more free space")
+  return storageFailure
+    ? `free Docker/Colima disk or delete unused slice containers/volumes; then restart slice ${formatSliceCommandRef(slice)} or recreate it if startup still fails`
+    : null
 }
 
 function sliceProviderAuthHealthy(slice: SliceRecord): boolean {

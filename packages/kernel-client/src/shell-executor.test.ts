@@ -1190,6 +1190,55 @@ test("executeShellCommand does not infer shared slice relay authority", async ()
   assert.match(result.message ?? "", /relay=unknown:wss:\/\/relay.example\/slice/)
 })
 
+test("executeShellCommand renders concrete slice storage recovery", async () => {
+  const fake = fakeClient((request) => {
+    if ("GetSlice" in request) {
+      return {
+        Slice: {
+          slice: {
+            id: "slice-1",
+            name: "linux-a",
+            backend: "local_docker",
+            os: "linux",
+            status: "unhealthy",
+            display_mode: "headless",
+            workspace_id: "/repo",
+            worktree_id: "/repo/feature",
+            workspace_mount: "/repo/feature",
+            worker_kernel_ref: "slice:linux-a",
+            worker_kernel_id: null,
+            worker_machine_id: null,
+            providers: ["codex"],
+            session_ids: [],
+            agent_ids: [],
+            provider_auth: [],
+            relay_endpoint: null,
+            display_endpoint: null,
+            last_operation: "start",
+            last_operation_status: "failed",
+            last_error: "slice storage preflight failed for desktop: /home/slice has 0MiB free, needs 256MiB",
+            created_at_ms: 0,
+            updated_at_ms: 0,
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
+  const status = await executeShellCommand(parseShellCommand("slice status linux-a"), context, { client: fake.client })
+  const doctor = await executeShellCommand(parseShellCommand("slice doctor linux-a"), context, { client: fake.client })
+
+  assert.equal(status.ok, true)
+  assert.match(status.message ?? "", /slice storage preflight failed for desktop/)
+  assert.match(status.message ?? "", /next=free Docker\/Colima disk or delete unused slice containers\/volumes; then restart slice linux-a or recreate it if startup still fails/)
+  assert.doesNotMatch(status.message ?? "", /next=open logs and audit/)
+  assert.equal(doctor.ok, false)
+  assert.match(doctor.message ?? "", /fail last operation: start:failed error=slice storage preflight failed/)
+  assert.match(doctor.message ?? "", /next: free Docker\/Colima disk or delete unused slice containers\/volumes; then restart slice linux-a or recreate it if startup still fails/)
+  assert.doesNotMatch(doctor.message ?? "", /inspect slice logs and audit, then retry/)
+})
+
 test("executeShellCommand renders slice account recovery hints", async () => {
   const fake = fakeClient((request) => {
     if ("ListSlices" in request) {
