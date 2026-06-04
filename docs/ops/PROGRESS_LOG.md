@@ -8,6 +8,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Attempted the actual-Hetzner OpenCode Zen Workspace Live Sync matrix with `node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-hetzner --include-opencode --only hetzner-managed-opencode,hetzner-tracked-opencode,hetzner-permission-opencode --continue-on-failure`. All three scenarios were blocked before Arroba Workspace Live Sync behavior by the OpenCode account response `Insufficient balance`.
 - Hardened `live-workspace-live-sync-permission-drill.mjs` so remote wrapper runs can pass the authoritative home history directory to the child drill. The Hetzner permission rerun now fails fast with the provider error in ~25s instead of waiting for the full approval-interaction timeout.
+- Classified OpenCode `Insufficient balance` / `Manage your billing` provider errors as substitutable resource-limit failures, so agents with configured substitutes can recover from that account state through the same automatic substitution path as quota, credit, rate-limit, and run-limit failures.
 
 ## 2026-06-02
 

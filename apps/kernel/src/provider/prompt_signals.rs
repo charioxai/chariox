@@ -74,6 +74,8 @@ pub(crate) fn classify_provider_substitutable_failure_text(
         || normalized.contains("exceeded your current quota")
         || normalized.contains("billing hard limit")
         || normalized.contains("billing limit")
+        || normalized.contains("insufficient balance")
+        || normalized.contains("manage your billing")
         || normalized.contains("spend limit")
         || normalized.contains("usage limit")
         || normalized.contains("monthly limit")
@@ -156,6 +158,13 @@ mod tests {
         )
         .expect("opencode credit error should be substitutable");
         assert!(opencode_failure.contains("No credits"));
+
+        let opencode_balance_failure = classify_provider_substitutable_failure_text(
+            "opencode",
+            "Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk/billing",
+        )
+        .expect("opencode balance error should be substitutable");
+        assert!(opencode_balance_failure.contains("Insufficient balance"));
     }
 
     #[test]
