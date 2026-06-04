@@ -1406,3 +1406,8 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Slice lifecycle command refactor
 
 - Split slice lifecycle/read/log/display command handling, start/stop/delete policy, active-agent guards, and worker discovery out of `runtime/slice_command_executor.rs` into `runtime/slice_command_executor/lifecycle.rs`. The root executor now stays focused on request routing and provider-auth command handling.
+
+### Home extension local relay revalidation
+
+- Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --continue-on-failure` on OSS main `78ada11b` after the latest terminal/web slice-auth UX alignment. Local self-hosted relay passed both `local-single` and `local-collab`; each scenario validated home-owned script, MCP, and connector invocation from a worker agent plus revoke enforcement.
+- Aligned the web terminal command center slice-auth descriptions in `arroba-cloud` main `5fd0709` with the TUI/shell wording: import copies this machine's provider credentials into the slice, login starts provider authentication inside the slice for another account, remove purges slice-local credentials/account summaries, and alias is an Arroba display label fallback.
