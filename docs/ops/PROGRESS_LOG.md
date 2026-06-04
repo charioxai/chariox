@@ -1411,3 +1411,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Re-ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --continue-on-failure` on OSS main `78ada11b` after the latest terminal/web slice-auth UX alignment. Local self-hosted relay passed both `local-single` and `local-collab`; each scenario validated home-owned script, MCP, and connector invocation from a worker agent plus revoke enforcement.
 - Aligned the web terminal command center slice-auth descriptions in `arroba-cloud` main `5fd0709` with the TUI/shell wording: import copies this machine's provider credentials into the slice, login starts provider authentication inside the slice for another account, remove purges slice-local credentials/account summaries, and alias is an Arroba display label fallback.
+
+### Slice provisioner reliability hardening
+
+- Re-ran `node apps/cli/scripts/live-slice-lifecycle-drill.mjs` locally. The first run exposed two lifecycle reliability issues: headed desktop startup failures surfaced as an unlabeled status 124, and slice provider-auth import/remove spent kernel response time on optional provider CLI status probes.
+- Hardened the local Docker slice provisioner so required startup phases log explicit `desktop`, `runtime`, and `provider-servers` boundaries, desktop failures collect screen/process/log diagnostics, provider-auth import/remove no longer wait on provider CLI probes, and provision completion no longer runs synchronous Docker status probes. A follow-up run now fails with the actionable root cause `desktop: No space left on device` in the local Docker environment instead of a generic transport timeout.

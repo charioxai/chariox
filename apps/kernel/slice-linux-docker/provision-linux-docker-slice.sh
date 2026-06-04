@@ -287,6 +287,40 @@ exec_slice() {
   exec_slice_with_timeout 90 "$@"
 }
 
+slice_screen_diagnostics() {
+  log "slice screen diagnostics"
+  run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
+    set +e
+    /opt/arroba-slice/slice-screen.sh status
+    echo '--- processes'
+    pgrep -af 'Xvfb|openbox|x11vnc|websockify|chromium' || true
+    echo '--- logs'
+    for log_file in /opt/arroba-slice/logs/xvfb.log /opt/arroba-slice/logs/openbox.log /opt/arroba-slice/logs/x11vnc.log /opt/arroba-slice/logs/novnc.log /opt/arroba-slice/logs/chromium-gui.log; do
+      echo \"==== \${log_file}\"
+      tail -n 40 \"\${log_file}\" 2>/dev/null || true
+    done
+  " >&2 || log "slice screen diagnostics unavailable"
+}
+
+run_required_phase() {
+  local label="$1"
+  shift
+  log "starting phase: $label"
+  local status=0
+  "$@" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    log "completed phase: $label"
+    return 0
+  fi
+  log "phase failed: $label (status $status)"
+  case "$label" in
+    desktop)
+      slice_screen_diagnostics
+      ;;
+  esac
+  return "$status"
+}
+
 copy_provider_auth_file() {
   local source_path="$1"
   local target_path="$2"
@@ -596,15 +630,15 @@ main() {
         import_provider_auth
       fi
       if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
-        exec_slice bash -lc "timeout 30s /opt/arroba-slice/slice-screen.sh start"
+        run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
       fi
       if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
-        exec_slice /opt/arroba-slice/start-runtime.sh
+        run_required_phase runtime exec_slice /opt/arroba-slice/start-runtime.sh
       fi
       if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
-        exec_slice /opt/arroba-slice/start-providers.sh
+        run_required_phase provider-servers exec_slice /opt/arroba-slice/start-providers.sh
       fi
-      print_status
+      log "provision completed; use status or logs actions for diagnostics"
       ;;
     status)
       require_docker
@@ -621,12 +655,12 @@ main() {
     import-provider-auth)
       require_docker
       import_provider_auth
-      print_provider_auth_status
+      log "provider auth import completed; account summaries are extracted by the home kernel"
       ;;
     remove-provider-auth)
       require_docker
       remove_provider_auth
-      print_provider_auth_status
+      log "provider auth removal completed; account summaries are reconciled by the home kernel"
       ;;
     start-provider-login)
       require_docker
@@ -657,7 +691,7 @@ main() {
     start-desktop)
       require_docker
       ensure_container
-      exec_slice bash -lc "timeout 30s /opt/arroba-slice/slice-screen.sh start"
+      run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker
