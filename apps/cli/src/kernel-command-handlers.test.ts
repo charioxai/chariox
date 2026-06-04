@@ -466,6 +466,56 @@ test("kernel health formatter avoids placeholder provider recovery when only agg
   assert.doesNotMatch(rendered, /<provider>/)
 })
 
+test("kernel health formatter avoids placeholder slice recovery when only aggregate lifecycle counts are available", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 1,
+      running_slices: 0,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 1,
+      attached_agents: 0,
+      failed_operations: 1,
+      in_progress_operations: 0,
+      issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.match(rendered, /slice lifecycle issues: unhealthy=1 failed_ops=1/)
+  assert.match(rendered, /next: run \/slice list to identify the affected slice, then run \/slice doctor and inspect logs\/audit before restarting or deleting it/)
+  assert.doesNotMatch(rendered, /<slice>/)
+})
+
+test("kernel health formatter avoids placeholder slice recovery for aggregate settling operations", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 2,
+      running_slices: 1,
+      starting_slices: 1,
+      stopping_slices: 1,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 1,
+      failed_operations: 0,
+      in_progress_operations: 2,
+      issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.match(rendered, /slice operations settling: starting=1 stopping=1 in_progress=2/)
+  assert.match(rendered, /next: wait for the slice operation to finish; run \/slice list to identify any stuck slice, then run \/slice doctor and inspect logs if it does not settle/)
+  assert.doesNotMatch(rendered, /<slice>/)
+})
+
 test("kernel health formatter reports remote execution issues", () => {
   const unhealthy = health({
     remote_execution: {
@@ -910,9 +960,10 @@ test("kernel remote-runtime formatter reports slice operations as degraded atten
   })
   assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=attention starting=1 stopping=1 in_progress=2 unhealthy=0 failed_ops=0 auth_missing=0 auth_unconfigured=0; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /slice operations settling: starting=1 stopping=1 in_progress=2/)
-  assert.match(rendered, /next: wait for the slice operation to finish; run \/slice doctor <slice> and inspect \/slice logs <slice> if it does not settle/)
+  assert.match(rendered, /next: wait for the slice operation to finish; run \/slice list to identify any stuck slice, then run \/slice doctor and inspect logs if it does not settle/)
   assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
   assert.doesNotMatch(rendered, /support bundle:/)
+  assert.doesNotMatch(rendered, /<slice>/)
 })
 
 test("kernel remote-runtime formatter reports settling manifests as degraded attention", async () => {

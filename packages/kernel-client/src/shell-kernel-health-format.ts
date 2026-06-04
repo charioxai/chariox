@@ -308,7 +308,9 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
         ? `  next: run /slice start${sliceTarget} for stopped slices or move attached agents to a running slice`
         : storageRecovery
           ? `  next: ${storageRecovery}; then run /slice start${sliceTarget} or recreate the slice if startup still fails`
-        : `  next: run /slice doctor${sliceTarget}, inspect /slice logs${sliceTarget}, and check /slice audit${sliceTarget} before restarting or deleting the slice`,
+        : sliceTarget
+          ? `  next: run /slice doctor${sliceTarget}, inspect /slice logs${sliceTarget}, and check /slice audit${sliceTarget} before restarting or deleting the slice`
+          : "  next: run /slice list to identify the affected slice, then run /slice doctor and inspect logs/audit before restarting or deleting it",
     )
   }
 
@@ -342,7 +344,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     && (sliceLifecycle.starting_slices > 0 || sliceLifecycle.stopping_slices > 0 || sliceLifecycle.in_progress_operations > 0)
   ) {
     lines.push(`slice operations settling: starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} in_progress=${sliceLifecycle.in_progress_operations}`)
-    lines.push("  next: wait for the slice operation to finish; run /slice doctor <slice> and inspect /slice logs <slice> if it does not settle")
+    lines.push("  next: wait for the slice operation to finish; run /slice list to identify any stuck slice, then run /slice doctor and inspect logs if it does not settle")
   }
 
   if (remoteExecutionIssueCount(health) > 0) {
