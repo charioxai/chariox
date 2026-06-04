@@ -4,6 +4,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-06-04
 
+### Remote home extension local relay validation
+
+- Revalidated the local self-hosted relay remote home-extension matrix. `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single` passed for a single user, and `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-collab` passed for collab. Both runs proved that a remote worker without the local extension definition/credential can invoke home-owned script, MCP, and connector tools through the relay, and that home-side revoke enforcement blocks stale use.
+
 ### Hetzner OpenCode Workspace Live Sync validation
 
 - Attempted the actual-Hetzner OpenCode Zen Workspace Live Sync matrix with `node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-hetzner --include-opencode --only hetzner-managed-opencode,hetzner-tracked-opencode,hetzner-permission-opencode --continue-on-failure`. All three scenarios were blocked before Arroba Workspace Live Sync behavior by the OpenCode account response `Insufficient balance`.
