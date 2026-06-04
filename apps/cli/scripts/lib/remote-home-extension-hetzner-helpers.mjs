@@ -14,9 +14,37 @@ export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
   ].join("; "))
 }
 
-export async function stopRemoteHomeExtensionHetznerRelay(options, port) {
-  await runHetznerCommand(options, `pkill -f ${shellQuote(`ARROBA_RELAY_PORT=${port}`)} 2>/dev/null || true`).catch(() => {})
-  await runHetznerCommand(options, `fuser -k ${port}/tcp 2>/dev/null || true`).catch(() => {})
+async function assertRemoteRelayPortFree(options, port) {
+  await runHetznerCommand(options, [
+    "python3 -c",
+    shellQuote([
+      "import socket, sys",
+      "port = int(sys.argv[1])",
+      "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+      "sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)",
+      "try:",
+      "    sock.bind(('127.0.0.1', port))",
+      "except OSError as exc:",
+      "    print(f'Hetzner relay port {port} is already in use; choose another run or wait for the owner to finish: {exc}', file=sys.stderr)",
+      "    raise SystemExit(17)",
+      "finally:",
+      "    sock.close()",
+    ].join("\n")),
+    String(port),
+  ].join(" "))
+}
+
+export async function stopRemoteHomeExtensionHetznerRelay(options, remoteRoot) {
+  const pidFile = path.posix.join(remoteRoot, "relay.pid")
+  await runHetznerCommand(options, [
+    `if test -f ${shellQuote(pidFile)}; then`,
+    `  pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || true);`,
+    `  if test -n "$pid" && test -r "/proc/$pid/environ" && tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx ${shellQuote(`ARROBA_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)}; then`,
+    '    kill "$pid" 2>/dev/null || true;',
+    '  fi;',
+    `  rm -f ${shellQuote(pidFile)};`,
+    'fi',
+  ].join(" ")).catch(() => {})
 }
 
 export async function removeRemoteHomeExtensionHetznerRoot(options, remoteRoot) {
@@ -31,10 +59,13 @@ export async function startRemoteHomeExtensionHetznerRelay({
   collab,
   issuer,
   secret,
+  remoteRoot,
 }) {
-  await stopRemoteHomeExtensionHetznerRelay(options, relayPort)
+  await assertRemoteRelayPortFree(options, relayPort)
+  const relayPidFile = path.posix.join(remoteRoot, "relay.pid")
   const relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
     ARROBA_REMOTE_REPO: options.hetznerRepo,
+    ARROBA_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     ARROBA_RELAY_HOST: "127.0.0.1",
     ARROBA_RELAY_PORT: String(relayPort),
     ARROBA_RELAY_TOKEN: sharedRelayToken,
@@ -42,7 +73,7 @@ export async function startRemoteHomeExtensionHetznerRelay({
       ARROBA_RELAY_SCOPED_ISSUER: issuer,
       ARROBA_RELAY_SCOPED_HMAC_SECRET: secret,
     } : {}),
-  }, "./apps/relay/target/debug/arroba-relay")), { stdio: ["ignore", "ignore", "inherit"] })
+  }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/arroba-relay`)), { stdio: ["ignore", "ignore", "inherit"] })
   const tunnel = spawn("ssh", [
     "-i",
     options.hetznerKey,

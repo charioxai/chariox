@@ -210,6 +210,7 @@ async function main() {
         collab: options.collab,
         issuer: RELAY_ISSUER,
         secret: RELAY_SECRET,
+        remoteRoot,
       })
       relay = hetznerRelay.relay
       relayTunnel = hetznerRelay.tunnel
@@ -454,7 +455,7 @@ async function main() {
     await terminateChild(relayTunnel)
     await terminateChild(relay)
     if (options.hetznerWorker) {
-      await stopRemoteHomeExtensionHetznerRelay(options, relayPort)
+      await stopRemoteHomeExtensionHetznerRelay(options, remoteRoot)
       await removeRemoteHomeExtensionHetznerRoot(options, remoteRoot)
     }
     await new Promise((resolve) => homeOnlyMcp?.close?.(resolve) ?? resolve())
