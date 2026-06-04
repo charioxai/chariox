@@ -441,6 +441,31 @@ test("kernel health formatter reports slice provider auth issues", () => {
   assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex before sending prompts to agents in that slice/)
 })
 
+test("kernel health formatter avoids placeholder provider recovery when only aggregate slice auth counts are available", () => {
+  const unhealthy = health({
+    slice_lifecycle: {
+      total_slices: 1,
+      running_slices: 1,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 0,
+      unhealthy_slices: 0,
+      attached_agents: 1,
+      failed_operations: 0,
+      in_progress_operations: 0,
+      issues: [],
+      provider_auth_missing_slices: 1,
+      provider_auth_unconfigured_slices: 1,
+      provider_auth_issues: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
+  assert.match(rendered, /next: run \/slice doctor for the affected slice; inspect \/slice audit; use the provider-specific \/slice auth login or \/slice auth import command shown by \/slice doctor before sending prompts to slice-backed agents/)
+  assert.doesNotMatch(rendered, /<provider>/)
+})
+
 test("kernel health formatter reports remote execution issues", () => {
   const unhealthy = health({
     remote_execution: {

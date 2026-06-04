@@ -522,10 +522,10 @@ function sliceProviderAuthNextAction(slice: SliceRecord): string {
   const coverage = sliceProviderAuthCoverage(slice)
   const actions = [
     coverage.missingProviders.length > 0
-      ? `import or login provider accounts${formatSliceProviderActionTarget(coverage.missingProviders)} with /slice auth import ${formatSliceLabel(slice)} ${sliceProviderCommandArg(coverage.missingProviders)} or /slice auth login ${formatSliceLabel(slice)} ${sliceProviderCommandArg(coverage.missingProviders)}`
+      ? `import or login provider accounts${formatSliceProviderActionTarget(coverage.missingProviders)} with ${formatSliceAuthRecoveryCommands(slice, coverage.missingProviders)}`
       : null,
     coverage.staleProviders.length > 0
-      ? `refresh provider login${formatSliceProviderActionTarget(coverage.staleProviders)} with /slice auth login ${formatSliceLabel(slice)} ${sliceProviderCommandArg(coverage.staleProviders)}`
+      ? `refresh provider login${formatSliceProviderActionTarget(coverage.staleProviders)} with ${formatSliceAuthLoginRecoveryCommands(slice, coverage.staleProviders)}`
       : null,
   ].filter((action): action is string => Boolean(action))
   if (actions.length > 0) {
@@ -546,13 +546,27 @@ function formatSliceProviderActionTarget(providers: readonly string[]): string {
   return list ? ` for ${list.replaceAll(", ", ",")}` : ""
 }
 
-function sliceProviderCommandArg(providers: readonly string[]): string {
-  const unique = sliceProviderNames(providers)
-  return unique.length === 1 ? unique[0]! : "<provider>"
-}
-
 function sliceProviderNames(providers: readonly string[]): string[] {
   return [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+}
+
+function formatSliceAuthRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
+  return formatProviderRecoveryCommands(providers, (provider) =>
+    `/slice auth import ${formatSliceLabel(slice)} ${provider} or /slice auth login ${formatSliceLabel(slice)} ${provider}`)
+}
+
+function formatSliceAuthLoginRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
+  return formatProviderRecoveryCommands(providers, (provider) => `/slice auth login ${formatSliceLabel(slice)} ${provider}`)
+}
+
+function formatProviderRecoveryCommands(providers: readonly string[], commandForProvider: (provider: string) => string): string {
+  const unique = sliceProviderNames(providers)
+  if (unique.length === 0) {
+    return "the provider-specific command shown by /slice doctor"
+  }
+  return unique
+    .map((provider, index) => index === 0 ? commandForProvider(provider) : `for ${provider} use ${commandForProvider(provider)}`)
+    .join("; ")
 }
 
 async function setSliceRunning(

@@ -427,10 +427,10 @@ function sliceNextAction(slice: SliceRecord): string | null {
   const coverage = sliceProviderAuthCoverage(slice)
   const actions = [
     coverage.missingProviders.length > 0
-      ? `import or login provider accounts${formatSliceProviderActionTarget(coverage.missingProviders)} with ${formatSliceAuthImportCommand(slice, sliceProviderCommandArg(coverage.missingProviders))} or ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(coverage.missingProviders))}`
+      ? `import or login provider accounts${formatSliceProviderActionTarget(coverage.missingProviders)} with ${formatSliceAuthRecoveryCommands(slice, coverage.missingProviders)}`
       : null,
     coverage.staleProviders.length > 0
-      ? `refresh provider login${formatSliceProviderActionTarget(coverage.staleProviders)} with ${formatSliceAuthLoginCommand(slice, sliceProviderCommandArg(coverage.staleProviders))}`
+      ? `refresh provider login${formatSliceProviderActionTarget(coverage.staleProviders)} with ${formatSliceAuthLoginRecoveryCommands(slice, coverage.staleProviders)}`
       : null,
   ].filter((action): action is string => Boolean(action))
   if (actions.length > 0) {
@@ -455,16 +455,30 @@ function formatSliceProviderActionTarget(providers: readonly string[]): string {
   return list ? ` for ${list.replaceAll(", ", ",")}` : " for this slice"
 }
 
-function sliceProviderCommandArg(providers: readonly string[]): string {
-  const unique = sliceProviderNames(providers)
-  return unique.length === 1 ? unique[0]! : "<provider>"
+function formatSliceAuthRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
+  return formatProviderRecoveryCommands(providers, (provider) =>
+    `${formatSliceAuthImportCommand(slice, provider)} or ${formatSliceAuthLoginCommand(slice, provider)}`)
 }
 
-function formatSliceAuthImportCommand(slice: SliceRecord, provider = "<provider>"): string {
+function formatSliceAuthLoginRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
+  return formatProviderRecoveryCommands(providers, (provider) => formatSliceAuthLoginCommand(slice, provider))
+}
+
+function formatProviderRecoveryCommands(providers: readonly string[], commandForProvider: (provider: string) => string): string {
+  const unique = sliceProviderNames(providers)
+  if (unique.length === 0) {
+    return "the provider-specific command shown by /slice doctor"
+  }
+  return unique
+    .map((provider, index) => index === 0 ? commandForProvider(provider) : `for ${provider} use ${commandForProvider(provider)}`)
+    .join("; ")
+}
+
+function formatSliceAuthImportCommand(slice: SliceRecord, provider: string): string {
   return `/slice auth import ${formatSliceCommandRef(slice)} ${provider}`
 }
 
-function formatSliceAuthLoginCommand(slice: SliceRecord, provider = "<provider>"): string {
+function formatSliceAuthLoginCommand(slice: SliceRecord, provider: string): string {
   return `/slice auth login ${formatSliceCommandRef(slice)} ${provider}`
 }
 

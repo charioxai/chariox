@@ -1309,7 +1309,7 @@ test("executeShellCommand requires slice auth coverage for every advertised prov
   assert.match(result.message ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-a opencode:openai or \/slice auth login linux-a opencode:openai/)
 })
 
-test("executeShellCommand renders concrete or placeholder slice stale-auth recovery", async () => {
+test("executeShellCommand renders concrete slice stale-auth recovery", async () => {
   const baseSlice = {
     id: "slice-1",
     name: "linux-a",
@@ -1365,7 +1365,7 @@ test("executeShellCommand renders concrete or placeholder slice stale-auth recov
   assert.match(result.message ?? "", /linux-a[\s\S]*auth_status=refresh codex/)
   assert.match(result.message ?? "", /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
   assert.match(result.message ?? "", /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
-  assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
+  assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex; for opencode:openai use \/slice auth login linux-b opencode:openai/)
 })
 
 test("executeShellCommand treats unsupported slice auth responses as failures", async () => {

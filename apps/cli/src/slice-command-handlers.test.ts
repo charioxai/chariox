@@ -54,7 +54,7 @@ test("slice command list renders provider account recovery hints", async () => {
   assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
 })
 
-test("slice command list keeps provider placeholder for multi-provider recovery hints", async () => {
+test("slice command list renders concrete commands for multi-provider recovery hints", async () => {
   const harness = sliceHarness({
     slices: [
       slice({
@@ -70,10 +70,10 @@ test("slice command list keeps provider placeholder for multi-provider recovery 
 
   assert.match(harness.notices.at(-1) ?? "", /auth_status=missing codex, opencode:openai/)
   assert.match(harness.notices.at(-1) ?? "", /providers=codex,opencode:openai auth_status=missing codex, opencode:openai auth=-/)
-  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev <provider> or \/slice auth login linux-dev <provider>/)
+  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex; for opencode:openai use \/slice auth import linux-dev opencode:openai or \/slice auth login linux-dev opencode:openai/)
 })
 
-test("slice command list renders concrete or placeholder stale-auth recovery hints", async () => {
+test("slice command list renders concrete stale-auth recovery hints", async () => {
   const harness = sliceHarness({
     slices: [
       slice({
@@ -100,7 +100,7 @@ test("slice command list renders concrete or placeholder stale-auth recovery hin
   assert.match(notice, /linux-a[\s\S]*auth_status=refresh codex/)
   assert.match(notice, /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
   assert.match(notice, /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
-  assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b <provider>/)
+  assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex; for opencode:openai use \/slice auth login linux-b opencode:openai/)
 })
 
 test("slice command create passes display mode and current worktree mount", async () => {
