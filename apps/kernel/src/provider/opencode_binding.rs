@@ -329,6 +329,11 @@ pub(super) fn abort_opencode_session(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -337,10 +342,11 @@ mod tests {
         opencode_prompt_should_disable_native_writes,
         opencode_workspace_live_sync_native_writes_allowed,
         opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
-        OpenCodeConfiguredDefaults, OpenCodeMessage,
+        submit_opencode_prompt, OpenCodeConfiguredDefaults, OpenCodeMessage, OpenCodeRuntimeState,
     };
     use crate::provider::{
-        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+        AgentEndpointMode, LaunchProviderRequest, OpenCodeEventSubscription, ProviderLaunchResult,
+        RuntimeProviderRun,
     };
 
     fn message(provider_id: &str, model_id: &str, variant: &str) -> OpenCodeMessage {
@@ -537,6 +543,35 @@ mod tests {
     }
 
     #[test]
+    fn managed_workspace_live_sync_prompt_does_not_globally_disable_native_write_tools() {
+        let (base_url, received) = prompt_request_server();
+        let run = test_run_with_endpoint(
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_workspace_live_sync_managed(),
+            false,
+            &base_url,
+        );
+        let (_tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            base_url,
+            "opencode-session-1".to_string(),
+            OpenCodeEventSubscription::for_tests(rx),
+        );
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "edit a sibling repository",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+
+        submit_opencode_prompt(&run, &mut state, &envelope).expect("prompt should submit");
+
+        let body = received.join().expect("server should capture request body");
+        assert_eq!(body.pointer("/tools"), None);
+        state.stop();
+    }
+
+    #[test]
     fn generated_message_ids_use_opencode_sortable_timestamp_width() {
         let id = next_opencode_message_id();
 
@@ -606,7 +641,59 @@ mod tests {
         assert_eq!(selection.variant.as_deref(), Some("medium"));
     }
 
+    fn prompt_request_server() -> (String, thread::JoinHandle<serde_json::Value>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("read timeout should be set");
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let size = stream.read(&mut buf).expect("request should read");
+                request.extend_from_slice(&buf[..size]);
+                let request_text = String::from_utf8_lossy(&request);
+                let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .expect("request should include content length");
+                if body.len() >= content_length {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            let (_, body) = request_text
+                .split_once("\r\n\r\n")
+                .expect("request should include body");
+            let body = serde_json::from_str(body).expect("request body should be JSON");
+            let response =
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+            body
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
     fn test_run(request: LaunchProviderRequest, fenced: bool) -> RuntimeProviderRun {
+        test_run_with_endpoint(request, fenced, "http://127.0.0.1:1")
+    }
+
+    fn test_run_with_endpoint(
+        request: LaunchProviderRequest,
+        fenced: bool,
+        endpoint: &str,
+    ) -> RuntimeProviderRun {
         let mut pty_env = BTreeMap::new();
         if fenced {
             pty_env.insert(
@@ -626,7 +713,7 @@ mod tests {
                 pty_env,
                 pty_env_remove: Vec::new(),
                 working_directory: None,
-                structured_endpoint: Some("http://127.0.0.1:1".to_string()),
+                structured_endpoint: Some(endpoint.to_string()),
             },
         )
     }
