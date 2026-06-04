@@ -4,8 +4,8 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 
 ## Provider Models
 
-- Default live-drill model: `gpt-5.2`.
-- Use older Codex-capable models such as `gpt-5.2` or `gpt-5.3` for routine drills.
+- Default live-drill model: use an explicit provider override that is accepted by the current provider account.
+- Workspace Live Sync Codex aliases use `gpt-5.5`; the matrix runner can be overridden with `ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL`.
 - Use reasoning effort `low` unless the drill is specifically validating reasoning-heavy behavior.
 - For `opencode`, always pass an explicit `opencode/...` Zen model when running live drills. Do not use the OpenAI-backed OpenCode model path for validation.
 - If an OpenCode drill receives an unqualified model such as `gpt-5.2`, treat it as ambiguous; pass an explicit `opencode/...` override.
@@ -13,10 +13,10 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
-node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2
+node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5
 node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
-node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.2 --full
+node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --full
 ```
 
 Use `opencode/gpt-5.2` for OpenCode workspace live sync drills.
@@ -35,7 +35,7 @@ pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-restart-drill
 pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 ```
 
-`live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, Hetzner, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-hetzner`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs.
+`live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, Hetzner, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-hetzner`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs. Matrix runs keep child-drill artifacts on failure so provider and kernel state can be inspected.
 
 OpenCode parity aliases use the same scenarios with explicit OpenCode Zen model selection:
 

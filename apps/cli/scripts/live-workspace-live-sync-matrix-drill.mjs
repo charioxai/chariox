@@ -10,7 +10,8 @@ const remoteDrill = path.join(scriptDir, 'live-remote-workspace-live-sync-drill.
 const localPermissionDrill = path.join(scriptDir, 'live-workspace-live-sync-permission-drill.mjs')
 const remotePermissionDrill = path.join(scriptDir, 'live-remote-workspace-live-sync-permission-drill.mjs')
 
-const CODEX_MODEL = ['--provider-model', 'codex=gpt-5.2']
+const codexModelId = process.env.ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.5'
+const CODEX_MODEL = ['--provider-model', `codex=${codexModelId}`]
 const OPENCODE_MODEL = ['--provider-model', 'opencode=opencode/gpt-5.2']
 
 const MATRIX = [
@@ -54,6 +55,10 @@ function printHelp() {
     '  --hetzner-host HOST     Forwarded to Hetzner drill scenarios',
     '  --hetzner-key PATH      Forwarded to Hetzner drill scenarios',
     '  --hetzner-repo PATH     Forwarded to Hetzner drill scenarios',
+    '',
+    'Environment:',
+    '  ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL  Codex model for Codex scenarios; defaults to gpt-5.5',
+    '  ARROBA_CODEX_MODEL                      Fallback Codex model override',
     '',
     'Scenario ids:',
     ...MATRIX.map((item) => `  ${item.id.padEnd(31)} ${item.description}`),
@@ -132,7 +137,7 @@ function selectScenarios(options) {
 function commandForScenario(item, passthrough) {
   return {
     command: process.execPath,
-    args: [item.script, ...item.args, ...(item.hetzner ? passthrough : [])],
+    args: [item.script, ...item.args, '--keep-artifacts-on-failure', ...(item.hetzner ? passthrough : [])],
   }
 }
 
