@@ -7,7 +7,7 @@ import type {
   RuntimeSession,
   SliceRecord,
 } from "./cli-types.js"
-import { handleAgentSpawnCommand } from "./agent-spawn-command-handlers.js"
+import { handleAgentSpawnCommand, type AgentSpawnCommandHandlerDeps } from "./agent-spawn-command-handlers.js"
 
 test("agent spawn command count inherits session defaults and launches each agent", async () => {
   let currentSession = session()
@@ -217,6 +217,133 @@ test("agent spawn command can create a headed slice with separate display option
   ])
 })
 
+test("agent spawn command reuses resolved slice id after validating scope", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => currentSession,
+      setSession: (nextSession) => { currentSession = nextSession },
+      calls,
+      flash: (message) => { flashedMessage = message },
+    }),
+    startSlice: async (sliceRef) => {
+      calls.push(`start:${sliceRef}`)
+      return slice({
+        id: "slice-resolved",
+        name: "dev",
+        workspace_id: "/workspace",
+        worktree_id: "/workspace",
+      })
+    },
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, machineRef, _worktreePlacement, sliceRef) => {
+      calls.push(`spawn:${alias}:${worktreeId ?? "default"}:${machineRef ?? "none"}:${sliceRef}`)
+      const nextAgent = agent({
+        id: "agent-slice",
+        agent_ref: "agent-slice",
+        alias: alias ?? null,
+        remote_execution: {
+          worker_kernel_id: "kernel-slice",
+          worker_machine_id: "machine-slice",
+          execution_lease_id: "lease-slice",
+          leased_agent_id: "worker-agent",
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+  }, ["builder", "codex/gpt-5.4", "--slice", "dev"])
+
+  assert.deepEqual(calls, [
+    "start:dev",
+    "spawn:builder:default:none:slice-resolved",
+    "run:null",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-resolved · worktree worktree-1 · worker machine-slice")
+})
+
+test("agent spawn command rejects reusable slices from another worktree", async () => {
+  const calls: string[] = []
+  let flashedMessage = ""
+  let flashedTone = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => session(),
+      calls,
+      flash: (message, tone) => {
+        flashedMessage = message
+        flashedTone = tone
+      },
+    }),
+    startSlice: async (sliceRef) => {
+      calls.push(`start:${sliceRef}`)
+      return slice({
+        id: "slice-other",
+        name: "dev",
+        workspace_id: "/workspace",
+        worktree_id: "/workspace/other",
+      })
+    },
+    spawnAgent: async () => {
+      throw new Error("stale reusable slice should not spawn an agent")
+    },
+  }, ["builder", "codex/gpt-5.4", "--slice", "dev"])
+
+  assert.deepEqual(calls, ["start:dev"])
+  assert.equal(flashedTone, "error")
+  assert.equal(flashedMessage, "slice dev is scoped to worktree /workspace/other, not /workspace; choose a slice for this worktree, use --slice new, or use --slice off")
+})
+
+test("agent spawn command rejects reusable slices that did not reach running", async () => {
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => session(),
+      calls,
+      flash: (message) => { flashedMessage = message },
+    }),
+    startSlice: async (sliceRef) => {
+      calls.push(`start:${sliceRef}`)
+      return slice({
+        id: "slice-starting",
+        name: "dev",
+        workspace_id: "/workspace",
+        worktree_id: "/workspace",
+        status: "starting",
+      })
+    },
+    spawnAgent: async () => {
+      throw new Error("non-running reusable slice should not spawn an agent")
+    },
+  }, ["builder", "codex/gpt-5.4", "--slice", "dev"])
+
+  assert.deepEqual(calls, ["start:dev"])
+  assert.equal(flashedMessage, "slice dev is starting; next: run /slice status dev, /slice logs dev, then retry after it is running")
+})
+
+test("agent spawn command fails loudly when reusable slice lifecycle is unavailable", async () => {
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => session(),
+      flash: (message) => { flashedMessage = message },
+    }),
+    spawnAgent: async () => {
+      throw new Error("unchecked reusable slice should not spawn an agent")
+    },
+  }, ["builder", "codex/gpt-5.4", "--slice", "dev"])
+
+  assert.equal(flashedMessage, "slice reuse is unavailable in this build")
+})
+
 test("agent spawn command rejects slice display without a new slice", async () => {
   let flashedMessage = ""
 
@@ -359,6 +486,37 @@ test("agent spawn command targets an exact kernel without machine resolution", a
   ])
   assert.equal(flashedMessage, "spawned agent agent-worker (builder) · remote machine-worker")
 })
+
+function baseSpawnDeps(options: {
+  currentSession: () => RuntimeSession
+  setSession?: (session: RuntimeSession) => void
+  calls?: string[]
+  flash?: (message: string, tone: "info" | "error") => void
+}): AgentSpawnCommandHandlerDeps {
+  return {
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: options.flash ?? (() => {}),
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => {
+      options.setSession?.(nextSession)
+    },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => { options.calls?.push("rebuild") },
+    launchAgentProviderRun: async () => {
+      throw new Error("base spawn deps should not launch locally")
+    },
+    setProviderRunState: (run) => { options.calls?.push(`run:${run ? run.id : "null"}`) },
+    refreshSessionState: async () => options.currentSession(),
+    spawnAgent: async () => {
+      throw new Error("base spawn deps should override spawnAgent")
+    },
+    refreshSplitPaneFocusRepaint: () => { options.calls?.push("repaint") },
+  }
+}
 
 function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {

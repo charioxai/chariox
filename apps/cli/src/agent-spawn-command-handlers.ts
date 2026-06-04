@@ -199,10 +199,17 @@ async function prepareSliceForSpawn(
   }
   const createMode = sliceCreateMode(sliceSelection, sliceDisplayMode)
   if (!createMode) {
-    if (deps.startSlice) {
-      await deps.startSlice(sliceSelection)
+    if (!deps.startSlice) {
+      throw new Error("slice reuse is unavailable in this build")
     }
-    return sliceSelection
+    const slice = await deps.startSlice(sliceSelection)
+    validateReusableSliceForSpawn(slice, {
+      requestedRef: sliceSelection,
+      workspaceId: deps.currentWorkspaceTarget(),
+      worktreeId: worktreeId || deps.currentWorktreeTarget(),
+      workerKernelRef,
+    })
+    return slice.id
   }
   if (!deps.createSlice || !deps.startSlice) {
     throw new Error("slice creation is unavailable in this build")
@@ -232,6 +239,43 @@ function defaultSliceName(worktreePath: string): string {
   const leaf = worktreePath.split("/").filter(Boolean).pop() || "workspace"
   const suffix = Date.now().toString(36).slice(-5)
   return `${leaf}-slice-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, "-")
+}
+
+function validateReusableSliceForSpawn(
+  slice: SliceRecord,
+  expected: {
+    requestedRef: string
+    workspaceId: string
+    worktreeId: string
+    workerKernelRef?: string | undefined
+  },
+): void {
+  const label = slice.name || slice.id || expected.requestedRef
+  if (slice.status !== "running") {
+    throw new Error(`slice ${label} is ${slice.status}; next: run /slice status ${expected.requestedRef}, /slice logs ${expected.requestedRef}, then retry after it is running`)
+  }
+  if (slice.workspace_id && expected.workspaceId && slice.workspace_id !== expected.workspaceId) {
+    throw new Error(`slice ${label} is scoped to workspace ${slice.workspace_id}, not ${expected.workspaceId}; choose a slice for this workspace, use --slice new, or use --slice off`)
+  }
+  const sliceWorktree = slice.worktree_id || slice.workspace_mount || ""
+  if (sliceWorktree && expected.worktreeId && sliceWorktree !== expected.worktreeId) {
+    throw new Error(`slice ${label} is scoped to worktree ${sliceWorktree}, not ${expected.worktreeId}; choose a slice for this worktree, use --slice new, or use --slice off`)
+  }
+  if (expected.workerKernelRef && !sliceMatchesWorkerRef(slice, expected.workerKernelRef)) {
+    throw new Error(`slice ${label} runs on ${formatSliceWorker(slice)}, not ${expected.workerKernelRef}; choose a slice on that worker, use --slice new, or use --slice off`)
+  }
+}
+
+function sliceMatchesWorkerRef(slice: SliceRecord, workerRef: string): boolean {
+  return [
+    slice.worker_kernel_id,
+    slice.worker_kernel_ref,
+    slice.worker_machine_id,
+  ].some((candidate) => candidate === workerRef)
+}
+
+function formatSliceWorker(slice: SliceRecord): string {
+  return slice.worker_machine_id || slice.worker_kernel_id || slice.worker_kernel_ref || "unknown worker"
 }
 
 function parseSpawnCount(value: string | undefined): number | null {
