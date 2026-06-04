@@ -70,7 +70,8 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--include-hetzner') options.includeHetzner = true
+    if (arg === '--') continue
+    else if (arg === '--include-hetzner') options.includeHetzner = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
     else if (arg === '--help' || arg === '-h') options.help = true
