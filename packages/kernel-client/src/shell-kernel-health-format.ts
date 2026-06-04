@@ -374,16 +374,17 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     }
     const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
     const firstIssue = remoteExtensionSync.issues[0]
-    const target = firstAgent ?? "<agent>"
-    const nextAction = remoteExtensionSyncNextAction(firstIssue
-      ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
-      : remoteExtensionSyncAggregateStatus(remoteExtensionSync), target, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${target}`
+    const nextAction = firstAgent
+      ? remoteExtensionSyncNextAction(firstIssue
+        ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
+        : remoteExtensionSyncAggregateStatus(remoteExtensionSync), firstAgent, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${firstAgent}`
+      : remoteExtensionAggregateNextAction(remoteExtensionSync)
     lines.push(`  next: ${nextAction}`)
   }
 
   if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0) {
     lines.push(`remote extension sync settling: syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents}`)
-    lines.push("  next: home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status <agent> and retry after worker connectivity is healthy")
+    lines.push("  next: home keeps stale home-proxy calls blocked until worker manifests settle; run /kernel remote-runtime or open Extensions to identify affected agents before retrying sync")
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -651,6 +652,13 @@ function remoteExtensionSyncAggregateStatus(remoteExtensionSync: DaemonHealthPro
     return { state: "stale", pending_revoke: false }
   }
   return null
+}
+
+function remoteExtensionAggregateNextAction(remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"]): string {
+  if (remoteExtensionSync.pending_revoke_agents > 0) {
+    return "keep the home revoke in place; run /kernel remote-runtime or open Extensions to identify affected agents, then retry sync after the worker reconnects"
+  }
+  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime or open Extensions to identify affected agents, then retry sync after worker connectivity is healthy"
 }
 
 function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): number {
