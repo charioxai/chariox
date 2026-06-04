@@ -61,8 +61,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
 
   assert.match(output, /\/kernel health\s+show runtime health, remote readiness, and invariants/)
   assert.match(output, /\/kernel remote-runtime\s+show provider runs, remote agents, slices, home-proxy, and live sync readiness/)
-  assert.match(output, /\/agent spawn \[a\] \[m\] \[--dir d\] \[--worktree d --branch b\] \[--machine r\|--kernel k\|--slice s\] spawn a local, remote, or slice agent/)
-  assert.doesNotMatch(output, /--slice-display/)
+  assert.match(output, /\/agent spawn \[a\] \[m\] \[--dir d\] \[--worktree d --branch b\] \[--machine r\|--kernel k\|--slice off\|new\|s\] \[--slice-display headless\|headed\] spawn a local, remote, or slice agent/)
   assert.match(output, /\/slice auth import\s+copy this machine's provider credentials into the slice/)
   assert.match(output, /\/slice auth remove\s+remove slice-local provider credentials and account summary/)
   assert.match(output, /\/slice auth login\s+start provider login inside the slice for a different account/)

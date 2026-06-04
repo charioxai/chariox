@@ -64,6 +64,19 @@ test("buildCommandCenterItems includes kernel remote runtime diagnostics", () =>
   assert.equal(items.find((item) => item.value === "/kernel remote-runtime")?.description, "Show provider runs, remote agents, slices, home-proxy, and live sync readiness")
 })
 
+test("buildCommandCenterItems explains slice spawn primitives", () => {
+  const items = buildCommandCenterItems("/agent", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items.find((item) => item.value === "/agent spawn ")?.description, "Spawn local, remote, or slice agents; use --slice off, new, new:headed, or an existing slice")
+})
+
 test("buildCommandCenterItems surfaces local provider catalog fallback in selection rows", () => {
   const context = {
     providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),

@@ -22,7 +22,7 @@ export const COMMAND_TREE: CommandNode[] = [
       {
         id: "agent-spawn",
         label: "spawn",
-        description: "Spawn local, remote, or slice agents, optionally in a directory/worktree",
+        description: "Spawn local, remote, or slice agents; use --slice off, new, new:headed, or an existing slice",
         value: "/agent spawn ",
       },
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },

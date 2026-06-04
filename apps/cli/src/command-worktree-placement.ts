@@ -124,7 +124,7 @@ export function parsePlacementOptions(
     if (arg === "--slice" && allowMachine) {
       const value = args[index + 1]
       if (!value || value.startsWith("--")) {
-        error = "usage: /agent spawn [alias] [model] --slice off|new:headless|new:headed|<slice-ref>"
+        error = "usage: /agent spawn [alias] [model] --slice off|new|new:headless|new:headed|<slice-ref>"
         break
       }
       sliceRef = value === "off" ? undefined : value
@@ -191,7 +191,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(args, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>]"
   }
   return {
     ...parsed,
