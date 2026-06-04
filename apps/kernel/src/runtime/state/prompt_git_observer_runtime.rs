@@ -167,23 +167,51 @@ impl KernelRuntimeState {
             prompt_summary: before.prompt_summary.clone(),
         };
         let history = self.owned.operational_history_store.clone();
+        let before_workspace_live_sync_tracked = before.workspace_live_sync_tracked;
+        let before_status_fingerprint = before.status_fingerprint.clone();
         let observation = tokio::task::spawn_blocking(move || {
-            let after = crate::git_observer::capture_turn_snapshot(after_context)?;
-            let tracked_change = if before.workspace_live_sync_tracked {
-                crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+            let retry_delays_ms: &[u64] = if before.workspace_live_sync_tracked {
+                &[50, 150, 300, 500]
             } else {
-                None
+                &[]
             };
-            let history_events = if record_history {
-                crate::git_observer::observe_after_turn(before, after.clone(), candidates, &history)
-            } else {
-                Ok(Vec::new())
-            };
-            Some(history_events.map(|events| (events, tracked_change)))
+            let mut attempts = 0usize;
+            loop {
+                let Some(after) = crate::git_observer::capture_turn_snapshot(after_context.clone())
+                else {
+                    if attempts >= retry_delays_ms.len() {
+                        return None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
+                    attempts += 1;
+                    continue;
+                };
+                let tracked_change = if before.workspace_live_sync_tracked {
+                    crate::git_observer::tracked_workspace_live_sync_change_after_turn(
+                        &before, &after,
+                    )
+                } else {
+                    None
+                };
+                let should_retry = before.workspace_live_sync_tracked && tracked_change.is_none();
+                if !should_retry || attempts >= retry_delays_ms.len() {
+                    let after_status_fingerprint = after.status_fingerprint.clone();
+                    let history_events = if record_history {
+                        crate::git_observer::observe_after_turn(before, after, candidates, &history)
+                    } else {
+                        Ok(Vec::new())
+                    };
+                    return Some(history_events.map(|events| {
+                        (events, tracked_change, attempts, after_status_fingerprint)
+                    }));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
+                attempts += 1;
+            }
         })
         .await;
         match observation {
-            Ok(Some(Ok((events, tracked_change)))) => {
+            Ok(Some(Ok((events, tracked_change, retry_attempts, after_status_fingerprint)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
                     self.record_and_fanout_workspace_live_sync_change(change, None)
@@ -195,6 +223,19 @@ impl KernelRuntimeState {
                             "provider_run_id": provider_run_id,
                             "prompt_id": prompt_id,
                             "changed_path_count": changed_path_count,
+                            "retry_attempts": retry_attempts,
+                        }),
+                    );
+                } else if before_workspace_live_sync_tracked {
+                    crate::logging::info_with_fields(
+                        "daemon.workspace_live_sync",
+                        "tracked workspace live sync turn had no changed paths",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "prompt_id": prompt_id,
+                            "retry_attempts": retry_attempts,
+                            "before_status_fingerprint": before_status_fingerprint,
+                            "after_status_fingerprint": after_status_fingerprint,
                         }),
                     );
                 }
@@ -219,7 +260,19 @@ impl KernelRuntimeState {
                     "error": error.to_string(),
                 }),
             ),
-            Ok(None) => {}
+            Ok(None) => {
+                if before_workspace_live_sync_tracked {
+                    crate::logging::warn_with_fields(
+                        "daemon.workspace_live_sync",
+                        "tracked workspace live sync post-turn capture failed",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "prompt_id": prompt_id,
+                            "before_status_fingerprint": before_status_fingerprint,
+                        }),
+                    );
+                }
+            }
             Err(error) => crate::logging::warn_with_fields(
                 "daemon.git_observer",
                 "failed to join post-turn git observation task",

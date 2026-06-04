@@ -53,7 +53,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 self.app,
                 provider_run_id,
             );
-        if completion_recorded && saw_settlement_blocking_activity {
+        if !prompt_completed && completion_recorded && saw_settlement_blocking_activity {
             self.note_prompt_settlement_requested(provider_run_id);
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);

@@ -246,6 +246,74 @@ async fn provider_output_pump_includes_unfocused_active_prompt_runs() {
 }
 
 #[tokio::test]
+async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+
+    let provider_run = app
+        .providers
+        .start_run_provider_only(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should start without becoming active")
+        .into_run();
+    app.update_provider_run_projection(provider_run.clone());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .git_turn_snapshots
+        .insert(crate::git_observer::GitTurnSnapshot {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider: "dev-stub".to_string(),
+            model: "sonnet".to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            provider_session_id: None,
+            prompt_id: "prompt-1".to_string(),
+            turn_id: "prompt-1".to_string(),
+            machine_id: None,
+            prompt_summary: "test prompt".to_string(),
+            repo_root: "/tmp/repo".to_string(),
+            worktree_path: "/tmp/repo".to_string(),
+            branch: Some("main".to_string()),
+            head_sha: Some("head".to_string()),
+            upstream_ref: None,
+            ahead_count: None,
+            status_fingerprint: String::new(),
+            is_dirty: false,
+            workspace_live_sync_tracked: true,
+            workspace_live_sync_file_snapshots: Default::default(),
+        });
+
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let provider_run_ids = provider_run_ids_for_owned_output_pump(&runtime.owned, &session_state);
+
+    assert!(
+        provider_run_ids.contains(provider_run.id()),
+        "output pump must drain runs that still have pending git/WLS snapshots"
+    );
+}
+
+#[tokio::test]
 async fn provider_completed_signal_settles_matching_active_prompt() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -302,7 +370,7 @@ async fn provider_completed_signal_settles_matching_active_prompt() {
 }
 
 #[tokio::test]
-async fn provider_completion_with_output_waits_for_quiet_poll_before_settling() {
+async fn provider_completion_with_output_settles_after_fanning_out_records() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -365,43 +433,16 @@ async fn provider_completion_with_output_waits_for_quiet_poll_before_settling() 
         .expect("completion batch with output should be accepted");
     assert_eq!(records.len(), 1);
 
-    let draining_session = runtime
-        .owned
-        .session_snapshot(session.id())
-        .expect("session snapshot should exist");
-    assert!(
-        draining_session
-            .active_prompt_for_agent(agent.id())
-            .is_some(),
-        "final output and completion in the same batch should keep the turn settling"
-    );
-    let draining_activity = runtime
-        .agent_activity_for_session(&draining_session)
-        .get(agent.id())
-        .cloned()
-        .expect("agent activity should be projected");
-    assert!(draining_activity.busy);
-    assert_eq!(
-        draining_activity.prompt_status,
-        crate::runtime::projection::AgentPromptRuntimeStatus::Settling
-    );
-
-    runtime
-        .apply_owned_structured_output_batch(
-            session.id(),
-            run.id(),
-            vec![attachment.id().to_string()],
-            crate::provider::ProviderPromptSignalBatch::default(),
-        )
-        .await
-        .expect("quiet poll should settle the completed prompt");
     let settled_session = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
-    assert!(settled_session
-        .active_prompt_for_agent(agent.id())
-        .is_none());
+    assert!(
+        settled_session
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "final output is fanned out before settlement, so a completed structured prompt must not wait for another poll"
+    );
 }
 
 #[tokio::test]

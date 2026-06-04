@@ -52,6 +52,8 @@ impl KernelRuntimeState {
             if owned.clear_prompt_activity(provider_run_id) {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
+            self.observe_git_after_provider_activity_if_pending(provider_run_id)
+                .await;
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
             return Ok(crate::app::ProviderRunExitSessionSummary {
@@ -102,7 +104,7 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && completion_recorded && saw_settlement_blocking_activity {
+        if !force && !prompt_completed && completion_recorded && saw_settlement_blocking_activity {
             owned.note_prompt_settlement_requested(provider_run_id);
             let _ = owned.session_snapshot(session_id);
             crate::logging::debug_with_fields(

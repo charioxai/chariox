@@ -107,6 +107,14 @@ impl GitTurnSnapshotStore {
         guard.remove(&key)
     }
 
+    pub(crate) fn provider_run_ids_for_session(&self, session_id: &str) -> BTreeSet<String> {
+        self.read()
+            .values()
+            .filter(|snapshot| snapshot.session_id == session_id)
+            .map(|snapshot| snapshot.provider_run_id.clone())
+            .collect()
+    }
+
     pub(crate) fn candidates_for(&self, snapshot: &GitTurnSnapshot) -> GitAttributionCandidates {
         let mut agent_ids = BTreeSet::new();
         let mut prompt_ids = BTreeSet::new();

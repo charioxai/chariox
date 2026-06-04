@@ -209,6 +209,8 @@ impl KernelRuntimeState {
                 }
                 return Err(error);
             }
+            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
+                .await;
         }
         let records = owned
             .terminal_stream
@@ -265,6 +267,11 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
                     )
             })
             .map(|run| run.id().to_string()),
+    );
+    provider_run_ids.extend(
+        owned
+            .git_turn_snapshots
+            .provider_run_ids_for_session(session.id()),
     );
     provider_run_ids
 }
