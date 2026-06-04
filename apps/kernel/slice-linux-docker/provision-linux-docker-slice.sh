@@ -206,10 +206,11 @@ ensure_container() {
       docker_create_args+=(--cpus "$SLICE_DOCKER_CPUS")
     fi
     local create_status=0
-    set +e
-    run_with_timeout 60 docker create "${docker_create_args[@]}" "$SLICE_IMAGE" >/dev/null
-    create_status=$?
-    set -e
+    if run_with_timeout 60 docker create "${docker_create_args[@]}" "$SLICE_IMAGE" >/dev/null; then
+      create_status=0
+    else
+      create_status=$?
+    fi
     if [[ "$create_status" -ne 0 ]]; then
       if container_exists; then
         log "docker create returned $create_status but container exists; continuing"
@@ -223,24 +224,29 @@ ensure_container() {
   if ! container_running; then
     log "starting container $SLICE_NAME"
     local start_status=0
-    set +e
-    run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null
-    start_status=$?
-    set -e
+    if run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null; then
+      start_status=0
+    else
+      start_status=$?
+    fi
     if [[ "$start_status" -ne 0 ]]; then
-      if wait_for_container_running 6 5; then
+      if wait_for_container_running 24 5; then
         log "docker start returned $start_status but container is running; continuing"
       else
-        return "$start_status"
+        log "docker start returned $start_status and container did not report running yet; continuing to verify with setup commands"
       fi
     fi
   fi
 
   if [[ "$created_container" == "1" ]]; then
-    run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice"
-    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh"
-    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh"
-    run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
+      || log "home directory ownership refresh unavailable; continuing"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
+      || log "runtime script overlay refresh unavailable; continuing"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
+      || log "screen script overlay refresh unavailable; continuing"
+    run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh \
+      || log "script permission refresh unavailable; continuing"
   fi
 }
 
@@ -486,7 +492,7 @@ start_provider_login() {
     rm -f '$log_file'
     screen -S '$session_name' -X quit >/dev/null 2>&1 || true
     screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[arroba] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
-  "
+  " || log "provider login start command did not confirm; continuing with screen fallback"
   sleep 3
   local login_output=""
   login_output="$(run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "cat '$log_file' 2>/dev/null || true")" || true

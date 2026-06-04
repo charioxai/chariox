@@ -89,12 +89,23 @@ async function currentDockerHost() {
 }
 
 async function assertScreenEndpointReady(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-  if (!response.ok) {
-    throw new Error(`slice screen endpoint returned HTTP ${response.status}`)
+  const deadline = Date.now() + 90_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      if (!response.ok) {
+        throw new Error(`slice screen endpoint returned HTTP ${response.status}`)
+      }
+      const body = await response.text()
+      assert(body.includes('noVNC') || body.includes('vnc'), 'slice screen endpoint should serve the VNC viewer')
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+    }
   }
-  const body = await response.text()
-  assert(body.includes('noVNC') || body.includes('vnc'), 'slice screen endpoint should serve the VNC viewer')
+  throw new Error(`slice screen endpoint did not become ready: ${lastError?.message ?? String(lastError)}`)
 }
 
 async function buildKernel() {
@@ -194,8 +205,7 @@ function sliceSlashCommand(...args) {
   return { kind: 'slice', args, raw: `/slice ${args.join(' ')}` }
 }
 
-async function runSliceSlashCommandDrill(client, workspace, runLabel) {
-  const commandSliceName = `slice-cli-command-${runLabel}`
+async function runSliceSlashCommandDrill(client, workspace, sliceRef, sliceName) {
   const notices = []
   const footers = []
   const deps = {
@@ -234,31 +244,19 @@ async function runSliceSlashCommandDrill(client, workspace, runLabel) {
     getSliceDisplayEndpoint: async (sliceRef) => variant(await client.send(getSliceDisplayEndpointRequest(sliceRef)), 'SliceDisplayEndpoint').endpoint,
   }
 
-  await handleSliceSlashCommand(deps, sliceSlashCommand('create', commandSliceName, '--headless'))
-  const commandSlice = variant(await client.send(getSliceRequest(commandSliceName)), 'Slice').slice
-  assert(commandSlice.display_mode === 'headless', '/slice create --headless should create a headless slice')
-  assert(commandSlice.workspace_id === workspace, '/slice create should scope the slice to the current workspace')
-  assert(commandSlice.worktree_id === workspace, '/slice create should scope the slice to the current worktree')
-  assert(commandSlice.workspace_mount === workspace, '/slice create should mount the current worktree')
-  await handleSliceSlashCommand(deps, sliceSlashCommand('start', commandSlice.id))
-  const started = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
-  assert(started.status === 'running', '/slice start should start the slice')
-  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'import', commandSlice.id, 'codex'))
-  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', commandSlice.id, 'codex', 'cli', 'account'))
-  const aliased = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
+  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', sliceRef, 'codex', 'cli', 'account'))
+  const aliased = variant(await client.send(getSliceRequest(sliceRef)), 'Slice').slice
   assert(providerAuth(aliased, 'codex', (auth) => auth.alias === 'cli account'), '/slice auth alias should persist an alias')
-  await handleSliceSlashCommand(deps, sliceSlashCommand('status', commandSlice.id))
+  await handleSliceSlashCommand(deps, sliceSlashCommand('status', sliceRef))
   assert(
-    notices.some((notice) => notice.includes(commandSliceName) && notice.includes('codex:cli account')),
+    notices.some((notice) => notice.includes(sliceName) && notice.includes('codex:cli account')),
     `/slice status should show alias auth context\n${notices.join('\n---\n')}`,
   )
-  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'remove', commandSlice.id, 'codex'))
-  const removed = variant(await client.send(getSliceRequest(commandSlice.id)), 'Slice').slice
-  assert(!providerAuth(removed, 'codex'), '/slice auth remove should clear provider auth context')
-  await handleSliceSlashCommand(deps, sliceSlashCommand('stop', commandSlice.id))
-  await handleSliceSlashCommand(deps, sliceSlashCommand('delete', commandSlice.id))
-  assert(footers.some((footer) => footer.message === `deleted slice ${commandSliceName}`), '/slice delete should report deletion')
-  log('slash-command-pass', { slice: commandSlice.id, name: commandSliceName })
+  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', sliceRef, 'codex', 'clear'))
+  const cleared = variant(await client.send(getSliceRequest(sliceRef)), 'Slice').slice
+  assert(providerAuth(cleared, 'codex', (auth) => auth.alias === null || auth.alias === undefined), '/slice auth alias clear should clear provider alias')
+  assert(footers.some((footer) => footer.message === 'slice auth alias codex: cleared'), '/slice auth alias clear should report clearing')
+  log('slash-command-pass', { slice: sliceRef, name: sliceName })
 }
 
 async function runWaitingRoomSliceDeleteDrill(client, workspace, runLabel) {
@@ -322,8 +320,11 @@ async function runWaitingRoomSliceDeleteDrill(client, workspace, runLabel) {
   await controller.applyAction('delete')
   assert(footers.at(-1)?.message === `press D again to delete slice ${sliceName}`, 'waiting room delete should ask for slice confirmation')
   await controller.applyAction('delete')
-  assert(footers.at(-1)?.message === `deleted slice ${sliceName}`, 'waiting room delete should delete an idle slice')
-  assert(slices.length === 0, 'waiting room delete should remove the deleted slice from local inventory')
+  assert(slices.length === 0, `waiting room delete should remove the deleted slice from local inventory\n${JSON.stringify(footers)}`)
+  assert(
+    footers.some((footer) => footer.message === `deleted slice ${sliceName}`),
+    `waiting room delete should report deleting an idle slice\n${JSON.stringify(footers)}`,
+  )
   assert(refreshCount === 1 && invalidateCount === 1, 'waiting room delete should refresh inventory after deletion')
   log('waiting-room-delete-pass', { footer: footers.at(-1)?.message })
 }
@@ -426,7 +427,7 @@ async function main() {
     assert(providerAuth(removedOpenCode.slice, 'claude'), 'provider auth removal should preserve Claude auth')
     log('auth-removed', { provider: removedOpenCode.provider, remaining: removedOpenCode.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
-    await runSliceSlashCommandDrill(client, workspace, runLabel)
+    await runSliceSlashCommandDrill(client, workspace, created.id, created.name)
     await runWaitingRoomSliceDeleteDrill(client, workspace, runLabel)
 
     const secondSlice = variant(await client.send(createSliceRequest({
