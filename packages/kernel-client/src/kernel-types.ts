@@ -370,11 +370,21 @@ export type ProviderRunSessionPointerIssue = {
   details: string
 }
 
+export type ProviderRunTerminalDiagnosticIssue = {
+  provider_run_id: string
+  session_id: string
+  agent_id?: string | null
+  provider: string
+  state: string
+  diagnostic: string
+}
+
 export type ProviderRunHealthSnapshot = {
   projected_runs: number
   active_runs: number
   arroba_active_runs: number
   native_tui_active_runs: number
+  terminal_diagnostics: ProviderRunTerminalDiagnosticIssue[]
   duplicate_arroba_agent_bindings: ProviderRunAgentBindingConflict[]
   multi_interface_agent_bindings: ProviderRunAgentBindingConflict[]
   orphaned_active_runs: ProviderRunIdentityIssue[]
@@ -1289,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 107
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 108
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

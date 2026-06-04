@@ -44,6 +44,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       active_runs: 1,
       arroba_active_runs: 1,
       native_tui_active_runs: 0,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
@@ -214,6 +215,7 @@ test("kernel health formatter reports provider-run identity issues", () => {
       active_runs: 3,
       arroba_active_runs: 2,
       native_tui_active_runs: 1,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
@@ -255,6 +257,42 @@ test("kernel health formatter reports provider-run identity issues", () => {
   assert.match(rendered, /next: run \/agent inspect agent-2; run \/provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent/)
   assert.match(rendered, /next: refresh the session; stop or relaunch provider run run-orphan if it stays active/)
   assert.match(rendered, /next: inspect session session-3 and relaunch the affected agent/)
+})
+
+test("kernel health formatter reports provider-run terminal diagnostics", () => {
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 1,
+      active_runs: 1,
+      arroba_active_runs: 1,
+      native_tui_active_runs: 0,
+      terminal_diagnostics: [{
+        provider_run_id: "run-timeout",
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider: "codex",
+        state: "Running",
+        diagnostic: "provider produced no terminal output within 10m",
+      }],
+      duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /provider run terminal diagnostics:/)
+  assert.match(rendered, /run=run-timeout provider=codex state=Running session=session-1 agent=agent-1: provider produced no terminal output within 10m/)
+  assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; relaunch agent agent-1 if the diagnostic persists; capture a debug bundle before restarting the kernel/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=0 mixed=0 orphaned=0 pointer=0 terminal=1 actor_rejects=0/)
+  assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
+  assert.deepEqual(kernelRemoteRuntimeReadiness(unhealthy), {
+    state: "blocked",
+    issueCount: 1,
+    attentionCount: 1,
+  })
 })
 
 test("kernel health formatter reports slice lifecycle issues", () => {
@@ -700,6 +738,7 @@ test("kernel health command reports duplicate provider-run bindings", async () =
       active_runs: 2,
       arroba_active_runs: 2,
       native_tui_active_runs: 0,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
@@ -757,6 +796,7 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
       active_runs: 2,
       arroba_active_runs: 2,
       native_tui_active_runs: 0,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
@@ -774,9 +814,9 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.match(rendered, /^remote runtime/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
   assert.match(rendered, /provider runs: projected=2 active=2 arroba=2 native_tui=0/)
-  assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)
-  assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
-  assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 actor_rejects=0/)
+  assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
+  assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
   assert.match(rendered, /duplicate session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
@@ -868,6 +908,7 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
       active_runs: 2,
       arroba_active_runs: 1,
       native_tui_active_runs: 1,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
       multi_interface_agent_bindings: [{
         session_id: "session-1",

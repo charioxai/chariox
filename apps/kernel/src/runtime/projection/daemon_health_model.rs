@@ -77,6 +77,7 @@ pub struct ProviderRunHealthSnapshot {
     pub active_runs: usize,
     pub arroba_active_runs: usize,
     pub native_tui_active_runs: usize,
+    pub terminal_diagnostics: Vec<ProviderRunTerminalDiagnosticIssue>,
     pub duplicate_arroba_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub multi_interface_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub orphaned_active_runs: Vec<ProviderRunIdentityIssue>,
@@ -103,6 +104,16 @@ pub struct ProviderRunSessionPointerIssue {
     pub session_id: String,
     pub active_provider_run_id: Option<String>,
     pub details: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRunTerminalDiagnosticIssue {
+    pub provider_run_id: String,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub provider: String,
+    pub state: String,
+    pub diagnostic: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,7 +710,8 @@ mod tests {
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
         ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
         ProviderRunActorHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
-        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, RemoteExecutionHealthSnapshot,
+        ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
+        ProviderRunTerminalDiagnosticIssue, RemoteExecutionHealthSnapshot,
         RemoteExtensionSyncHealthSnapshot, RemoteExtensionSyncIssue,
         SessionProjectionHealthSnapshot, SliceLifecycleHealthSnapshot, SliceLifecycleIssue,
         WorkspaceCoordinationHealthSnapshot, WorkspaceLiveSyncHealthSnapshot,
@@ -765,6 +777,14 @@ mod tests {
                 active_runs: 3,
                 arroba_active_runs: 2,
                 native_tui_active_runs: 1,
+                terminal_diagnostics: vec![ProviderRunTerminalDiagnosticIssue {
+                    provider_run_id: "provider-run-timeout".to_string(),
+                    session_id: "session-1".to_string(),
+                    agent_id: Some("agent-1".to_string()),
+                    provider: "codex".to_string(),
+                    state: "Running".to_string(),
+                    diagnostic: "provider produced no terminal output within 10m".to_string(),
+                }],
                 duplicate_arroba_agent_bindings: vec![ProviderRunAgentBindingConflict {
                     session_id: "session-1".to_string(),
                     agent_id: "agent-1".to_string(),

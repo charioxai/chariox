@@ -1654,6 +1654,7 @@ function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): DaemonHe
       active_runs: 0,
       arroba_active_runs: 0,
       native_tui_active_runs: 0,
+      terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],

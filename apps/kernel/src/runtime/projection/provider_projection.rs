@@ -11,7 +11,7 @@ use crate::session::RuntimeSession;
 
 use super::{
     ProviderCatalogHealthSnapshot, ProviderRunAgentBindingConflict, ProviderRunHealthSnapshot,
-    ProviderRunIdentityIssue, ProviderRunSessionPointerIssue,
+    ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, ProviderRunTerminalDiagnosticIssue,
 };
 
 #[derive(Clone, Default)]
@@ -126,12 +126,23 @@ fn provider_run_health_snapshot(
     let mut active_agent_bindings: BTreeMap<(String, String), Vec<(String, &'static str)>> =
         BTreeMap::new();
     let mut orphaned_active_runs = Vec::new();
+    let mut terminal_diagnostics = Vec::new();
 
     for run in &runs {
         if run.state() == ProviderRunState::Ended {
             continue;
         }
         active_runs += 1;
+        if let Some(diagnostic) = run.terminal_diagnostic() {
+            terminal_diagnostics.push(ProviderRunTerminalDiagnosticIssue {
+                provider_run_id: run.id().to_string(),
+                session_id: run.session_id().to_string(),
+                agent_id: run.agent_instance_id().map(str::to_string),
+                provider: run.provider().to_string(),
+                state: format!("{:?}", run.state()),
+                diagnostic: diagnostic.to_string(),
+            });
+        }
         match run.client_interface() {
             ProviderClientInterface::Arroba => {
                 arroba_active_runs += 1;
@@ -260,6 +271,7 @@ fn provider_run_health_snapshot(
         active_runs,
         arroba_active_runs,
         native_tui_active_runs,
+        terminal_diagnostics,
         duplicate_arroba_agent_bindings,
         multi_interface_agent_bindings,
         orphaned_active_runs,

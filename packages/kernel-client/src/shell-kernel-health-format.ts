@@ -7,6 +7,7 @@ export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
     + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
+    + health.provider_runs.terminal_diagnostics.length
     + providerCatalogHealthIssueCount(health)
     + health.projection_invariants.mismatches.length
     + workspaceHealthIssueCount(health)
@@ -74,7 +75,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const lines = [
     "remote runtime",
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
-    `provider run invariants: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
+    `provider run invariants: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
@@ -198,6 +199,23 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     }
     const target = firstSession ? `session ${firstSession}` : "the affected session"
     lines.push(`  next: inspect ${target} and relaunch the affected agent to restore one active run pointer`)
+  }
+
+  if (providerRuns.terminal_diagnostics.length > 0) {
+    lines.push("provider run terminal diagnostics:")
+    let firstAgent: string | null = null
+    let firstRun: string | null = null
+    for (const issue of providerRuns.terminal_diagnostics) {
+      firstAgent ??= issue.agent_id ?? null
+      firstRun ??= issue.provider_run_id
+      lines.push(`  run=${issue.provider_run_id} provider=${issue.provider} state=${issue.state} session=${issue.session_id} agent=${issue.agent_id ?? "-"}: ${issue.diagnostic}`)
+    }
+    const target = firstAgent
+      ? `agent ${firstAgent}`
+      : firstRun
+        ? `provider run ${firstRun}`
+        : "the affected provider run"
+    lines.push(`  next: run /agent inspect ${firstAgent ?? "<agent>"}; run /provider processes; relaunch ${target} if the diagnostic persists; capture a debug bundle before restarting the kernel`)
   }
 
   if (providerRunActor.enqueue_rejections > 0) {
@@ -453,14 +471,14 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const providerRunsSummary = providerRunIssues === 0 && providerRunActor.enqueue_rejections === 0
     ? "ok"
-    : `attention duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${providerRunActor.enqueue_rejections}`
+    : `attention duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${providerRunActor.enqueue_rejections}`
   return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
 }
 
 function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHealthProjection): void {
   const providerRuns = health.provider_runs
   const actorRejects = health.provider_run_actor.enqueue_rejections
-  lines.push(`provider run issues: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} actor_rejects=${actorRejects}`)
+  lines.push(`provider run issues: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${actorRejects}`)
   for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
     lines.push(`  duplicate session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
   }
@@ -472,6 +490,9 @@ function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHea
   }
   for (const issue of providerRuns.session_active_run_mismatches) {
     lines.push(`  pointer session=${issue.session_id} active=${issue.active_provider_run_id ?? "-"}: ${issue.details}`)
+  }
+  for (const issue of providerRuns.terminal_diagnostics) {
+    lines.push(`  terminal run=${issue.provider_run_id} provider=${issue.provider} state=${issue.state} session=${issue.session_id} agent=${issue.agent_id ?? "-"}: ${issue.diagnostic}`)
   }
   if (actorRejects > 0) {
     lines.push(`  actor rejected ${actorRejects} command${actorRejects === 1 ? "" : "s"}`)
@@ -497,6 +518,10 @@ function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): str
   if (pointer) {
     return `inspect session ${pointer.session_id || "<session>"} and relaunch the affected agent to restore one active run pointer`
   }
+  const terminal = providerRuns.terminal_diagnostics[0]
+  if (terminal) {
+    return `run /agent inspect ${terminal.agent_id || "<agent>"}; run /provider processes; relaunch provider run ${terminal.provider_run_id || "<provider-run>"} if the diagnostic persists`
+  }
   return "wait for provider-run command queues to drain; inspect duplicate/stuck provider runs if rejections continue"
 }
 
@@ -509,6 +534,7 @@ function providerRunInvariantIssueCount(health: DaemonHealthProjection): number 
     + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
+    + health.provider_runs.terminal_diagnostics.length
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {
