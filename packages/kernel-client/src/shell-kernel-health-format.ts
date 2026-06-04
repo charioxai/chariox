@@ -158,9 +158,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    const target = firstAgent ?? "<agent>"
     lines.push("  invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates")
-    lines.push(`  next: run /agent inspect ${target}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`)
+    lines.push(firstAgent
+      ? `  next: run /agent inspect ${firstAgent}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
+      : "  next: run /provider processes; capture a debug bundle, then identify and stop duplicate provider runs before sending more prompts")
   }
 
   if (providerRuns.multi_interface_agent_bindings.length > 0) {
@@ -170,8 +171,9 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    const target = firstAgent ?? "<agent>"
-    lines.push(`  next: run /agent inspect ${target}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`)
+    lines.push(firstAgent
+      ? `  next: run /agent inspect ${firstAgent}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
+      : "  next: run /provider processes; close the extra native TUI or Arroba provider run after identifying the affected agent")
   }
 
   if (providerCatalog.expired) {
@@ -215,7 +217,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       : firstRun
         ? `provider run ${firstRun}`
         : "the affected provider run"
-    lines.push(`  next: run /agent inspect ${firstAgent ?? "<agent>"}; run /provider processes; relaunch ${target} if the diagnostic persists; capture a debug bundle before restarting the kernel`)
+    const inspectAction = firstAgent
+      ? `run /agent inspect ${firstAgent}; `
+      : "identify the affected agent from /provider processes or the debug bundle; "
+    lines.push(`  next: ${inspectAction}run /provider processes; relaunch ${target} if the diagnostic persists; capture a debug bundle before restarting the kernel`)
   }
 
   if (providerRunActor.enqueue_rejections > 0) {
@@ -326,12 +331,16 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
       lines.push(`  slice=${issue.name} (${issue.slice_id}) status=${issue.status}${worktree}${agents}${provider}${state}${alias}${identity}: ${issue.details}`)
     }
     const firstIssue = sliceLifecycle.provider_auth_issues[0]
-    const sliceRef = firstIssue?.slice_id ?? "<slice>"
+    const sliceRef = firstIssue?.slice_id
     const provider = firstIssue?.provider
-    const providerAction = provider
+    const providerAction = provider && sliceRef
       ? `use /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
-      : "use the provider-specific /slice auth login or /slice auth import command shown by /slice doctor"
-    lines.push(`  next: run /slice doctor ${sliceRef}; inspect /slice audit ${sliceRef}; ${providerAction} before sending prompts to agents in that slice`)
+      : provider
+        ? `identify the affected slice, then use /slice auth login or /slice auth import for ${provider}`
+        : "use the provider-specific /slice auth login or /slice auth import command shown by /slice doctor"
+    lines.push(sliceRef
+      ? `  next: run /slice doctor ${sliceRef}; inspect /slice audit ${sliceRef}; ${providerAction} before sending prompts to agents in that slice`
+      : `  next: run /slice doctor for the affected slice; inspect /slice audit; ${providerAction} before sending prompts to slice-backed agents`)
   } else if (sliceLifecycle.provider_auth_missing_slices > 0 || sliceLifecycle.provider_auth_unconfigured_slices > 0) {
     lines.push(`slice provider auth issues: missing=${sliceLifecycle.provider_auth_missing_slices} unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`)
     lines.push("  next: run /slice doctor for the affected slice; inspect /slice audit; use the provider-specific /slice auth login or /slice auth import command shown by /slice doctor before sending prompts to slice-backed agents")
@@ -526,23 +535,32 @@ function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): str
   const providerRuns = health.provider_runs
   const duplicate = providerRuns.duplicate_arroba_agent_bindings[0]
   if (duplicate) {
-    return `run /agent inspect ${duplicate.agent_id || "<agent>"}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
+    return duplicate.agent_id
+      ? `run /agent inspect ${duplicate.agent_id}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
+      : "run /provider processes; capture a debug bundle, then identify and stop duplicate provider runs before sending more prompts"
   }
   const mixed = providerRuns.multi_interface_agent_bindings[0]
   if (mixed) {
-    return `run /agent inspect ${mixed.agent_id || "<agent>"}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
+    return mixed.agent_id
+      ? `run /agent inspect ${mixed.agent_id}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
+      : "run /provider processes; close the extra native TUI or Arroba provider run after identifying the affected agent"
   }
   const orphaned = providerRuns.orphaned_active_runs[0]
   if (orphaned) {
-    return `refresh the session; stop or relaunch provider run ${orphaned.provider_run_id || "<provider-run>"} if it stays active`
+    const target = orphaned.provider_run_id ? `provider run ${orphaned.provider_run_id}` : "the orphaned provider run"
+    return `refresh the session; stop or relaunch ${target} if it stays active`
   }
   const pointer = providerRuns.session_active_run_mismatches[0]
   if (pointer) {
-    return `inspect session ${pointer.session_id || "<session>"} and relaunch the affected agent to restore one active run pointer`
+    const target = pointer.session_id ? `session ${pointer.session_id}` : "the affected session"
+    return `inspect ${target} and relaunch the affected agent to restore one active run pointer`
   }
   const terminal = providerRuns.terminal_diagnostics[0]
   if (terminal) {
-    return `run /agent inspect ${terminal.agent_id || "<agent>"}; run /provider processes; relaunch provider run ${terminal.provider_run_id || "<provider-run>"} if the diagnostic persists`
+    const target = terminal.provider_run_id ? `provider run ${terminal.provider_run_id}` : "the affected provider run"
+    return terminal.agent_id
+      ? `run /agent inspect ${terminal.agent_id}; run /provider processes; relaunch ${target} if the diagnostic persists`
+      : `identify the affected agent from /provider processes or the debug bundle; run /provider processes; relaunch ${target} if the diagnostic persists`
   }
   return "wait for provider-run command queues to drain; inspect duplicate/stuck provider runs if rejections continue"
 }

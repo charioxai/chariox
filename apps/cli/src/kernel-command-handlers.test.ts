@@ -295,6 +295,35 @@ test("kernel health formatter reports provider-run terminal diagnostics", () => 
   })
 })
 
+test("kernel health formatter avoids placeholder agent recovery for unbound provider diagnostics", () => {
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 1,
+      active_runs: 1,
+      arroba_active_runs: 1,
+      native_tui_active_runs: 0,
+      terminal_diagnostics: [{
+        provider_run_id: "run-timeout",
+        session_id: "session-1",
+        agent_id: null,
+        provider: "codex",
+        state: "Running",
+        diagnostic: "provider produced no terminal output within 10m",
+      }],
+      duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.match(rendered, /provider run terminal diagnostics:/)
+  assert.match(rendered, /run=run-timeout provider=codex state=Running session=session-1 agent=-: provider produced no terminal output within 10m/)
+  assert.match(rendered, /next: identify the affected agent from \/provider processes or the debug bundle; run \/provider processes; relaunch provider run run-timeout if the diagnostic persists; capture a debug bundle before restarting the kernel/)
+  assert.doesNotMatch(rendered, /<agent>/)
+})
+
 test("kernel health formatter reports slice lifecycle issues", () => {
   const unhealthy = health({
     slice_lifecycle: {
@@ -930,6 +959,34 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.match(rendered, /duplicate session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
+})
+
+test("kernel remote-runtime formatter avoids placeholder recovery targets", () => {
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 1,
+      active_runs: 1,
+      arroba_active_runs: 1,
+      native_tui_active_runs: 0,
+      terminal_diagnostics: [{
+        provider_run_id: "provider-run-1",
+        session_id: "session-1",
+        agent_id: null,
+        provider: "codex",
+        state: "Running",
+        diagnostic: "provider produced no terminal output within 10m",
+      }],
+      duplicate_arroba_agent_bindings: [],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+  const rendered = formatKernelRemoteRuntimeHealth(unhealthy)
+
+  assert.match(rendered, /terminal run=provider-run-1 provider=codex state=Running session=session-1 agent=-: provider produced no terminal output within 10m/)
+  assert.match(rendered, /next: identify the affected agent from \/provider processes or the debug bundle; run \/provider processes; relaunch provider run provider-run-1 if the diagnostic persists/)
+  assert.doesNotMatch(rendered, /<agent>|<provider-run>|<session>/)
 })
 
 test("kernel remote-runtime formatter reports slice operations as degraded attention", () => {
