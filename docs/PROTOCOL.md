@@ -153,7 +153,7 @@ Provider hidden-context injection contract:
 
 - Prompt submission from the kernel to a provider adapter is conceptually a `PromptEnvelope`, not one concatenated string.
 - `visible_user_prompt` is the only prompt body that may be shown in Arroba prompt blobs, terminal input history, native provider prompt boxes, or user-facing prompt echoes.
-- `hidden_system_context` carries Arroba runtime/system prompt material: runtime instructions, Workspace Live Sync instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
+- `hidden_system_context` carries Arroba runtime/system prompt material: runtime instructions, Workspace Live Sync managed/tracked instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
 - `attachments` remain structured prompt attachments and are not used to smuggle hidden system instructions.
 - `manifest` records prompt template ids, template hashes or versions, assembly conditions, and the provider injection channel selected for the turn; the manifest is audit/debug metadata, not prompt UI content.
 - Arroba MUST NOT implement hidden context by prepending text to `visible_user_prompt` and later redacting it from UI surfaces.
@@ -172,7 +172,7 @@ Prompt template storage:
 
 - Arroba prompt templates are user-owned markdown files under `~/.arroba/prompts`.
 - Source-controlled defaults may be materialized there for first run, but runtime assembly reads from the registry path rather than hardcoding prompt text in adapter code.
-- Required templates include runtime base instructions, Workspace Live Sync instructions, native permission instructions, slice runtime instructions, MCP/skill continuation instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
+- Required templates include runtime base instructions, Workspace Live Sync managed instructions, Workspace Live Sync tracked instructions, native permission instructions, slice runtime instructions, MCP/skill continuation instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
 - Cloud editing, if introduced later, edits this registry model and must not create a second prompt source of truth.
 
 Provider-local visibility caveat:
@@ -624,6 +624,8 @@ Workspace Live Sync has two coordinated modes:
 
 - **managed**: supported providers are configured so coordinated workspace files can only be changed through Arroba MCP/runtime tools; direct provider-native writes are denied inside synced roots, while repositories outside those roots remain editable through normal provider-native paths when Arroba has an active write fence for the provider process.
 - **tracked**: provider-native file writes are allowed, but the kernel snapshots allowed workspace files during an Arroba-managed turn, computes changed-file diffs at turn end, and fans those changes out to attached Workspace Live Sync targets.
+
+Provider hidden context is mode-specific: managed runs receive instructions to use Arroba runtime/MCP write tools inside synced roots, while tracked runs receive instructions that provider-native edits inside synced roots are allowed and observed at turn end. Both modes must tell the provider that unrelated repositories outside synced roots remain normal provider-native edit targets.
 
 macOS hardening moves this from provider-specific policy to an Arroba-owned process launch boundary. Arroba-managed provider processes are launched behind a macOS workspace write fence that denies filesystem writes under selected protected roots only: the canonical selected worktree Git root plus explicitly attached local workspace-link roots. Provider state/cache/temp writes and writes to unrelated sibling repositories outside those roots remain allowed. Codex provider-native sandboxing remains enabled as defense in depth. OpenCode native tools that can write are enabled for managed mode only when this Arroba fence is active. Linux and Windows write-fence backends are deferred.
 
