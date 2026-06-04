@@ -343,7 +343,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
       : `  next: run /slice doctor for the affected slice; inspect /slice audit; ${providerAction} before sending prompts to slice-backed agents`)
   } else if (sliceLifecycle.provider_auth_missing_slices > 0 || sliceLifecycle.provider_auth_unconfigured_slices > 0) {
     lines.push(`slice provider auth issues: missing=${sliceLifecycle.provider_auth_missing_slices} unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`)
-    lines.push("  next: run /slice doctor for the affected slice; inspect /slice audit; use the provider-specific /slice auth login or /slice auth import command shown by /slice doctor before sending prompts to slice-backed agents")
+    lines.push("  next: run /slice list to identify affected slices; run /slice doctor and inspect /slice audit before choosing a provider account to login or import")
   }
 
   if (
@@ -395,7 +395,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 
   if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0) {
     lines.push(`remote extension sync settling: syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents}`)
-    lines.push("  next: home keeps stale home-proxy calls blocked until worker manifests settle; run /kernel remote-runtime or open Extensions to identify affected agents before retrying sync")
+    lines.push("  next: home keeps stale home-proxy calls blocked until worker manifests settle; run /kernel remote-runtime and then /extension sync-status for the affected agent before retrying sync")
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -676,9 +676,9 @@ function remoteExtensionSyncAggregateStatus(remoteExtensionSync: DaemonHealthPro
 
 function remoteExtensionAggregateNextAction(remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"]): string {
   if (remoteExtensionSync.pending_revoke_agents > 0) {
-    return "keep the home revoke in place; run /kernel remote-runtime or open Extensions to identify affected agents, then retry sync after the worker reconnects"
+    return "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects"
   }
-  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime or open Extensions to identify affected agents, then retry sync after worker connectivity is healthy"
+  return "home keeps stale home-proxy calls blocked; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
 }
 
 function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): number {

@@ -507,7 +507,7 @@ function formatSliceAuthLoginRecoveryCommands(slice: SliceRecord, providers: rea
 function formatProviderRecoveryCommands(providers: readonly string[], commandForProvider: (provider: string) => string): string {
   const unique = sliceProviderNames(providers)
   if (unique.length === 0) {
-    return "the provider-specific command shown by /slice doctor"
+    return "run /slice doctor after provider discovery, then use the matching /slice auth import or /slice auth login command"
   }
   return unique
     .map((provider, index) => index === 0 ? commandForProvider(provider) : `for ${provider} use ${commandForProvider(provider)}`)

@@ -199,6 +199,34 @@ test("executeShellCommand renders generic slice provider auth recovery without p
   assert.doesNotMatch(result.message ?? "", /<provider>|provider-specific/)
 })
 
+test("executeShellCommand renders aggregate slice provider auth recovery without placeholders", async () => {
+  const baseHealth = daemonHealth()
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          slice_lifecycle: {
+            ...baseHealth.slice_lifecycle,
+            total_slices: 2,
+            running_slices: 2,
+            provider_auth_missing_slices: 1,
+            provider_auth_unconfigured_slices: 1,
+            provider_auth_issues: [],
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /slice provider auth issues: missing=1 unconfigured=1/)
+  assert.match(result.message ?? "", /next: run \/slice list to identify affected slices; run \/slice doctor and inspect \/slice audit before choosing a provider account to login or import/)
+  assert.doesNotMatch(result.message ?? "", /<provider>|provider-specific/)
+})
+
 test("executeShellCommand accepts kernel remote runtime aliases", async () => {
   const fake = fakeClient((request) => {
     assert.deepEqual(request, { GetDaemonHealth: null })
@@ -247,8 +275,42 @@ test("executeShellCommand reports degraded remote runtime attention", async () =
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /^remote runtime/)
   assert.match(result.message ?? "", /remote extension sync settling: syncing=1 pending=1/)
+  assert.match(result.message ?? "", /next: home keeps stale home-proxy calls blocked until worker manifests settle; run \/kernel remote-runtime and then \/extension sync-status for the affected agent before retrying sync/)
   assert.match(result.message ?? "", /remote runtime readiness: degraded \(2 attention\)/)
+  assert.doesNotMatch(result.message ?? "", /open Extensions|<agent>/)
   assert.doesNotMatch(result.message ?? "", /support bundle:/)
+})
+
+test("executeShellCommand renders aggregate remote extension recovery without web-only actions", async () => {
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          remote_extension_sync: {
+            remote_agents: 1,
+            home_proxy_agents: 1,
+            home_proxy_grants: 1,
+            manifest_missing_agents: 0,
+            synced_agents: 0,
+            syncing_agents: 0,
+            pending_agents: 0,
+            failed_agents: 1,
+            stale_agents: 0,
+            pending_revoke_agents: 1,
+            issues: [],
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel remote-runtime"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /remote extension sync issues: failed=1 stale=0 missing=0 pending_revoke=1/)
+  assert.match(result.message ?? "", /next: keep the home revoke in place; run \/kernel remote-runtime to identify affected agents, then use \/extension sync-status and \/extension sync-retry after the worker reconnects/)
+  assert.doesNotMatch(result.message ?? "", /open Extensions|<agent>/)
 })
 
 test("executeShellCommand renders attached session runtime context before kernel health", async () => {
