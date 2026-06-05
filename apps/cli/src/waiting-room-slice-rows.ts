@@ -73,14 +73,14 @@ export function waitingRoomSliceTitleWidth(remote: Pick<WaitingRoomRemoteState, 
 }
 
 function formatSliceStatus(slice: SliceRecord): string {
-  const agents = slice.agent_ids?.length ?? 0
+  const agents = formatSliceAgentOccupancy(slice.agent_ids ?? [])
   const auth = waitingRoomSliceAuthDetail(slice)
   const worktree = formatSliceScope(slice)
   const relay = formatSliceRelayLabel(slice)
   return [
     slice.status,
     slice.display_mode ?? "headless",
-    `${agents} agent${agents === 1 ? "" : "s"}`,
+    agents,
     relay ? `relay ${relay}` : "",
     worktree,
     auth ? `auth ${auth}` : "",
@@ -88,6 +88,16 @@ function formatSliceStatus(slice: SliceRecord): string {
       ? `last error ${slice.last_error ?? slice.last_operation ?? "failed"}`
       : "",
   ].filter(Boolean).join(" ")
+}
+
+function formatSliceAgentOccupancy(agentIds: readonly string[]): string {
+  const agents = agentIds.map((agent) => agent.trim()).filter(Boolean)
+  if (agents.length === 0) {
+    return "0 agents"
+  }
+  const shown = agents.slice(0, 3).join(", ")
+  const more = agents.length > 3 ? ` +${agents.length - 3} more` : ""
+  return `${agents.length} agent${agents.length === 1 ? "" : "s"}: ${shown}${more}`
 }
 
 function waitingRoomSliceAuthDetail(slice: SliceRecord): string {

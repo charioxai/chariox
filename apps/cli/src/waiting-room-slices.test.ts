@@ -70,7 +70,7 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
       slice({
         id: "slice-1",
         name: "linux-dev",
-        agent_ids: ["agent-1"],
+        agent_ids: ["agent-1", "agent-2", "agent-3", "agent-4"],
         display_mode: "headed",
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
         provider_auth: [
@@ -81,7 +81,7 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
     ],
   })
 
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 1 agent, relay shared, codex work (acct-1), claude user@example.com)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 4 agents: agent-1, agent-2, agent-3 +1 more, relay shared, codex work (acct-1), claude user@example.com)")
 })
 
 test("waiting room slice labels do not infer shared relay when private flag is missing", () => {
@@ -121,7 +121,7 @@ test("waiting room slices filter reusable slices by selected worktree", () => {
     })
 
     assert.deepEqual(slices.map((entry) => entry.id), ["feature-slice"])
-    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent, auth missing codex)")
+    assert.equal(formatWaitingRoomSliceSelection("feature-slice", slices), "feature (running, headless, 1 agent: agent-1, auth missing codex)")
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
