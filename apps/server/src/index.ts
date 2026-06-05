@@ -37,6 +37,8 @@ import {
   isMcpPublication,
 } from "./publication-mcp.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
+import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import { publicationStatusPayload } from "./publication-status.js"
 import type {
   GatewayDeps,
   GatewayRequest,
@@ -78,20 +80,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return { status: "ok" }
   })
 
-  app.get("/.well-known/arroba/publication/status", async () => ({
-    status: "running",
-    publication_id: publication.publication_id,
-    runtime_session_id: publication.session_id,
-    source_session_id: publication.source_session_id ?? null,
-    workflow_ref: publication.workflow_ref,
-    endpoint_ref: publication.endpoint_ref,
-    hook_id: publication.hook_id ?? null,
-    queue_ref: publication.queue_ref ?? "default",
-    transport: publication.transport ?? "human_http",
-    mode: publication.mode ?? "sync",
-    route: publication.route ?? "/*",
-    methods: publication.methods ?? ["GET", "POST"],
-  }))
+  app.get("/.well-known/arroba/publication/status", async () => publicationStatusPayload(publication, deps))
 
   app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
     if (publication.transport && publication.transport !== "human_http") {
@@ -217,6 +206,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       logger.info("workflow gateway listening", { host, port, address })
       await registerServedPublicationEndpoint(config, host, port, logger)
       schedulePublicationEndpointRegistration(config, host, port, logger)
+      schedulePublicationRuntimePump(config, logger)
     })
     .catch((error) => {
       logger.error("workflow gateway failed to start", { error: error.message, host, port })
@@ -234,6 +224,32 @@ function schedulePublicationEndpointRegistration(
   const interval = setInterval(() => {
     void registerServedPublicationEndpoint(publication, host, port, logger)
   }, 5 * 60 * 1_000)
+  interval.unref?.()
+}
+
+function schedulePublicationRuntimePump(
+  publication: WorkflowPublicationConfig | undefined,
+  logger: ArrobaLogger,
+) {
+  if (!publication) return
+  let pumping = false
+  const interval = setInterval(() => {
+    if (pumping) return
+    pumping = true
+    const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+    void pumpPublicationRuntime(client, publication)
+      .catch((error) => {
+        logger.debug("workflow gateway runtime pump failed", {
+          error: error instanceof Error ? error.message : String(error),
+          publication_id: publication.publication_id,
+          runtime_session_id: publication.session_id,
+        })
+      })
+      .finally(() => {
+        pumping = false
+        void client.close().catch(() => {})
+      })
+  }, Math.max(250, publication.poll_ms ?? 500))
   interval.unref?.()
 }
 

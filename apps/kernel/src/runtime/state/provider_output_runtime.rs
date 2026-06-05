@@ -186,6 +186,7 @@ impl KernelRuntimeState {
         owned.reap_structured_prompt_jobs();
         self.reap_provider_first_output_timeouts(session_id).await?;
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         let session = owned.session_store.get_session(session_id)?;
         let provider_run_ids = provider_run_ids_for_owned_output_pump(owned, &session);
         let recipient_attachment_ids = owned

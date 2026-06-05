@@ -237,6 +237,7 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
+            self.remove_session_workflow_dispatch_claims(session_id);
             self.prompt_state_owner.remove_session(session_id);
             let ended = self.session_store.end_session(session_id)?;
             return Ok((ended, Vec::new()));
@@ -275,6 +276,7 @@ impl KernelRuntimeOwnedState {
                 self.clear_prompt_activity(run.id());
             }
         }
+        self.remove_session_workflow_dispatch_claims(session_id);
         self.prompt_state_owner.remove_session(session_id);
         let mut ended = self.session_store.end_session(session_id)?;
         ended.set_agents(removed_agents);
@@ -292,6 +294,12 @@ impl KernelRuntimeOwnedState {
             }),
         );
         Ok((ended, terminated_run_ids))
+    }
+
+    fn remove_session_workflow_dispatch_claims(&self, session_id: &str) {
+        let _ = self.prompt_workspace_claims.remove_matching(|claim| {
+            claim.session_id == session_id && claim.operation == "workflow_node_dispatch"
+        });
     }
 
     pub(super) fn delete_session_ref(

@@ -24,7 +24,7 @@ impl KernelRuntimeOwnedState {
 
     fn collect_blocked_workflow_claim_retries(&self) -> Vec<BlockedWorkflowClaimRetry> {
         let mut retries = Vec::new();
-        for session in self.session_store.read().list_sessions() {
+        for session in self.session_store.list_non_ended_sessions_including_hidden() {
             for workflow_run in session.workflow_runs() {
                 for node_run in workflow_run.node_runs() {
                     if node_run.status()

@@ -148,6 +148,8 @@ export type WorkflowRun = {
     timestamp_ms?: number
   }>
   final_output?: { message: string; artifacts?: unknown[] } | null
+  created_at_ms?: number
+  completed_at_ms?: number | null
 }
 
 export type WorkflowInvocationResult = {
@@ -159,6 +161,7 @@ export type WorkflowInvocationResult = {
 
 export type GatewayDeps = {
   invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
+  getPublicationStatusDetails?: (publication: WorkflowPublicationConfig) => Promise<Record<string, unknown>>
 }
 
 export type PublicationInvocationOptions = {

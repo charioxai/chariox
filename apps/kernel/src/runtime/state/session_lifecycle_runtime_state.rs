@@ -337,6 +337,7 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
+        self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         self.append_session_durable_event("session.ended", &session, "runtime_end_session")
             .await?;
         self.detach_session_slices(&session).await?;

@@ -24,8 +24,10 @@ const {
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   endSessionRequest,
+  getDaemonHealthRequest,
   getSessionStateRequest,
   getWorkflowPublicationRequest,
+  getWorkflowRunRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
   listSessionsRequest,
@@ -684,19 +686,55 @@ async function waitForProviderRunReady(client, providerRunId) {
   throw new Error(`provider run ${providerRunId} did not become ready`)
 }
 
-async function waitForWatchdogWorkflowRun(client, sessionId, workflowId) {
-  const deadline = Date.now() + 20_000
+async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
+  const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
   let lastRuns = []
+  let lastRun = null
   while (Date.now() < deadline) {
     const listed = variant(
       await client.send(listWorkflowRunsRequest(sessionId, workflowId)),
       'WorkflowRunsListed',
     )
     lastRuns = listed.workflow_runs ?? []
-    if (lastRuns.length > 0) return lastRuns[0]
+    if (lastRuns.length > 0) {
+      const candidate = lastRuns[0]
+      const detailed = variant(
+        await client.send(getWorkflowRunRequest(sessionId, candidate.id)),
+        'WorkflowRun',
+      ).workflow_run ?? candidate
+      lastRun = detailed
+      if (!options.requireOutput || (isTerminalWorkflowRunStatus(detailed.status) && detailed.final_output?.message)) {
+        return detailed
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
-  throw new Error(`watchdog publication did not start a workflow run; last runs: ${JSON.stringify(lastRuns)}`)
+  let activeClaims = []
+  try {
+    const health = variant(await client.send(getDaemonHealthRequest()), 'DaemonHealth')
+    activeClaims = health.projection?.workspace_coordination?.active_operation_claims ?? []
+  } catch {
+    activeClaims = []
+  }
+  throw new Error(`watchdog publication did not reach expected run state; active claims: ${JSON.stringify(activeClaims)}, last run: ${JSON.stringify(lastRun)}, last runs: ${JSON.stringify(lastRuns)}`)
+}
+
+async function waitForPublicationStatusLatestOutput(gatewayUrl, expectedMessage) {
+  const deadline = Date.now() + 30_000
+  let lastStatus = null
+  while (Date.now() < deadline) {
+    const response = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    lastStatus = await response.json()
+    if (response.status === 200 && lastStatus.latest_output?.kind === 'final' && lastStatus.latest_output?.message === expectedMessage) {
+      return lastStatus
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`expected publication status latest final output ${expectedMessage}, got ${JSON.stringify(lastStatus)}`)
+}
+
+function isTerminalWorkflowRunStatus(status) {
+  return ['completed', 'failed', 'stopped'].includes(String(status).toLowerCase())
 }
 
 async function createSelfSignedCertificate(root) {
@@ -736,6 +774,7 @@ async function main() {
   const websocketWorkspace = path.join(root, 'websocket-workspace')
   const browserWorkspace = path.join(root, 'browser-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
+  const watchdogWorkspace = path.join(root, 'watchdog-workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
@@ -780,6 +819,7 @@ async function main() {
     await mkdir(apiSseWorkspace, { recursive: true })
     await mkdir(browserWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
+    await mkdir(watchdogWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
@@ -1017,6 +1057,48 @@ async function main() {
         transport: { kind: 'mcp' },
         parser: { kind: 'json' },
         mode: 'sync',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+
+    logStep('create_watchdog_session')
+    const watchdogSession = variant(
+      await client.send(createSessionRequest(watchdogWorkspace, watchdogWorkspace, 'publication-drill-watchdog')),
+      'SessionCreated',
+    ).session
+    sessionIds.push(watchdogSession.id)
+    await client.send(attachToSessionRequest(watchdogSession.id, `publication-drill-watchdog-${process.pid}`))
+    const watchdogAgent = variant(
+      await client.send(spawnAgentRequest(watchdogSession.id, 'dev-stub', 'watchdog-final', 'workflow-intermediate-node', watchdogWorkspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    const watchdogProviderRun = variant(
+      await client.send(launchProviderRunRequest(watchdogSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', watchdogAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    await waitForProviderRunReady(client, watchdogProviderRun.id)
+    const watchdogWorkflow = variant(await client.send(createWorkflowRequest(watchdogSession.id, 'published-watchdog')), 'WorkflowCreated').workflow
+    const watchdogNode = variant(await client.send(addWorkflowNodeRequest(watchdogSession.id, watchdogWorkflow.id, watchdogAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(
+      watchdogSession.id,
+      watchdogWorkflow.id,
+      watchdogNode.id,
+      'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+    ))
+    await client.send(setWorkflowNodeCanCompleteRunRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, true))
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, true))
+    const watchdogEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(watchdogSession.id, watchdogWorkflow.id, watchdogNode.id, 'watchdog')),
+      'WorkflowEndpointCreated',
+    ).endpoint
+    const watchdogPublication = variant(
+      await client.send(createWorkflowPublicationRequest(watchdogSession.id, watchdogWorkflow.id, watchdogEndpoint.id, {
+        alias: 'public_watchdog',
+        route: '/watchdog',
+        methods: ['POST'],
+        transport: { kind: 'api_sse_json' },
+        parser: { kind: 'json' },
+        mode: 'async',
       })),
       'WorkflowPublicationCreated',
     ).publication
@@ -1396,6 +1478,7 @@ async function main() {
     }
     await stopProcess(gateway)
     gateway = null
+    await client.send(endSessionRequest(exportedRuntimeSessionId)).catch(() => {})
 
     logStep('invoke_ipc_exported')
     const ipcResult = await run(process.execPath, [
@@ -1414,6 +1497,12 @@ async function main() {
     if (!ipcBody.accepted || !hasAcceptedRunMetadata(ipcBody)) {
       throw new Error(`expected IPC accepted run metadata, got ${ipcResult.stdout}`)
     }
+    if (typeof ipcBody.runtime_session_id !== 'string') {
+      throw new Error(`expected IPC output to include runtime_session_id, got ${ipcResult.stdout}`)
+    }
+    sessionIds.push(ipcBody.runtime_session_id)
+    await assertPublicationRuntimeSessionHidden(client, ipcBody.runtime_session_id)
+    await client.send(endSessionRequest(ipcBody.runtime_session_id)).catch(() => {})
 
     logStep('serve_provider_override_prompt')
     const overrideExportDir = path.join(root, 'exported-publication-provider-override')
@@ -1432,6 +1521,14 @@ async function main() {
       effort: 'low',
     })
     await waitForGateway(gatewayUrl)
+    const overrideStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const overrideStatusBody = await overrideStatusResponse.json()
+    const overrideRuntimeSessionId = overrideStatusBody.runtime_session_id
+    if (overrideStatusResponse.status !== 200 || typeof overrideRuntimeSessionId !== 'string') {
+      throw new Error(`expected override publication status with runtime session id, got ${overrideStatusResponse.status}: ${JSON.stringify(overrideStatusBody)}`)
+    }
+    sessionIds.push(overrideRuntimeSessionId)
+    await assertPublicationRuntimeSessionHidden(client, overrideRuntimeSessionId)
     const overrideBindings = JSON.parse(await readFile(path.join(overrideExportDir, 'bindings.local.json'), 'utf8'))
     const overrideReplacement = overrideBindings.provider_model_overrides
       ?.find((candidate) => candidate.agent_id === overridePackage.agentId)
@@ -1457,15 +1554,17 @@ async function main() {
     }
     await stopProcess(gateway)
     gateway = null
+    await client.send(endSessionRequest(overrideRuntimeSessionId)).catch(() => {})
     logStep('serve_provider_override_prompt_ok', { agentId: overridePackage.agentId })
+    await client.send(endSessionRequest(session.id)).catch(() => {})
 
     logStep('watchdog_publication_export')
     const watchdog = variant(
       await client.send(createWorkflowWatchdogRequest(
-        apiSseSession.id,
-        apiSseWorkflow.id,
-        apiSseFinalEndpoint.id,
-        5,
+        watchdogSession.id,
+        watchdogWorkflow.id,
+        watchdogEndpoint.id,
+        60,
         'watchdog-publication',
         'queue',
         1,
@@ -1474,12 +1573,12 @@ async function main() {
     ).watchdog
     const watchdogExportDir = path.join(root, 'exported-watchdog-publication')
     const watchdogExportResult = await executeShellCommand(
-      parseShellCommand(`workflow publication export ${apiSseFinalPublication.id} ${watchdogExportDir} --kernel-url ${kernelUrl}`),
+      parseShellCommand(`workflow publication export ${watchdogPublication.id} ${watchdogExportDir} --kernel-url ${kernelUrl}`),
       createDefaultShellContext({
-        workspace: apiSseWorkspace,
-        worktree: apiSseWorkspace,
-        sessionId: apiSseSession.id,
-        workflowId: apiSseWorkflow.id,
+        workspace: watchdogWorkspace,
+        worktree: watchdogWorkspace,
+        sessionId: watchdogSession.id,
+        workflowId: watchdogWorkflow.id,
       }),
       { client },
     )
@@ -1490,6 +1589,8 @@ async function main() {
     if (watchdogSnapshot.watchdogs?.[0]?.id !== watchdog.id) {
       throw new Error(`expected exported watchdog ${watchdog.id}, got ${JSON.stringify(watchdogSnapshot.watchdogs)}`)
     }
+    watchdogSnapshot.watchdogs[0].next_run_at_ms = 0
+    await writeFile(path.join(watchdogExportDir, 'workflow.snapshot.json'), `${JSON.stringify(watchdogSnapshot, null, 2)}\n`)
     gateway = startProcess(
       cliBinary,
       ['serve', watchdogExportDir, String(gatewayPort), '--kernel-url', kernelUrl],
@@ -1506,13 +1607,28 @@ async function main() {
     if (statusResponse.status !== 200 || typeof runtimeSessionId !== 'string') {
       throw new Error(`expected publication status with runtime session id, got ${statusResponse.status}: ${JSON.stringify(statusBody)}`)
     }
+    if (statusBody.watchdog_count !== 1 || statusBody.watchdogs?.[0]?.id !== watchdog.id) {
+      throw new Error(`expected publication status to expose watchdog ${watchdog.id}, got ${JSON.stringify(statusBody)}`)
+    }
     sessionIds.push(runtimeSessionId)
     await assertPublicationRuntimeSessionHidden(client, runtimeSessionId)
-    const watchdogRun = await waitForWatchdogWorkflowRun(client, runtimeSessionId, apiSseWorkflow.id)
+    const watchdogRuntimeSession = variant(
+      await client.send(getSessionStateRequest(runtimeSessionId)),
+      'SessionState',
+    ).session
+    if (watchdogRuntimeSession.workspace_id !== watchdogWorkspace || watchdogRuntimeSession.worktree_id !== watchdogWorkspace) {
+      throw new Error(`expected watchdog runtime workspace ${watchdogWorkspace}, got ${JSON.stringify({
+        workspace_id: watchdogRuntimeSession.workspace_id,
+        worktree_id: watchdogRuntimeSession.worktree_id,
+      })}`)
+    }
+    const watchdogRun = await waitForWatchdogWorkflowRun(client, runtimeSessionId, watchdogWorkflow.id, { requireOutput: true })
+    const statusAfterRun = await waitForPublicationStatusLatestOutput(gatewayUrl, watchdogRun.final_output?.message)
     logStep('watchdog_publication_ok', {
       runtimeSessionId,
       workflowRunId: watchdogRun.id,
       status: watchdogRun.status,
+      latestOutput: statusAfterRun.latest_output?.message,
     })
     await stopProcess(gateway)
     gateway = null

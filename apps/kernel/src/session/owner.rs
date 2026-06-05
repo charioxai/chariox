@@ -48,6 +48,10 @@ impl SessionStateStore {
         self.read().list_sessions()
     }
 
+    pub(crate) fn list_non_ended_sessions_including_hidden(&self) -> Vec<RuntimeSession> {
+        self.read().list_non_ended_sessions_including_hidden()
+    }
+
     pub(crate) fn list_all_sessions(&self) -> Vec<RuntimeSession> {
         self.read().list_all_sessions()
     }

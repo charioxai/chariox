@@ -35,7 +35,11 @@ async function main() {
   const result = await invokePublicationInput(publication, {
     ...invocationOptions,
   })
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({
+    ...result,
+    runtime_session_id: publication.session_id,
+    source_session_id: publication.source_session_id ?? null,
+  }, null, 2)}\n`)
 }
 
 function parseArgs(args: string[]): CallOptions {

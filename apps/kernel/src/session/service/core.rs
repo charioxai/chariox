@@ -370,6 +370,10 @@ impl SessionService {
         self.store.visible_non_ended_sessions().cloned().collect()
     }
 
+    pub fn list_non_ended_sessions_including_hidden(&self) -> Vec<RuntimeSession> {
+        self.store.non_ended_sessions().cloned().collect()
+    }
+
     pub fn list_all_sessions(&self) -> Vec<RuntimeSession> {
         self.store.list()
     }

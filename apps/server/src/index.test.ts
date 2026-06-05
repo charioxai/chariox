@@ -80,6 +80,111 @@ test("GET publication status reports runtime binding", async () => {
   }
 })
 
+test("GET publication status includes runtime watchdog and latest output details", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+  }, {
+    getPublicationStatusDetails: async () => ({
+      runtime: { reachable: true },
+      watchdog_count: 1,
+      watchdogs: [{
+        id: "watchdog-1",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        enabled: true,
+        interval_seconds: 5,
+        invocation_prompt: "scheduled prompt",
+        policy: "queue",
+        wakeups_executed: 1,
+        next_run_at_ms: 1000,
+        last_run_at_ms: 900,
+        last_status: "started",
+        last_error: null,
+        last_workflow_run_id: "run-1",
+        pending_run: false,
+        created_at_ms: 0,
+        updated_at_ms: 900,
+      }],
+      latest_run: {
+        id: "run-1",
+        status: "Completed",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        created_at_ms: 800,
+        completed_at_ms: 950,
+        publication_invocation: null,
+        final_output: { message: "{\"value\":1842}" },
+      },
+      latest_output: {
+        kind: "final",
+        message: "{\"value\":1842}",
+        artifacts: [],
+      },
+    }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/arroba/publication/status",
+    })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json(), {
+      status: "running",
+      publication_id: "pub-test",
+      runtime_session_id: "session-1",
+      source_session_id: null,
+      workflow_ref: "workflow-1",
+      endpoint_ref: "endpoint-1",
+      hook_id: null,
+      queue_ref: "default",
+      transport: "human_http",
+      mode: "sync",
+      route: "/*",
+      methods: ["GET", "POST"],
+      runtime: { reachable: true },
+      watchdog_count: 1,
+      watchdogs: [{
+        id: "watchdog-1",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        enabled: true,
+        interval_seconds: 5,
+        invocation_prompt: "scheduled prompt",
+        policy: "queue",
+        wakeups_executed: 1,
+        next_run_at_ms: 1000,
+        last_run_at_ms: 900,
+        last_status: "started",
+        last_error: null,
+        last_workflow_run_id: "run-1",
+        pending_run: false,
+        created_at_ms: 0,
+        updated_at_ms: 900,
+      }],
+      latest_run: {
+        id: "run-1",
+        status: "Completed",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        created_at_ms: 800,
+        completed_at_ms: 950,
+        publication_invocation: null,
+        final_output: { message: "{\"value\":1842}" },
+      },
+      latest_output: {
+        kind: "final",
+        message: "{\"value\":1842}",
+        artifacts: [],
+      },
+    })
+  } finally {
+    await app.close()
+  }
+})
+
 test("gateway maps kernel-owned publication records to runtime config", async () => {
   const config = publicationConfigFromKernelRecord({
     id: "pub-1",
