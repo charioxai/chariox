@@ -22,6 +22,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/view"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
+  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions (6)")
 })
 
 test("buildCommandCenterItems includes config subcommands", () => {

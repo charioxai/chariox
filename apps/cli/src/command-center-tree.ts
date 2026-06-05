@@ -204,7 +204,7 @@ export const COMMAND_TREE: CommandNode[] = [
   {
     id: "extension",
     label: "/extension",
-    description: "Grant or revoke any extension kind",
+    description: "Grant, revoke, and inspect worker-local, home-proxy, and skill snapshot extensions",
     value: "/extension ",
     children: [
       { id: "extension-grant", label: "grant", description: "Grant an extension to an agent", value: "/extension grant " },
