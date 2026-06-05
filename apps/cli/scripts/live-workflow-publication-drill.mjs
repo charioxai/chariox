@@ -31,6 +31,7 @@ const {
   listSessionsRequest,
   listWorkflowRunsRequest,
   setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowNodeCanEmitIntermediateOutputRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
 } = requests
@@ -740,11 +741,11 @@ async function main() {
     sessionIds.push(apiSseSession.id)
     await client.send(attachToSessionRequest(apiSseSession.id, `publication-drill-api-sse-final-${process.pid}`))
     const apiSseAgent = variant(
-      await client.send(spawnAgentRequest(apiSseSession.id, 'dev-stub', 'api-sse-final', 'workflow-single-turn-node', apiSseWorkspace, 'low')),
+      await client.send(spawnAgentRequest(apiSseSession.id, 'dev-stub', 'api-sse-final', 'workflow-intermediate-node', apiSseWorkspace, 'low')),
       'AgentSpawned',
     ).agent
     const apiSseProviderRun = variant(
-      await client.send(launchProviderRunRequest(apiSseSession.id, 'dev-stub', 'default', 'workflow-single-turn-node', 'low', apiSseAgent.id)),
+      await client.send(launchProviderRunRequest(apiSseSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', apiSseAgent.id)),
       'ProviderRunLaunchAccepted',
     ).provider_run
     await waitForProviderRunReady(client, apiSseProviderRun.id)
@@ -757,6 +758,7 @@ async function main() {
       'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
     ))
     await client.send(setWorkflowNodeCanCompleteRunRequest(apiSseSession.id, apiSseWorkflow.id, apiSseNode.id, true))
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(apiSseSession.id, apiSseWorkflow.id, apiSseNode.id, true))
     const apiSseFinalEndpoint = variant(
       await client.send(createWorkflowEndpointRequest(apiSseSession.id, apiSseWorkflow.id, apiSseNode.id, 'api')),
       'WorkflowEndpointCreated',
@@ -1020,12 +1022,14 @@ async function main() {
       apiSseFinalResponse.status !== 200
       || !apiSseFinalEvents.includes('queued')
       || !apiSseFinalEvents.includes('started')
+      || !apiSseFinalEvents.includes('partial')
       || !apiSseFinalEvents.includes('final')
+      || (!apiSseFinalBody.includes('"value":1841') && !apiSseFinalBody.includes('\\"value\\":1841'))
       || (!apiSseFinalBody.includes('"value":1842') && !apiSseFinalBody.includes('\\"value\\":1842'))
     ) {
       const errorIndex = apiSseFinalBody.lastIndexOf('event: error')
       const diagnostic = errorIndex >= 0 ? apiSseFinalBody.slice(errorIndex, errorIndex + 800) : apiSseFinalBody.slice(0, 2_000)
-      throw new Error(`expected API SSE queued/started/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
+      throw new Error(`expected API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
     await stopProcess(gateway)

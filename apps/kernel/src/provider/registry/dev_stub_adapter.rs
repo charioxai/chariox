@@ -26,6 +26,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let pty_args = dev_stub_pty_args(request.model.as_str());
+        let pty_env = dev_stub_pty_env(request);
         let pty_target = if is_dev_stub_workflow_drill_model(request.model.as_str()) {
             format!(
                 "stub-pty:{}:{}",
@@ -47,7 +48,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
             pty_target: Some(pty_target),
             pty_program: Some("/bin/sh".to_string()),
             pty_args,
-            pty_env: BTreeMap::new(),
+            pty_env,
             pty_env_remove: request.provider_env_remove.clone(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
@@ -120,6 +121,11 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             "workflow single turn node",
             1842,
         )),
+        "workflow-intermediate-node" => Some(dev_stub_workflow_intermediate_script(
+            "workflow intermediate node",
+            1841,
+            1842,
+        )),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
@@ -135,10 +141,28 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
         "workflow-drill-node-1"
             | "workflow-drill-node-2"
             | "workflow-single-turn-node"
+            | "workflow-intermediate-node"
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
             | "large-output-drill"
     )
+}
+
+fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if request.model == "workflow-intermediate-node" {
+        if let Some(binding) = request.runtime_mcp_binding.as_ref() {
+            env.insert(
+                "ARROBA_DEV_STUB_RUNTIME_MCP_URL".to_string(),
+                binding.server_url.clone(),
+            );
+            env.insert(
+                "ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN".to_string(),
+                binding.auth_token.clone(),
+            );
+        }
+    }
+    env
 }
 
 fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {
@@ -153,6 +177,108 @@ fn dev_stub_workflow_read_through_script(summary: &str, value: i64) -> String {
     format!(
         "stty -echo 2>/dev/null || true; printed=0; while IFS= read -r _line; do if [ \"$printed\" -eq 0 ]; then printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; printed=1; fi; done"
     )
+}
+
+fn dev_stub_workflow_intermediate_script(
+    summary: &str,
+    intermediate: i64,
+    final_value: i64,
+) -> String {
+    let payload =
+        format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{final_value}}}}}}}"#);
+    let intermediate_output = serde_json::json!({ "value": intermediate }).to_string();
+    let js = format!(
+        r#"const http = require("node:http");
+const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const finalPayload = {payload_json};
+const intermediateOutput = {intermediate_json};
+let printed = false;
+let promptBuffer = "";
+let fallbackTimer = null;
+
+function callRuntimeTool(name, args) {{
+  return new Promise((resolve, reject) => {{
+    if (!runtimeUrl || !runtimeToken) return reject(new Error("runtime MCP binding missing"));
+    const parsed = new URL(runtimeUrl);
+    const body = JSON.stringify({{
+      jsonrpc: "2.0",
+      id: `dev-stub-${{Date.now()}}`,
+      method: "tools/call",
+      params: {{ name, arguments: args }},
+    }});
+    const req = http.request({{
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname || "/mcp",
+      method: "POST",
+      headers: {{
+        authorization: `Bearer ${{runtimeToken}}`,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      }},
+    }}, (res) => {{
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {{
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode !== 200) return reject(new Error(`runtime MCP HTTP ${{res.statusCode}}: ${{text}}`));
+        const response = JSON.parse(text);
+        if (response.error) return reject(new Error(JSON.stringify(response.error)));
+        if (response.result && response.result.isError) return reject(new Error(JSON.stringify(response.result)));
+        resolve(response.result);
+      }});
+    }});
+    req.on("error", reject);
+    req.end(body);
+  }});
+}}
+
+async function emitOnce() {{
+  if (printed) return;
+  const tokenMatch = promptBuffer.match(/workflow-ack:[A-Za-z0-9_-]+/);
+  const deliveryToken = tokenMatch ? tokenMatch[0] : undefined;
+  if (!deliveryToken && !fallbackTimer) {{
+    fallbackTimer = setTimeout(() => {{
+      emitOnce().catch((error) => {{
+        process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
+      }});
+    }}, 250);
+    return;
+  }}
+  printed = true;
+  if (deliveryToken) {{
+    await callRuntimeTool("ack_workflow_turn", {{
+      delivery_token: deliveryToken,
+    }});
+  }}
+  await callRuntimeTool("validate_and_submit_intermediate_workflow_run_output", {{
+    workflow_output_json: JSON.stringify(intermediateOutput),
+    ...(deliveryToken ? {{ delivery_token: deliveryToken }} : {{}}),
+  }});
+  process.stdout.write("```json\n" + JSON.stringify(finalPayload) + "\n```\n");
+}}
+
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {{
+  promptBuffer += chunk;
+  emitOnce().catch((error) => {{
+    process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
+  }});
+}});
+process.stdin.resume();
+"#,
+        payload_json = payload,
+        intermediate_json = intermediate_output,
+    );
+    format!(
+        "stty -echo 2>/dev/null || true; node -e {}",
+        shell_single_quote(&js)
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn dev_stub_semantic_renderer_script() -> String {
