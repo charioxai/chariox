@@ -71,6 +71,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const liveSyncManagedMode = liveSync.managed_mode
   const workspaceIdentity = liveSync.workspace_identity
   const externalChanges = liveSync.external_changes
+  const liveSyncAffectedRoots = workspaceLiveSyncAffectedRoots(health)
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const lines = [
     "remote runtime",
@@ -85,7 +86,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
-    "workspace live sync scope: selected workspace/worktree only; other repositories unrestricted",
+    `workspace live sync scope: ${workspaceLiveSyncScopeDetail(liveSyncAffectedRoots)}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
@@ -121,6 +122,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   const liveSyncManagedMode = liveSync.managed_mode
   const workspaceIdentity = liveSync.workspace_identity
   const externalChanges = liveSync.external_changes
+  const liveSyncAffectedRoots = workspaceLiveSyncAffectedRoots(health)
   const commandLanes = commandLaneHealthSummary(health)
   const lines = [
     "kernel health",
@@ -141,7 +143,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
     `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
-    "workspace live sync scope: selected workspace/worktree only; other repositories unrestricted",
+    `workspace live sync scope: ${workspaceLiveSyncScopeDetail(liveSyncAffectedRoots)}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
@@ -473,6 +475,7 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
   const sliceLifecycle = health.slice_lifecycle
   const remoteExtensionSync = health.remote_extension_sync
   const liveSync = health.workspace_live_sync
+  const liveSyncAffectedRoots = workspaceLiveSyncAffectedRoots(health)
   const workerRuns = remoteExecution.missing_active_worker_runs === 0 && remoteExecution.malformed_bindings === 0
     ? "ok"
     : `attention missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`
@@ -498,12 +501,63 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     && liveSync.external_changes.externally_changed_artifacts === 0
     && liveSync.external_changes.live_watcher_scan_errors === 0
     ? "selected-workspace-only"
-    : `attention identity_changed=${liveSync.workspace_identity.identity_changed_provider_runs} invalid=${liveSync.workspace_identity.invalid_provider_runs} external_changes=${liveSync.external_changes.externally_changed_artifacts} scan_errors=${liveSync.external_changes.live_watcher_scan_errors}`
+    : liveSyncScopeAttentionDetail(liveSyncAffectedRoots, liveSync.workspace_identity.identity_changed_provider_runs, liveSync.workspace_identity.invalid_provider_runs, liveSync.external_changes.externally_changed_artifacts, liveSync.external_changes.live_watcher_scan_errors)
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const providerRunsSummary = providerRunIssues === 0 && providerRunActor.enqueue_rejections === 0
     ? "ok"
     : `attention duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${providerRunActor.enqueue_rejections}`
   return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
+}
+
+function workspaceLiveSyncScopeDetail(affectedRoots: readonly string[]): string {
+  const base = "selected workspace/worktree only; other repositories unrestricted"
+  if (affectedRoots.length === 0) {
+    return base
+  }
+  return `${base}; affected roots: ${formatAffectedRoots(affectedRoots)}`
+}
+
+function liveSyncScopeAttentionDetail(
+  affectedRoots: readonly string[],
+  identityChanged: number,
+  invalid: number,
+  externalChanges: number,
+  watcherScanErrors: number,
+): string {
+  const counts = `attention identity_changed=${identityChanged} invalid=${invalid} external_changes=${externalChanges} scan_errors=${watcherScanErrors}`
+  const roots = formatAffectedRoots(affectedRoots)
+  return roots ? `${counts} roots=${roots}` : counts
+}
+
+function workspaceLiveSyncAffectedRoots(health: DaemonHealthProjection): string[] {
+  return uniqueNonEmpty([
+    ...health.workspace_live_sync.workspace_identity.issues.map((issue) => issue.root),
+    ...health.workspace_live_sync.external_changes.issues.map((issue) => issue.workspace_root),
+  ].filter(nonEmptyRoot))
+}
+
+function nonEmptyRoot(root: string | null | undefined): root is string {
+  return Boolean(root && root !== "-")
+}
+
+function formatAffectedRoots(affectedRoots: readonly string[]): string {
+  if (affectedRoots.length === 0) {
+    return ""
+  }
+  const shown = affectedRoots.slice(0, 3).join(", ")
+  const more = affectedRoots.length > 3 ? ` +${affectedRoots.length - 3} more` : ""
+  return `${shown}${more}`
+}
+
+function uniqueNonEmpty(values: readonly string[]): string[] {
+  const unique: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (trimmed && !unique.includes(trimmed)) {
+      unique.push(trimmed)
+    }
+  }
+  return unique
 }
 
 function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHealthProjection): void {
