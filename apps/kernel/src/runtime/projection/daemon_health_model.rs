@@ -623,12 +623,16 @@ impl RemoteExtensionSyncHealthSnapshot {
                 .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
                 .collect::<Vec<_>>();
             let home_proxy_grant_count = home_proxy_grants.len();
-            if home_proxy_grant_count == 0 {
+            let status = agent.remote_extension_manifest_sync();
+            let pending_revoke = status
+                .and_then(|status| status.pending_revoke)
+                .unwrap_or(false);
+            if home_proxy_grant_count == 0 && !pending_revoke {
                 continue;
             }
             snapshot.home_proxy_agents += 1;
             snapshot.home_proxy_grants += home_proxy_grant_count;
-            let Some(status) = agent.remote_extension_manifest_sync() else {
+            let Some(status) = status else {
                 snapshot.manifest_missing_agents += 1;
                 snapshot.issues.push(remote_extension_sync_issue(
                     agent,
@@ -648,7 +652,6 @@ impl RemoteExtensionSyncHealthSnapshot {
                 RemoteExtensionManifestSyncState::Failed => snapshot.failed_agents += 1,
                 RemoteExtensionManifestSyncState::Stale => snapshot.stale_agents += 1,
             }
-            let pending_revoke = status.pending_revoke.unwrap_or(false);
             if pending_revoke {
                 snapshot.pending_revoke_agents += 1;
             }
@@ -1424,6 +1427,28 @@ mod tests {
             snapshot.issues[0].active_worker_provider_run_id.as_deref(),
             Some("worker-run-1")
         );
+    }
+
+    #[test]
+    fn remote_extension_sync_health_reports_pending_revoke_after_last_grant_removed() {
+        let mut revoked = remote_agent("agent-revoked");
+        revoked.set_remote_extension_manifest_sync(Some(
+            RemoteExtensionManifestSyncStatus::pending("hash-empty-manifest".to_string(), true)
+                .failed("worker offline"),
+        ));
+
+        let snapshot = RemoteExtensionSyncHealthSnapshot::from_agents(&[revoked]);
+
+        assert_eq!(snapshot.remote_agents, 1);
+        assert_eq!(snapshot.home_proxy_agents, 1);
+        assert_eq!(snapshot.home_proxy_grants, 0);
+        assert_eq!(snapshot.failed_agents, 1);
+        assert_eq!(snapshot.pending_revoke_agents, 1);
+        assert_eq!(snapshot.issues.len(), 1);
+        assert_eq!(snapshot.issues[0].agent_id, "agent-revoked");
+        assert_eq!(snapshot.issues[0].state, "failed");
+        assert_eq!(snapshot.issues[0].pending_revoke, true);
+        assert!(snapshot.issues[0].home_proxy_grants.is_empty());
     }
 
     #[test]
