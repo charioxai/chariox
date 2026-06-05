@@ -253,7 +253,7 @@ test("agent summaries keep final remote extension revokes visible after grants a
 
   assert.match(listSummary, /0 grants \(final revoke pending\)/)
   assert.match(listSummary, /manifest failed abcdef12 pending revoke error worker offline; see \/extension sync-status agent-remote/)
-  assert.match(inspectSummary, /extensions: none/)
+  assert.match(inspectSummary, /extensions: none \(final revoke pending\)/)
   assert.match(inspectSummary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(inspectSummary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
 })

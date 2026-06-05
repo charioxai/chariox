@@ -479,6 +479,54 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.equal(fake.requests.length, 3)
 })
 
+test("executeShellCommand context keeps final revokes visible after grants are gone", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo/worktree",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            agents: [makeAgent({
+              id: "agent-1",
+              agent_ref: "agent-1",
+              remote_execution: {
+                worker_kernel_id: "worker-1",
+                worker_machine_id: "machine-1",
+                execution_lease_id: "lease-1",
+                leased_agent_id: "leased-agent-1",
+              },
+              extension_grants: [],
+              remote_extension_manifest_sync: {
+                state: "failed",
+                manifest_hash: "empty-hash",
+                pending_revoke: true,
+                last_error: "worker offline",
+              },
+            })],
+          }),
+          agent_activity: {},
+        },
+      }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /extensions: none \(final revoke pending\)/)
+  assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=empty-hash, error=worker offline/)
+  assert.match(result.message ?? "", /remote extension next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
+})
+
 test("executeShellCommand context keeps home machine visible without daemon id", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",

@@ -313,7 +313,7 @@ function agentProviderRunId(
 function formatAgentExtensionSummary(agent: AgentInstance): string {
   const grants = agent.extension_grants ?? []
   if (grants.length === 0) {
-    return "none"
+    return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
   }
   return formatExtensionGrantPlacementSummary(grants, {
     remote: Boolean(agent.remote_execution),
