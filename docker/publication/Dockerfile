@@ -12,7 +12,13 @@ RUN pnpm --filter @arroba/server run build
 
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /opt/arroba
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    libdbus-1-dev \
+    pkg-config \
+  && rm -rf /var/lib/apt/lists/*
 COPY apps/kernel apps/kernel
+COPY apps/relay apps/relay
 RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin arroba-kernel
 
 FROM node:22-bookworm-slim
@@ -24,6 +30,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
+    libdbus-1-3 \
     tini \
   && rm -rf /var/lib/apt/lists/*
 

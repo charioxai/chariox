@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -362,7 +361,7 @@ async function findChromeExecutable() {
   return null
 }
 
-async function runHumanHttpBrowserDrill({ url, root }) {
+async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
   const chromePath = await findChromeExecutable()
   if (!chromePath) {
     logStep('browser_screenshot_skipped', { reason: 'chrome-not-found' })
@@ -398,7 +397,7 @@ async function runHumanHttpBrowserDrill({ url, root }) {
     await cdp.send('Runtime.enable')
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
     await cdp.send('Page.navigate', { url })
-    const finalState = await waitForBrowserFinalOutput(cdp)
+    const finalState = await waitForBrowserFinalOutput(cdp, timeoutMs)
     const statuses = finalState.statuses ?? []
     const outputs = finalState.outputs ?? []
     for (const expectedStatus of ['Running', 'Completed']) {
@@ -485,8 +484,8 @@ async function connectChromeTarget(webSocketUrl) {
   }
 }
 
-async function waitForBrowserFinalOutput(cdp) {
-  const deadline = Date.now() + 30_000
+async function waitForBrowserFinalOutput(cdp, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
   let lastState = null
   while (Date.now() < deadline) {
     const evaluated = await cdp.send('Runtime.evaluate', {
@@ -633,6 +632,18 @@ async function waitForGateway(baseUrl, timeoutMs = 20_000) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error(`gateway did not become ready: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function waitForContainerGateway(baseUrl, containerProcess, timeoutMs = 60_000) {
+  try {
+    await waitForGateway(baseUrl, timeoutMs)
+  } catch (error) {
+    throw new Error([
+      `container gateway did not become ready: ${error instanceof Error ? error.message : String(error)}`,
+      `stdout:\n${containerProcess?.logs?.stdout ?? ''}`,
+      `stderr:\n${containerProcess?.logs?.stderr ?? ''}`,
+    ].join('\n'))
+  }
 }
 
 async function assertPublicationRuntimeSessionHidden(client, runtimeSessionId) {
@@ -895,7 +906,10 @@ async function createSelfSignedCertificate(root) {
 }
 
 async function main() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
+  const drillTmpRoot = process.env.ARROBA_PUBLICATION_DRILL_TMPDIR
+    ?? path.join(repoRoot, '.tmp')
+  await mkdir(drillTmpRoot, { recursive: true })
+  const root = await mkdtemp(path.join(drillTmpRoot, 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
   const apiSseTunnelWorkspace = path.join(root, 'api-sse-tunnel-workspace')
@@ -1922,24 +1936,29 @@ async function main() {
         port: containerHumanPort,
       })
       try {
-        await waitForGateway(containerHumanUrl, 60_000)
+        await waitForContainerGateway(containerHumanUrl, containerProcess, 60_000)
         const containerStatusResponse = await fetch(`${containerHumanUrl}/.well-known/arroba/publication/status`)
         const containerStatusBody = await containerStatusResponse.json()
         if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
           throw new Error(`expected container human_http status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
         }
-        const containerHumanResponse = await fetch(`${containerHumanUrl}/final/container-human-http`, {
+        const containerHumanResponse = await fetch(`${containerHumanUrl}/`, {
           headers: { accept: 'text/html' },
         })
         const containerHumanBody = await containerHumanResponse.text()
         if (
           containerHumanResponse.status !== 200
-          || !containerHumanBody.includes('EventSource')
-          || !containerHumanBody.includes(containerStatusBody.runtime_session_id)
+          || !containerHumanBody.includes('invoke-form')
+          || !containerHumanBody.includes('type="file" name="artifact" multiple')
+          || !containerHumanBody.includes('/final/')
         ) {
-          throw new Error(`expected container human_http HTML/SSE page, got ${containerHumanResponse.status}: ${containerHumanBody.slice(0, 1_000)}`)
+          throw new Error(`expected container human_http root form with prompt and artifact upload, got ${containerHumanResponse.status}: ${containerHumanBody.slice(0, 1_000)}`)
         }
-        await runHumanHttpBrowserDrill({ url: `${containerHumanUrl}/final/container-human-http-browser`, root })
+        await runHumanHttpBrowserDrill({
+          url: `${containerHumanUrl}/final/container-human-http-browser`,
+          root,
+          timeoutMs: 90_000,
+        })
         logStep('container_human_http_ok', { runtimeSessionId: containerStatusBody.runtime_session_id })
       } finally {
         await stopProcess(containerProcess)
@@ -1976,7 +1995,7 @@ async function main() {
         port: containerApiPort,
       })
       try {
-        await waitForGateway(containerApiUrl, 60_000)
+        await waitForContainerGateway(containerApiUrl, containerProcess, 60_000)
         const containerApiStatusResponse = await fetch(`${containerApiUrl}/.well-known/arroba/publication/status`)
         const containerApiStatusBody = await containerApiStatusResponse.json()
         if (containerApiStatusResponse.status !== 200 || typeof containerApiStatusBody.runtime_session_id !== 'string') {
@@ -2004,6 +2023,177 @@ async function main() {
       } finally {
         await stopProcess(containerProcess)
         await removeDockerContainer(containerApiName).catch(() => {})
+        containerProcess = null
+      }
+
+      logStep('container_websocket_export')
+      const websocketContainerExportDir = path.join(root, 'container-websocket-package')
+      const websocketContainerPackageDir = path.join(root, 'container-websocket-portable')
+      const websocketContainerExportResult = await executeShellCommand(
+        parseShellCommand(`workflow publication export ${websocketFinalPublication.id} ${websocketContainerExportDir} --kernel-url ${kernelUrl}`),
+        createDefaultShellContext({
+          workspace: websocketWorkspace,
+          worktree: websocketWorkspace,
+          sessionId: websocketSession.id,
+          workflowId: websocketWorkflow.id,
+        }),
+        { client },
+      )
+      if (!websocketContainerExportResult.ok) {
+        throw new Error(`websocket_json container publication export failed: ${websocketContainerExportResult.message}`)
+      }
+      await createContainerPortablePackage(websocketContainerExportDir, websocketContainerPackageDir)
+      const containerWebSocketPort = await freePort()
+      const containerWebSocketUrl = `http://127.0.0.1:${containerWebSocketPort}`
+      const containerWebSocketName = `arroba-publication-websocket-${process.pid}`
+      dockerContainers.push(containerWebSocketName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerWebSocketName,
+        packageDir: websocketContainerPackageDir,
+        workspaceDir: websocketWorkspace,
+        port: containerWebSocketPort,
+      })
+      try {
+        await waitForContainerGateway(containerWebSocketUrl, containerProcess, 60_000)
+        const containerWebSocketStatusResponse = await fetch(`${containerWebSocketUrl}/.well-known/arroba/publication/status`)
+        const containerWebSocketStatusBody = await containerWebSocketStatusResponse.json()
+        if (containerWebSocketStatusResponse.status !== 200 || typeof containerWebSocketStatusBody.runtime_session_id !== 'string') {
+          throw new Error(`expected container websocket_json status with runtime session id, got ${containerWebSocketStatusResponse.status}: ${JSON.stringify(containerWebSocketStatusBody)}`)
+        }
+        const containerWebSocket = await invokePublicationWebSocket(
+          `ws://127.0.0.1:${containerWebSocketPort}/.well-known/arroba/publication/ws`,
+          { prompt: 'container-websocket-publication' },
+          { waitForFinal: true },
+        )
+        const containerWebSocketTypes = containerWebSocket.messages.map((message) => message.type)
+        const containerWebSocketBody = JSON.stringify(containerWebSocket.messages)
+        if (
+          !containerWebSocketTypes.includes('accepted')
+          || !containerWebSocketTypes.includes('queued')
+          || !containerWebSocketTypes.includes('started')
+          || !containerWebSocketTypes.includes('partial')
+          || !containerWebSocketTypes.includes('final')
+          || (!containerWebSocketBody.includes('"value":1841') && !containerWebSocketBody.includes('\\"value\\":1841'))
+          || (!containerWebSocketBody.includes('"value":1842') && !containerWebSocketBody.includes('\\"value\\":1842'))
+        ) {
+          throw new Error(`expected container websocket_json accepted/queued/started/partial/final with deterministic output, got ${JSON.stringify(containerWebSocket.messages)}`)
+        }
+        logStep('container_websocket_ok', { runtimeSessionId: containerWebSocketStatusBody.runtime_session_id, events: containerWebSocketTypes })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerWebSocketName).catch(() => {})
+        containerProcess = null
+      }
+
+      logStep('container_mcp_export')
+      const mcpContainerExportDir = path.join(root, 'container-mcp-package')
+      const mcpContainerPackageDir = path.join(root, 'container-mcp-portable')
+      const mcpContainerExportResult = await executeShellCommand(
+        parseShellCommand(`workflow publication export ${mcpPublication.id} ${mcpContainerExportDir} --kernel-url ${kernelUrl}`),
+        createDefaultShellContext({
+          workspace: mcpWorkspace,
+          worktree: mcpWorkspace,
+          sessionId: mcpSession.id,
+          workflowId: mcpWorkflow.id,
+        }),
+        { client },
+      )
+      if (!mcpContainerExportResult.ok) {
+        throw new Error(`mcp container publication export failed: ${mcpContainerExportResult.message}`)
+      }
+      await createContainerPortablePackage(mcpContainerExportDir, mcpContainerPackageDir)
+      const containerMcpPort = await freePort()
+      const containerMcpUrl = `http://127.0.0.1:${containerMcpPort}`
+      const containerMcpName = `arroba-publication-mcp-${process.pid}`
+      dockerContainers.push(containerMcpName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerMcpName,
+        packageDir: mcpContainerPackageDir,
+        workspaceDir: mcpWorkspace,
+        port: containerMcpPort,
+      })
+      try {
+        await waitForContainerGateway(containerMcpUrl, containerProcess, 60_000)
+        const containerMcpStatusResponse = await fetch(`${containerMcpUrl}/.well-known/arroba/publication/status`)
+        const containerMcpStatusBody = await containerMcpStatusResponse.json()
+        if (containerMcpStatusResponse.status !== 200 || typeof containerMcpStatusBody.runtime_session_id !== 'string') {
+          throw new Error(`expected container mcp status with runtime session id, got ${containerMcpStatusResponse.status}: ${JSON.stringify(containerMcpStatusBody)}`)
+        }
+        const containerMcpToolsResponse = await fetch(`${containerMcpUrl}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        })
+        const containerMcpToolsBody = await containerMcpToolsResponse.json()
+        const containerMcpToolName = containerMcpToolsBody.result?.tools?.[0]?.name
+        if (containerMcpToolsResponse.status !== 200 || typeof containerMcpToolName !== 'string') {
+          throw new Error(`expected container MCP tools/list to expose publication tool, got ${containerMcpToolsResponse.status}: ${JSON.stringify(containerMcpToolsBody)}`)
+        }
+        const containerMcpCallResponse = await fetch(`${containerMcpUrl}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: containerMcpToolName, arguments: { prompt: 'container-mcp-publication' } },
+          }),
+        })
+        const containerMcpCallBody = await containerMcpCallResponse.json()
+        const containerMcpText = containerMcpCallBody.result?.content?.[0]?.text ?? ''
+        if (
+          containerMcpCallResponse.status !== 200
+          || containerMcpCallBody.result?.isError !== false
+          || (!containerMcpText.includes('"value":1842') && !containerMcpText.includes('\\"value\\":1842'))
+        ) {
+          throw new Error(`expected container MCP tools/call final output, got ${containerMcpCallResponse.status}: ${JSON.stringify(containerMcpCallBody).slice(0, 1_200)}`)
+        }
+        logStep('container_mcp_ok', { runtimeSessionId: containerMcpStatusBody.runtime_session_id, tool: containerMcpToolName })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerMcpName).catch(() => {})
+        containerProcess = null
+      }
+
+      logStep('container_watchdog_export')
+      const watchdogContainerPackageDir = path.join(root, 'container-watchdog-portable')
+      await createContainerPortablePackage(watchdogExportDir, watchdogContainerPackageDir)
+      const containerWatchdogPort = await freePort()
+      const containerWatchdogUrl = `http://127.0.0.1:${containerWatchdogPort}`
+      const containerWatchdogName = `arroba-publication-watchdog-${process.pid}`
+      dockerContainers.push(containerWatchdogName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerWatchdogName,
+        packageDir: watchdogContainerPackageDir,
+        workspaceDir: watchdogWorkspace,
+        port: containerWatchdogPort,
+      })
+      try {
+        await waitForContainerGateway(containerWatchdogUrl, containerProcess, 60_000)
+        const containerWatchdogStatusResponse = await fetch(`${containerWatchdogUrl}/.well-known/arroba/publication/status`)
+        const containerWatchdogStatusBody = await containerWatchdogStatusResponse.json()
+        if (
+          containerWatchdogStatusResponse.status !== 200
+          || typeof containerWatchdogStatusBody.runtime_session_id !== 'string'
+          || containerWatchdogStatusBody.watchdog_count !== 1
+          || containerWatchdogStatusBody.watchdogs?.[0]?.id !== watchdog.id
+        ) {
+          throw new Error(`expected container watchdog status with runtime session and watchdog, got ${containerWatchdogStatusResponse.status}: ${JSON.stringify(containerWatchdogStatusBody)}`)
+        }
+        const containerWatchdogOutput = await waitForPublicationStatusLatestOutput(
+          containerWatchdogUrl,
+          watchdogRun.final_output?.message,
+        )
+        logStep('container_watchdog_ok', {
+          runtimeSessionId: containerWatchdogStatusBody.runtime_session_id,
+          latestOutput: containerWatchdogOutput.latest_output?.message,
+        })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerWatchdogName).catch(() => {})
         containerProcess = null
       }
 

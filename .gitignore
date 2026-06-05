@@ -19,6 +19,7 @@ coverage/
 .DS_Store
 
 # Other
+.tmp/
 happy-main/
 opencode-dev/
 codex-main/
