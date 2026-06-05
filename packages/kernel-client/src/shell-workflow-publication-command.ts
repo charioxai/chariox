@@ -14,6 +14,12 @@ import {
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
+import {
+  clearWorkflowPublicationBinding,
+  formatWorkflowPublicationBindings,
+  loadWorkflowPublicationBindingsPackage,
+  setWorkflowPublicationBinding,
+} from "./shell-workflow-publication-bindings.js"
 import { writeWorkflowPublicationExportPackage } from "./shell-workflow-publication-export.js"
 import {
   formatWorkflowPublicationLabel,
@@ -75,6 +81,10 @@ export async function executeWorkflowPublicationCommand(
     }
   }
 
+  if (action === "config" || action === "bindings") {
+    return executeWorkflowPublicationConfigCommand(rest, context)
+  }
+
   if (action === "disable" || action === "remove") {
     const publicationRef = rest[0]
     if (!publicationRef) {
@@ -111,7 +121,53 @@ export async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|export|disable" }
+  return { ok: false, message: "usage: workflow publication list|create|show|export|config|disable" }
+}
+
+async function executeWorkflowPublicationConfigCommand(args: string[], context: ShellContext): Promise<ShellCommandResult> {
+  const [action = "show", packagePath, ...rest] = args
+  const resolvedPackagePath = packagePath
+    ? resolvePath(context.worktree ?? context.workspace ?? process.cwd(), packagePath)
+    : undefined
+  if (action === "show" || action === "get") {
+    if (!packagePath) {
+      return { ok: false, message: "usage: workflow publication config show <package-dir|publication.json>" }
+    }
+    const packageState = await loadWorkflowPublicationBindingsPackage(resolvedPackagePath!)
+    return { ok: true, message: formatWorkflowPublicationBindings(packageState), data: packageState }
+  }
+  if (action === "set") {
+    const [agentId, provider, model, effort] = rest
+    if (!packagePath || !agentId || !provider) {
+      return {
+        ok: false,
+        message: "usage: workflow publication config set <package-dir|publication.json> <agent-id> <provider> [model|-] [effort|-]",
+      }
+    }
+    const packageState = await setWorkflowPublicationBinding(resolvedPackagePath!, agentId, {
+      provider,
+      model: model ?? null,
+      effort: effort ?? null,
+    })
+    return {
+      ok: true,
+      message: `updated workflow publication binding for ${agentId} in ${packageState.bindingsPath}`,
+      data: packageState,
+    }
+  }
+  if (action === "clear" || action === "reset") {
+    const agentId = rest[0]
+    if (!packagePath || !agentId) {
+      return { ok: false, message: "usage: workflow publication config clear <package-dir|publication.json> <agent-id>" }
+    }
+    const packageState = await clearWorkflowPublicationBinding(resolvedPackagePath!, agentId)
+    return {
+      ok: true,
+      message: `cleared workflow publication binding for ${agentId} in ${packageState.bindingsPath}`,
+      data: packageState,
+    }
+  }
+  return { ok: false, message: "usage: workflow publication config show|set|clear" }
 }
 
 function parseWorkflowPublicationCreateOptions(

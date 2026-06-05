@@ -450,6 +450,69 @@ test("executeShellCommand exports a workflow publication package", async () => {
   }
 })
 
+test("executeShellCommand configures workflow publication package bindings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-publication-bindings-test-"))
+  try {
+    const workflow = makeWorkflow({
+      nodes: [
+        { id: "node-1", agent_id: "agent-1" },
+        { id: "node-2", agent_id: "agent-2" },
+      ],
+    })
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 1,
+      publication_id: "publication-1",
+      workflow_id: "workflow-1",
+      default_bindings_path: "bindings.local.json",
+      hooks: [],
+    }, null, 2), "utf8")
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      workflow,
+      endpoint: workflow.endpoints![0],
+      queues: [],
+      watchdogs: [],
+      agents: [
+        makeAgent({ id: "agent-1", provider: "opencode", model: "gpt-5.2", effort: "high" }),
+        makeAgent({ id: "agent-2", agent_ref: "agent-2", provider: "codex", model: "gpt-5", effort: null }),
+      ],
+    }, null, 2), "utf8")
+    const fake = fakeClient((request) => {
+      throw new Error(`unexpected request ${JSON.stringify(request)}`)
+    })
+    const context = createDefaultShellContext({
+      workspace: root,
+      worktree: root,
+      sessionId: "session-1",
+      workflowId: "workflow-1",
+    })
+
+    const showResult = await executeShellCommand(parseShellCommand("workflow publication config show ."), context, { client: fake.client })
+    const setResult = await executeShellCommand(parseShellCommand("workflow publication config set . agent-1 claude sonnet-4 medium"), context, { client: fake.client })
+    const localBindingsAfterSet = JSON.parse(await readFile(join(root, "bindings.local.json"), "utf8"))
+    const clearResult = await executeShellCommand(parseShellCommand("workflow publication config clear . agent-1"), context, { client: fake.client })
+    const localBindingsAfterClear = JSON.parse(await readFile(join(root, "bindings.local.json"), "utf8"))
+
+    assert.equal(showResult.ok, true)
+    assert.match(showResult.message ?? "", /agent-1 nodes=node-1 captured=opencode\/gpt-5\.2 effort=high replacement=default/)
+    assert.match(showResult.message ?? "", /local bindings file has not been created yet/)
+    assert.equal(setResult.ok, true)
+    assert.match(setResult.message ?? "", /updated workflow publication binding for agent-1/)
+    assert.deepEqual(localBindingsAfterSet.provider_model_overrides[0].replacement, {
+      provider: "claude",
+      model: "sonnet-4",
+      effort: "medium",
+    })
+    assert.equal(clearResult.ok, true)
+    assert.match(clearResult.message ?? "", /cleared workflow publication binding for agent-1/)
+    assert.equal(localBindingsAfterClear.provider_model_overrides[0].replacement, null)
+    assert.deepEqual(fake.requests, [])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("executeShellCommand manages advanced workflow settings, watchdogs, and queue", async () => {
   const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final", intermediate_output_schema_ref: "progress" })
   const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
