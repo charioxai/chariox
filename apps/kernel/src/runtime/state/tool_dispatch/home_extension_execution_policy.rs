@@ -485,10 +485,7 @@ fn remote_extension_invocation_context_prefix(
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
     metadata: &crate::extension::RemoteExtensionInvocationMetadata,
 ) -> String {
-    let base = metadata
-        .idempotency_key
-        .as_deref()
-        .unwrap_or(metadata.invocation_id.as_str());
+    let base = remote_extension_invocation_replay_base(metadata);
     format!(
         "home_session={}|home_agent={}|leased_agent={}|worker_run={}|base={}|",
         context.home_session_id,
@@ -497,6 +494,16 @@ fn remote_extension_invocation_context_prefix(
         context.worker_provider_run_id,
         base,
     )
+}
+
+fn remote_extension_invocation_replay_base(
+    metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+) -> &str {
+    metadata
+        .idempotency_key
+        .as_deref()
+        .or(metadata.provider_tool_call_id.as_deref())
+        .unwrap_or(metadata.invocation_id.as_str())
 }
 
 fn remote_extension_invocation_cancel_key(
@@ -584,6 +591,19 @@ mod tests {
         crate::extension::RemoteExtensionInvocationMetadata {
             invocation_id: invocation_id.to_string(),
             provider_tool_call_id: None,
+            attempt: 1,
+            idempotency_key: None,
+            started_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+
+    fn metadata_with_provider_call(
+        invocation_id: &str,
+        provider_tool_call_id: &str,
+    ) -> crate::extension::RemoteExtensionInvocationMetadata {
+        crate::extension::RemoteExtensionInvocationMetadata {
+            invocation_id: invocation_id.to_string(),
+            provider_tool_call_id: Some(provider_tool_call_id.to_string()),
             attempt: 1,
             idempotency_key: None,
             started_at_ms: crate::session::unix_epoch_ms(),
@@ -741,6 +761,64 @@ mod tests {
             error
                 .to_string()
                 .contains("duplicate non-idempotent home extension invocation"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_rejects_duplicate_provider_tool_call_without_idempotency() {
+        let state = test_runtime_state().await;
+        let context = context("agent-1");
+        let tool = tool("lookup");
+        let first = metadata_with_provider_call("invoke-provider-1", "provider-call-1");
+        let second = metadata_with_provider_call("invoke-provider-2", "provider-call-1");
+        assert!(state
+            .begin_home_extension_invocation(&context, &tool, &first)
+            .await
+            .expect("first provider tool call should start")
+            .is_none());
+        assert!(
+            state
+                .complete_home_extension_invocation(
+                    &context,
+                    &tool,
+                    &first,
+                    serde_json::json!({"ok": true}),
+                )
+                .await
+        );
+
+        let error = state
+            .begin_home_extension_invocation(&context, &tool, &second)
+            .await
+            .expect_err("duplicate provider tool call should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate non-idempotent home extension invocation"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn home_extension_invocation_rejects_in_flight_duplicate_provider_tool_call() {
+        let state = test_runtime_state().await;
+        let context = context("agent-1");
+        let tool = tool("lookup");
+        let first = metadata_with_provider_call("invoke-provider-inflight-1", "provider-call-2");
+        let second = metadata_with_provider_call("invoke-provider-inflight-2", "provider-call-2");
+        assert!(state
+            .begin_home_extension_invocation(&context, &tool, &first)
+            .await
+            .expect("first provider tool call should start")
+            .is_none());
+
+        let error = state
+            .begin_home_extension_invocation(&context, &tool, &second)
+            .await
+            .expect_err("in-flight duplicate provider tool call should be rejected");
+        assert!(
+            error.to_string().contains("is already in progress"),
             "unexpected error: {error}"
         );
     }
