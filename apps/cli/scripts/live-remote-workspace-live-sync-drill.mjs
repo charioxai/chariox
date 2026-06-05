@@ -40,6 +40,8 @@ const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
+const HETZNER_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON =
+  'Hetzner managed Workspace Live Sync is unsupported because the worker runs Linux and managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host'
 
 function parseArgs(argv) {
   const options = {
@@ -99,6 +101,19 @@ function parseArgs(argv) {
     throw new Error('--managed-target-count must be a non-negative integer')
   }
   return options
+}
+
+function preflightWorkspaceLiveSyncSupport(options) {
+  if (options.hetznerWorker && options.mode === 'managed') {
+    return {
+      status: 'unsupported',
+      mode: 'remote-workspace-live-sync-live-drill',
+      liveSyncMode: options.mode,
+      hetznerWorker: true,
+      reason: HETZNER_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON,
+    }
+  }
+  return null
 }
 
 function makePorts() {
@@ -323,6 +338,13 @@ async function main() {
     return
   }
   if (options.providers.length < 1) throw new Error('remote workspace live sync drill requires at least one provider')
+  const unsupported = preflightWorkspaceLiveSyncSupport(options)
+  if (unsupported) {
+    console.error(`[workspace-live-sync-drill] unsupported: ${unsupported.reason}`)
+    console.log(JSON.stringify(unsupported, null, 2))
+    process.exitCode = 2
+    return
+  }
 
   const ports = makePorts()
   const runId = `${process.pid}-${Date.now()}`

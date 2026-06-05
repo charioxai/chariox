@@ -23,7 +23,12 @@ const MATRIX = [
   scenario('remote-tracked-codex', 'same-host remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-tracked-parity-target', '--full', '--timeout-ms', '700000'], { remote: true }),
   scenario('remote-tracked-restart-codex', 'same-host remote tracked Codex relay restart recovery', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-restart-tracked-target', '--full', '--restart-relay-before-sync', '--timeout-ms', '700000'], { remote: true }),
   scenario('remote-permission-codex', 'same-host remote Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL], { remote: true }),
-  scenario('hetzner-managed-codex', 'Hetzner remote managed Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true }),
+  scenario('hetzner-managed-codex', 'Hetzner remote managed Codex unsupported-platform fast-fail', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '120000'], {
+    remote: true,
+    hetzner: true,
+    expectedFailure: true,
+    expectedOutputIncludes: 'managed mode needs selective write fencing',
+  }),
   scenario('hetzner-tracked-codex', 'Hetzner remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true }),
   scenario('hetzner-permission-codex', 'Hetzner remote Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL, '--hetzner-worker', '--timeout-ms', '360000'], { remote: true, hetzner: true }),
   scenario('local-managed-opencode', 'local managed OpenCode Zen two-target fanout', localDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--timeout-ms', '700000'], { opencode: true }),
@@ -32,7 +37,13 @@ const MATRIX = [
   scenario('remote-managed-opencode', 'same-host remote managed OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-tracked-opencode', 'same-host remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-opencode-tracked-parity-target', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-permission-opencode', 'same-host remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--timeout-ms', '700000'], { remote: true, opencode: true }),
-  scenario('hetzner-managed-opencode', 'Hetzner remote managed OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
+  scenario('hetzner-managed-opencode', 'Hetzner remote managed OpenCode Zen unsupported-platform fast-fail', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '120000'], {
+    remote: true,
+    hetzner: true,
+    opencode: true,
+    expectedFailure: true,
+    expectedOutputIncludes: 'managed mode needs selective write fencing',
+  }),
   scenario('hetzner-tracked-opencode', 'Hetzner remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-opencode-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
   scenario('hetzner-permission-opencode', 'Hetzner remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--hetzner-worker', '--timeout-ms', '700000'], { remote: true, hetzner: true, opencode: true }),
 ]
@@ -153,15 +164,39 @@ async function runScenario(item, passthrough) {
   const { command, args } = commandForScenario(item, passthrough)
   console.log(`[workspace-live-sync-matrix] start ${item.id}: ${item.description}`)
   console.log(`[workspace-live-sync-matrix] command ${quoteCommand(command, args)}`)
+  let output = ''
+  const appendOutput = (chunk, stream) => {
+    const text = chunk.toString()
+    stream.write(text)
+    output += text
+    if (output.length > 2_000_000) output = output.slice(-1_000_000)
+  }
   const status = await new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: repoRoot, stdio: 'inherit' })
+    const child = spawn(command, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] })
+    child.stdout.on('data', (chunk) => appendOutput(chunk, process.stdout))
+    child.stderr.on('data', (chunk) => appendOutput(chunk, process.stderr))
     child.on('exit', (code, signal) => resolve({ code, signal }))
     child.on('error', (error) => resolve({ code: 1, signal: null, error }))
   })
   const durationMs = Date.now() - start
   if (status.code === 0) {
+    if (item.expectedFailure) {
+      const reason = 'expected unsupported failure but scenario exited successfully'
+      console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
+      return { item, ok: false, durationMs, reason }
+    }
     console.log(`[workspace-live-sync-matrix] pass ${item.id} duration_ms=${durationMs}`)
     return { item, ok: true, durationMs }
+  }
+  if (item.expectedFailure) {
+    const expected = item.expectedOutputIncludes
+    if (!expected || output.includes(expected)) {
+      console.log(`[workspace-live-sync-matrix] pass ${item.id} expected_failure duration_ms=${durationMs}`)
+      return { item, ok: true, durationMs, expectedFailure: true }
+    }
+    const reason = `expected failure output to include ${JSON.stringify(expected)}`
+    console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
+    return { item, ok: false, durationMs, reason }
   }
   const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? 'none'}`
   console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
@@ -192,7 +227,8 @@ async function main() {
   const failed = results.filter((result) => !result.ok)
   console.log('[workspace-live-sync-matrix] summary')
   for (const result of results) {
-    console.log(`  ${result.ok ? 'pass' : 'fail'} ${result.item.id} duration_ms=${result.durationMs}${result.reason ? ` ${result.reason}` : ''}`)
+    const expected = result.expectedFailure ? ' expected_failure' : ''
+    console.log(`  ${result.ok ? 'pass' : 'fail'} ${result.item.id}${expected} duration_ms=${result.durationMs}${result.reason ? ` ${result.reason}` : ''}`)
   }
   if (failed.length > 0) process.exitCode = 1
 }
