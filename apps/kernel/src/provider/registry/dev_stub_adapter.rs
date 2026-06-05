@@ -193,7 +193,8 @@ const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
 const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
 const finalPayload = {payload_json};
 const intermediateOutput = {intermediate_json};
-let printed = false;
+let emittedTokenOccurrences = 0;
+let emittedWithoutToken = false;
 let promptBuffer = "";
 let fallbackTimer = null;
 
@@ -234,19 +235,7 @@ function callRuntimeTool(name, args) {{
   }});
 }}
 
-async function emitOnce() {{
-  if (printed) return;
-  const tokenMatch = promptBuffer.match(/workflow-ack:[A-Za-z0-9_-]+/);
-  const deliveryToken = tokenMatch ? tokenMatch[0] : undefined;
-  if (!deliveryToken && !fallbackTimer) {{
-    fallbackTimer = setTimeout(() => {{
-      emitOnce().catch((error) => {{
-        process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
-      }});
-    }}, 250);
-    return;
-  }}
-  printed = true;
+async function emitForDeliveryToken(deliveryToken) {{
   if (deliveryToken) {{
     await callRuntimeTool("ack_workflow_turn", {{
       delivery_token: deliveryToken,
@@ -257,6 +246,34 @@ async function emitOnce() {{
     ...(deliveryToken ? {{ delivery_token: deliveryToken }} : {{}}),
   }});
   process.stdout.write("```json\n" + JSON.stringify(finalPayload) + "\n```\n");
+}}
+
+async function emitOnce() {{
+  const tokenMatches = [...promptBuffer.matchAll(/workflow-ack:[A-Za-z0-9_-]+/g)];
+  const deliveryToken = tokenMatches.length ? tokenMatches[tokenMatches.length - 1][0] : undefined;
+  if (!deliveryToken) {{
+    if (emittedWithoutToken) return;
+    if (!fallbackTimer) {{
+      fallbackTimer = setTimeout(() => {{
+        fallbackTimer = null;
+        if (emittedWithoutToken) return;
+        emittedWithoutToken = true;
+        emitForDeliveryToken(undefined).catch((error) => {{
+          process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
+        }});
+      }}, 250);
+    }}
+    return;
+  }}
+  if (fallbackTimer) {{
+    clearTimeout(fallbackTimer);
+    fallbackTimer = null;
+  }}
+  if (tokenMatches.length <= emittedTokenOccurrences) return;
+  emittedTokenOccurrences = tokenMatches.length;
+  emitForDeliveryToken(deliveryToken).catch((error) => {{
+    process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
+  }});
 }}
 
 process.stdin.setEncoding("utf8");

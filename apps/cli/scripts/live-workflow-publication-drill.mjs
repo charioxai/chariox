@@ -422,6 +422,120 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
   }
 }
 
+async function runHumanHttpRootFormBrowserDrill({ baseUrl, root, timeoutMs = 30_000 }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) {
+    logStep('browser_root_form_screenshot_skipped', { reason: 'chrome-not-found' })
+    return
+  }
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(root, 'chrome-root-form-profile')
+  const screenshotPath = path.join(root, 'human-http-root-form-final.png')
+  const artifactPath = path.join(root, 'human-http-root-form-upload.txt')
+  await mkdir(userDataDir, { recursive: true })
+  await writeFile(artifactPath, 'root-form-publication-upload\n')
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    process.env,
+    'chrome-human-http-root-form-publication',
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, 'about:blank', chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await cdp.send('DOM.enable')
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
+    await cdp.send('Page.navigate', { url: baseUrl })
+    await waitForBrowserRootForm(cdp)
+    const document = await cdp.send('DOM.getDocument')
+    const input = await cdp.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: 'input[type="file"][name="artifact"]',
+    })
+    if (!input.nodeId) {
+      throw new Error('browser root form did not expose artifact file input')
+    }
+    await cdp.send('DOM.setFileInputFiles', {
+      nodeId: input.nodeId,
+      files: [artifactPath],
+    })
+    const submitted = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const form = document.querySelector('#invoke-form');
+        const prompt = form?.querySelector('[name="prompt"]');
+        if (!form || !prompt) return false;
+        prompt.value = 'browser-root-form-publication';
+        form.requestSubmit();
+        return true;
+      })()`,
+    })
+    if (submitted.result?.value !== true) {
+      throw new Error('browser root form could not be submitted')
+    }
+    const finalState = await waitForBrowserFinalOutput(cdp, timeoutMs)
+    const statuses = finalState.statuses ?? []
+    const outputs = finalState.outputs ?? []
+    if (finalState.status !== 'Completed' && !statuses.includes('Completed')) {
+      throw new Error(`browser root form did not complete; state=${JSON.stringify(finalState)}`)
+    }
+    for (const expectedValue of ['"value":1841', '"value":1842']) {
+      if (!outputs.some((output) => output.includes(expectedValue)) && !String(finalState.output ?? '').includes(expectedValue)) {
+        throw new Error(`browser root form did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}, state=${JSON.stringify(finalState)}`)
+      }
+    }
+    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error('browser root form screenshot was empty')
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    logStep('browser_root_form_screenshot_ok', { screenshotPath, statuses, outputs })
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+  }
+}
+
+async function waitForBrowserRootForm(cdp) {
+  const deadline = Date.now() + 20_000
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const form = document.querySelector('#invoke-form');
+        const prompt = form?.querySelector('[name="prompt"]');
+        const file = form?.querySelector('input[type="file"][name="artifact"]');
+        return {
+          title: document.title,
+          hasForm: !!form,
+          hasPrompt: !!prompt,
+          hasFile: !!file,
+        };
+      })()`,
+    })
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.hasForm && lastState?.hasPrompt && lastState?.hasFile) return
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`browser root form did not render: ${JSON.stringify(lastState)}`)
+}
+
 async function waitForChromeTarget(debuggingPort, expectedUrl, chrome) {
   const endpoint = `http://127.0.0.1:${debuggingPort}/json/list`
   const deadline = Date.now() + 20_000
@@ -487,6 +601,8 @@ async function connectChromeTarget(webSocketUrl) {
 async function waitForBrowserFinalOutput(cdp, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   let lastState = null
+  const polledStatuses = []
+  const polledOutputs = []
   while (Date.now() < deadline) {
     const evaluated = await cdp.send('Runtime.evaluate', {
       returnByValue: true,
@@ -499,7 +615,19 @@ async function waitForBrowserFinalOutput(cdp, timeoutMs = 30_000) {
       })()`,
     })
     lastState = evaluated.result?.value ?? null
-    if (lastState?.ok) return lastState
+    if (lastState?.status && !polledStatuses.includes(lastState.status)) {
+      polledStatuses.push(lastState.status)
+    }
+    if (lastState?.output && !polledOutputs.includes(lastState.output)) {
+      polledOutputs.push(lastState.output)
+    }
+    if (lastState?.ok) {
+      return {
+        ...lastState,
+        statuses: [...new Set([...polledStatuses, ...(lastState.statuses ?? [])])],
+        outputs: [...new Set([...polledOutputs, ...(lastState.outputs ?? [])])],
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
   throw new Error(`browser did not render final workflow output: ${JSON.stringify(lastState)}`)
@@ -916,6 +1044,7 @@ async function main() {
   const websocketWorkspace = path.join(root, 'websocket-workspace')
   const websocketTunnelWorkspace = path.join(root, 'websocket-tunnel-workspace')
   const browserWorkspace = path.join(root, 'browser-workspace')
+  const browserRootWorkspace = path.join(root, 'browser-root-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const watchdogWorkspace = path.join(root, 'watchdog-workspace')
   const home = path.join(root, 'home')
@@ -966,6 +1095,7 @@ async function main() {
     await mkdir(websocketWorkspace, { recursive: true })
     await mkdir(websocketTunnelWorkspace, { recursive: true })
     await mkdir(browserWorkspace, { recursive: true })
+    await mkdir(browserRootWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(watchdogWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -1194,6 +1324,19 @@ async function main() {
       })),
       'WorkflowPublicationCreated',
     ).publication
+    logStep('create_browser_root_form_session')
+    const browserRoot = await createDeterministicPublicationSession(client, sessionIds, {
+      workspace: browserRootWorkspace,
+      sessionAlias: 'publication-drill-human-http-root-form',
+      attachAlias: 'publication-drill-human-http-root-form',
+      agentAlias: 'human-http-root-form',
+      workflowAlias: 'published-human-http-root-form',
+      endpointAlias: 'browser-root',
+      publicationAlias: 'public_human_http_root_form',
+      route: '/final/*',
+      methods: ['GET'],
+      transportKind: 'human_http',
+    })
     logStep('create_mcp_session')
     const mcpSession = variant(
       await client.send(createSessionRequest(mcpWorkspace, mcpWorkspace, 'publication-drill-mcp')),
@@ -1614,6 +1757,29 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    logStep('invoke_human_http_browser_root_form')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: browserRoot.session.id,
+        ARROBA_PUBLICATION_ID: browserRoot.publication.id,
+      },
+      'gateway-human-http-root-form',
+    )
+    await waitForGateway(gatewayUrl)
+    await runHumanHttpRootFormBrowserDrill({
+      baseUrl: `${gatewayUrl}/`,
+      root,
+      timeoutMs: 90_000,
+    })
+    await stopProcess(gateway)
+    gateway = null
+
     logStep('invoke_mcp')
     gateway = startProcess(
       process.execPath,
@@ -1928,6 +2094,7 @@ async function main() {
       const containerHumanUrl = `http://127.0.0.1:${containerHumanPort}`
       const containerHumanName = `arroba-publication-human-${process.pid}`
       dockerContainers.push(containerHumanName)
+      let containerHumanPromptRuntimeSessionId = null
       let containerProcess = startPublicationContainer({
         image: publicationContainerImage,
         name: containerHumanName,
@@ -1942,6 +2109,7 @@ async function main() {
         if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
           throw new Error(`expected container human_http status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
         }
+        containerHumanPromptRuntimeSessionId = containerStatusBody.runtime_session_id
         const containerHumanResponse = await fetch(`${containerHumanUrl}/`, {
           headers: { accept: 'text/html' },
         })
@@ -1959,10 +2127,42 @@ async function main() {
           root,
           timeoutMs: 90_000,
         })
-        logStep('container_human_http_ok', { runtimeSessionId: containerStatusBody.runtime_session_id })
+        logStep('container_human_http_prompt_url_ok', { runtimeSessionId: containerStatusBody.runtime_session_id })
       } finally {
         await stopProcess(containerProcess)
         await removeDockerContainer(containerHumanName).catch(() => {})
+        containerProcess = null
+      }
+      const containerHumanRootPort = await freePort()
+      const containerHumanRootUrl = `http://127.0.0.1:${containerHumanRootPort}`
+      const containerHumanRootName = `arroba-publication-human-root-${process.pid}`
+      dockerContainers.push(containerHumanRootName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerHumanRootName,
+        packageDir: humanHttpContainerPackageDir,
+        workspaceDir: browserWorkspace,
+        port: containerHumanRootPort,
+      })
+      try {
+        await waitForContainerGateway(containerHumanRootUrl, containerProcess, 60_000)
+        const containerStatusResponse = await fetch(`${containerHumanRootUrl}/.well-known/arroba/publication/status`)
+        const containerStatusBody = await containerStatusResponse.json()
+        if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
+          throw new Error(`expected container human_http root status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
+        }
+        await runHumanHttpRootFormBrowserDrill({
+          baseUrl: `${containerHumanRootUrl}/`,
+          root,
+          timeoutMs: 90_000,
+        })
+        logStep('container_human_http_ok', {
+          promptRuntimeSessionId: containerHumanPromptRuntimeSessionId,
+          rootFormRuntimeSessionId: containerStatusBody.runtime_session_id,
+        })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerHumanRootName).catch(() => {})
         containerProcess = null
       }
 
