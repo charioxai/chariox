@@ -548,7 +548,7 @@ async function main() {
       console.error('[publication-drill] kernel logs', kernel?.logs ?? null)
       console.error('[publication-drill] gateway logs', gateway?.logs ?? null)
     }
-    await rm(root, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 }
 

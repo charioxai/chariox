@@ -73,6 +73,24 @@ export type WorkflowPublicationPackage = {
 
 export type WorkflowPublicationSnapshot = KernelWorkflowPublicationSnapshot
 
+export type PublicationProviderModelProfile = {
+  provider: string
+  model?: string | null
+  effort?: string | null
+}
+
+export type PublicationProviderModelOverride = {
+  agent_id: string
+  node_ids?: string[]
+  captured: PublicationProviderModelProfile
+  replacement?: PublicationProviderModelProfile | null
+}
+
+export type WorkflowPublicationBindings = {
+  schema_version: number
+  provider_model_overrides?: PublicationProviderModelOverride[]
+}
+
 export type PublicationNamedRequirement = {
   name: string
 }

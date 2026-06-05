@@ -13,6 +13,10 @@ import type {
 } from "@arroba/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import {
+  resolvePublicationProviderModelBindings,
+  type ProviderModelBindingPrompt,
+} from "./publication-bindings.js"
 import { validatePublicationRequirements } from "./publication-requirements.js"
 import type {
   InputSchema,
@@ -63,6 +67,8 @@ export async function loadPublicationPackageConfig(
     hookId?: string
     materialize?: boolean
     validateRequirements?: boolean
+    validateProviderBindings?: boolean
+    promptProviderModelReplacement?: ProviderModelBindingPrompt | false
     client?: KernelLookupClient
   } = {},
 ): Promise<WorkflowPublicationConfig> {
@@ -81,15 +87,29 @@ export async function loadPublicationPackageConfig(
   const requirements = await loadPublicationRequirements(root)
   const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
   try {
+    let materializationSnapshot = clonePublicationSnapshot(snapshot)
+    if (options.validateProviderBindings !== false) {
+      const bindingsPath = join(root, publicationPackage.default_bindings_path ?? "bindings.local.json")
+      const bindingOptions: { promptReplacement?: ProviderModelBindingPrompt | false } = {}
+      if (options.promptProviderModelReplacement !== undefined) {
+        bindingOptions.promptReplacement = options.promptProviderModelReplacement
+      }
+      const resolved = await resolvePublicationProviderModelBindings(materializationSnapshot, bindingsPath, ownedClient, bindingOptions)
+      materializationSnapshot = resolved.snapshot
+    }
     if (options.validateRequirements !== false) {
       await validatePublicationRequirements(requirements, ownedClient, snapshot.source_session?.workspace_id)
     }
-    return await materializePublicationConfig(config, snapshot, ownedClient)
+    return await materializePublicationConfig(config, materializationSnapshot, ownedClient)
   } finally {
     if (!options.client) {
       await ownedClient.close?.().catch(() => {})
     }
   }
+}
+
+function clonePublicationSnapshot(snapshot: WorkflowPublicationSnapshot): WorkflowPublicationSnapshot {
+  return JSON.parse(JSON.stringify(snapshot)) as WorkflowPublicationSnapshot
 }
 
 async function loadPublicationRequirements(root: string) {

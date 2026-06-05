@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
@@ -165,6 +165,7 @@ test("gateway loads publication package directories", async () => {
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      default_bindings_path: "bindings.local.json",
       hooks: [{
         id: "hook-1",
         transport: "human_http",
@@ -271,6 +272,15 @@ test("gateway materializes exported publication packages through the kernel", as
         last_activity_at_ms: 0,
       }],
     }))
+    await writeFile(join(root, "bindings.local.json"), JSON.stringify({
+      schema_version: 1,
+      provider_model_overrides: [{
+        agent_id: "agent-1",
+        node_ids: ["node-1"],
+        captured: { provider: "codex", model: null, effort: null },
+        replacement: { provider: "opencode", model: "gpt-5", effort: "medium" },
+      }],
+    }))
     await writeFile(join(root, "requirements.json"), JSON.stringify({
       schema_version: 1,
       mcps: [{ name: "playwright" }],
@@ -286,6 +296,9 @@ test("gateway materializes exported publication packages through the kernel", as
       client: {
         send: async (request) => {
           requests.push(request)
+          if ("GetProviderCatalog" in request) return providerCatalogResponse({
+            opencode: ["gpt-5"],
+          })
           if ("ListMcpServers" in request) return { McpServersListed: { mcps: [{ name: "playwright" }] } }
           if ("ListSkills" in request) return { SkillsListed: { skills: [{ name: "qa" }] } }
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
@@ -303,6 +316,7 @@ test("gateway materializes exported publication packages through the kernel", as
     })
 
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
       "ListMcpServers",
       "ListSkills",
       "ListScripts",
@@ -310,10 +324,196 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListCredentials",
       "MaterializeWorkflowPublication",
     ])
-    assert.deepEqual(requests[0], { ListMcpServers: { workspace_id: "/repo" } })
+    assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: "/repo" } })
+    const materializeRequest = requests.at(-1) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+        }
+      }
+    }
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "opencode")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "medium")
     assert.equal(config.source_session_id, "session-1")
     assert.equal(config.session_id, "runtime-session-1")
     assert.equal(config.workflow_ref, "workflow-1")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("gateway prompts for unavailable provider/model bindings and persists the replacement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      default_bindings_path: "bindings.local.json",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      queues: [{ id: "workflow-1:default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }],
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "missing-provider",
+        model: "missing-model",
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    const config = await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      promptProviderModelReplacement: async () => ({ provider: "codex", model: "gpt-5", effort: "high" }),
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5"] })
+          return {
+            WorkflowPublicationMaterialized: {
+              publication_id: "pub-1",
+              session: { id: "runtime-session-1" },
+              agent_id_map: { "agent-1": "agent-2" },
+            },
+          }
+        },
+      },
+    })
+
+    const materializeRequest = requests.at(-1) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+        }
+      }
+    }
+    assert.equal(config.session_id, "runtime-session-1")
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
+      "MaterializeWorkflowPublication",
+    ])
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "codex")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "high")
+
+    const bindings = JSON.parse(await readFile(join(root, "bindings.local.json"), "utf8")) as {
+      provider_model_overrides: Array<{ replacement?: { provider?: string; model?: string | null; effort?: string | null } | null }>
+    }
+    assert.deepEqual(bindings.provider_model_overrides[0]?.replacement, {
+      provider: "codex",
+      model: "gpt-5",
+      effort: "high",
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("gateway fails before materialization when provider/model bindings cannot be resolved", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-fail-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      default_bindings_path: "bindings.local.json",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "missing-provider",
+        model: "missing-model",
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    await assert.rejects(
+      () => loadPublicationPackageConfig(root, {
+        kernelEndpoint: "ws://kernel",
+        materialize: true,
+        promptProviderModelReplacement: false,
+        client: {
+          send: async (request) => {
+            requests.push(request)
+            if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5"] })
+            throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+          },
+        },
+      }),
+      /publication provider\/model is unavailable for agent agent-1: missing-provider\/missing-model/,
+    )
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["GetProviderCatalog"])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -382,6 +582,7 @@ test("gateway fails package materialization before runtime creation when require
         client: {
           send: async (request) => {
             requests.push(request)
+            if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: [] })
             if ("ListSkills" in request) return { SkillsListed: { skills: [] } }
             if ("ListCredentials" in request) return { CredentialsListed: { credentials: [] } }
             throw new Error(`unexpected request: ${JSON.stringify(request)}`)
@@ -391,6 +592,7 @@ test("gateway fails package materialization before runtime creation when require
       /publication requirements are missing: skill:qa, credential:github-token/,
     )
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
       "ListSkills",
       "ListCredentials",
     ])
@@ -743,6 +945,22 @@ function createWebSocketReader(socket: WebSocket) {
           resolve(value)
         })
       })
+    },
+  }
+}
+
+function providerCatalogResponse(providers: Record<string, string[]>) {
+  return {
+    ProviderCatalog: {
+      catalog: {
+        all: Object.entries(providers).map(([id, models]) => ({
+          id,
+          name: id,
+          models: Object.fromEntries(models.map((model) => [model, { id: model, name: model }])),
+        })),
+        default: {},
+        connected: Object.keys(providers),
+      },
     },
   }
 }
