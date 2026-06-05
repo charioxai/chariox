@@ -27,6 +27,10 @@ import {
   parseAndValidateRequest,
   validateInput,
 } from "./publication-parser.js"
+import {
+  installPublicationMcpRoutes,
+  isMcpPublication,
+} from "./publication-mcp.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import type {
   GatewayDeps,
@@ -62,6 +66,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   installRawBodyParsers(app)
   installHumanHttpRoutes(app, publication)
   installApiSseJsonRoutes(app, publication, deps)
+  installPublicationMcpRoutes(app, publication, deps)
 
   app.get("/health", async () => {
     logger.debug("handled health request")
@@ -91,7 +96,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
   })
 
-  if (!isApiSseJsonPublication(publication)) {
+  if (!isApiSseJsonPublication(publication) && !isMcpPublication(publication)) {
     const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
     for (const method of methods) {
       app.route({

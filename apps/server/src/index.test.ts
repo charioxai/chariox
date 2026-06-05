@@ -728,6 +728,113 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   }
 })
 
+test("mcp exposes a published workflow as a tool and returns final output", async () => {
+  let seenInput: unknown = null
+  let seenCaller: unknown = null
+  const { app } = buildServer({
+    ...baseConfig,
+    publication_id: "pub-mcp",
+    transport: "mcp",
+    route: "/ignored",
+    methods: ["POST"],
+    input_schema: {
+      type: "object",
+      required: ["prompt"],
+      properties: { prompt: { type: "string" } },
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      seenInput = invocation.input
+      seenCaller = invocation.caller
+      return {
+        accepted: true,
+        workflow_run: {
+          id: "run-mcp",
+          status: "Completed",
+          final_output: {
+            message: "mcp done",
+            artifacts: [{ name: "artifact.txt", url: "artifact://mcp" }],
+          },
+        },
+      }
+    },
+  })
+
+  try {
+    const initialize = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } },
+    })
+    assert.equal(initialize.statusCode, 200)
+    assert.equal(initialize.json().result.serverInfo.name, "arroba-publication")
+
+    const tools = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      payload: { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    })
+    assert.equal(tools.statusCode, 200)
+    assert.equal(tools.json().result.tools[0].name, "invoke_pub_mcp")
+
+    const called = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      payload: {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "invoke_pub_mcp", arguments: { prompt: "ship" } },
+      },
+    })
+    assert.equal(called.statusCode, 200)
+    assert.deepEqual(called.json().result.content, [{ type: "text", text: "mcp done" }])
+    assert.equal(called.json().result.structuredContent.workflow_run_id, "run-mcp")
+    assert.deepEqual(called.json().result.structuredContent.artifacts, [{ name: "artifact.txt", url: "artifact://mcp" }])
+    assert.equal(called.json().result.isError, false)
+    assert.deepEqual(seenInput, { prompt: "ship" })
+    assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "mcp", tool_name: "invoke_pub_mcp" } })
+
+    const genericRoute = await app.inject({ method: "POST", url: "/ignored", payload: { prompt: "nope" } })
+    assert.equal(genericRoute.statusCode, 404)
+  } finally {
+    await app.close()
+  }
+})
+
+test("mcp rejects invalid tool input", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    publication_id: "pub-mcp",
+    transport: "mcp",
+    input_schema: {
+      type: "object",
+      required: ["prompt"],
+      properties: { prompt: { type: "string" } },
+    },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      payload: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "invoke_pub_mcp", arguments: { prompt: 7 } },
+      },
+    })
+    assert.equal(response.statusCode, 200)
+    assert.equal(response.json().error.code, -32000)
+    assert.match(response.json().error.message, /field prompt expected string/)
+  } finally {
+    await app.close()
+  }
+})
+
 test("human HTTP root returns a browser invocation form", async () => {
   const { app } = buildServer({
     ...baseConfig,

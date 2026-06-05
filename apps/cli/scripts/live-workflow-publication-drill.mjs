@@ -300,6 +300,7 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
+  const mcpWorkspace = path.join(root, 'mcp-workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
@@ -334,6 +335,7 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(apiSseWorkspace, { recursive: true })
+    await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
@@ -439,6 +441,46 @@ async function main() {
         transport: { kind: 'api_sse_json' },
         parser: { kind: 'json' },
         mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    logStep('create_mcp_session')
+    const mcpSession = variant(
+      await client.send(createSessionRequest(mcpWorkspace, mcpWorkspace, 'publication-drill-mcp')),
+      'SessionCreated',
+    ).session
+    sessionIds.push(mcpSession.id)
+    await client.send(attachToSessionRequest(mcpSession.id, `publication-drill-mcp-${process.pid}`))
+    const mcpAgent = variant(
+      await client.send(spawnAgentRequest(mcpSession.id, 'dev-stub', 'mcp-final', 'workflow-single-turn-node', mcpWorkspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    const mcpProviderRun = variant(
+      await client.send(launchProviderRunRequest(mcpSession.id, 'dev-stub', 'default', 'workflow-single-turn-node', 'low', mcpAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    await waitForProviderRunReady(client, mcpProviderRun.id)
+    const mcpWorkflow = variant(await client.send(createWorkflowRequest(mcpSession.id, 'published-mcp')), 'WorkflowCreated').workflow
+    const mcpNode = variant(await client.send(addWorkflowNodeRequest(mcpSession.id, mcpWorkflow.id, mcpAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(
+      mcpSession.id,
+      mcpWorkflow.id,
+      mcpNode.id,
+      'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+    ))
+    await client.send(setWorkflowNodeCanCompleteRunRequest(mcpSession.id, mcpWorkflow.id, mcpNode.id, true))
+    const mcpEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(mcpSession.id, mcpWorkflow.id, mcpNode.id, 'mcp')),
+      'WorkflowEndpointCreated',
+    ).endpoint
+    const mcpPublication = variant(
+      await client.send(createWorkflowPublicationRequest(mcpSession.id, mcpWorkflow.id, mcpEndpoint.id, {
+        alias: 'public_mcp',
+        route: '/mcp',
+        methods: ['POST'],
+        transport: { kind: 'mcp' },
+        parser: { kind: 'json' },
+        mode: 'sync',
       })),
       'WorkflowPublicationCreated',
     ).publication
@@ -589,6 +631,54 @@ async function main() {
       throw new Error(`expected API SSE queued/started/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_mcp')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: mcpSession.id,
+        ARROBA_PUBLICATION_ID: mcpPublication.id,
+      },
+      'gateway-mcp',
+    )
+    await waitForGateway(gatewayUrl)
+    const mcpToolsResponse = await fetch(`${gatewayUrl}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    })
+    const mcpToolsBody = await mcpToolsResponse.json()
+    const mcpToolName = mcpToolsBody.result?.tools?.[0]?.name
+    if (mcpToolsResponse.status !== 200 || typeof mcpToolName !== 'string') {
+      throw new Error(`expected MCP tools/list to expose publication tool, got ${mcpToolsResponse.status}: ${JSON.stringify(mcpToolsBody)}`)
+    }
+    const mcpCallResponse = await fetch(`${gatewayUrl}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: mcpToolName, arguments: { prompt: 'mcp-publication' } },
+      }),
+    })
+    const mcpCallBody = await mcpCallResponse.json()
+    const mcpText = mcpCallBody.result?.content?.[0]?.text ?? ''
+    if (
+      mcpCallResponse.status !== 200
+      || mcpCallBody.result?.isError !== false
+      || (!mcpText.includes('"value":1842') && !mcpText.includes('\\"value\\":1842'))
+    ) {
+      throw new Error(`expected MCP tools/call final output, got ${mcpCallResponse.status}: ${JSON.stringify(mcpCallBody).slice(0, 1_200)}`)
+    }
+    logStep('mcp_ok', { tool: mcpToolName, workflowRunId: mcpCallBody.result?.structuredContent?.workflow_run_id ?? null })
     await stopProcess(gateway)
     gateway = null
 

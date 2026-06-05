@@ -10,6 +10,7 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
+import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 export function defaultKernelEndpoint() {
@@ -56,6 +57,7 @@ async function waitForWorkflowRun(
   const deadline = Date.now() + timeoutMs
   let latest: WorkflowRun | null = null
   while (Date.now() < deadline) {
+    await pumpPublicationRuntime(client, publication)
     const response = await client.send<Record<string, unknown>>(
       getWorkflowRunRequest(publication.session_id, workflowRunId),
     )
