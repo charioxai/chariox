@@ -142,6 +142,12 @@ async function invokePublicationWebSocket(url, input, options = {}) {
   }
 }
 
+function websocketUrlFromHttp(url) {
+  const parsed = new URL(url)
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+  return parsed.toString()
+}
+
 async function run(command, args, options = {}) {
   return await new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -686,6 +692,50 @@ async function waitForProviderRunReady(client, providerRunId) {
   throw new Error(`provider run ${providerRunId} did not become ready`)
 }
 
+async function createDeterministicPublicationSession(client, sessionIds, options) {
+  const session = variant(
+    await client.send(createSessionRequest(options.workspace, options.workspace, options.sessionAlias)),
+    'SessionCreated',
+  ).session
+  sessionIds.push(session.id)
+  await client.send(attachToSessionRequest(session.id, `${options.attachAlias}-${process.pid}`))
+  const agent = variant(
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', options.agentAlias, 'workflow-intermediate-node', options.workspace, 'low')),
+    'AgentSpawned',
+  ).agent
+  const providerRun = variant(
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', agent.id)),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, providerRun.id)
+  const workflow = variant(await client.send(createWorkflowRequest(session.id, options.workflowAlias)), 'WorkflowCreated').workflow
+  const node = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, agent.id)), 'WorkflowNodeAdded').node
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    node.id,
+    'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+  ))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, node.id, true))
+  await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, node.id, true))
+  const endpoint = variant(
+    await client.send(createWorkflowEndpointRequest(session.id, workflow.id, node.id, options.endpointAlias)),
+    'WorkflowEndpointCreated',
+  ).endpoint
+  const publication = variant(
+    await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+      alias: options.publicationAlias,
+      route: options.route,
+      methods: options.methods,
+      transport: { kind: options.transportKind },
+      parser: { kind: 'json' },
+      mode: 'async',
+    })),
+    'WorkflowPublicationCreated',
+  ).publication
+  return { session, publication }
+}
+
 async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
   const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
   let lastRuns = []
@@ -771,7 +821,9 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
+  const apiSseTunnelWorkspace = path.join(root, 'api-sse-tunnel-workspace')
   const websocketWorkspace = path.join(root, 'websocket-workspace')
+  const websocketTunnelWorkspace = path.join(root, 'websocket-tunnel-workspace')
   const browserWorkspace = path.join(root, 'browser-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const watchdogWorkspace = path.join(root, 'watchdog-workspace')
@@ -817,6 +869,9 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(apiSseWorkspace, { recursive: true })
+    await mkdir(apiSseTunnelWorkspace, { recursive: true })
+    await mkdir(websocketWorkspace, { recursive: true })
+    await mkdir(websocketTunnelWorkspace, { recursive: true })
     await mkdir(browserWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(watchdogWorkspace, { recursive: true })
@@ -938,6 +993,19 @@ async function main() {
       })),
       'WorkflowPublicationCreated',
     ).publication
+    logStep('create_api_sse_tunnel_session')
+    const apiSseTunnel = await createDeterministicPublicationSession(client, sessionIds, {
+      workspace: apiSseTunnelWorkspace,
+      sessionAlias: 'publication-drill-api-sse-tunnel-final',
+      attachAlias: 'publication-drill-api-sse-tunnel-final',
+      agentAlias: 'api-sse-tunnel-final',
+      workflowAlias: 'published-api-sse-tunnel-final',
+      endpointAlias: 'api-tunnel',
+      publicationAlias: 'public_api_sse_tunnel_final',
+      route: '/invoke',
+      methods: ['POST'],
+      transportKind: 'api_sse_json',
+    })
     logStep('create_websocket_session')
     const websocketSession = variant(
       await client.send(createSessionRequest(websocketWorkspace, websocketWorkspace, 'publication-drill-websocket-final')),
@@ -979,6 +1047,19 @@ async function main() {
       })),
       'WorkflowPublicationCreated',
     ).publication
+    logStep('create_websocket_tunnel_session')
+    const websocketTunnel = await createDeterministicPublicationSession(client, sessionIds, {
+      workspace: websocketTunnelWorkspace,
+      sessionAlias: 'publication-drill-websocket-tunnel-final',
+      attachAlias: 'publication-drill-websocket-tunnel-final',
+      agentAlias: 'websocket-tunnel-final',
+      workflowAlias: 'published-websocket-tunnel-final',
+      endpointAlias: 'websocket-tunnel',
+      publicationAlias: 'public_websocket_tunnel_final',
+      route: '/.well-known/arroba/publication/ws',
+      methods: ['GET'],
+      transportKind: 'websocket_json',
+    })
     logStep('create_browser_session')
     const browserSession = variant(
       await client.send(createSessionRequest(browserWorkspace, browserWorkspace, 'publication-drill-human-http-final')),
@@ -1287,6 +1368,53 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    logStep('invoke_api_sse_final_tunnel')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: apiSseTunnel.session.id,
+        ARROBA_PUBLICATION_ID: apiSseTunnel.publication.id,
+      },
+      'gateway-api-sse-final-tunnel',
+    )
+    await waitForGateway(gatewayUrl)
+    const registeredApiSseFinalPublication = await waitForRegisteredPublicationEndpoint(
+      client,
+      apiSseTunnel.session.id,
+      apiSseTunnel.publication.id,
+      `${gatewayUrl}/`,
+      `http://127.0.0.1:${relayPort}/display/publication-`,
+    )
+    const apiSseFinalTunnelUrl = new URL('invoke', registeredApiSseFinalPublication.open_url).toString()
+    const apiSseFinalTunnelResponse = await fetch(apiSseFinalTunnelUrl, {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'api-sse-final-publication-tunnel' }),
+    })
+    const apiSseFinalTunnelBody = await apiSseFinalTunnelResponse.text()
+    const apiSseFinalTunnelEvents = sseEventNames(apiSseFinalTunnelBody)
+    if (
+      apiSseFinalTunnelResponse.status !== 200
+      || !apiSseFinalTunnelEvents.includes('queued')
+      || !apiSseFinalTunnelEvents.includes('started')
+      || !apiSseFinalTunnelEvents.includes('partial')
+      || !apiSseFinalTunnelEvents.includes('final')
+      || (!apiSseFinalTunnelBody.includes('"value":1841') && !apiSseFinalTunnelBody.includes('\\"value\\":1841'))
+      || (!apiSseFinalTunnelBody.includes('"value":1842') && !apiSseFinalTunnelBody.includes('\\"value\\":1842'))
+    ) {
+      const errorIndex = apiSseFinalTunnelBody.lastIndexOf('event: error')
+      const diagnostic = errorIndex >= 0 ? apiSseFinalTunnelBody.slice(errorIndex, errorIndex + 800) : apiSseFinalTunnelBody.slice(0, 2_000)
+      throw new Error(`expected tunnel API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalTunnelResponse.status} ${JSON.stringify(apiSseFinalTunnelEvents)}: ${diagnostic}`)
+    }
+    logStep('api_sse_final_tunnel_ok', { events: apiSseFinalTunnelEvents, openUrl: registeredApiSseFinalPublication.open_url })
+    await stopProcess(gateway)
+    gateway = null
+
     logStep('invoke_websocket_final')
     gateway = startProcess(
       process.execPath,
@@ -1321,6 +1449,53 @@ async function main() {
       throw new Error(`expected websocket accepted/queued/started/partial/final with deterministic output, got ${JSON.stringify(webSocketFinal.messages)}`)
     }
     logStep('websocket_final_ok', { events: webSocketFinalTypes })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_websocket_final_tunnel')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: websocketTunnel.session.id,
+        ARROBA_PUBLICATION_ID: websocketTunnel.publication.id,
+      },
+      'gateway-websocket-final-tunnel',
+    )
+    await waitForGateway(gatewayUrl)
+    const registeredWebSocketPublication = await waitForRegisteredPublicationEndpoint(
+      client,
+      websocketTunnel.session.id,
+      websocketTunnel.publication.id,
+      `${gatewayUrl}/`,
+      `http://127.0.0.1:${relayPort}/display/publication-`,
+    )
+    const webSocketTunnelUrl = websocketUrlFromHttp(
+      new URL('.well-known/arroba/publication/ws', registeredWebSocketPublication.open_url).toString(),
+    )
+    const webSocketTunnelFinal = await invokePublicationWebSocket(
+      webSocketTunnelUrl,
+      { prompt: 'websocket-final-publication-tunnel' },
+      { waitForFinal: true },
+    )
+    const webSocketTunnelTypes = webSocketTunnelFinal.messages.map((message) => message.type)
+    const webSocketTunnelBody = JSON.stringify(webSocketTunnelFinal.messages)
+    if (
+      !webSocketTunnelTypes.includes('accepted')
+      || !webSocketTunnelTypes.includes('queued')
+      || !webSocketTunnelTypes.includes('started')
+      || !webSocketTunnelTypes.includes('partial')
+      || !webSocketTunnelTypes.includes('final')
+      || (!webSocketTunnelBody.includes('"value":1841') && !webSocketTunnelBody.includes('\\"value\\":1841'))
+      || (!webSocketTunnelBody.includes('"value":1842') && !webSocketTunnelBody.includes('\\"value\\":1842'))
+    ) {
+      throw new Error(`expected tunnel websocket accepted/queued/started/partial/final with deterministic output, got ${JSON.stringify(webSocketTunnelFinal.messages)}`)
+    }
+    logStep('websocket_final_tunnel_ok', { events: webSocketTunnelTypes, openUrl: registeredWebSocketPublication.open_url })
     await stopProcess(gateway)
     gateway = null
 

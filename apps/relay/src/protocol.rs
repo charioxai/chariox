@@ -170,6 +170,8 @@ pub struct RelayDisplayTunnelOpenRequest {
     pub path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<RelayDisplayTunnelHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,6 +415,7 @@ mod tests {
                     name: "accept".to_string(),
                     value: "text/html".to_string(),
                 }],
+                body_base64: Some("eyJwcm9tcHQiOiJoaSJ9".to_string()),
             },
         };
         let start = RelayEnvelope::DaemonDisplayTunnelResponseStart {
@@ -477,6 +480,10 @@ mod tests {
         assert_eq!(
             json.pointer("/1/request/headers/0/name"),
             Some(&serde_json::json!("accept"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/body_base64"),
+            Some(&serde_json::json!("eyJwcm9tcHQiOiJoaSJ9"))
         );
         assert_eq!(
             json.pointer("/2/kind"),

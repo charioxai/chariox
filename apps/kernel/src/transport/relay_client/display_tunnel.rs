@@ -9,6 +9,7 @@ use std::io::Read;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+const DISPLAY_PROXY_CHUNK_BYTES: usize = 8 * 1024;
 const DISPLAY_PROXY_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(super) async fn handle_display_tunnel_open(
@@ -39,7 +40,10 @@ pub(super) async fn handle_display_tunnel_open(
     }
     let result = match target {
         Some(target) => {
-            tokio::task::spawn_blocking(move || proxy_display_request(&target, &request))
+            let outgoing_tx = outgoing_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                proxy_display_request(&outgoing_tx, &target, &request)
+            })
                 .await
                 .map_err(|error| relay_error("display_proxy_join_failed", &error.to_string(), true))
                 .and_then(|result| result)
@@ -51,27 +55,7 @@ pub(super) async fn handle_display_tunnel_open(
         )),
     };
     match result {
-        Ok(response) => {
-            let _ = send_outgoing_envelope(
-                &outgoing_tx,
-                RelayEnvelope::DaemonDisplayTunnelResponseStart {
-                    response: RelayDisplayTunnelResponseStart {
-                        stream_id: stream_id.clone(),
-                        status: response.status,
-                        headers: response.headers,
-                    },
-                },
-            );
-            let _ = send_outgoing_envelope(
-                &outgoing_tx,
-                RelayEnvelope::DaemonDisplayTunnelChunk {
-                    chunk: RelayDisplayTunnelStreamChunk {
-                        stream_id: stream_id.clone(),
-                        data: BASE64_STANDARD.encode(response.body),
-                        message_kind: None,
-                    },
-                },
-            );
+        Ok(()) => {
             let _ = send_outgoing_envelope(
                 &outgoing_tx,
                 RelayEnvelope::DaemonDisplayTunnelClose {
@@ -136,16 +120,11 @@ async fn handle_display_tunnel_websocket(
     }
 }
 
-struct DisplayProxyResponse {
-    status: u16,
-    headers: Vec<RelayDisplayTunnelHeader>,
-    body: Vec<u8>,
-}
-
 fn proxy_display_request(
+    outgoing_tx: &RelayOutgoingSender,
     target: &RelayDisplayTunnelTarget,
     request: &RelayDisplayTunnelOpenRequest,
-) -> Result<DisplayProxyResponse, RelayError> {
+) -> Result<(), RelayError> {
     let url = local_display_url(target, &request.path)?;
     let mut builder = ureq::request(&request.method, url.as_str());
     for header in request
@@ -155,15 +134,35 @@ fn proxy_display_request(
     {
         builder = builder.set(header.name.as_str(), header.value.as_str());
     }
-    match builder.call() {
-        Ok(response) => response_to_proxy(response),
-        Err(ureq::Error::Status(_, response)) => response_to_proxy(response),
+    let body = request
+        .body_base64
+        .as_ref()
+        .map(|body| {
+            BASE64_STANDARD
+                .decode(body.as_bytes())
+                .map_err(|error| relay_error("display_proxy_body_invalid", &error.to_string(), false))
+        })
+        .transpose()?;
+    let response = match body {
+        Some(body) => builder.send_bytes(&body),
+        None if method_uses_empty_body(&request.method) => builder.send_bytes(&[]),
+        None => builder.call(),
+    };
+    match response {
+        Ok(response) => stream_response_to_proxy(outgoing_tx, request, response),
+        Err(ureq::Error::Status(_, response)) => {
+            stream_response_to_proxy(outgoing_tx, request, response)
+        }
         Err(error) => Err(relay_error(
             "display_proxy_failed",
             &error.to_string(),
             true,
         )),
     }
+}
+
+fn method_uses_empty_body(method: &str) -> bool {
+    matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH")
 }
 
 async fn proxy_display_websocket(
@@ -341,7 +340,11 @@ fn header_value<'a>(headers: &'a [RelayDisplayTunnelHeader], name: &str) -> Opti
         .map(|header| header.value.as_str())
 }
 
-fn response_to_proxy(response: ureq::Response) -> Result<DisplayProxyResponse, RelayError> {
+fn stream_response_to_proxy(
+    outgoing_tx: &RelayOutgoingSender,
+    request: &RelayDisplayTunnelOpenRequest,
+    response: ureq::Response,
+) -> Result<(), RelayError> {
     let status = response.status();
     let headers = response
         .headers_names()
@@ -356,31 +359,49 @@ fn response_to_proxy(response: ureq::Response) -> Result<DisplayProxyResponse, R
                 })
         })
         .collect::<Vec<_>>();
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: request.stream_id.clone(),
+                status,
+                headers,
+            },
+        },
+    )
+    .map_err(|error| relay_error("display_proxy_start_send_failed", &error.to_string(), true))?;
     let mut reader = response.into_reader();
-    let mut body = Vec::new();
-    reader
-        .by_ref()
-        .take(DISPLAY_PROXY_MAX_RESPONSE_BYTES.saturating_add(1))
-        .read_to_end(&mut body)
-        .map_err(|error| relay_error("display_proxy_read_failed", &error.to_string(), true))?;
-    if body.len() as u64 > DISPLAY_PROXY_MAX_RESPONSE_BYTES {
-        return Err(relay_error(
-            "display_proxy_response_too_large",
-            "display proxy response exceeded maximum size",
-            false,
-        ));
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; DISPLAY_PROXY_CHUNK_BYTES];
+    loop {
+        let size = reader
+            .read(&mut buffer)
+            .map_err(|error| relay_error("display_proxy_read_failed", &error.to_string(), true))?;
+        if size == 0 {
+            break;
+        }
+        total = total.saturating_add(size as u64);
+        if total > DISPLAY_PROXY_MAX_RESPONSE_BYTES {
+            return Err(relay_error(
+                "display_proxy_response_too_large",
+                "display proxy response exceeded maximum size",
+                false,
+            ));
+        }
+        send_display_chunk(outgoing_tx, &request.stream_id, &buffer[..size], None)?;
     }
-    Ok(DisplayProxyResponse {
-        status,
-        headers,
-        body,
-    })
+    Ok(())
 }
 
 fn forward_request_header(name: &str) -> bool {
     !matches!(
         name.to_ascii_lowercase().as_str(),
-        "host" | "connection" | "upgrade" | "sec-websocket-key" | "sec-websocket-version"
+        "host"
+            | "connection"
+            | "content-length"
+            | "upgrade"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
     )
 }
 
@@ -402,6 +423,7 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tokio::net::TcpListener;
     use tokio::time::{timeout, Duration};
 
@@ -456,6 +478,7 @@ mod tests {
                     value: "websocket".to_string(),
                 },
             ],
+            body_base64: None,
         };
 
         assert!(display_request_is_websocket(&request));
@@ -512,6 +535,7 @@ mod tests {
                     value: "websocket".to_string(),
                 },
             ],
+            body_base64: None,
         };
         let handle = tokio::spawn(handle_display_tunnel_open(
             Arc::clone(&state),
@@ -567,5 +591,108 @@ mod tests {
         local_task
             .await
             .expect("local websocket task should finish");
+    }
+
+    #[tokio::test]
+    async fn display_http_proxy_forwards_post_body_and_streams_response_chunks() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("local http listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("local http listener should have addr");
+        let local_task = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("local http should accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let size = stream.read(&mut buffer).expect("request should read");
+                if size == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..size]);
+                if request.ends_with(b"{\"prompt\":\"hi\"}") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            assert!(text.starts_with("POST /invoke HTTP/1.1"), "{text}");
+            assert!(text.contains("content-type: application/json"), "{text}");
+            assert!(text.ends_with("{\"prompt\":\"hi\"}"), "{text}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+                .expect("response headers should write");
+            stream
+                .write_all(b"event: queued\ndata: {}\n\n")
+                .expect("first response chunk should write");
+            stream.flush().expect("first response chunk should flush");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stream
+                .write_all(b"event: final\ndata: {\"value\":1842}\n\n")
+                .expect("second response chunk should write");
+        });
+
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: "display-1".to_string(),
+            slice_id: "publication-1".to_string(),
+            local_base_url: format!("http://{addr}"),
+            expires_at_ms: u64::MAX,
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "stream-1".to_string(),
+            tunnel_id: "display-1".to_string(),
+            method: "POST".to_string(),
+            path: "/display/display-1/invoke".to_string(),
+            headers: vec![RelayDisplayTunnelHeader {
+                name: "content-type".to_string(),
+                value: "application/json".to_string(),
+            }],
+            body_base64: Some(BASE64_STANDARD.encode("{\"prompt\":\"hi\"}")),
+        };
+        tokio::spawn(handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            request,
+        ));
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("response start should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response }) => {
+                assert_eq!(response.stream_id, "stream-1");
+                assert_eq!(response.status, 200);
+                assert_eq!(response.headers[0].name, "content-type");
+                assert_eq!(response.headers[0].value, "text/event-stream");
+            }
+            other => panic!("unexpected display response start: {other:?}"),
+        }
+
+        let mut decoded_chunks = Vec::new();
+        loop {
+            match timeout(Duration::from_secs(2), outgoing_rx.recv())
+                .await
+                .expect("display chunk or close should arrive")
+            {
+                Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk }) => {
+                    decoded_chunks.extend(
+                        BASE64_STANDARD
+                            .decode(chunk.data)
+                            .expect("display chunk should decode"),
+                    );
+                }
+                Some(RelayEnvelope::DaemonDisplayTunnelClose { error, .. }) => {
+                    assert_eq!(error, None);
+                    break;
+                }
+                other => panic!("unexpected display stream envelope: {other:?}"),
+            }
+        }
+        let body = String::from_utf8(decoded_chunks).expect("response chunks should be utf8");
+        assert!(body.contains("event: queued"), "{body}");
+        assert!(body.contains("event: final"), "{body}");
+        local_task.join().expect("local http task should finish");
     }
 }

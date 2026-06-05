@@ -24,6 +24,7 @@ const DISPLAY_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPLAY_RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(10);
 const DISPLAY_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DISPLAY_MAX_HEADER_BYTES: usize = 16 * 1024;
+const DISPLAY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DISPLAY_STREAM_QUEUE_CAPACITY: usize = 128;
 
 pub(crate) async fn is_display_http_request(stream: &TcpStream) -> bool {
@@ -105,6 +106,7 @@ struct DisplayHttpRequest {
     method: String,
     path: String,
     headers: Vec<RelayDisplayTunnelHeader>,
+    body: Vec<u8>,
     websocket_key: Option<String>,
 }
 
@@ -127,7 +129,31 @@ async fn read_display_request(stream: &mut TcpStream) -> Result<DisplayHttpReque
             break;
         }
     }
-    parse_display_request(&buffer).ok_or(404_u16)
+    let (mut request, body_start) = parse_display_request(&buffer).ok_or(404_u16)?;
+    let expected_body_len = content_length(&request.headers)?;
+    if expected_body_len > DISPLAY_MAX_BODY_BYTES {
+        return Err(413);
+    }
+    request.body.extend_from_slice(&buffer[body_start..]);
+    if request.body.len() > expected_body_len {
+        request.body.truncate(expected_body_len);
+    }
+    while request.body.len() < expected_body_len {
+        let remaining = expected_body_len - request.body.len();
+        let read_limit = remaining.min(chunk.len());
+        let size = tokio::time::timeout(
+            DISPLAY_REQUEST_READ_TIMEOUT,
+            stream.read(&mut chunk[..read_limit]),
+        )
+        .await
+        .map_err(|_| 408_u16)?
+        .map_err(|_| 400_u16)?;
+        if size == 0 {
+            return Err(400);
+        }
+        request.body.extend_from_slice(&chunk[..size]);
+    }
+    Ok(request)
 }
 
 async fn forward_display_http_stream(
@@ -147,6 +173,7 @@ async fn forward_display_http_stream(
             method: request.method,
             path: request.path,
             headers: request.headers,
+            body_base64: (!request.body.is_empty()).then(|| BASE64_STANDARD.encode(&request.body)),
         },
     };
     send_envelope(&daemon_sender, &open).await?;
@@ -338,13 +365,13 @@ fn display_request_path(buffer: &[u8]) -> Option<&str> {
     let method = parts.next()?;
     let path = parts.next()?;
     match method {
-        "GET" | "HEAD" | "OPTIONS" => {}
+        "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT" | "PATCH" | "DELETE" => {}
         _ => return None,
     }
     path.starts_with("/display/").then_some(path)
 }
 
-fn parse_display_request(buffer: &[u8]) -> Option<DisplayHttpRequest> {
+fn parse_display_request(buffer: &[u8]) -> Option<(DisplayHttpRequest, usize)> {
     let end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
     let request = std::str::from_utf8(&buffer[..end]).ok()?;
     let mut lines = request.split("\r\n");
@@ -366,12 +393,16 @@ fn parse_display_request(buffer: &[u8]) -> Option<DisplayHttpRequest> {
         .filter(|header| !header.name.is_empty())
         .collect::<Vec<_>>();
     let websocket_key = websocket_request_key(&headers);
-    Some(DisplayHttpRequest {
-        method,
-        path,
-        headers,
-        websocket_key,
-    })
+    Some((
+        DisplayHttpRequest {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+            websocket_key,
+        },
+        end + 4,
+    ))
 }
 
 fn websocket_request_key(headers: &[RelayDisplayTunnelHeader]) -> Option<String> {
@@ -394,6 +425,13 @@ fn header_value<'a>(headers: &'a [RelayDisplayTunnelHeader], name: &str) -> Opti
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.as_str())
+}
+
+fn content_length(headers: &[RelayDisplayTunnelHeader]) -> Result<usize, u16> {
+    let Some(value) = header_value(headers, "content-length") else {
+        return Ok(0);
+    };
+    value.trim().parse::<usize>().map_err(|_| 400_u16)
 }
 
 fn display_tunnel_id(path: &str) -> Option<&str> {
@@ -471,6 +509,7 @@ fn status_reason(status: u16) -> &'static str {
         404 => "Not Found",
         408 => "Request Timeout",
         410 => "Gone",
+        413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
         501 => "Not Implemented",
         502 => "Bad Gateway",
@@ -497,11 +536,11 @@ mod tests {
             Some("/display/tunnel-1/vnc.html")
         );
         assert_eq!(
-            display_request_path(b"GET /kernel HTTP/1.1\r\nUpgrade: websocket\r\n"),
-            None
+            display_request_path(b"POST /display/tunnel/api HTTP/1.1\r\n"),
+            Some("/display/tunnel/api")
         );
         assert_eq!(
-            display_request_path(b"POST /display/tunnel HTTP/1.1\r\n"),
+            display_request_path(b"GET /kernel HTTP/1.1\r\nUpgrade: websocket\r\n"),
             None
         );
     }
@@ -519,21 +558,34 @@ mod tests {
 
     #[test]
     fn parse_display_request_preserves_method_path_and_headers() {
-        let request = parse_display_request(
-            b"GET /display/tunnel-1/vnc.html HTTP/1.1\r\nhost: relay.test\r\naccept: text/html\r\n\r\n",
-        )
-        .expect("request should parse");
+        let raw =
+            b"GET /display/tunnel-1/vnc.html HTTP/1.1\r\nhost: relay.test\r\naccept: text/html\r\n\r\n";
+        let (request, body_start) = parse_display_request(raw).expect("request should parse");
 
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "/display/tunnel-1/vnc.html");
         assert_eq!(request.headers[0].name, "host");
         assert_eq!(request.headers[1].value, "text/html");
         assert_eq!(request.websocket_key, None);
+        assert_eq!(body_start, raw.len());
+    }
+
+    #[test]
+    fn parse_display_request_preserves_post_request_body_metadata() {
+        let headers =
+            b"POST /display/tunnel-1/invoke HTTP/1.1\r\nhost: relay.test\r\ncontent-length: 15\r\ncontent-type: application/json\r\n\r\n";
+        let raw = [headers.as_slice(), b"{\"prompt\":\"hi\"}".as_slice()].concat();
+        let (request, body_start) = parse_display_request(&raw).expect("request should parse");
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/display/tunnel-1/invoke");
+        assert_eq!(content_length(&request.headers), Ok(15));
+        assert_eq!(body_start, headers.len());
     }
 
     #[test]
     fn parse_display_request_detects_websocket_upgrade() {
-        let request = parse_display_request(
+        let (request, _) = parse_display_request(
             b"GET /display/tunnel-1/websockify HTTP/1.1\r\nhost: relay.test\r\nconnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nsec-websocket-key: abc\r\n\r\n",
         )
         .expect("request should parse");
