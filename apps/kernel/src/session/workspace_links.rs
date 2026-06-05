@@ -64,7 +64,13 @@ impl WorkspaceLinkAttachment {
     }
 
     fn matches_repo_root(&self, repo_root: &Path) -> bool {
-        self.repo_root == normalize_workspace_link_repo_root(path_to_workspace_link_root(repo_root))
+        let requested = normalize_workspace_link_repo_root(path_to_workspace_link_root(repo_root));
+        if self.repo_root == requested {
+            return true;
+        }
+        canonical_workspace_link_root(&self.repo_root)
+            .zip(canonical_workspace_link_root(&requested))
+            .is_some_and(|(left, right)| left == right)
     }
 }
 
@@ -158,4 +164,45 @@ pub fn normalize_workspace_link_repo_root(repo_root: impl Into<String>) -> Strin
 
 pub fn path_to_workspace_link_root(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn canonical_workspace_link_root(repo_root: &str) -> Option<String> {
+    PathBuf::from(repo_root)
+        .canonicalize()
+        .ok()
+        .map(|path| normalize_workspace_link_repo_root(path.to_string_lossy()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_link_attachment_matches_canonical_equivalent_repo_roots() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-workspace-link-canonical-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let real_root = base.join("real").join("repo");
+        let alias_root = base.join("alias-repo");
+        std::fs::create_dir_all(&real_root).expect("real repo root should exist");
+        std::os::unix::fs::symlink(&real_root, &alias_root).expect("repo alias should link");
+        let mut link = WorkspaceLinkDefinition::new("link-1", "session-1", "shared", "user-1");
+        link.attach(WorkspaceLinkAttachment::new(
+            "link-1",
+            "user-1",
+            "machine-1",
+            "kernel-1",
+            alias_root.to_string_lossy(),
+            None,
+            None,
+        ));
+
+        let attachment = link.attachment_for_repo_root(&real_root);
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(attachment.is_some());
+    }
 }

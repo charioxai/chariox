@@ -12,10 +12,11 @@ impl KernelRuntimeState {
             .owned
             .session_store
             .get_session(provider_run.session_id())?;
-        let workspace_root = provider_run
+        let working_directory = provider_run
             .working_directory()
             .cloned()
             .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+        let workspace_root = workspace_live_sync_root_for_working_directory(&working_directory);
         let identity = workspace_identity_for_root_off_thread(workspace_root.clone()).await?;
         let identity = workspace_live_sync_identity_for_session_workspace_link(
             identity,
@@ -92,5 +93,84 @@ impl KernelRuntimeState {
             &session,
             Some(&agent),
         ))
+    }
+}
+
+fn workspace_live_sync_root_for_working_directory(working_directory: &Path) -> PathBuf {
+    workspace_live_sync_git_toplevel(working_directory)
+        .unwrap_or_else(|| working_directory.to_path_buf())
+}
+
+fn workspace_live_sync_git_toplevel(path: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    (!root.is_empty()).then(|| PathBuf::from(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_root_uses_git_toplevel_for_subdirectories() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-live-sync-tool-root-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let repo = base.join("selected");
+        let subdir = repo.join("src").join("feature");
+        std::fs::create_dir_all(&subdir).expect("repo subdir fixture should exist");
+        run_git_init(&repo);
+        let expected = repo
+            .canonicalize()
+            .expect("repo root should canonicalize for comparison");
+        let root = workspace_live_sync_root_for_working_directory(&subdir);
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn workspace_live_sync_root_keeps_non_git_working_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-live-sync-tool-root-non-git-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let selected = base.join("selected").join("subdir");
+        std::fs::create_dir_all(&selected).expect("non-git fixture should exist");
+        let root = workspace_live_sync_root_for_working_directory(&selected);
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(root, selected);
+    }
+
+    fn run_git_init(path: &Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .arg("-b")
+            .arg("main")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run");
+        assert!(
+            status.success(),
+            "git init should succeed in {}",
+            path.display()
+        );
     }
 }
