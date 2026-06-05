@@ -86,6 +86,27 @@ async function invokePublicationWebSocket(url, input, options = {}) {
     if (ready.type !== 'ready') {
       throw new Error(`expected websocket ready message, got ${JSON.stringify(ready)}`)
     }
+    socket.send(JSON.stringify({
+      type: 'artifact_begin',
+      artifact_id: 'ws-artifact-1',
+      name: 'ws-input.txt',
+      mime_type: 'text/plain',
+      size_bytes: 9,
+    }))
+    const begun = await reader.read()
+    if (begun.type !== 'artifact_ack' || begun.status !== 'begun') {
+      throw new Error(`expected websocket artifact begin ack, got ${JSON.stringify(begun)}`)
+    }
+    socket.send(JSON.stringify({ type: 'artifact_chunk', artifact_id: 'ws-artifact-1', data: 'd3MtcHVibA==' }))
+    const chunk = await reader.read()
+    if (chunk.type !== 'artifact_ack' || chunk.status !== 'chunk') {
+      throw new Error(`expected websocket artifact chunk ack, got ${JSON.stringify(chunk)}`)
+    }
+    socket.send(JSON.stringify({ type: 'artifact_end', artifact_id: 'ws-artifact-1' }))
+    const readyArtifact = await reader.read()
+    if (readyArtifact.type !== 'artifact' || readyArtifact.status !== 'ready') {
+      throw new Error(`expected websocket artifact ready message, got ${JSON.stringify(readyArtifact)}`)
+    }
     socket.send(JSON.stringify({ type: 'invoke', input }))
     const accepted = await reader.read()
     if (accepted.type !== 'accepted' || (!accepted.workflow_run?.id && !accepted.queued)) {

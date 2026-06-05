@@ -968,6 +968,30 @@ test("gateway accepts WebSocket publication invocations", async () => {
     const reader = createWebSocketReader(socket)
     try {
       assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-test" })
+      socket.send(JSON.stringify({
+        type: "artifact_begin",
+        artifact_id: "artifact-1",
+        name: "input.txt",
+        mime_type: "text/plain",
+        size_bytes: 5,
+      }))
+      assert.deepEqual(await reader.read(), { type: "artifact_ack", status: "begun", artifact_id: "artifact-1" })
+      socket.send(JSON.stringify({ type: "artifact_chunk", artifact_id: "artifact-1", data: "aGVs" }))
+      assert.deepEqual(await reader.read(), { type: "artifact_ack", status: "chunk", artifact_id: "artifact-1" })
+      socket.send(JSON.stringify({ type: "artifact_chunk", artifact_id: "artifact-1", data: "bG8=" }))
+      assert.deepEqual(await reader.read(), { type: "artifact_ack", status: "chunk", artifact_id: "artifact-1" })
+      socket.send(JSON.stringify({ type: "artifact_end", artifact_id: "artifact-1" }))
+      assert.deepEqual(await reader.read(), {
+        type: "artifact",
+        status: "ready",
+        artifact: {
+          artifact_id: "artifact-1",
+          name: "input.txt",
+          type: "text/plain",
+          size_bytes: 5,
+          base64: "aGVsbG8=",
+        },
+      })
       socket.send(JSON.stringify({ type: "invoke", input: { task: "ship" } }))
       const accepted = await reader.read() as { type?: string; workflow_run?: { id?: string } }
       assert.equal(accepted.type, "accepted")
@@ -975,7 +999,16 @@ test("gateway accepts WebSocket publication invocations", async () => {
       const final = await reader.read() as { type?: string; workflow_run?: { status?: string } }
       assert.equal(final.type, "final")
       assert.equal(final.workflow_run?.status, "Completed")
-      assert.deepEqual(inputs, [{ task: "ship" }])
+      assert.deepEqual(inputs, [{
+        task: "ship",
+        artifacts: [{
+          artifact_id: "artifact-1",
+          name: "input.txt",
+          type: "text/plain",
+          size_bytes: 5,
+          base64: "aGVsbG8=",
+        }],
+      }])
     } finally {
       socket.close()
     }

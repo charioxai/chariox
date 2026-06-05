@@ -25,6 +25,27 @@ type WebSocketUpgradeHost = {
   }
 }
 
+type WebSocketArtifactUpload = {
+  artifact_id: string
+  name: string
+  type: string
+  size_bytes: number | null
+  chunks: string[]
+}
+
+type WebSocketReadyArtifact = {
+  artifact_id: string
+  name: string
+  type: string
+  size_bytes: number | null
+  base64: string
+}
+
+type WebSocketConnectionState = {
+  pendingArtifacts: Map<string, WebSocketArtifactUpload>
+  readyArtifacts: Map<string, WebSocketReadyArtifact>
+}
+
 export function installPublicationWebSocket(
   app: WebSocketUpgradeHost,
   publication: WorkflowPublicationConfig,
@@ -50,8 +71,12 @@ async function handlePublicationWebSocket(
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
+  const state: WebSocketConnectionState = {
+    pendingArtifacts: new Map(),
+    readyArtifacts: new Map(),
+  }
   webSocket.on("message", (data) => {
-    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, { type: "anonymous" })
+    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, { type: "anonymous" }, state)
   })
   sendWebSocketJson(webSocket, { type: "ready", publication_id: publication.publication_id })
 }
@@ -62,21 +87,25 @@ async function handlePublicationWebSocketMessage(
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
   caller: Record<string, unknown>,
+  state: WebSocketConnectionState,
 ) {
   try {
     const envelope = parseWebSocketEnvelope(data)
+    if (handleWebSocketArtifactMessage(webSocket, envelope, state)) return
     if (envelope.type !== "invoke") {
       sendWebSocketJson(webSocket, { type: "error", error: "expected invoke message" })
       return
     }
-    validateInput(envelope.input, publication.input_schema)
+    const input = attachWebSocketArtifacts(envelope.input, [...state.readyArtifacts.values()])
+    validateInput(input, publication.input_schema)
     const invocation: NormalizedInvocation = {
       publication_id: publication.publication_id,
       request_id: `ws_${Date.now()}_${Math.random().toString(16).slice(2)}`,
       caller,
-      input: envelope.input,
+      input,
       mode: publication.mode ?? "sync",
     }
+    state.readyArtifacts.clear()
     const result = deps.invokeWorkflow
       ? await deps.invokeWorkflow(invocation)
       : await invokeKernelWorkflow(publication, invocation)
@@ -119,13 +148,80 @@ async function streamWorkflowRun(webSocket: WsSocket, publication: WorkflowPubli
   }
 }
 
-function parseWebSocketEnvelope(data: RawData): { type: string; input: unknown } {
+function parseWebSocketEnvelope(data: RawData): Record<string, unknown> & { type: string; input: unknown } {
   const raw = Array.isArray(data) ? Buffer.concat(data).toString("utf8") : Buffer.from(data as Buffer).toString("utf8")
-  const parsed = JSON.parse(raw) as { type?: unknown; input?: unknown; payload?: unknown }
+  const parsed = JSON.parse(raw) as Record<string, unknown> & { type?: unknown; input?: unknown; payload?: unknown }
   return {
+    ...parsed,
     type: typeof parsed.type === "string" ? parsed.type : "",
     input: parsed.input ?? parsed.payload ?? {},
   }
+}
+
+function handleWebSocketArtifactMessage(
+  webSocket: WsSocket,
+  envelope: Record<string, unknown> & { type: string },
+  state: WebSocketConnectionState,
+) {
+  if (envelope.type === "artifact_begin") {
+    const artifactId = typeof envelope.artifact_id === "string" && envelope.artifact_id.trim()
+      ? envelope.artifact_id
+      : `artifact_${Date.now()}_${Math.random().toString(16).slice(2)}`
+    state.pendingArtifacts.set(artifactId, {
+      artifact_id: artifactId,
+      name: typeof envelope.name === "string" && envelope.name.trim() ? envelope.name : artifactId,
+      type: typeof envelope.mime_type === "string"
+        ? envelope.mime_type
+        : typeof envelope.type_hint === "string"
+          ? envelope.type_hint
+          : "application/octet-stream",
+      size_bytes: typeof envelope.size_bytes === "number" ? envelope.size_bytes : null,
+      chunks: [],
+    })
+    sendWebSocketJson(webSocket, { type: "artifact_ack", status: "begun", artifact_id: artifactId })
+    return true
+  }
+  if (envelope.type === "artifact_chunk") {
+    const artifactId = typeof envelope.artifact_id === "string" ? envelope.artifact_id : ""
+    const upload = state.pendingArtifacts.get(artifactId)
+    if (!upload || typeof envelope.data !== "string") {
+      sendWebSocketJson(webSocket, { type: "error", error: "unknown artifact chunk" })
+      return true
+    }
+    upload.chunks.push(envelope.data)
+    sendWebSocketJson(webSocket, { type: "artifact_ack", status: "chunk", artifact_id: artifactId })
+    return true
+  }
+  if (envelope.type === "artifact_end") {
+    const artifactId = typeof envelope.artifact_id === "string" ? envelope.artifact_id : ""
+    const upload = state.pendingArtifacts.get(artifactId)
+    if (!upload) {
+      sendWebSocketJson(webSocket, { type: "error", error: "unknown artifact end" })
+      return true
+    }
+    state.pendingArtifacts.delete(artifactId)
+    const artifact = {
+      artifact_id: upload.artifact_id,
+      name: upload.name,
+      type: upload.type,
+      size_bytes: upload.size_bytes,
+      base64: upload.chunks.join(""),
+    }
+    state.readyArtifacts.set(artifactId, artifact)
+    sendWebSocketJson(webSocket, { type: "artifact", status: "ready", artifact })
+    return true
+  }
+  return false
+}
+
+function attachWebSocketArtifacts(input: unknown, artifacts: WebSocketReadyArtifact[]) {
+  if (artifacts.length === 0) return input
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>
+    const existing = Array.isArray(record.artifacts) ? record.artifacts : []
+    return { ...record, artifacts: [...existing, ...artifacts] }
+  }
+  return { input, artifacts }
 }
 
 function sendWebSocketJson(webSocket: WsSocket, payload: unknown) {
