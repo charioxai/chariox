@@ -27,6 +27,23 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
+        if !matches!(
+            tool.kind,
+            crate::extension::ExtensionKind::Script | crate::extension::ExtensionKind::Connector
+        ) {
+            let error = DaemonError::LocalTransport {
+                operation: "home extension invocation",
+                message: format!(
+                    "home extension runtime tool invocation only supports scripts and connectors; `{}` is `{}` and must use its dedicated dispatch path",
+                    tool.tool_name,
+                    tool.kind.as_str()
+                ),
+            };
+            let _ = self
+                .append_home_extension_denied_event(&context, &metadata, &tool, &error)
+                .await;
+            return Err(error);
+        }
         if let Some(cached) = self
             .begin_audited_home_extension_invocation(&context, &metadata, &tool)
             .await?
