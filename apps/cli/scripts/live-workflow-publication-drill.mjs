@@ -26,6 +26,7 @@ const {
   getProviderRunRequest,
   launchProviderRunRequest,
   listSessionsRequest,
+  setWorkflowNodeCanCompleteRunRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
 } = requests
@@ -41,6 +42,10 @@ function variant(response, key) {
 
 function hasAcceptedRunMetadata(body) {
   return !!body && (body.workflow_run?.id || body.queued === true)
+}
+
+function sseEventNames(body) {
+  return [...body.matchAll(/^event: (.+)$/gm)].map((match) => match[1])
 }
 
 function createWebSocketReader(socket) {
@@ -294,6 +299,7 @@ async function createSelfSignedCertificate(root) {
 async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
+  const apiSseWorkspace = path.join(root, 'api-sse-workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
@@ -323,10 +329,11 @@ async function main() {
   let kernel = null
   let gateway = null
   let client = null
-  let sessionId = null
+  const sessionIds = []
   let succeeded = false
   try {
     await mkdir(workspace, { recursive: true })
+    await mkdir(apiSseWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
@@ -342,7 +349,7 @@ async function main() {
 
     logStep('create_session')
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'publication-drill')), 'SessionCreated').session
-    sessionId = session.id
+    sessionIds.push(session.id)
     await client.send(attachToSessionRequest(session.id, `publication-drill-${process.pid}`))
 
     logStep('spawn_agent')
@@ -386,6 +393,47 @@ async function main() {
     const apiSsePublication = variant(
       await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
         alias: 'public_api_sse',
+        route: '/invoke',
+        methods: ['POST'],
+        transport: { kind: 'api_sse_json' },
+        parser: { kind: 'json' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+
+    logStep('create_api_sse_final_session')
+    const apiSseSession = variant(
+      await client.send(createSessionRequest(apiSseWorkspace, apiSseWorkspace, 'publication-drill-api-sse-final')),
+      'SessionCreated',
+    ).session
+    sessionIds.push(apiSseSession.id)
+    await client.send(attachToSessionRequest(apiSseSession.id, `publication-drill-api-sse-final-${process.pid}`))
+    const apiSseAgent = variant(
+      await client.send(spawnAgentRequest(apiSseSession.id, 'dev-stub', 'api-sse-final', 'workflow-single-turn-node', apiSseWorkspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    const apiSseProviderRun = variant(
+      await client.send(launchProviderRunRequest(apiSseSession.id, 'dev-stub', 'default', 'workflow-single-turn-node', 'low', apiSseAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    await waitForProviderRunReady(client, apiSseProviderRun.id)
+    const apiSseWorkflow = variant(await client.send(createWorkflowRequest(apiSseSession.id, 'published-api-sse-final')), 'WorkflowCreated').workflow
+    const apiSseNode = variant(await client.send(addWorkflowNodeRequest(apiSseSession.id, apiSseWorkflow.id, apiSseAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(
+      apiSseSession.id,
+      apiSseWorkflow.id,
+      apiSseNode.id,
+      'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+    ))
+    await client.send(setWorkflowNodeCanCompleteRunRequest(apiSseSession.id, apiSseWorkflow.id, apiSseNode.id, true))
+    const apiSseFinalEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(apiSseSession.id, apiSseWorkflow.id, apiSseNode.id, 'api')),
+      'WorkflowEndpointCreated',
+    ).endpoint
+    const apiSseFinalPublication = variant(
+      await client.send(createWorkflowPublicationRequest(apiSseSession.id, apiSseWorkflow.id, apiSseFinalEndpoint.id, {
+        alias: 'public_api_sse_final',
         route: '/invoke',
         methods: ['POST'],
         transport: { kind: 'api_sse_json' },
@@ -503,7 +551,44 @@ async function main() {
     if (apiSseResponse.status !== 200 || !apiSseBody.includes('event: queued')) {
       throw new Error(`expected API SSE queued event, got ${apiSseResponse.status}: ${apiSseBody.slice(0, 400)}`)
     }
-    logStep('api_sse_ok')
+    logStep('api_sse_queued_ok')
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_api_sse_final')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: apiSseSession.id,
+        ARROBA_PUBLICATION_ID: apiSseFinalPublication.id,
+      },
+      'gateway-api-sse-final',
+    )
+    await waitForGateway(gatewayUrl)
+    const apiSseFinalResponse = await fetch(`${gatewayUrl}/invoke`, {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'api-sse-final-publication' }),
+    })
+    const apiSseFinalBody = await apiSseFinalResponse.text()
+    const apiSseFinalEvents = sseEventNames(apiSseFinalBody)
+    if (
+      apiSseFinalResponse.status !== 200
+      || !apiSseFinalEvents.includes('queued')
+      || !apiSseFinalEvents.includes('started')
+      || !apiSseFinalEvents.includes('final')
+      || (!apiSseFinalBody.includes('"value":1842') && !apiSseFinalBody.includes('\\"value\\":1842'))
+    ) {
+      const errorIndex = apiSseFinalBody.lastIndexOf('event: error')
+      const diagnostic = errorIndex >= 0 ? apiSseFinalBody.slice(errorIndex, errorIndex + 800) : apiSseFinalBody.slice(0, 2_000)
+      throw new Error(`expected API SSE queued/started/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
+    }
+    logStep('api_sse_final_ok', { events: apiSseFinalEvents })
     await stopProcess(gateway)
     gateway = null
 
@@ -629,8 +714,10 @@ async function main() {
     })
     succeeded = true
   } finally {
-    if (client && sessionId) {
-      await client.send(endSessionRequest(sessionId)).catch(() => {})
+    if (client) {
+      for (const id of sessionIds.reverse()) {
+        await client.send(endSessionRequest(id)).catch(() => {})
+      }
     }
     await client?.close?.().catch(() => {})
     await stopProcess(gateway)

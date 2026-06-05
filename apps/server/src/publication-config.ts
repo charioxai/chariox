@@ -18,6 +18,7 @@ import {
   type ProviderModelBindingPrompt,
 } from "./publication-bindings.js"
 import { validatePublicationRequirements } from "./publication-requirements.js"
+import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import type {
   InputSchema,
   KernelLookupClient,
@@ -100,7 +101,9 @@ export async function loadPublicationPackageConfig(
     if (options.validateRequirements !== false) {
       await validatePublicationRequirements(requirements, ownedClient, snapshot.source_session?.workspace_id)
     }
-    return await materializePublicationConfig(config, materializationSnapshot, ownedClient)
+    const materializedConfig = await materializePublicationConfig(config, materializationSnapshot, ownedClient)
+    await ensurePublicationRuntimeAttached(ownedClient, materializedConfig)
+    return materializedConfig
   } finally {
     if (!options.client) {
       await ownedClient.close?.().catch(() => {})
@@ -175,7 +178,9 @@ export async function loadPublicationConfigFromKernel(
     if (!publication) {
       throw new Error(`unexpected workflow publication response: ${JSON.stringify(response)}`)
     }
-    return publicationConfigFromKernelRecord(publication, kernelEndpoint)
+    const config = publicationConfigFromKernelRecord(publication, kernelEndpoint)
+    await ensurePublicationRuntimeAttached(ownedClient, config)
+    return config
   } finally {
     if (!client) {
       await ownedClient.close?.().catch(() => {})

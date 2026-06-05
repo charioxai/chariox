@@ -7,6 +7,7 @@ import {
 } from "./kernel-publication-client.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -167,6 +168,7 @@ async function streamWorkflowRunUntilFinal(
     const pollMs = publication.poll_ms ?? 500
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline && !reply.raw.destroyed) {
+      await pumpPublicationRuntime(client, publication)
       const response = await client.send<Record<string, unknown>>(
         getWorkflowRunRequest(publication.session_id, workflowRunId),
       )

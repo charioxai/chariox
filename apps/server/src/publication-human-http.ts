@@ -3,6 +3,7 @@ import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import type {
   GatewayRequest,
   WorkflowInvocationResult,
@@ -261,6 +262,7 @@ async function streamWorkflowRunEventsWithClient(
   const deadline = Date.now() + timeoutMs
   let lastStatus: string | null = null
   while (Date.now() < deadline && !reply.raw.destroyed) {
+    await pumpPublicationRuntime(client, publication)
     const response = await client.send<Record<string, unknown>>(
       getWorkflowRunRequest(publication.session_id, workflowRunId),
     )

@@ -101,6 +101,13 @@ test("gateway can load publication config from kernel lookup", async () => {
 
   assert.deepEqual(requests, [
     { GetWorkflowPublication: { session_id: "session-1", publication_ref: "pub-1" } },
+    {
+      AttachToSession: {
+        session_id: "session-1",
+        client_id: `arroba-publication-gateway-${process.pid}-pub-1`,
+        capability_level: "FullTerminal",
+      },
+    },
   ])
   assert.equal(config.publication_id, "pub-1")
   assert.equal(config.workflow_ref, "workflow-1")
@@ -324,9 +331,10 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListConnectors",
       "ListCredentials",
       "MaterializeWorkflowPublication",
+      "AttachToSession",
     ])
     assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: "/repo" } })
-    const materializeRequest = requests.at(-1) as {
+    const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
       MaterializeWorkflowPublication: {
         snapshot: {
           agents: Array<{ provider: string; model: string | null; effort?: string | null }>
