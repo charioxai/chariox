@@ -6,6 +6,7 @@ import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
 import { validateInput } from "./publication-parser.js"
+import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -88,7 +89,10 @@ async function streamApiSseInvocation(
     const result = deps.invokeWorkflow
       ? await deps.invokeWorkflow(invocation)
       : await invokeKernelWorkflow({ ...publication, mode: "async" }, invocation)
-    await streamApiSseResult(reply, publication, result, state, Boolean(deps.invokeWorkflow))
+    await streamApiSseResult(reply, publication, result, state, {
+      requestId: invocation.request_id,
+      injectedWorkflowInvoker: Boolean(deps.invokeWorkflow),
+    })
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -101,10 +105,16 @@ async function streamApiSseResult(
   publication: WorkflowPublicationConfig,
   result: WorkflowInvocationResult,
   state: StreamState,
-  injectedWorkflowInvoker: boolean,
+  options: {
+    requestId: string
+    injectedWorkflowInvoker: boolean
+  },
 ) {
   if (result.queued) {
     writeSse(reply, "queued", { result: result.response ?? null })
+    if (!options.injectedWorkflowInvoker) {
+      await streamQueuedInvocationByRequestId(reply, publication, options.requestId, state)
+    }
     return
   }
   const initialRun = result.workflow_run
@@ -117,8 +127,32 @@ async function streamApiSseResult(
     return
   }
   emitWorkflowRunEvents(reply, initialRun, state)
-  if (isTerminalWorkflowRunStatus(initialRun.status) || injectedWorkflowInvoker) return
+  if (isTerminalWorkflowRunStatus(initialRun.status) || options.injectedWorkflowInvoker) return
   await streamWorkflowRunUntilFinal(reply, publication, initialRun.id, state)
+}
+
+async function streamQueuedInvocationByRequestId(
+  reply: ApiSseReply,
+  publication: WorkflowPublicationConfig,
+  requestId: string,
+  state: StreamState,
+) {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, publication, requestId, {
+      shouldContinue: () => !reply.raw.destroyed,
+    })
+    if (!workflowRun) {
+      writeSse(reply, "timeout", { invocation_id: requestId })
+      return
+    }
+    emitWorkflowRunEvents(reply, workflowRun, state)
+    if (!isTerminalWorkflowRunStatus(workflowRun.status)) {
+      await streamWorkflowRunUntilFinal(reply, publication, workflowRun.id, state)
+    }
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 async function streamWorkflowRunUntilFinal(

@@ -11,6 +11,7 @@ import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
 import { validateInput } from "./publication-parser.js"
+import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -112,11 +113,34 @@ async function handlePublicationWebSocketMessage(
     sendWebSocketJson(webSocket, { type: "accepted", ...result })
     if (!deps.invokeWorkflow && result.workflow_run?.id) {
       await streamWorkflowRun(webSocket, publication, result.workflow_run.id)
+    } else if (!deps.invokeWorkflow && result.queued) {
+      await streamQueuedWorkflowRun(webSocket, publication, invocation.request_id)
     } else if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
       sendWebSocketJson(webSocket, { type: "final", workflow_run: result.workflow_run })
     }
   } catch (error) {
     sendWebSocketJson(webSocket, { type: "error", error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+async function streamQueuedWorkflowRun(webSocket: WsSocket, publication: WorkflowPublicationConfig, requestId: string) {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, publication, requestId, {
+      shouldContinue: () => webSocket.readyState === WsSocket.OPEN,
+    })
+    if (!workflowRun) {
+      sendWebSocketJson(webSocket, { type: "timeout", invocation_id: requestId })
+      return
+    }
+    sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
+    if (isTerminalWorkflowRunStatus(workflowRun.status)) {
+      sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
+      return
+    }
+    await streamWorkflowRun(webSocket, publication, workflowRun.id)
+  } finally {
+    await client.close().catch(() => {})
   }
 }
 

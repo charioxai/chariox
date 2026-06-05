@@ -2,6 +2,7 @@ import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import type {
   GatewayRequest,
   WorkflowInvocationResult,
@@ -47,6 +48,16 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
     }
     await streamWorkflowRunEvents(reply, publication, workflowRunId)
   })
+
+  app.get("/.well-known/arroba/publication/invocations/:requestId/events", async (request, reply) => {
+    const params = request.params as { requestId?: string }
+    const requestId = params.requestId
+    if (!requestId) {
+      reply.code(400)
+      return { error: "invocation request id is required" }
+    }
+    await streamInvocationEvents(reply, publication, requestId)
+  })
 }
 
 export function shouldReturnHumanHtml(
@@ -64,9 +75,10 @@ export function forwardHumanHttpResult(
   reply: Pick<HumanHttpReply, "code" | "type">,
   publication: WorkflowPublicationConfig,
   result: WorkflowInvocationResult,
+  invocationRequestId?: string,
 ) {
   reply.code(200).type("text/html; charset=utf-8")
-  return humanHttpStatusPage(publication, result)
+  return humanHttpStatusPage(publication, result, invocationRequestId)
 }
 
 function isHumanHttpPublication(publication: WorkflowPublicationConfig) {
@@ -138,10 +150,13 @@ function humanHttpFormPage(publication: WorkflowPublicationConfig) {
 function humanHttpStatusPage(
   publication: WorkflowPublicationConfig,
   result: WorkflowInvocationResult,
+  invocationRequestId?: string,
 ) {
   const workflowRunId = result.workflow_run?.id ?? null
   const eventsUrl = workflowRunId
     ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
+    : result.queued && invocationRequestId
+      ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
     : null
   return htmlDocument(
     "Workflow Run",
@@ -178,6 +193,41 @@ function humanHttpStatusPage(
   )
 }
 
+async function streamInvocationEvents(
+  reply: HumanHttpReply,
+  publication: WorkflowPublicationConfig,
+  requestId: string,
+) {
+  reply.hijack()
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  })
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    writeSse(reply, "queued", { invocation_id: requestId })
+    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, publication, requestId, {
+      shouldContinue: () => !reply.raw.destroyed,
+    })
+    if (!workflowRun) {
+      writeSse(reply, "timeout", { invocation_id: requestId })
+      return
+    }
+    writeSse(reply, "status", { workflow_run: workflowRun })
+    if (isTerminalWorkflowRunStatus(workflowRun.status)) {
+      writeSse(reply, "final", { workflow_run: workflowRun })
+      return
+    }
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client)
+  } catch (error) {
+    writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
+  } finally {
+    await client.close().catch(() => {})
+    reply.raw.end()
+  }
+}
+
 async function streamWorkflowRunEvents(
   reply: HumanHttpReply,
   publication: WorkflowPublicationConfig,
@@ -191,32 +241,41 @@ async function streamWorkflowRunEvents(
   })
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
-    const timeoutMs = publication.sync_timeout_ms ?? 30_000
-    const pollMs = publication.poll_ms ?? 500
-    const deadline = Date.now() + timeoutMs
-    let lastStatus: string | null = null
-    while (Date.now() < deadline && !reply.raw.destroyed) {
-      const response = await client.send<Record<string, unknown>>(
-        getWorkflowRunRequest(publication.session_id, workflowRunId),
-      )
-      const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
-      if (workflowRun && workflowRun.status !== lastStatus) {
-        lastStatus = workflowRun.status
-        writeSse(reply, "status", { workflow_run: workflowRun })
-      }
-      if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
-        writeSse(reply, "final", { workflow_run: workflowRun })
-        return
-      }
-      await sleep(pollMs)
-    }
-    writeSse(reply, "timeout", { workflow_run_id: workflowRunId })
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
     await client.close().catch(() => {})
     reply.raw.end()
   }
+}
+
+async function streamWorkflowRunEventsWithClient(
+  reply: HumanHttpReply,
+  publication: WorkflowPublicationConfig,
+  workflowRunId: string,
+  client: LocalIpcClient,
+) {
+  const timeoutMs = publication.sync_timeout_ms ?? 30_000
+  const pollMs = publication.poll_ms ?? 500
+  const deadline = Date.now() + timeoutMs
+  let lastStatus: string | null = null
+  while (Date.now() < deadline && !reply.raw.destroyed) {
+    const response = await client.send<Record<string, unknown>>(
+      getWorkflowRunRequest(publication.session_id, workflowRunId),
+    )
+    const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
+    if (workflowRun && workflowRun.status !== lastStatus) {
+      lastStatus = workflowRun.status
+      writeSse(reply, "status", { workflow_run: workflowRun })
+    }
+    if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
+      writeSse(reply, "final", { workflow_run: workflowRun })
+      return
+    }
+    await sleep(pollMs)
+  }
+  writeSse(reply, "timeout", { workflow_run_id: workflowRunId })
 }
 
 function writeSse(reply: HumanHttpReply, event: string, payload: unknown) {

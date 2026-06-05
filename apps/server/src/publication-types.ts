@@ -122,6 +122,7 @@ export type WorkflowRun = {
   status: string
   workflow_id?: string
   endpoint_id?: string
+  invocation_prompt?: string | null
   intermediate_outputs?: Array<{
     id: string
     source_node_run_id?: string

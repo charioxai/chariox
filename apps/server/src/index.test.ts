@@ -13,6 +13,7 @@ import {
   publicationConfigFromPackage,
   type WorkflowPublicationConfig,
 } from "./index.js"
+import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { WebSocket } from "ws"
 
 const baseConfig: WorkflowPublicationConfig = {
@@ -828,6 +829,57 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
   } finally {
     await app.close()
   }
+})
+
+test("human HTTP queued browser GET opens an invocation SSE subscription", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+  }, {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      queued: true,
+      response: { queued_prompt: { id: "queue-1" } },
+    }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/queued", headers: { accept: "text/html" } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /EventSource/)
+    assert.match(response.body, /\/\.well-known\/arroba\/publication\/invocations\//)
+  } finally {
+    await app.close()
+  }
+})
+
+test("workflow run correlation resolves queued publication invocations by request id", async () => {
+  const client = {
+    send: async () => ({
+      WorkflowRunsListed: {
+        workflow_runs: [{
+          id: "run-1",
+          status: "Completed",
+          invocation_prompt: JSON.stringify({
+            publication_id: "pub-test",
+            request_id: "api_123",
+            input: { prompt: "ship" },
+          }),
+        }, {
+          id: "run-2",
+          status: "Completed",
+          invocation_prompt: JSON.stringify({ request_id: "api_456" }),
+        }],
+      },
+    }),
+  }
+
+  const workflowRun = await findWorkflowRunByInvocationRequestId(client, baseConfig, "api_123")
+
+  assert.equal(workflowRun?.id, "run-1")
 })
 
 test("gateway supports regex and path-template parsers", async () => {
