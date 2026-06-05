@@ -140,8 +140,8 @@ impl KernelRuntimeState {
             .lock()
             .await
             .iter()
-            .any(|(_, value)| {
-                value.invocation_id == metadata.invocation_id && value.result.is_none()
+            .any(|(key, value)| {
+                home_extension_invocation_matches_cancel(key, value, context, metadata)
             });
         if in_flight {
             self.owned
@@ -530,6 +530,18 @@ fn remote_extension_invocation_key(
     )
 }
 
+fn home_extension_invocation_matches_cancel(
+    key: &str,
+    value: &RemoteExtensionInvocationState,
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    metadata: &crate::extension::RemoteExtensionInvocationMetadata,
+) -> bool {
+    key.starts_with(&remote_extension_invocation_context_prefix(
+        context, metadata,
+    )) && value.invocation_id == metadata.invocation_id
+        && value.result.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,6 +865,30 @@ mod tests {
             .expect("second invocation replay should be available")
             .expect("second result should be cached");
         assert_eq!(replayed, serde_json::json!({"tool": "create_issue"}));
+    }
+
+    #[test]
+    fn home_extension_cancel_match_is_scoped_to_context() {
+        let first_context = context("agent-1");
+        let second_context = context("agent-2");
+        let tool = tool("lookup");
+        let metadata = metadata("invoke-shared");
+        let key = remote_extension_invocation_key(&first_context, &tool, &metadata);
+        let value = RemoteExtensionInvocationState {
+            invocation_id: metadata.invocation_id.clone(),
+            result: None,
+        };
+
+        assert!(home_extension_invocation_matches_cancel(
+            &key,
+            &value,
+            &first_context,
+            &metadata,
+        ));
+        assert!(
+            !home_extension_invocation_matches_cancel(&key, &value, &second_context, &metadata),
+            "cancelling another context with the same invocation id must not mark this call in-flight",
+        );
     }
 
     #[test]
