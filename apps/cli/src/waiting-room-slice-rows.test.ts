@@ -47,7 +47,7 @@ test("waiting room slice rows show partial provider auth coverage", () => {
     ],
   }, 16)
 
-  assert.equal(rows[1]?.value, "running headless 0 agents - auth codex work (acct-1),claude unknown/state=unknown,missing opencode,refresh claude")
+  assert.equal(rows[1]?.value, "running headless 0 agents - auth codex work (acct-1),claude auth missing/state=unknown,missing opencode,refresh claude")
 })
 
 test("waiting room slice rows show empty and loading states", () => {

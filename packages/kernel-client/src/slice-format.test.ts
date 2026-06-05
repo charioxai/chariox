@@ -39,6 +39,10 @@ test("slice formatter resolves backend provider account labels", () => {
   assert.equal(formatSliceBackendProviderAccount(slice, "codex"), "daily")
   assert.equal(formatSliceBackendProviderAccount(slice, "opencode"), "acct-123...cdef")
   assert.equal(formatSliceBackendProviderAccount(slice, "claude"), "auth missing")
+  assert.equal(formatSliceBackendProviderAccount({
+    providers: ["codex"],
+    provider_auth: [{ provider: "codex", state: "configured" }],
+  }, "codex"), "account unknown")
   assert.equal(formatSliceBackendProviderAccount({ providers: ["codex"], provider_auth: [] }, "codex"), "auth missing")
   assert.equal(formatSliceBackendProviderAccount(slice, "unknown"), null)
 })
@@ -64,7 +68,7 @@ test("slice formatter preserves provider auth attention states", () => {
         state: "not_configured",
       }],
     }),
-    "opencode=not_configured/state=not_configured",
+    "opencode=auth missing/state=not_configured",
   )
 })
 
@@ -108,7 +112,7 @@ test("slice formatter summarizes partial provider auth status", () => {
       providers: ["codex", "opencode"],
       provider_auth: [{ provider: "codex", state: "configured", alias: "daily" }],
     }),
-    "auth codex=daily (configured); missing opencode",
+    "auth codex=daily (account unknown); missing opencode",
   )
   assert.equal(
     formatSliceProviderAuthStatus({
@@ -118,7 +122,7 @@ test("slice formatter summarizes partial provider auth status", () => {
         { provider: "opencode:opencode", state: "not_configured" },
       ],
     }),
-    "auth opencode:openai=configured, opencode:opencode=not_configured/state=not_configured; refresh opencode:opencode",
+    "auth opencode:openai=account unknown, opencode:opencode=auth missing/state=not_configured; refresh opencode:opencode",
   )
 })
 

@@ -144,7 +144,7 @@ test("waiting room slice labels show partial and stale provider auth coverage", 
 
   assert.equal(
     formatWaitingRoomSliceSelection("slice-1", slices),
-    "linux-dev (running, headless, 0 agents, codex work (acct-1), claude not_configured/state=not_configured, missing opencode, refresh claude)",
+    "linux-dev (running, headless, 0 agents, codex work (acct-1), claude auth missing/state=not_configured, missing opencode, refresh claude)",
   )
 })
 

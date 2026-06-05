@@ -124,7 +124,7 @@ export function formatProviderAccountForBackend(
     return account.alias?.trim()
       || account.email?.trim()
       || shortAccountId(account.account_id)
-      || (sliceAuthNeedsAttention(account.state) ? "auth missing" : "auth configured")
+      || fallbackSliceAuthIdentity(account.state)
   }
   const targeted = sliceProviderNames(advertisedProviders ?? []).some((target) => sliceProviderMatches(target, providerId))
   return targeted ? "auth missing" : null
@@ -165,7 +165,7 @@ export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {
   const identity = entry.email
     || entry.account_id
     || entry.auth_type
-    || entry.state
+    || fallbackSliceAuthIdentity(entry.state)
   if (entry.alias && entry.alias !== identity) {
     return `${entry.alias} (${identity})`
   }
@@ -216,4 +216,8 @@ function shortAccountId(accountId: string | null | undefined): string | null {
     return null
   }
   return value.length <= 12 ? value : `${value.slice(0, 8)}...${value.slice(-4)}`
+}
+
+function fallbackSliceAuthIdentity(state: string): string {
+  return sliceAuthNeedsAttention(state) ? "auth missing" : "account unknown"
 }
