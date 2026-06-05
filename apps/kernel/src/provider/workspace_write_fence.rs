@@ -90,7 +90,8 @@ fn apply_platform_workspace_write_fence(
     }
 
     let canonical_roots = canonical_workspace_live_sync_roots(protected_roots)?;
-    let profile_path = write_macos_seatbelt_profile(request, &canonical_roots)?;
+    let exception_roots = nested_git_repository_exception_roots(&canonical_roots);
+    let profile_path = write_macos_seatbelt_profile(request, &canonical_roots, &exception_roots)?;
 
     let mut wrapped_args = vec![
         "-f".to_string(),
@@ -147,6 +148,7 @@ fn apply_platform_workspace_write_fence(
 fn write_macos_seatbelt_profile(
     request: &LaunchProviderRequest,
     canonical_roots: &[PathBuf],
+    exception_roots: &[PathBuf],
 ) -> Result<PathBuf, DaemonError> {
     let profile_dir = std::env::temp_dir().join("arroba-workspace-write-fences");
     fs::create_dir_all(&profile_dir).map_err(|error| DaemonError::LocalTransport {
@@ -160,7 +162,7 @@ fn write_macos_seatbelt_profile(
         "workspace-{:x}.sb",
         workspace_fence_hash(request, canonical_roots)
     ));
-    let profile = macos_seatbelt_profile(canonical_roots);
+    let profile = macos_seatbelt_profile(canonical_roots, exception_roots);
     fs::write(&profile_path, profile).map_err(|error| DaemonError::LocalTransport {
         operation: "workspace_write_fence",
         message: format!(
@@ -182,7 +184,7 @@ fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_roots: &[Path
     hasher.finish()
 }
 
-fn macos_seatbelt_profile(canonical_roots: &[PathBuf]) -> String {
+fn macos_seatbelt_profile(canonical_roots: &[PathBuf], exception_roots: &[PathBuf]) -> String {
     let mut profile = "(version 1)\n".to_string();
     for root in canonical_roots {
         profile.push_str(&format!(
@@ -190,8 +192,95 @@ fn macos_seatbelt_profile(canonical_roots: &[PathBuf]) -> String {
             seatbelt_string(root)
         ));
     }
+    for root in exception_roots {
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}\"))\n",
+            seatbelt_string(root)
+        ));
+    }
     profile.push_str("(allow default)\n");
     profile
+}
+
+#[cfg(target_os = "macos")]
+fn nested_git_repository_exception_roots(canonical_roots: &[PathBuf]) -> Vec<PathBuf> {
+    const MAX_SCANNED_DIRECTORIES: usize = 20_000;
+
+    let mut exceptions = Vec::new();
+    let mut scanned = 0_usize;
+    for root in canonical_roots {
+        collect_nested_git_repository_exception_roots(
+            root,
+            root,
+            canonical_roots,
+            &mut exceptions,
+            &mut scanned,
+            MAX_SCANNED_DIRECTORIES,
+        );
+    }
+    exceptions.sort();
+    exceptions.dedup();
+    exceptions
+}
+
+#[cfg(target_os = "macos")]
+fn collect_nested_git_repository_exception_roots(
+    scan_root: &Path,
+    directory: &Path,
+    protected_roots: &[PathBuf],
+    exceptions: &mut Vec<PathBuf>,
+    scanned: &mut usize,
+    max_scanned: usize,
+) {
+    if *scanned >= max_scanned {
+        return;
+    }
+    *scanned += 1;
+
+    let git_marker = directory.join(".git");
+    if git_marker.exists() && directory != scan_root {
+        if let Ok(canonical) = directory.canonicalize() {
+            if protected_roots.iter().all(|root| root != &canonical)
+                && !exceptions.iter().any(|root| root == &canonical)
+            {
+                exceptions.push(canonical);
+            }
+        }
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == ".git"
+            || name == ".arroba"
+            || name == "node_modules"
+            || name == "target"
+            || name == ".next"
+            || name == "dist"
+            || name == "build"
+        {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_nested_git_repository_exception_roots(
+                scan_root,
+                &entry.path(),
+                protected_roots,
+                exceptions,
+                scanned,
+                max_scanned,
+            );
+            if *scanned >= max_scanned {
+                return;
+            }
+        }
+    }
 }
 
 fn seatbelt_string(path: &Path) -> String {
@@ -330,10 +419,13 @@ mod tests {
 
     #[test]
     fn macos_profile_denies_each_protected_root_only() {
-        let profile = super::macos_seatbelt_profile(&[
-            PathBuf::from("/repo/selected"),
-            PathBuf::from("/repo/attached"),
-        ]);
+        let profile = super::macos_seatbelt_profile(
+            &[
+                PathBuf::from("/repo/selected"),
+                PathBuf::from("/repo/attached"),
+            ],
+            &[],
+        );
 
         assert!(profile.contains("(deny file-write* (subpath \"/repo/selected\"))"));
         assert!(profile.contains("(deny file-write* (subpath \"/repo/attached\"))"));
@@ -342,8 +434,20 @@ mod tests {
     }
 
     #[test]
+    fn macos_profile_allows_nested_unsynced_git_repo_exceptions() {
+        let profile = super::macos_seatbelt_profile(
+            &[PathBuf::from("/repo/selected")],
+            &[PathBuf::from("/repo/selected/other-repo")],
+        );
+
+        assert!(profile.contains("(deny file-write* (subpath \"/repo/selected\"))"));
+        assert!(profile.contains("(allow file-write* (subpath \"/repo/selected/other-repo\"))"));
+        assert!(profile.ends_with("(allow default)\n"));
+    }
+
+    #[test]
     fn macos_profile_escapes_protected_roots() {
-        let profile = super::macos_seatbelt_profile(&[PathBuf::from("/repo/quoted \"root\"")]);
+        let profile = super::macos_seatbelt_profile(&[PathBuf::from("/repo/quoted \"root\"")], &[]);
 
         assert!(profile.contains("(deny file-write* (subpath \"/repo/quoted \\\"root\\\"\"))"));
         assert!(profile.ends_with("(allow default)\n"));
@@ -400,6 +504,59 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_workspace_write_fence_allows_nested_unsynced_git_repo_at_runtime() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-workspace-write-fence-nested-repo-test-{}",
+            std::process::id()
+        ));
+        let protected_root = base.join("selected");
+        let nested_repo = protected_root.join("other-repo");
+        std::fs::create_dir_all(&nested_repo).expect("nested repo fixture should exist");
+        run_git_init(&nested_repo);
+
+        let outside_launch = fenced_shell_launch(
+            &protected_root,
+            &nested_repo,
+            "printf ok > nested-write.txt",
+        );
+        let nested = std::process::Command::new(outside_launch.pty_program.as_deref().unwrap())
+            .args(&outside_launch.pty_args)
+            .current_dir(&nested_repo)
+            .envs(&outside_launch.pty_env)
+            .output()
+            .expect("nested write process should launch");
+
+        let protected_launch = fenced_shell_launch(
+            &protected_root,
+            &nested_repo,
+            &format!(
+                "printf denied > {}",
+                protected_root.join("inside-selected.txt").display()
+            ),
+        );
+        let protected =
+            std::process::Command::new(protected_launch.pty_program.as_deref().unwrap())
+                .args(&protected_launch.pty_args)
+                .current_dir(&nested_repo)
+                .envs(&protected_launch.pty_env)
+                .output()
+                .expect("protected write process should launch");
+
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            nested.status.success(),
+            "nested git repo write should succeed: stderr={}",
+            String::from_utf8_lossy(&nested.stderr)
+        );
+        assert!(
+            !protected.status.success(),
+            "selected root write should stay blocked"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     fn fenced_shell_launch(
         protected_root: &std::path::Path,
         working_directory: &std::path::Path,
@@ -422,5 +579,24 @@ mod tests {
             structured_endpoint: Some("http://127.0.0.1:1".to_string()),
         };
         apply_workspace_write_fence(launch, &request).expect("launch should be fenced")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_git_init(path: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .arg("-b")
+            .arg("main")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run");
+        assert!(
+            status.success(),
+            "git init should succeed in {}",
+            path.display()
+        );
     }
 }
