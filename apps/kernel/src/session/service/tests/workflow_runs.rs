@@ -683,6 +683,62 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
 }
 
 #[test]
+fn publication_runtime_watchdogs_are_collected_from_hidden_materialized_session() {
+    let mut service = SessionService::new(&test_config());
+    let source_session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("source session should be created");
+    seed_agents(&mut service, source_session.id(), &["agent-1"]);
+    let source = workflow_with_endpoint(&mut service, source_session.id(), "published", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(source_session.id(), source.workflow.id())
+        .expect("workflow should resolve with its endpoint");
+    let mut watchdog = crate::session::WorkflowWatchdogDefinition::new(
+        "published-watchdog",
+        workflow.id(),
+        source.endpoint.id(),
+        60,
+        "scheduled publication prompt",
+        WorkflowWatchdogPolicy::Queue,
+        Some(2),
+    );
+    watchdog.set_next_run_at_ms(0);
+
+    let runtime_session = service
+        .create_session(
+            CreateSessionRequest::new("publication-workspace", "publication-worktree")
+                .with_hidden(true),
+        )
+        .expect("publication runtime session should be created");
+    let materialized = service
+        .replace_publication_runtime_workflows(
+            runtime_session.id(),
+            vec![workflow.clone()],
+            vec![crate::session::WorkflowPromptQueueDefinition::default_queue(workflow.id())],
+            vec![watchdog.clone()],
+        )
+        .expect("publication runtime workflows should materialize");
+    assert!(materialized.is_hidden());
+    assert_eq!(materialized.workflow_watchdogs(), &[watchdog.clone()]);
+
+    let plans = service
+        .collect_due_workflow_watchdog_invocations(0)
+        .expect("publication watchdog should collect");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].watchdog_id, watchdog.id());
+    assert_eq!(plans[0].session_id, runtime_session.id());
+    assert_eq!(plans[0].workflow_id, workflow.id());
+    assert_eq!(plans[0].endpoint_id, source.endpoint.id());
+    assert_eq!(plans[0].invocation_prompt, "scheduled publication prompt");
+
+    let updated = service
+        .resolve_workflow_watchdog_ref(runtime_session.id(), watchdog.id())
+        .expect("materialized watchdog should resolve");
+    assert_eq!(updated.last_status(), Some("invoking"));
+    assert_eq!(updated.next_run_at_ms(), 60_000);
+}
+
+#[test]
 fn workflow_watchdog_defaults_to_bounded_max_wakeups() {
     let mut service = SessionService::new(&test_config());
     let session = service

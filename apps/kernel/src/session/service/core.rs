@@ -68,6 +68,7 @@ impl SessionService {
         session_id: &str,
         workflows: Vec<WorkflowDefinition>,
         workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
+        workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
     ) -> Result<RuntimeSession, DaemonError> {
         let session =
             self.store
@@ -75,7 +76,11 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        session.replace_publication_runtime_workflows(workflows, workflow_prompt_queues);
+        session.replace_publication_runtime_workflows(
+            workflows,
+            workflow_prompt_queues,
+            workflow_watchdogs,
+        );
         let first_agent_id = session
             .workflows()
             .first()

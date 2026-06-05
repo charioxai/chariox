@@ -600,9 +600,11 @@ impl RuntimeSession {
         &mut self,
         workflows: Vec<WorkflowDefinition>,
         workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
+        workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
     ) {
         self.workflows = workflows;
         self.workflow_prompt_queues = workflow_prompt_queues;
+        self.workflow_watchdogs = workflow_watchdogs;
         let workflow_ids = self
             .workflows
             .iter()

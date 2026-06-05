@@ -142,6 +142,37 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        if let Some(watchdog) = request
+            .snapshot
+            .watchdogs
+            .iter()
+            .find(|watchdog| watchdog.workflow_id() != workflow_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "materialize workflow publication",
+                message: format!(
+                    "snapshot watchdog `{}` belongs to workflow `{}` instead of `{workflow_id}`",
+                    watchdog.id(),
+                    watchdog.workflow_id()
+                ),
+            });
+        }
+        if let Some(watchdog) = request.snapshot.watchdogs.iter().find(|watchdog| {
+            request
+                .snapshot
+                .workflow
+                .endpoint(watchdog.endpoint_id())
+                .is_none()
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "materialize workflow publication",
+                message: format!(
+                    "snapshot watchdog `{}` references missing endpoint `{}`",
+                    watchdog.id(),
+                    watchdog.endpoint_id()
+                ),
+            });
+        }
 
         let captured_agents = request
             .snapshot
@@ -207,6 +238,7 @@ impl KernelRuntimeOwnedState {
             &session_id,
             vec![workflow],
             request.snapshot.queues,
+            request.snapshot.watchdogs,
         )?;
         let session = self.workflow_session(&session_id)?;
         Ok(LocalDaemonResponse::WorkflowPublicationMaterialized {

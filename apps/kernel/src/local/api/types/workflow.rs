@@ -83,6 +83,8 @@ pub struct WorkflowPublicationSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queues: Vec<WorkflowPromptQueueDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watchdogs: Vec<WorkflowWatchdogDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentInstance>,
 }
 

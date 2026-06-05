@@ -382,7 +382,13 @@ test("executeShellCommand exports a workflow publication package", async () => {
       mode: "async",
     })
     const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
-    const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication], workflow_prompt_queues: [queue] })
+    const watchdog = makeWorkflowWatchdog({ policy: "queue", invocation_prompt: "published schedule" })
+    const session = makeSession({
+      workflows: [makeWorkflow()],
+      workflow_publications: [publication],
+      workflow_prompt_queues: [queue],
+      workflow_watchdogs: [watchdog],
+    })
     const fake = fakeClient((request) => {
       if ("GetWorkflowPublication" in request) {
         return { WorkflowPublication: { publication } }
@@ -419,6 +425,8 @@ test("executeShellCommand exports a workflow publication package", async () => {
     assert.equal(snapshot.workflow.id, "workflow-1")
     assert.equal(snapshot.endpoint.id, "endpoint-1")
     assert.equal(snapshot.queues[0].id, "default")
+    assert.equal(snapshot.watchdogs[0].id, "watchdog-1")
+    assert.equal(snapshot.watchdogs[0].invocation_prompt, "published schedule")
     assert.equal(snapshot.agents[0].id, "agent-1")
     const requirements = JSON.parse(await readFile(join(root, "exported", "requirements.json"), "utf8"))
     assert.deepEqual(requirements.mcps, [])

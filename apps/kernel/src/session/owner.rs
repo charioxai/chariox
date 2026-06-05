@@ -72,11 +72,13 @@ impl SessionStateStore {
         session_id: &str,
         workflows: Vec<super::WorkflowDefinition>,
         workflow_prompt_queues: Vec<super::WorkflowPromptQueueDefinition>,
+        workflow_watchdogs: Vec<super::WorkflowWatchdogDefinition>,
     ) -> Result<RuntimeSession, DaemonError> {
         self.write().replace_publication_runtime_workflows(
             session_id,
             workflows,
             workflow_prompt_queues,
+            workflow_watchdogs,
         )
     }
 

@@ -100,6 +100,7 @@ function workflowPublicationSnapshot(publication: WorkflowPublicationDefinition,
     workflow,
     endpoint,
     queues: (session.workflow_prompt_queues ?? []).filter((queue) => queue.workflow_id === workflow.id),
+    watchdogs: (session.workflow_watchdogs ?? []).filter((watchdog) => watchdog.workflow_id === workflow.id),
     agents,
   }
 }

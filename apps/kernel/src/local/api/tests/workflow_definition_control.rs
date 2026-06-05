@@ -394,6 +394,15 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         .find(|queue| queue.workflow_id() == workflow.id() && queue.alias() == "default")
         .expect("source workflow should have a default queue")
         .clone();
+    let source_watchdog = crate::session::WorkflowWatchdogDefinition::new(
+        "watchdog-1",
+        workflow.id(),
+        endpoint.id(),
+        60,
+        "publication watchdog",
+        crate::session::WorkflowWatchdogPolicy::Queue,
+        Some(1),
+    );
     match harness
         .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
             session_ref: source_session.id().to_string(),
@@ -419,8 +428,9 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
                         worktree_id: source_session.worktree_id().to_string(),
                     }),
                     workflow: workflow.clone(),
-                    endpoint: Some(endpoint),
+                    endpoint: Some(endpoint.clone()),
                     queues: vec![source_queue],
+                    watchdogs: vec![source_watchdog.clone()],
                     agents: vec![source_agent.clone()],
                 },
             },
@@ -447,6 +457,15 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     assert!(materialized.is_hidden());
     assert_ne!(materialized.id(), source_session.id());
     assert_eq!(materialized.workflows().len(), 1);
+    assert_eq!(materialized.workflow_watchdogs().len(), 1);
+    assert_eq!(
+        materialized.workflow_watchdogs()[0].invocation_prompt(),
+        source_watchdog.invocation_prompt()
+    );
+    assert_eq!(
+        materialized.workflow_watchdogs()[0].endpoint_id(),
+        endpoint.id()
+    );
     assert_eq!(materialized.agents().len(), 1);
     assert_ne!(materialized.agents()[0].id(), source_agent.id());
 
