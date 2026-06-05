@@ -189,6 +189,149 @@ async function stopProcess(child) {
   })
 }
 
+async function findChromeExecutable() {
+  const candidates = [
+    process.env.ARROBA_CHROME_PATH,
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    'google-chrome',
+    'chromium',
+    'chromium-browser',
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    const result = await run(candidate, ['--version'])
+    if (result.code === 0) return candidate
+  }
+  return null
+}
+
+async function runHumanHttpBrowserDrill({ url, root }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) {
+    logStep('browser_screenshot_skipped', { reason: 'chrome-not-found' })
+    return
+  }
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(root, 'chrome-profile')
+  const screenshotPath = path.join(root, 'human-http-final.png')
+  await mkdir(userDataDir, { recursive: true })
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      url,
+    ],
+    process.env,
+    'chrome-human-http-publication',
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, url, chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await waitForBrowserFinalOutput(cdp)
+    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error('browser screenshot was empty')
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    logStep('browser_screenshot_ok', { screenshotPath })
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+  }
+}
+
+async function waitForChromeTarget(debuggingPort, expectedUrl, chrome) {
+  const endpoint = `http://127.0.0.1:${debuggingPort}/json/list`
+  const deadline = Date.now() + 20_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(endpoint)
+      const targets = await response.json()
+      const target = targets.find((candidate) => candidate.type === 'page' && candidate.url === expectedUrl)
+        ?? targets.find((candidate) => candidate.type === 'page' && candidate.webSocketDebuggerUrl)
+      if (target?.webSocketDebuggerUrl) return target
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`Chrome DevTools target did not become ready: ${lastError?.message ?? 'no page target'}\n${chrome.logs.stderr.slice(-2_000)}`)
+}
+
+async function connectChromeTarget(webSocketUrl) {
+  const socket = new WebSocket(webSocketUrl)
+  let nextId = 1
+  const pending = new Map()
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out opening Chrome DevTools socket')), 10_000)
+    socket.once('open', () => {
+      clearTimeout(timeout)
+      resolve()
+    })
+    socket.once('error', reject)
+  })
+  socket.on('message', (data) => {
+    const message = JSON.parse(data.toString())
+    if (typeof message.id !== 'number') return
+    const waiter = pending.get(message.id)
+    if (!waiter) return
+    pending.delete(message.id)
+    if (message.error) waiter.reject(new Error(`${message.error.message}: ${message.error.data ?? ''}`))
+    else waiter.resolve(message.result ?? {})
+  })
+  socket.on('error', (error) => {
+    for (const waiter of pending.values()) waiter.reject(error)
+    pending.clear()
+  })
+  return {
+    send(method, params = {}) {
+      const id = nextId++
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        socket.send(JSON.stringify({ id, method, params }))
+      })
+    },
+    close() {
+      return new Promise((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) return resolve()
+        socket.once('close', resolve)
+        socket.close()
+      })
+    },
+  }
+}
+
+async function waitForBrowserFinalOutput(cdp) {
+  const deadline = Date.now() + 30_000
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const status = document.querySelector('#status')?.textContent?.trim() || '';
+        const output = document.querySelector('#output')?.textContent?.trim() || '';
+        return { status, output, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
+      })()`,
+    })
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.ok) return
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  throw new Error(`browser did not render final workflow output: ${JSON.stringify(lastState)}`)
+}
+
 async function waitForProcessExit(child, timeoutMs = 10_000) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return { code: child.exitCode, signal: child.signalCode }
@@ -317,6 +460,7 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
+  const browserWorkspace = path.join(root, 'browser-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
@@ -352,6 +496,7 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(apiSseWorkspace, { recursive: true })
+    await mkdir(browserWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
@@ -457,6 +602,46 @@ async function main() {
         methods: ['POST'],
         transport: { kind: 'api_sse_json' },
         parser: { kind: 'json' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+    logStep('create_browser_session')
+    const browserSession = variant(
+      await client.send(createSessionRequest(browserWorkspace, browserWorkspace, 'publication-drill-human-http-final')),
+      'SessionCreated',
+    ).session
+    sessionIds.push(browserSession.id)
+    await client.send(attachToSessionRequest(browserSession.id, `publication-drill-human-http-final-${process.pid}`))
+    const browserAgent = variant(
+      await client.send(spawnAgentRequest(browserSession.id, 'dev-stub', 'human-http-final', 'workflow-single-turn-node', browserWorkspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    const browserProviderRun = variant(
+      await client.send(launchProviderRunRequest(browserSession.id, 'dev-stub', 'default', 'workflow-single-turn-node', 'low', browserAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    await waitForProviderRunReady(client, browserProviderRun.id)
+    const browserWorkflow = variant(await client.send(createWorkflowRequest(browserSession.id, 'published-human-http-final')), 'WorkflowCreated').workflow
+    const browserNode = variant(await client.send(addWorkflowNodeRequest(browserSession.id, browserWorkflow.id, browserAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(
+      browserSession.id,
+      browserWorkflow.id,
+      browserNode.id,
+      'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+    ))
+    await client.send(setWorkflowNodeCanCompleteRunRequest(browserSession.id, browserWorkflow.id, browserNode.id, true))
+    const browserEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(browserSession.id, browserWorkflow.id, browserNode.id, 'browser')),
+      'WorkflowEndpointCreated',
+    ).endpoint
+    const humanHttpFinalPublication = variant(
+      await client.send(createWorkflowPublicationRequest(browserSession.id, browserWorkflow.id, browserEndpoint.id, {
+        alias: 'public_human_http_final',
+        route: '/final/*',
+        methods: ['GET'],
+        transport: { kind: 'human_http' },
+        parser: { kind: 'path_template', template: '/final/:task' },
         mode: 'async',
       })),
       'WorkflowPublicationCreated',
@@ -648,6 +833,28 @@ async function main() {
       throw new Error(`expected API SSE queued/started/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_human_http_browser_final')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: browserSession.id,
+        ARROBA_PUBLICATION_ID: humanHttpFinalPublication.id,
+      },
+      'gateway-human-http-final',
+    )
+    await waitForGateway(gatewayUrl)
+    await runHumanHttpBrowserDrill({
+      url: `${gatewayUrl}/final/browser-final-publication`,
+      root,
+    })
     await stopProcess(gateway)
     gateway = null
 
