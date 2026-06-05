@@ -56,6 +56,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   const notices: string[] = []
   const footers: string[] = []
   const modeUpdates: string[] = []
+  const defaultUpdates: string[] = []
   const statusUpdates: string[] = []
   const auditCalls: string[] = []
   const auditEvents: RecallEvent[] = [{
@@ -92,6 +93,9 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     setWorkspaceLiveSyncMode: async (sessionId, mode) => {
       modeUpdates.push(`${sessionId}:${mode}`)
     },
+    setUserConfigValue: async (path, value) => {
+      defaultUpdates.push(`${path}:${value}`)
+    },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
   })
@@ -105,6 +109,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync enable managed")
   await runWorkspace(deps, "/workspace sync enable tracked")
   await runWorkspace(deps, "/workspace sync disable")
+  await runWorkspace(deps, "/workspace sync default tracked")
 
   assert.match(notices[0] ?? "", /Workspace live sync: managed footer=conflict/)
   assert.match(notices[0] ?? "", /Scope: selected workspace\/worktree only; other repositories are unrestricted/)
@@ -133,11 +138,12 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     "session-1:tracked",
     "session-1:unrestricted",
   ])
+  assert.deepEqual(defaultUpdates, ["providers.workspace_live_sync:tracked"])
   assert.deepEqual(footers.slice(-4), [
-    "info:current session workspace live sync set to tracked (selected workspace/worktree only; other repositories unrestricted)",
     "info:current session workspace live sync enabled: managed (selected workspace/worktree only; other repositories unrestricted)",
     "info:current session workspace live sync enabled: tracked (selected workspace/worktree only; other repositories unrestricted)",
     "info:current session workspace live sync disabled; other repositories remain unrestricted",
+    "info:default workspace live sync for new sessions set to tracked (selected workspace/worktree only; other repositories unrestricted)",
   ])
 
   status.targets = []
@@ -167,9 +173,13 @@ test("workspace sync audit renders empty state", async () => {
 test("workspace sync slash commands use off managed tracked mode names", async () => {
   const footers: string[] = []
   const modeUpdates: string[] = []
+  const defaultUpdates: string[] = []
   const deps = workspaceDeps({
     setWorkspaceLiveSyncMode: async (sessionId, mode) => {
       modeUpdates.push(`${sessionId}:${mode}`)
+    },
+    setUserConfigValue: async (path, value) => {
+      defaultUpdates.push(`${path}:${value}`)
     },
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
   })
@@ -177,12 +187,38 @@ test("workspace sync slash commands use off managed tracked mode names", async (
   await runWorkspace(deps, "/workspace sync mode on")
   await runWorkspace(deps, "/workspace sync mode off")
   await runWorkspace(deps, "/workspace sync enable on")
+  await runWorkspace(deps, "/workspace sync default on")
+  await runWorkspace(deps, "/workspace sync default off")
 
   assert.deepEqual(modeUpdates, ["session-1:unrestricted"])
+  assert.deepEqual(defaultUpdates, ["providers.workspace_live_sync:off"])
   assert.deepEqual(footers, [
     "error:usage: /workspace sync mode off|managed|tracked",
     "info:current session workspace live sync disabled; other repositories remain unrestricted",
     "error:usage: /workspace sync enable [managed|tracked]",
+    "error:usage: /workspace sync default off|managed|tracked",
+    "info:default workspace live sync for new sessions disabled; other repositories remain unrestricted",
+  ])
+})
+
+test("workspace sync default can be changed without an attached session", async () => {
+  const footers: string[] = []
+  const defaultUpdates: string[] = []
+  const deps = workspaceDeps({
+    isAttached: () => false,
+    setUserConfigValue: async (path, value) => {
+      defaultUpdates.push(`${path}:${value}`)
+    },
+    flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
+  })
+
+  await runWorkspace(deps, "/workspace sync default managed")
+  await runWorkspace(deps, "/workspace sync status")
+
+  assert.deepEqual(defaultUpdates, ["providers.workspace_live_sync:managed"])
+  assert.deepEqual(footers, [
+    "info:default workspace live sync for new sessions set to managed (selected workspace/worktree only; other repositories unrestricted)",
+    "error:attach to a session before viewing workspace live sync",
   ])
 })
 

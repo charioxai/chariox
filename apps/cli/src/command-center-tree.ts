@@ -364,6 +364,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "workspace-sync-off", label: "sync off", description: "Disable live sync for this session; other repositories stay unrestricted", value: "/workspace sync off" },
       { id: "workspace-sync-managed", label: "sync managed", description: "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted", value: "/workspace sync managed" },
       { id: "workspace-sync-tracked", label: "sync tracked", description: "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted", value: "/workspace sync tracked" },
+      { id: "workspace-sync-default", label: "sync default", description: "Set default live sync for new sessions without changing the current session", value: "/workspace sync default " },
       { id: "workspace-sync-link", label: "sync link", description: "Attach this worktree to a sync link", value: "/workspace sync link " },
     ],
   },

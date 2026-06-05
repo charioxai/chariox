@@ -6,6 +6,7 @@ import type {
 import type { ParsedSlashCommand } from "./commands.js"
 import type { RecallEvent } from "@arroba/kernel-client"
 import {
+  formatWorkspaceLiveSyncDefaultModeChangeMessage,
   formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
   workspaceLiveSyncModeProtocolValue,
@@ -77,6 +78,16 @@ async function handleWorkspaceSyncCommand(
   action: string | undefined,
   args: string[],
 ): Promise<void> {
+  if (action === "default") {
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
+    if (!mode || args.length !== 1 || !deps.setUserConfigValue) {
+      deps.flashFooter("usage: /workspace sync default off|managed|tracked", "error")
+      return
+    }
+    await deps.setUserConfigValue("providers.workspace_live_sync", mode)
+    deps.flashFooter(formatWorkspaceLiveSyncDefaultModeChangeMessage(mode), "info")
+    return
+  }
   if (!deps.isAttached()) {
     deps.flashFooter("attach to a session before viewing workspace live sync", "error")
     return
@@ -184,7 +195,7 @@ async function handleWorkspaceSyncCommand(
     })
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|audit|off|managed|tracked|link", "error")
+  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|audit|off|managed|tracked|default|link", "error")
 }
 
 export async function handleWorktreeSlashCommand(
