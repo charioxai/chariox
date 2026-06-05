@@ -28,6 +28,7 @@ export type ShellAgentSessionContext = {
   homeMachineId?: string | null
   ownerUserId?: string | null
   workspaceLiveSyncMode?: "managed" | "tracked" | "unrestricted" | null
+  workspaceLiveSyncWorktree?: string | null
 }
 
 export function formatAgentRef(agent: AgentInstance): string {
@@ -58,7 +59,7 @@ function formatAgentListSessionContext(context: ShellAgentSessionContext): strin
   const parts = [
     `home kernel ${formatHomeKernel(context)}`,
     context.ownerUserId ? `owner ${context.ownerUserId}` : null,
-    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}`,
+    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}${formatLiveSyncScopeSuffix(context)}`,
   ].filter(Boolean)
   return `session runtime: ${parts.join("; ")}`
 }
@@ -171,6 +172,7 @@ export function formatAgentInspectSummary(
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
     `live sync: ${formatWorkspaceLiveSyncModeLabel(sessionContext.workspaceLiveSyncMode)}`,
+    `live sync scope: ${formatLiveSyncScope(sessionContext)}`,
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,
@@ -209,6 +211,18 @@ export function formatAgentInspectSummary(
 function formatHomeKernel(context: ShellAgentSessionContext): string {
   const homeKernel = context.homeKernelId || "<unknown>"
   return context.homeMachineId ? `${homeKernel}@${context.homeMachineId}` : homeKernel
+}
+
+function formatLiveSyncScope(context: ShellAgentSessionContext): string {
+  const worktree = context.workspaceLiveSyncWorktree?.trim()
+  return worktree
+    ? `${worktree} (selected workspace/worktree only; other repositories unrestricted)`
+    : "selected workspace/worktree only; other repositories unrestricted"
+}
+
+function formatLiveSyncScopeSuffix(context: ShellAgentSessionContext): string {
+  const worktree = context.workspaceLiveSyncWorktree?.trim()
+  return worktree ? ` on ${worktree}` : ""
 }
 
 export function formatAgentSubstituteSummary(agent: AgentInstance): string {

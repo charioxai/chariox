@@ -79,6 +79,7 @@ export async function handleAgentSlashCommand(
         homeMachineId: session.host_machine_id ?? null,
         ownerUserId: session.owner_user_id ?? null,
         workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
+        workspaceLiveSyncWorktree: session.worktree_id ?? null,
       }))
       deps.flashFooter(
         session.agents.length === 0
@@ -107,6 +108,7 @@ export async function handleAgentSlashCommand(
         homeMachineId: session.host_machine_id ?? null,
         ownerUserId: session.owner_user_id ?? null,
         workspaceLiveSyncMode: session.workspace_live_sync_mode ?? null,
+        workspaceLiveSyncWorktree: session.worktree_id ?? null,
       }))
       deps.flashFooter(`showing agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
       return
