@@ -141,7 +141,11 @@ fn workspace_live_sync_allowed_writes(
         .iter()
         .filter(|entry| {
             entry.as_str().is_some_and(|path| {
-                workspace_live_sync_write_is_outside_protected_roots(path, protected_roots, cwd)
+                workspace_live_sync_write_is_disjoint_from_protected_roots(
+                    path,
+                    protected_roots,
+                    cwd,
+                )
             })
         })
         .cloned()
@@ -149,7 +153,7 @@ fn workspace_live_sync_allowed_writes(
     (!allowed.is_empty()).then(|| Value::Array(allowed))
 }
 
-fn workspace_live_sync_write_is_outside_protected_roots(
+fn workspace_live_sync_write_is_disjoint_from_protected_roots(
     path: &str,
     protected_roots: &[PathBuf],
     cwd: Option<&Path>,
@@ -170,9 +174,10 @@ fn workspace_live_sync_write_is_outside_protected_roots(
         cwd.join(path)
     };
     let normalized_path = normalize_path(&resolved_path);
-    !protected_roots.iter().any(|root| {
+    protected_roots.iter().all(|root| {
         let normalized_root = normalize_path(root);
-        normalized_path.starts_with(normalized_root)
+        !normalized_path.starts_with(&normalized_root)
+            && !normalized_root.starts_with(&normalized_path)
     })
 }
 
@@ -188,4 +193,63 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_codex_permission_grant_allows_only_disjoint_write_scopes() {
+        let requested = json!({
+            "network": true,
+            "fileSystem": {
+                "read": ["/repo/selected", "/repo/sibling"],
+                "write": [
+                    "/repo/selected",
+                    "/repo/selected/src",
+                    "/repo",
+                    "/repo/sibling",
+                    "../peer",
+                    "local-temp"
+                ]
+            }
+        });
+
+        let grant = workspace_live_sync_codex_permission_grant(
+            &requested,
+            &[PathBuf::from("/repo/selected")],
+            Some(Path::new("/repo/selected")),
+        );
+
+        assert_eq!(
+            grant,
+            json!({
+                "network": true,
+                "fileSystem": {
+                    "read": ["/repo/selected", "/repo/sibling"],
+                    "write": ["/repo/sibling", "../peer"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_codex_permission_grant_keeps_sibling_repo_writes_unrestricted() {
+        assert!(workspace_live_sync_write_is_disjoint_from_protected_roots(
+            "../../sibling",
+            &[PathBuf::from("/repo/selected")],
+            Some(Path::new("/repo/selected/src")),
+        ));
+        assert!(workspace_live_sync_write_is_disjoint_from_protected_roots(
+            "/repo/sibling",
+            &[PathBuf::from("/repo/selected")],
+            Some(Path::new("/repo/selected")),
+        ));
+        assert!(!workspace_live_sync_write_is_disjoint_from_protected_roots(
+            "/repo",
+            &[PathBuf::from("/repo/selected")],
+            Some(Path::new("/repo/selected")),
+        ));
+    }
 }
