@@ -117,8 +117,8 @@ test("buildCommandCenterItems includes workspace live sync subcommands", () => {
   assert.equal(values.has("/workspace sync mode "), false)
   assert.equal(items.find((item) => item.value === "/workspace sync off")?.description, "Disable live sync for this session; other repositories stay unrestricted")
   assert.equal(items.find((item) => item.value === "/workspace sync audit")?.description, "Show workspace live sync mode audit events")
-  assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed live sync with write reservations; requires managed write fencing on the provider host")
-  assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked turn-end live sync for this session; works on workers without managed write fencing")
+  assert.equal(items.find((item) => item.value === "/workspace sync managed")?.description, "Use managed sync for the selected workspace/worktree; other repositories stay unrestricted")
+  assert.equal(items.find((item) => item.value === "/workspace sync tracked")?.description, "Use tracked sync for the selected workspace/worktree; other repositories stay unrestricted")
 })
 
 test("buildCommandCenterItems includes slice diagnostics and lifecycle commands", () => {
