@@ -113,12 +113,12 @@ async function run(command, args, options = {}) {
   })
 }
 
-async function buildKernel() {
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+async function buildRustBinary(binaryName) {
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', binaryName])
   if (result.code !== 0) {
-    throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
+    throw new Error(`${binaryName} build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  return path.join(repoRoot, 'apps/kernel/target/debug', binaryName)
 }
 
 async function freePort() {
@@ -280,7 +280,8 @@ async function main() {
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
 
-    const kernelBinary = await buildKernel()
+    const kernelBinary = await buildRustBinary('arroba-kernel')
+    const cliBinary = await buildRustBinary('arroba-cli')
     kernel = startProcess(kernelBinary, [], env, 'kernel')
     await waitForKernel(kernelUrl)
     client = new LocalIpcClient(kernelUrl, {
@@ -430,15 +431,13 @@ async function main() {
       throw new Error(`publication export failed: ${exportResult.message}`)
     }
     gateway = startProcess(
-      process.execPath,
-      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      cliBinary,
+      ['serve', exportDir, String(gatewayPort), '--kernel-url', kernelUrl],
       {
         ...env,
         HOST: '127.0.0.1',
-        PORT: String(gatewayPort),
-        ARROBA_PUBLICATION_PACKAGE: path.join(exportDir, 'publication.json'),
       },
-      'gateway-exported',
+      'arroba-serve-exported',
     )
     await waitForGateway(gatewayUrl)
     const exportedResponse = await fetch(`${gatewayUrl}/qa/exported-publication`)
