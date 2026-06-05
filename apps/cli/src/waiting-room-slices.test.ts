@@ -6,6 +6,7 @@ import {
   cycleWaitingRoomSliceSelectionId,
   formatWaitingRoomSliceLabel,
   formatWaitingRoomSliceSelection,
+  normalizeWaitingRoomSliceSelection,
   normalizeWaitingRoomSliceSelectionId,
   selectedWaitingRoomSliceRef,
   waitingRoomSelectedSlice,
@@ -41,6 +42,14 @@ test("waiting room slice selection normalizes ids and labels while preserving st
   assert.equal(normalizeWaitingRoomSliceSelectionId("linux-dev", slices), "slice-1")
   assert.equal(normalizeWaitingRoomSliceSelectionId("deleted-slice", slices), "deleted-slice")
   assert.equal(normalizeWaitingRoomSliceSelectionId(null, slices), "none")
+  assert.deepEqual(normalizeWaitingRoomSliceSelection("new:headed", "headless", slices), {
+    sliceSelectionId: "new",
+    sliceDisplayMode: "headed",
+  })
+  assert.deepEqual(normalizeWaitingRoomSliceSelection("new:headless", "headed", slices), {
+    sliceSelectionId: "new",
+    sliceDisplayMode: "headless",
+  })
 })
 
 test("waiting room slice selection resolves refs, labels, and cycling", () => {

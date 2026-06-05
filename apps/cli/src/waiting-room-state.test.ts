@@ -55,6 +55,17 @@ test("waiting room state normalization bounds indexes and redirects unavailable 
   assert.equal(normalized.workspaceLiveSyncMode, "off")
   assert.equal(normalized.sliceSelectionId, "slice-1")
 
+  const headedSliceCreate = normalizeWaitingRoomState(
+    waitingRoomState({
+      sliceSelectionId: "new:headed",
+      sliceDisplayMode: "headless",
+    }),
+    [],
+    catalog,
+  )
+  assert.equal(headedSliceCreate.sliceSelectionId, "new")
+  assert.equal(headedSliceCreate.sliceDisplayMode, "headed")
+
   const withoutSessions = normalizeWaitingRoomState(
     waitingRoomState({ focus: "join-sessions", sessionIndex: 3 }),
     [],

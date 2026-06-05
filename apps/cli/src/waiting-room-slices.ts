@@ -48,6 +48,24 @@ export function normalizeWaitingRoomSliceSelectionId(selectionId: string | null 
   return slice?.id ?? normalized
 }
 
+export function normalizeWaitingRoomSliceSelection(
+  selectionId: string | null | undefined,
+  displayMode: WaitingRoomState["sliceDisplayMode"],
+  slices: SliceRecord[],
+): Pick<WaitingRoomState, "sliceSelectionId" | "sliceDisplayMode"> {
+  const normalized = selectionId?.trim() || "none"
+  if (normalized === "new:headed" || normalized === "new:headless") {
+    return {
+      sliceSelectionId: "new",
+      sliceDisplayMode: normalized === "new:headed" ? "headed" : "headless",
+    }
+  }
+  return {
+    sliceSelectionId: normalizeWaitingRoomSliceSelectionId(normalized, slices),
+    sliceDisplayMode: displayMode === "headed" ? "headed" : "headless",
+  }
+}
+
 export function waitingRoomSelectedSlice(selectionId: string | null | undefined, slices: SliceRecord[]) {
   if (selectionId === "none" || selectionId === "new") {
     return null

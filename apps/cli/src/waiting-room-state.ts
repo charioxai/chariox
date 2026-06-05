@@ -22,7 +22,7 @@ import {
   waitingRoomSessions,
 } from "./waiting-room-session-rows.js"
 import {
-  normalizeWaitingRoomSliceSelectionId,
+  normalizeWaitingRoomSliceSelection,
   waitingRoomSlices,
 } from "./waiting-room-slices.js"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
@@ -89,6 +89,11 @@ export function normalizeWaitingRoomState(
   const providerId = normalizeBackendProvider(state.providerId)
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
+  const sliceSelection = normalizeWaitingRoomSliceSelection(
+    state.sliceSelectionId,
+    state.sliceDisplayMode,
+    slices,
+  )
   const focus = (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
     ? "new"
     : previewSessions.length === 0 && state.focus === "session"
@@ -117,16 +122,12 @@ export function normalizeWaitingRoomState(
     workspaceLiveSyncMode: normalizeWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
-    sliceSelectionId: normalizeWaitingRoomSliceSelectionId(state.sliceSelectionId, slices),
-    sliceDisplayMode: normalizeSliceDisplayMode(state.sliceDisplayMode),
+    sliceSelectionId: sliceSelection.sliceSelectionId,
+    sliceDisplayMode: sliceSelection.sliceDisplayMode,
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
     themeId: normalizeThemeName(state.themeId, themeRegistry),
   }
-}
-
-function normalizeSliceDisplayMode(value: WaitingRoomState["sliceDisplayMode"]): NonNullable<WaitingRoomState["sliceDisplayMode"]> {
-  return value === "headed" ? "headed" : "headless"
 }
 
 function normalizeWorkspaceLiveSyncMode(value: WaitingRoomState["workspaceLiveSyncMode"]): WaitingRoomState["workspaceLiveSyncMode"] {
