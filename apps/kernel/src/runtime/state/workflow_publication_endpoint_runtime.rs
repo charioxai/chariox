@@ -151,6 +151,9 @@ fn local_publication_base_url(local_url: &url::Url) -> Result<String, DaemonErro
 fn relay_display_base_url(relay_url: &str) -> Option<url::Url> {
     let mut url = url::Url::parse(relay_url).ok()?;
     match url.scheme() {
+        "ws" => {
+            url.set_scheme("http").ok()?;
+        }
         "wss" => {
             url.set_scheme("https").ok()?;
         }
@@ -182,4 +185,26 @@ fn random_hex_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relay_display_base_url;
+
+    #[test]
+    fn relay_display_base_url_maps_websocket_schemes_to_browser_schemes() {
+        assert_eq!(
+            relay_display_base_url("ws://127.0.0.1:43130/ws")
+                .map(|url| url.to_string())
+                .as_deref(),
+            Some("http://127.0.0.1:43130/")
+        );
+        assert_eq!(
+            relay_display_base_url("wss://relay.example.test/ws")
+                .map(|url| url.to_string())
+                .as_deref(),
+            Some("https://relay.example.test/")
+        );
+        assert!(relay_display_base_url("http://relay.example.test").is_none());
+    }
 }

@@ -143,11 +143,15 @@ async function run(command, args, options = {}) {
 }
 
 async function buildRustBinary(binaryName) {
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', binaryName])
+  const manifestPath = binaryName === 'arroba-relay'
+    ? path.join(repoRoot, 'apps/relay/Cargo.toml')
+    : path.join(repoRoot, 'apps/kernel/Cargo.toml')
+  const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', binaryName])
   if (result.code !== 0) {
     throw new Error(`${binaryName} build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return path.join(repoRoot, 'apps/kernel/target/debug', binaryName)
+  const targetRoot = binaryName === 'arroba-relay' ? 'apps/relay' : 'apps/kernel'
+  return path.join(repoRoot, targetRoot, 'target/debug', binaryName)
 }
 
 async function freePort() {
@@ -397,7 +401,54 @@ async function waitForGateway(baseUrl) {
   throw new Error(`gateway did not become ready: ${lastError?.message ?? String(lastError)}`)
 }
 
-async function waitForRegisteredPublicationEndpoint(client, sessionId, publicationId, expectedUrl) {
+async function waitForTcpPort(host, port, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host, port }, () => {
+          socket.end()
+          resolve()
+        })
+        socket.once('error', reject)
+      })
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  throw new Error(`tcp port ${host}:${port} did not become ready: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
+  const deadline = Date.now() + 20_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    const relayClient = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await Promise.race([
+        relayClient.send(listSessionsRequest()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('relay probe timeout')), 2_000)),
+      ])
+      await relayClient.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error
+      await relayClient.close().catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function waitForRegisteredPublicationEndpoint(client, sessionId, publicationId, expectedLocalUrl, expectedOpenUrlPrefix) {
   const deadline = Date.now() + 20_000
   let lastPublication = null
   while (Date.now() < deadline) {
@@ -408,14 +459,15 @@ async function waitForRegisteredPublicationEndpoint(client, sessionId, publicati
     lastPublication = response.publication ?? null
     if (
       lastPublication?.status === 'running'
-      && lastPublication.open_url === expectedUrl
-      && lastPublication.deployment?.local_url === expectedUrl
+      && lastPublication.deployment?.local_url === expectedLocalUrl
+      && typeof lastPublication.open_url === 'string'
+      && lastPublication.open_url.startsWith(expectedOpenUrlPrefix)
     ) {
       return lastPublication
     }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
-  throw new Error(`publication endpoint did not register as running at ${expectedUrl}: ${JSON.stringify(lastPublication)}`)
+  throw new Error(`publication endpoint did not register as running at ${expectedLocalUrl}: ${JSON.stringify(lastPublication)}`)
 }
 
 async function waitForProviderRunReady(client, providerRunId) {
@@ -487,15 +539,19 @@ async function main() {
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
+  const relayPort = await freePort()
   const kernelPort = await freePort()
   const mcpPort = await freePort()
   const opencodePort = await freePort()
   const codexPort = await freePort()
   const gatewayPort = await freePort()
   const gatewayHttpsPort = await freePort()
+  const relayUrl = `ws://127.0.0.1:${relayPort}`
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
   const gatewayHttpsUrl = `https://127.0.0.1:${gatewayHttpsPort}`
+  const relayToken = `publication-drill-relay-${process.pid}`
+  const daemonAlias = `publication-drill-${process.pid}`
   const env = {
     ...process.env,
     HOME: home,
@@ -505,11 +561,15 @@ async function main() {
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
     ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: `publication-drill-${process.pid}`,
+    ARROBA_DAEMON_ID: daemonAlias,
+    ARROBA_DAEMON_ALIAS: daemonAlias,
     ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
     ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
+    ARROBA_RELAY_URL: relayUrl,
+    ARROBA_RELAY_TOKEN: relayToken,
   }
 
+  let relay = null
   let kernel = null
   let gateway = null
   let client = null
@@ -526,8 +586,17 @@ async function main() {
 
     const kernelBinary = await buildRustBinary('arroba-kernel')
     const cliBinary = await buildRustBinary('arroba-cli')
+    const relayBinary = await buildRustBinary('arroba-relay')
+    relay = startProcess(relayBinary, [], {
+      ...env,
+      ARROBA_RELAY_HOST: '127.0.0.1',
+      ARROBA_RELAY_PORT: String(relayPort),
+      ARROBA_RELAY_TOKEN: relayToken,
+    }, 'relay')
+    await waitForTcpPort('127.0.0.1', relayPort)
     kernel = startProcess(kernelBinary, [], env, 'kernel')
     await waitForKernel(kernelUrl)
+    await waitForRelayTarget(relayUrl, relayToken, daemonAlias)
     client = new LocalIpcClient(kernelUrl, {
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
@@ -724,13 +793,22 @@ async function main() {
       'gateway',
     )
     await waitForGateway(gatewayUrl)
-    const registeredPublication = await waitForRegisteredPublicationEndpoint(client, session.id, publication.id, `${gatewayUrl}/`)
+    const registeredPublication = await waitForRegisteredPublicationEndpoint(
+      client,
+      session.id,
+      publication.id,
+      `${gatewayUrl}/`,
+      `http://127.0.0.1:${relayPort}/display/publication-`,
+    )
     logStep('publication_endpoint_registered', {
       publicationId: registeredPublication.id,
       status: registeredPublication.status,
       openUrl: registeredPublication.open_url,
       deployment: registeredPublication.deployment?.kind ?? null,
     })
+    if (registeredPublication.deployment?.kind !== 'tunnel') {
+      throw new Error(`expected registered publication deployment tunnel, got ${JSON.stringify(registeredPublication.deployment)}`)
+    }
 
     logStep('invoke_browser_html')
     const rootHtmlResponse = await fetch(`${gatewayUrl}/`, { headers: { accept: 'text/html' } })
@@ -745,6 +823,19 @@ async function main() {
     const browserHtml = await browserResponse.text()
     if (browserResponse.status !== 200 || !browserHtml.includes('EventSource')) {
       throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserHtml.slice(0, 200)}`)
+    }
+
+    logStep('invoke_browser_html_tunnel')
+    const tunnelRootResponse = await fetch(registeredPublication.open_url, { headers: { accept: 'text/html' } })
+    const tunnelRootHtml = await tunnelRootResponse.text()
+    if (tunnelRootResponse.status !== 200 || !tunnelRootHtml.includes('invoke-form')) {
+      throw new Error(`expected tunnel root form HTML, got ${tunnelRootResponse.status}: ${tunnelRootHtml.slice(0, 200)}`)
+    }
+    const tunnelBrowserUrl = new URL('qa/browser-publication-tunnel', registeredPublication.open_url).toString()
+    const tunnelBrowserResponse = await fetch(tunnelBrowserUrl, { headers: { accept: 'text/html' } })
+    const tunnelBrowserHtml = await tunnelBrowserResponse.text()
+    if (tunnelBrowserResponse.status !== 200 || !tunnelBrowserHtml.includes('EventSource')) {
+      throw new Error(`expected tunnel browser invocation HTML with SSE subscription, got ${tunnelBrowserResponse.status}: ${tunnelBrowserHtml.slice(0, 200)}`)
     }
 
     logStep('invoke_browser_upload')
@@ -1122,7 +1213,9 @@ async function main() {
     await client?.close?.().catch(() => {})
     await stopProcess(gateway)
     await stopProcess(kernel)
+    await stopProcess(relay)
     if (!succeeded) {
+      console.error('[publication-drill] relay logs', relay?.logs ?? null)
       console.error('[publication-drill] kernel logs', kernel?.logs ?? null)
       console.error('[publication-drill] gateway logs', gateway?.logs ?? null)
     }
