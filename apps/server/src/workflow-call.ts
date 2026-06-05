@@ -84,7 +84,9 @@ function requireValue(value: string | undefined, option: string) {
 async function loadPublication(options: CallOptions): Promise<WorkflowPublicationConfig> {
   if (options.configPath) return loadPublicationConfig(options.configPath)
   if (options.packagePath) {
-    const packageOptions: { kernelEndpoint?: string; hookId?: string } = {}
+    const packageOptions: { kernelEndpoint?: string; hookId?: string; materialize?: boolean } = {
+      materialize: true,
+    }
     if (options.kernelUrl) packageOptions.kernelEndpoint = options.kernelUrl
     if (options.hookId) packageOptions.hookId = options.hookId
     return loadPublicationPackageConfig(options.packagePath, packageOptions)

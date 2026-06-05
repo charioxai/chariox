@@ -452,6 +452,25 @@ impl AgentInstance {
         self.worktree_id = worktree_id;
     }
 
+    pub fn materialized_for_publication_runtime(
+        mut self,
+        id: impl Into<String>,
+        agent_ref: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        self.id = id.into();
+        self.agent_ref = agent_ref.into();
+        self.session_id = session_id.into();
+        self.remote_execution = None;
+        self.provider_resume_state = ProviderResumeState::default();
+        self.remote_extension_manifest_sync = None;
+        self.state = AgentState::Idle;
+        self.is_processing = false;
+        self.created_at_ms = crate::session::unix_epoch_ms();
+        self.last_activity_at_ms = self.created_at_ms;
+        self
+    }
+
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.provider_resume_state = resume_state;
     }

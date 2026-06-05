@@ -67,6 +67,19 @@ impl SessionStateStore {
         self.write().remove_restored_session(session_id)
     }
 
+    pub(crate) fn replace_publication_runtime_workflows(
+        &self,
+        session_id: &str,
+        workflows: Vec<super::WorkflowDefinition>,
+        workflow_prompt_queues: Vec<super::WorkflowPromptQueueDefinition>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write().replace_publication_runtime_workflows(
+            session_id,
+            workflows,
+            workflow_prompt_queues,
+        )
+    }
+
     pub(crate) fn end_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().end_session(session_id)
     }

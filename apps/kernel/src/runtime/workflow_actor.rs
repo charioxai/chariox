@@ -130,6 +130,12 @@ impl WorkflowRuntime {
                 operation: "route workflow kernel command",
                 message: "request is not handled by the workflow runtime".to_string(),
             })?;
+        if matches!(
+            request,
+            LocalDaemonRequest::MaterializeWorkflowPublication(_)
+        ) {
+            return Ok(session_id);
+        }
         if self.session_projection.get(&session_id).is_some()
             || !self.session_projection.has_warmed_list()
         {
@@ -317,6 +323,9 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ListWorkflowPublications(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::DisableWorkflowPublication(request) => request.session_id.clone(),
+        LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
+            format!("publication-materialize:{}", request.publication_id)
+        }
         LocalDaemonRequest::CreateWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::AliasWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::BindWorkflowEndpoint(request) => request.session_id.clone(),

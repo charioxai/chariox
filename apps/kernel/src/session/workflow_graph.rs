@@ -118,6 +118,10 @@ impl WorkflowNodeDefinition {
         &self.agent_id
     }
 
+    pub fn set_agent_id(&mut self, agent_id: impl Into<String>) {
+        self.agent_id = agent_id.into();
+    }
+
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
     }

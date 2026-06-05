@@ -124,6 +124,19 @@ impl AgentService {
         self.store.insert_restored(agent)
     }
 
+    pub(crate) fn materialize_publication_agent(
+        &mut self,
+        agent: AgentInstance,
+        session_id: &str,
+    ) -> AgentInstance {
+        let agent = agent.materialized_for_publication_runtime(
+            self.store.next_agent_id(),
+            generate_agent_ref(),
+            session_id,
+        );
+        self.store.insert(agent)
+    }
+
     /// Create default agent for a new session
     pub fn create_default_agent(
         &mut self,
@@ -771,6 +784,15 @@ impl AgentServiceStore {
 
     pub(crate) fn restore_agent(&self, agent: AgentInstance) -> AgentInstance {
         self.write().restore_agent(agent)
+    }
+
+    pub(crate) fn materialize_publication_agent(
+        &self,
+        agent: AgentInstance,
+        session_id: &str,
+    ) -> AgentInstance {
+        self.write()
+            .materialize_publication_agent(agent, session_id)
     }
 
     pub fn create_default_agent(

@@ -63,6 +63,28 @@ impl SessionService {
         self.store.remove(session_id)
     }
 
+    pub(crate) fn replace_publication_runtime_workflows(
+        &mut self,
+        session_id: &str,
+        workflows: Vec<WorkflowDefinition>,
+        workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.replace_publication_runtime_workflows(workflows, workflow_prompt_queues);
+        let first_agent_id = session
+            .workflows()
+            .first()
+            .and_then(|workflow| workflow.nodes().first())
+            .map(|node| node.agent_id().to_string());
+        session.set_focused_agent(first_agent_id);
+        Ok(session.clone())
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store
             .get(session_id)

@@ -31,6 +31,7 @@ export type TlsConfig = {
 export type WorkflowPublicationConfig = {
   publication_id: string
   session_id: string
+  source_session_id?: string
   workflow_ref: string
   endpoint_ref: string
   kernel_endpoint?: string
@@ -70,18 +71,7 @@ export type WorkflowPublicationPackage = {
   hooks: PublicationHookConfig[]
 }
 
-export type WorkflowPublicationSnapshot = {
-  schema_version: number
-  source_session?: {
-    id?: string
-  }
-  workflow?: {
-    id?: string
-  }
-  endpoint?: {
-    id?: string
-  }
-}
+export type WorkflowPublicationSnapshot = KernelWorkflowPublicationSnapshot
 
 export type NormalizedInvocation = {
   publication_id: string
@@ -131,3 +121,4 @@ export type GatewayRequest = {
   query?: unknown
   raw: unknown
 }
+import type { WorkflowPublicationSnapshot as KernelWorkflowPublicationSnapshot } from "@arroba/kernel-client/kernel-types"

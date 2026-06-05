@@ -4,7 +4,10 @@ import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { getWorkflowPublicationRequest } from "@arroba/kernel-client/ipc-requests"
+import {
+  getWorkflowPublicationRequest,
+  materializeWorkflowPublicationRequest,
+} from "@arroba/kernel-client/ipc-requests"
 import type {
   WorkflowPublicationDefinition,
 } from "@arroba/kernel-client/kernel-types"
@@ -53,19 +56,26 @@ export async function loadPublicationConfig(path: string) {
 
 export async function loadPublicationPackageConfig(
   path: string,
-  options: { kernelEndpoint?: string; hookId?: string } = {},
+  options: {
+    kernelEndpoint?: string
+    hookId?: string
+    materialize?: boolean
+    client?: KernelLookupClient
+  } = {},
 ): Promise<WorkflowPublicationConfig> {
   const packagePath = path.endsWith(".json") ? path : join(path, "publication.json")
   const root = dirname(resolve(packagePath))
   const publicationPackage = JSON.parse(await readFile(packagePath, "utf8")) as WorkflowPublicationPackage
   const snapshotPath = join(root, "workflow.snapshot.json")
   const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as WorkflowPublicationSnapshot
-  return publicationConfigFromPackage(
+  const config = publicationConfigFromPackage(
     publicationPackage,
     snapshot,
     options.kernelEndpoint ?? defaultKernelEndpoint(),
     options.hookId,
   )
+  if (!options.materialize) return config
+  return materializePublicationConfig(config, snapshot, options.client)
 }
 
 export function publicationConfigFromPackage(
@@ -90,6 +100,7 @@ export function publicationConfigFromPackage(
   const config: WorkflowPublicationConfig = {
     publication_id: hook.publication_id ?? publicationPackage.publication_id,
     session_id: sessionId,
+    source_session_id: sessionId,
     workflow_ref: workflowId,
     endpoint_ref: endpointId,
     kernel_endpoint: kernelEndpoint,
@@ -158,7 +169,10 @@ export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicatio
     if (process.env.ARROBA_PUBLICATION_HOOK_ID) {
       packageOptions.hookId = process.env.ARROBA_PUBLICATION_HOOK_ID
     }
-    return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.ARROBA_PUBLICATION_PACKAGE, packageOptions))
+    return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.ARROBA_PUBLICATION_PACKAGE, {
+      ...packageOptions,
+      materialize: true,
+    }))
   }
   if (process.env.ARROBA_PUBLICATION_CONFIG) {
     return withEnvTlsConfig(await loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG))
@@ -175,6 +189,33 @@ export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicatio
     ))
   }
   return undefined
+}
+
+export async function materializePublicationConfig(
+  config: WorkflowPublicationConfig,
+  snapshot: WorkflowPublicationSnapshot,
+  client?: KernelLookupClient,
+): Promise<WorkflowPublicationConfig> {
+  const ownedClient = client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await ownedClient.send(
+      materializeWorkflowPublicationRequest(config.publication_id, snapshot),
+    )
+    const materialized = response.WorkflowPublicationMaterialized as { session?: { id?: string } } | undefined
+    const runtimeSessionId = materialized?.session?.id
+    if (!runtimeSessionId) {
+      throw new Error(`unexpected workflow publication materialization response: ${JSON.stringify(response)}`)
+    }
+    return {
+      ...config,
+      source_session_id: config.source_session_id ?? config.session_id,
+      session_id: runtimeSessionId,
+    }
+  } finally {
+    if (!client) {
+      await ownedClient.close?.().catch(() => {})
+    }
+  }
 }
 
 function tlsConfigFromEnv(): TlsConfig | undefined {

@@ -126,14 +126,25 @@ test("gateway maps exported publication packages to runtime config", async () =>
     }],
   }, {
     schema_version: 1,
-    source_session: { id: "session-1" },
-    workflow: { id: "workflow-1" },
-    endpoint: { id: "endpoint-1" },
+    source_session: {
+      id: "session-1",
+      workspace_id: "/repo",
+      worktree_id: "/repo",
+    },
+    workflow: {
+      id: "workflow-1",
+      alias: null,
+      nodes: [{ id: "node-1", agent_id: "agent-1" }],
+      edges: [],
+      endpoints: [{ id: "endpoint-1", alias: null, entry_node_id: "node-1" }],
+    },
+    endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
   }, "ws://kernel")
 
   assert.deepEqual(config, {
     publication_id: "pub-1",
     session_id: "session-1",
+    source_session_id: "session-1",
     workflow_ref: "workflow-1",
     endpoint_ref: "endpoint-1",
     kernel_endpoint: "ws://kernel",
@@ -165,9 +176,36 @@ test("gateway loads publication package directories", async () => {
     }))
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
-      source_session: { id: "session-1" },
-      workflow: { id: "workflow-1" },
-      endpoint: { id: "endpoint-1" },
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "codex",
+        model: null,
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
     }))
 
     const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
@@ -177,6 +215,84 @@ test("gateway loads publication package directories", async () => {
     assert.equal(config.workflow_ref, "workflow-1")
     assert.equal(config.endpoint_ref, "endpoint-1")
     assert.equal(config.kernel_endpoint, "ws://kernel")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("gateway materializes exported publication packages through the kernel", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-materialize-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      queues: [{ id: "workflow-1:default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }],
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "codex",
+        model: null,
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+
+    const config = await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          return {
+            WorkflowPublicationMaterialized: {
+              publication_id: "pub-1",
+              session: { id: "runtime-session-1" },
+              agent_id_map: { "agent-1": "agent-2" },
+            },
+          }
+        },
+      },
+    })
+
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["MaterializeWorkflowPublication"])
+    assert.equal(config.source_session_id, "session-1")
+    assert.equal(config.session_id, "runtime-session-1")
+    assert.equal(config.workflow_ref, "workflow-1")
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -42,6 +42,7 @@ export {
   loadPublicationConfig,
   loadPublicationConfigFromKernel,
   loadPublicationPackageConfig,
+  materializePublicationConfig,
   publicationConfigFromKernelRecord,
   publicationConfigFromPackage,
 } from "./publication-config.js"

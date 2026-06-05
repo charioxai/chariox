@@ -65,6 +65,38 @@ pub struct DisableWorkflowPublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializeWorkflowPublicationRequest {
+    pub publication_id: String,
+    pub snapshot: WorkflowPublicationSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationSnapshot {
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session: Option<WorkflowPublicationSourceSessionSnapshot>,
+    pub workflow: WorkflowDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<WorkflowEndpointDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queues: Vec<WorkflowPromptQueueDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentInstance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationSourceSessionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub workspace_id: String,
+    pub worktree_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowEndpointRequest {
     pub session_id: String,
     pub workflow_ref: String,

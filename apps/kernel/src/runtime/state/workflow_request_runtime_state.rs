@@ -59,6 +59,11 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
+                let result = owned.workflow_materialize_publication(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
                 let result = owned.workflow_create_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -249,6 +254,7 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
         | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
+        | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointBound { session, .. }

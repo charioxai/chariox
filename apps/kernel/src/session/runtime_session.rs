@@ -596,6 +596,23 @@ impl RuntimeSession {
         workflow
     }
 
+    pub(crate) fn replace_publication_runtime_workflows(
+        &mut self,
+        workflows: Vec<WorkflowDefinition>,
+        workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
+    ) {
+        self.workflows = workflows;
+        self.workflow_prompt_queues = workflow_prompt_queues;
+        let workflow_ids = self
+            .workflows
+            .iter()
+            .map(|workflow| workflow.id().to_string())
+            .collect::<Vec<_>>();
+        for workflow_id in workflow_ids {
+            self.ensure_default_workflow_prompt_queue(&workflow_id);
+        }
+    }
+
     pub fn remove_workflow(&mut self, workflow_id: &str) -> Option<WorkflowDefinition> {
         let index = self
             .workflows

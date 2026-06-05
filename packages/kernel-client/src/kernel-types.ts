@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 111
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 112
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1755,6 +1755,23 @@ export type WorkflowPublicationDefinition = {
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type WorkflowPublicationSnapshot = {
+  schema_version: number
+  captured_at_ms?: number | null
+  source_session?: WorkflowPublicationSourceSessionSnapshot | null
+  workflow: WorkflowDefinition
+  endpoint?: WorkflowEndpointDefinition | null
+  queues?: WorkflowPromptQueueDefinition[]
+  agents?: AgentInstance[]
+}
+
+export type WorkflowPublicationSourceSessionSnapshot = {
+  id?: string | null
+  alias?: string | null
+  workspace_id: string
+  worktree_id: string
 }
 
 export type WorkflowWatchdogDefinition = {

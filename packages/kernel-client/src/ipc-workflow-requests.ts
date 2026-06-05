@@ -1,4 +1,4 @@
-import type { WorkflowDesignOp } from "./kernel-types.js"
+import type { WorkflowDesignOp, WorkflowPublicationSnapshot } from "./kernel-types.js"
 
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
   return {
@@ -106,6 +106,18 @@ export function disableWorkflowPublicationRequest(sessionId: string, publication
     DisableWorkflowPublication: {
       session_id: sessionId,
       publication_ref: publicationRef,
+    },
+  }
+}
+
+export function materializeWorkflowPublicationRequest(
+  publicationId: string,
+  snapshot: WorkflowPublicationSnapshot,
+) {
+  return {
+    MaterializeWorkflowPublication: {
+      publication_id: publicationId,
+      snapshot,
     },
   }
 }

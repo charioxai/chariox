@@ -304,3 +304,171 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     }
 }
+
+#[test]
+fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session() {
+    let harness = LocalRouterTestHarness::new();
+    let source_session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("source session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: source_session.id().to_string(),
+            alias: Some("published_worker".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("default".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+        }))
+        .expect("source workflow agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: source_session.id().to_string(),
+            alias: Some("publishable".to_string()),
+        }))
+        .expect("workflow should be created")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: source_session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: source_agent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow node should be added")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        _ => panic!("unexpected local response"),
+    };
+    let (workflow, endpoint) = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: source_session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated {
+            workflow, endpoint, ..
+        } => (workflow, endpoint),
+        _ => panic!("unexpected local response"),
+    };
+    let source_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: source_session.id().to_string(),
+            },
+        ))
+        .expect("source state should load")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source_queue = source_state
+        .workflow_prompt_queues()
+        .iter()
+        .find(|queue| queue.workflow_id() == workflow.id() && queue.alias() == "default")
+        .expect("source workflow should have a default queue")
+        .clone();
+    match harness
+        .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: source_session.id().to_string(),
+            workspace_id: None,
+        }))
+        .expect("source session should be deletable before materialization")
+    {
+        LocalDaemonResponse::SessionDeleted { .. } => {}
+        _ => panic!("unexpected local response"),
+    };
+
+    let materialized = match harness
+        .dispatch(LocalDaemonRequest::MaterializeWorkflowPublication(
+            MaterializeWorkflowPublicationRequest {
+                publication_id: "publication-1".to_string(),
+                snapshot: WorkflowPublicationSnapshot {
+                    schema_version: 1,
+                    captured_at_ms: Some(42),
+                    source_session: Some(WorkflowPublicationSourceSessionSnapshot {
+                        id: Some(source_session.id().to_string()),
+                        alias: source_session.alias().map(str::to_string),
+                        workspace_id: source_session.workspace_id().to_string(),
+                        worktree_id: source_session.worktree_id().to_string(),
+                    }),
+                    workflow: workflow.clone(),
+                    endpoint: Some(endpoint),
+                    queues: vec![source_queue],
+                    agents: vec![source_agent.clone()],
+                },
+            },
+        ))
+        .expect("publication should materialize")
+    {
+        LocalDaemonResponse::WorkflowPublicationMaterialized {
+            session,
+            agent_id_map,
+            ..
+        } => {
+            assert_eq!(
+                agent_id_map.get(source_agent.id()).map(String::as_str),
+                session
+                    .workflows()
+                    .first()
+                    .and_then(|workflow| workflow.nodes().first())
+                    .map(|node| node.agent_id())
+            );
+            session
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert!(materialized.is_hidden());
+    assert_ne!(materialized.id(), source_session.id());
+    assert_eq!(materialized.workflows().len(), 1);
+    assert_eq!(materialized.agents().len(), 1);
+    assert_ne!(materialized.agents()[0].id(), source_agent.id());
+
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListSessions(ListSessionsRequest))
+        .expect("list sessions should succeed")
+    {
+        LocalDaemonResponse::SessionsListed { sessions } => sessions,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(listed.is_empty());
+
+    let hidden_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: materialized.id().to_string(),
+            },
+        ))
+        .expect("hidden runtime session should still load by id")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(hidden_state.is_hidden());
+}
