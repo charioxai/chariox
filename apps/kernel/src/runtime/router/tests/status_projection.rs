@@ -185,6 +185,42 @@ async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent()
 }
 
 #[tokio::test]
+async fn provider_run_projection_lookup_prefers_deterministic_latest_highest_state_run() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let first_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "sonnet")
+                .with_agent_id(&agent_id),
+        )
+        .expect("first provider run should start")
+        .into_run();
+    app.update_provider_run_projection(first_run.clone());
+    let second_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "opus")
+                .with_agent_id(&agent_id),
+        )
+        .expect("second provider run should start")
+        .into_run();
+    app.update_provider_run_projection(second_run.clone());
+
+    assert_eq!(
+        app.provider_run_projection_store()
+            .get_for_agent(&session_id, &agent_id)
+            .map(|run| run.id().to_string()),
+        Some(second_run.id().to_string())
+    );
+    assert!(second_run.active_selection_cmp(&first_run).is_gt());
+}
+
+#[tokio::test]
 async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

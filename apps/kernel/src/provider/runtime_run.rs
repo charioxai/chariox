@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -403,6 +404,20 @@ impl RuntimeProviderRun {
         self.last_activity_at_ms
     }
 
+    pub(crate) fn active_selection_cmp(&self, other: &Self) -> Ordering {
+        (
+            provider_run_active_selection_rank(self.state),
+            self.last_activity_at_ms,
+            self.started_at_ms,
+        )
+            .cmp(&(
+                provider_run_active_selection_rank(other.state),
+                other.last_activity_at_ms,
+                other.started_at_ms,
+            ))
+            .then_with(|| self.id.cmp(&other.id))
+    }
+
     pub fn touch_activity(&mut self) {
         self.last_activity_at_ms = unix_epoch_ms();
     }
@@ -431,6 +446,15 @@ impl RuntimeProviderRun {
         self.session_id = session_id.into();
         self.agent_instance_id = Some(agent_id.into());
         self
+    }
+}
+
+fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
+    match state {
+        ProviderRunState::Running => 3,
+        ProviderRunState::Parked => 2,
+        ProviderRunState::Starting => 1,
+        ProviderRunState::Ended => 0,
     }
 }
 

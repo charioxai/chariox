@@ -307,12 +307,7 @@ impl ProviderProcessService {
                     && run.agent_instance_id() == Some(agent_id)
                     && run.state() != ProviderRunState::Ended
             })
-            .max_by_key(|run| match run.state() {
-                ProviderRunState::Running => 3,
-                ProviderRunState::Parked => 2,
-                ProviderRunState::Starting => 1,
-                ProviderRunState::Ended => 0,
-            })
+            .max_by(|left, right| left.active_selection_cmp(right))
             .cloned()
     }
 
@@ -342,12 +337,7 @@ impl ProviderProcessService {
                     && run.provider() == provider
                     && run.state() != ProviderRunState::Ended
             })
-            .max_by_key(|run| match run.state() {
-                ProviderRunState::Running => 3,
-                ProviderRunState::Parked => 2,
-                ProviderRunState::Starting => 1,
-                ProviderRunState::Ended => 0,
-            })
+            .max_by(|left, right| left.active_selection_cmp(right))
             .cloned()
     }
 

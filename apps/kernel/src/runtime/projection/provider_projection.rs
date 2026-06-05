@@ -54,12 +54,7 @@ impl ProviderRunProjectionStore {
                     && run.agent_instance_id() == Some(agent_id)
                     && run.state() != crate::provider::ProviderRunState::Ended
             })
-            .max_by_key(|run| match run.state() {
-                crate::provider::ProviderRunState::Running => 3,
-                crate::provider::ProviderRunState::Parked => 2,
-                crate::provider::ProviderRunState::Starting => 1,
-                crate::provider::ProviderRunState::Ended => 0,
-            })
+            .max_by(|left, right| left.active_selection_cmp(right))
             .cloned()
     }
 

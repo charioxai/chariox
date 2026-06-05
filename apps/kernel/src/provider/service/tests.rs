@@ -103,6 +103,43 @@ fn tracked_workspace_live_sync_does_not_require_managed_write_enforcement() {
 }
 
 #[test]
+fn active_provider_run_lookup_prefers_deterministic_latest_highest_state_run() {
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let agent_id = "agent-1".to_string();
+    let mut providers = ProviderProcessService::new();
+
+    let first = providers
+        .start_run_provider_only(launch_request(session.id(), "sonnet").with_agent_id(&agent_id))
+        .expect("first provider run should start");
+    let second = providers
+        .start_run_provider_only(launch_request(session.id(), "opus").with_agent_id(&agent_id))
+        .expect("second provider run should start");
+    let first = providers
+        .mark_run_running(first.run().id())
+        .expect("first run should mark running");
+    let second = providers
+        .mark_run_running(second.run().id())
+        .expect("second run should mark running");
+
+    assert_eq!(
+        providers
+            .get_run_for_agent(session.id(), &agent_id)
+            .map(|run| run.id().to_string()),
+        Some(second.id().to_string())
+    );
+    assert_eq!(
+        providers
+            .get_session_run_for_provider(session.id(), "claude-code")
+            .map(|run| run.id().to_string()),
+        Some(second.id().to_string())
+    );
+    assert!(second.active_selection_cmp(&first).is_gt());
+}
+
+#[test]
 fn claude_native_tui_runs_use_pty_output_pumping() {
     let providers = ProviderProcessService::new();
     let request = LaunchProviderRequest::new("session-1", "claude", "default", "sonnet", "low")
