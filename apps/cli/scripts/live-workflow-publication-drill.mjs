@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
@@ -180,6 +180,60 @@ function startProcess(command, args, env, name) {
   child.logs = logs
   child.name = name
   return child
+}
+
+function startServeWithProviderPrompt({
+  cliBinary,
+  packageDir,
+  port,
+  kernelUrl,
+  env,
+  provider,
+  model,
+  effort,
+}) {
+  const script = `
+set timeout 45
+set cli $env(ARROBA_EXPECT_CLI_BINARY)
+set package_dir $env(ARROBA_EXPECT_PUBLICATION_PACKAGE)
+set port $env(ARROBA_EXPECT_PUBLICATION_PORT)
+set kernel_url $env(ARROBA_EXPECT_KERNEL_URL)
+set provider $env(ARROBA_EXPECT_REPLACEMENT_PROVIDER)
+set model $env(ARROBA_EXPECT_REPLACEMENT_MODEL)
+set effort $env(ARROBA_EXPECT_REPLACEMENT_EFFORT)
+trap { catch { exec kill [exp_pid] }; exit 143 } SIGTERM
+spawn -noecho $cli serve $package_dir $port --kernel-url $kernel_url
+expect {
+  -re {Replacement provider:} { send -- "$provider\\r" }
+  timeout { puts stderr "timed out waiting for provider replacement prompt"; exit 2 }
+  eof { set wait_result [wait]; exit [lindex $wait_result 3] }
+}
+expect {
+  -re {Replacement model .*:} { send -- "$model\\r" }
+  timeout { puts stderr "timed out waiting for model replacement prompt"; exit 2 }
+  eof { set wait_result [wait]; exit [lindex $wait_result 3] }
+}
+expect {
+  -re {Replacement effort .*:} { send -- "$effort\\r" }
+  timeout { puts stderr "timed out waiting for effort replacement prompt"; exit 2 }
+  eof { set wait_result [wait]; exit [lindex $wait_result 3] }
+}
+expect {
+  -re {workflow gateway listening} { puts "EXPECT_SERVE_READY"; exp_continue }
+  timeout { exp_continue }
+  eof { set wait_result [wait]; exit [lindex $wait_result 3] }
+}
+`
+  return startProcess('/usr/bin/expect', ['-c', script], {
+    ...env,
+    ARROBA_EXPECT_CLI_BINARY: cliBinary,
+    ARROBA_EXPECT_PUBLICATION_PACKAGE: packageDir,
+    ARROBA_EXPECT_PUBLICATION_PORT: String(port),
+    ARROBA_EXPECT_KERNEL_URL: kernelUrl,
+    ARROBA_EXPECT_REPLACEMENT_PROVIDER: provider,
+    ARROBA_EXPECT_REPLACEMENT_MODEL: model,
+    ARROBA_EXPECT_REPLACEMENT_EFFORT: effort,
+  }, 'arroba-serve-provider-override')
 }
 
 async function stopProcess(child) {
@@ -475,6 +529,23 @@ async function assertPackageDoesNotContain(exportDir, forbiddenValues) {
     }
   }
   await visit(exportDir)
+}
+
+async function createUnavailableProviderPackage(sourceDir, targetDir) {
+  await rm(targetDir, { recursive: true, force: true })
+  await cp(sourceDir, targetDir, { recursive: true })
+  await rm(path.join(targetDir, 'bindings.local.json'), { force: true })
+  const snapshotPath = path.join(targetDir, 'workflow.snapshot.json')
+  const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'))
+  const agent = snapshot.agents?.[0]
+  if (!agent?.id) {
+    throw new Error(`exported publication snapshot has no agent to mutate: ${JSON.stringify(snapshot.agents)}`)
+  }
+  agent.provider = 'missing-publication-provider'
+  agent.model = 'missing-publication-model'
+  agent.effort = 'missing-publication-effort'
+  await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
+  return { agentId: agent.id }
 }
 
 async function waitForTcpPort(host, port, timeoutMs = 20_000) {
@@ -1207,6 +1278,50 @@ async function main() {
     if (!ipcBody.accepted || !hasAcceptedRunMetadata(ipcBody)) {
       throw new Error(`expected IPC accepted run metadata, got ${ipcResult.stdout}`)
     }
+
+    logStep('serve_provider_override_prompt')
+    const overrideExportDir = path.join(root, 'exported-publication-provider-override')
+    const overridePackage = await createUnavailableProviderPackage(exportDir, overrideExportDir)
+    gateway = startServeWithProviderPrompt({
+      cliBinary,
+      packageDir: overrideExportDir,
+      port: gatewayPort,
+      kernelUrl,
+      env: {
+        ...env,
+        HOST: '127.0.0.1',
+      },
+      provider: 'dev-stub',
+      model: 'publication-drill-model',
+      effort: 'low',
+    })
+    await waitForGateway(gatewayUrl)
+    const overrideBindings = JSON.parse(await readFile(path.join(overrideExportDir, 'bindings.local.json'), 'utf8'))
+    const overrideReplacement = overrideBindings.provider_model_overrides
+      ?.find((candidate) => candidate.agent_id === overridePackage.agentId)
+      ?.replacement
+    if (
+      overrideReplacement?.provider !== 'dev-stub'
+      || overrideReplacement?.model !== 'publication-drill-model'
+      || overrideReplacement?.effort !== 'low'
+    ) {
+      throw new Error(`expected provider override to persist dev-stub/publication-drill-model/low, got ${JSON.stringify(overrideBindings)}`)
+    }
+    const overrideResponse = await fetch(`${gatewayUrl}/qa/provider-override-publication`)
+    const overrideBody = await overrideResponse.json()
+    if (overrideResponse.status !== 202 || !hasAcceptedRunMetadata(overrideBody)) {
+      throw new Error(`expected provider override package HTTP 202, got ${overrideResponse.status}: ${JSON.stringify(overrideBody)}`)
+    }
+    if (
+      !gateway.logs.stdout.includes('Replacement provider:')
+      || !gateway.logs.stdout.includes('Replacement model')
+      || !gateway.logs.stdout.includes('Replacement effort')
+    ) {
+      throw new Error(`expected provider override prompt transcript, got stdout:\n${gateway.logs.stdout}\nstderr:\n${gateway.logs.stderr}`)
+    }
+    await stopProcess(gateway)
+    gateway = null
+    logStep('serve_provider_override_prompt_ok', { agentId: overridePackage.agentId })
 
     logStep('watchdog_publication_export')
     const watchdog = variant(
