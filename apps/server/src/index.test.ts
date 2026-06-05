@@ -271,6 +271,14 @@ test("gateway materializes exported publication packages through the kernel", as
         last_activity_at_ms: 0,
       }],
     }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({
+      schema_version: 1,
+      mcps: [{ name: "playwright" }],
+      skills: [{ name: "qa" }],
+      scripts: [{ name: "deploy" }],
+      connectors: [{ name: "github" }],
+      credentials: [{ name: "github-token", used_by: "github" }],
+    }))
 
     const config = await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
@@ -278,6 +286,11 @@ test("gateway materializes exported publication packages through the kernel", as
       client: {
         send: async (request) => {
           requests.push(request)
+          if ("ListMcpServers" in request) return { McpServersListed: { mcps: [{ name: "playwright" }] } }
+          if ("ListSkills" in request) return { SkillsListed: { skills: [{ name: "qa" }] } }
+          if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
+          if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
+          if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
@@ -289,10 +302,98 @@ test("gateway materializes exported publication packages through the kernel", as
       },
     })
 
-    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["MaterializeWorkflowPublication"])
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "ListMcpServers",
+      "ListSkills",
+      "ListScripts",
+      "ListConnectors",
+      "ListCredentials",
+      "MaterializeWorkflowPublication",
+    ])
+    assert.deepEqual(requests[0], { ListMcpServers: { workspace_id: "/repo" } })
     assert.equal(config.source_session_id, "session-1")
     assert.equal(config.session_id, "runtime-session-1")
     assert.equal(config.workflow_ref, "workflow-1")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("gateway fails package materialization before runtime creation when requirements are missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-requirements-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "codex",
+        model: null,
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({
+      schema_version: 1,
+      skills: [{ name: "qa" }],
+      credentials: [{ name: "github-token" }],
+    }))
+
+    await assert.rejects(
+      () => loadPublicationPackageConfig(root, {
+        kernelEndpoint: "ws://kernel",
+        materialize: true,
+        client: {
+          send: async (request) => {
+            requests.push(request)
+            if ("ListSkills" in request) return { SkillsListed: { skills: [] } }
+            if ("ListCredentials" in request) return { CredentialsListed: { credentials: [] } }
+            throw new Error(`unexpected request: ${JSON.stringify(request)}`)
+          },
+        },
+      }),
+      /publication requirements are missing: skill:qa, credential:github-token/,
+    )
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "ListSkills",
+      "ListCredentials",
+    ])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

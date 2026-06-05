@@ -13,6 +13,7 @@ import type {
 } from "@arroba/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import { validatePublicationRequirements } from "./publication-requirements.js"
 import type {
   InputSchema,
   KernelLookupClient,
@@ -20,6 +21,7 @@ import type {
   PublicationHookConfig,
   TlsConfig,
   WorkflowPublicationPackage,
+  WorkflowPublicationRequirements,
   WorkflowPublicationSnapshot,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
@@ -60,6 +62,7 @@ export async function loadPublicationPackageConfig(
     kernelEndpoint?: string
     hookId?: string
     materialize?: boolean
+    validateRequirements?: boolean
     client?: KernelLookupClient
   } = {},
 ): Promise<WorkflowPublicationConfig> {
@@ -75,7 +78,29 @@ export async function loadPublicationPackageConfig(
     options.hookId,
   )
   if (!options.materialize) return config
-  return materializePublicationConfig(config, snapshot, options.client)
+  const requirements = await loadPublicationRequirements(root)
+  const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    if (options.validateRequirements !== false) {
+      await validatePublicationRequirements(requirements, ownedClient, snapshot.source_session?.workspace_id)
+    }
+    return await materializePublicationConfig(config, snapshot, ownedClient)
+  } finally {
+    if (!options.client) {
+      await ownedClient.close?.().catch(() => {})
+    }
+  }
+}
+
+async function loadPublicationRequirements(root: string) {
+  try {
+    return JSON.parse(await readFile(join(root, "requirements.json"), "utf8")) as WorkflowPublicationRequirements
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("publication package is missing requirements.json")
+    }
+    throw error
+  }
 }
 
 export function publicationConfigFromPackage(

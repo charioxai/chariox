@@ -73,6 +73,24 @@ export type WorkflowPublicationPackage = {
 
 export type WorkflowPublicationSnapshot = KernelWorkflowPublicationSnapshot
 
+export type PublicationNamedRequirement = {
+  name: string
+}
+
+export type PublicationCredentialRequirement = {
+  name: string
+  used_by?: string
+}
+
+export type WorkflowPublicationRequirements = {
+  schema_version: number
+  mcps?: PublicationNamedRequirement[]
+  skills?: PublicationNamedRequirement[]
+  scripts?: PublicationNamedRequirement[]
+  connectors?: PublicationNamedRequirement[]
+  credentials?: PublicationCredentialRequirement[]
+}
+
 export type NormalizedInvocation = {
   publication_id: string
   request_id: string

@@ -161,6 +161,36 @@ async function stopProcess(child) {
   })
 }
 
+async function waitForProcessExit(child, timeoutMs = 10_000) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { code: child.exitCode, signal: child.signalCode }
+  }
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`${child.name ?? 'process'} did not exit within ${timeoutMs}ms`))
+    }, timeoutMs)
+    child.once('exit', (code, signal) => {
+      clearTimeout(timeout)
+      resolve({ code, signal })
+    })
+  })
+}
+
+async function assertGatewayDoesNotListen(baseUrl, timeoutMs = 1_500) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`)
+      if (response.ok) {
+        throw new Error(`gateway unexpectedly listened at ${baseUrl}`)
+      }
+    } catch (error) {
+      if (/unexpectedly listened/.test(error.message)) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+}
+
 async function waitForKernel(kernelUrl) {
   const deadline = Date.now() + 20_000
   let lastError = null
@@ -477,6 +507,30 @@ async function main() {
     if (!ipcBody.accepted || !hasAcceptedRunMetadata(ipcBody)) {
       throw new Error(`expected IPC accepted run metadata, got ${ipcResult.stdout}`)
     }
+
+    logStep('missing_requirements_fail_before_listen')
+    await writeFile(path.join(exportDir, 'requirements.json'), JSON.stringify({
+      schema_version: 1,
+      skills: [{ name: 'missing-publication-skill' }],
+    }, null, 2))
+    gateway = startProcess(
+      cliBinary,
+      ['serve', exportDir, String(gatewayPort), '--kernel-url', kernelUrl],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+      },
+      'arroba-serve-missing-requirements',
+    )
+    const failedServe = await waitForProcessExit(gateway)
+    await assertGatewayDoesNotListen(gatewayUrl)
+    if (failedServe.code === 0) {
+      throw new Error('expected missing-requirements serve to fail')
+    }
+    if (!/publication requirements are missing: skill:missing-publication-skill/.test(gateway.logs.stderr)) {
+      throw new Error(`expected missing-requirements error, got stderr:\n${gateway.logs.stderr}`)
+    }
+    gateway = null
 
     logStep('ok', {
       anonymousPublicationId: publication.id,
