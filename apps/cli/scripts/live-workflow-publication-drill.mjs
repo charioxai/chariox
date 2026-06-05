@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
@@ -22,10 +22,12 @@ const {
   createWorkflowEndpointRequest,
   createWorkflowPublicationRequest,
   createWorkflowRequest,
+  createWorkflowWatchdogRequest,
   endSessionRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
   listSessionsRequest,
+  listWorkflowRunsRequest,
   setWorkflowNodeCanCompleteRunRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
@@ -264,6 +266,21 @@ async function waitForProviderRunReady(client, providerRunId) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error(`provider run ${providerRunId} did not become ready`)
+}
+
+async function waitForWatchdogWorkflowRun(client, sessionId, workflowId) {
+  const deadline = Date.now() + 20_000
+  let lastRuns = []
+  while (Date.now() < deadline) {
+    const listed = variant(
+      await client.send(listWorkflowRunsRequest(sessionId, workflowId)),
+      'WorkflowRunsListed',
+    )
+    lastRuns = listed.workflow_runs ?? []
+    if (lastRuns.length > 0) return lastRuns[0]
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`watchdog publication did not start a workflow run; last runs: ${JSON.stringify(lastRuns)}`)
 }
 
 async function createSelfSignedCertificate(root) {
@@ -773,6 +790,63 @@ async function main() {
     if (!ipcBody.accepted || !hasAcceptedRunMetadata(ipcBody)) {
       throw new Error(`expected IPC accepted run metadata, got ${ipcResult.stdout}`)
     }
+
+    logStep('watchdog_publication_export')
+    const watchdog = variant(
+      await client.send(createWorkflowWatchdogRequest(
+        apiSseSession.id,
+        apiSseWorkflow.id,
+        apiSseFinalEndpoint.id,
+        5,
+        'watchdog-publication',
+        'queue',
+        1,
+      )),
+      'WorkflowWatchdogCreated',
+    ).watchdog
+    const watchdogExportDir = path.join(root, 'exported-watchdog-publication')
+    const watchdogExportResult = await executeShellCommand(
+      parseShellCommand(`workflow publication export ${apiSseFinalPublication.id} ${watchdogExportDir} --kernel-url ${kernelUrl}`),
+      createDefaultShellContext({
+        workspace: apiSseWorkspace,
+        worktree: apiSseWorkspace,
+        sessionId: apiSseSession.id,
+        workflowId: apiSseWorkflow.id,
+      }),
+      { client },
+    )
+    if (!watchdogExportResult.ok) {
+      throw new Error(`watchdog publication export failed: ${watchdogExportResult.message}`)
+    }
+    const watchdogSnapshot = JSON.parse(await readFile(path.join(watchdogExportDir, 'workflow.snapshot.json'), 'utf8'))
+    if (watchdogSnapshot.watchdogs?.[0]?.id !== watchdog.id) {
+      throw new Error(`expected exported watchdog ${watchdog.id}, got ${JSON.stringify(watchdogSnapshot.watchdogs)}`)
+    }
+    gateway = startProcess(
+      cliBinary,
+      ['serve', watchdogExportDir, String(gatewayPort), '--kernel-url', kernelUrl],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+      },
+      'arroba-serve-watchdog',
+    )
+    await waitForGateway(gatewayUrl)
+    const statusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const statusBody = await statusResponse.json()
+    const runtimeSessionId = statusBody.runtime_session_id
+    if (statusResponse.status !== 200 || typeof runtimeSessionId !== 'string') {
+      throw new Error(`expected publication status with runtime session id, got ${statusResponse.status}: ${JSON.stringify(statusBody)}`)
+    }
+    sessionIds.push(runtimeSessionId)
+    const watchdogRun = await waitForWatchdogWorkflowRun(client, runtimeSessionId, apiSseWorkflow.id)
+    logStep('watchdog_publication_ok', {
+      runtimeSessionId,
+      workflowRunId: watchdogRun.id,
+      status: watchdogRun.status,
+    })
+    await stopProcess(gateway)
+    gateway = null
 
     logStep('missing_requirements_fail_before_listen')
     await writeFile(path.join(exportDir, 'requirements.json'), JSON.stringify({

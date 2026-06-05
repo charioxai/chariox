@@ -73,6 +73,19 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return { status: "ok" }
   })
 
+  app.get("/.well-known/arroba/publication/status", async () => ({
+    status: "running",
+    publication_id: publication.publication_id,
+    runtime_session_id: publication.session_id,
+    source_session_id: publication.source_session_id ?? null,
+    workflow_ref: publication.workflow_ref,
+    endpoint_ref: publication.endpoint_ref,
+    transport: publication.transport ?? "human_http",
+    mode: publication.mode ?? "sync",
+    route: publication.route ?? "/*",
+    methods: publication.methods ?? ["GET", "POST"],
+  }))
+
   app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
     if (publication.transport && publication.transport !== "human_http") {
       reply.code(404)

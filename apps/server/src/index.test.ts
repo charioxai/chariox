@@ -41,6 +41,42 @@ test("GET /health returns an ok status payload", async () => {
   }
 })
 
+test("GET publication status reports runtime binding", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    source_session_id: "source-session-1",
+    transport: "api_sse_json",
+    methods: ["POST"],
+    route: "/invoke",
+    mode: "async",
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/arroba/publication/status",
+    })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json(), {
+      status: "running",
+      publication_id: "pub-test",
+      runtime_session_id: "session-1",
+      source_session_id: "source-session-1",
+      workflow_ref: "workflow-1",
+      endpoint_ref: "endpoint-1",
+      transport: "api_sse_json",
+      mode: "async",
+      route: "/invoke",
+      methods: ["POST"],
+    })
+  } finally {
+    await app.close()
+  }
+})
+
 test("gateway maps kernel-owned publication records to runtime config", async () => {
   const config = publicationConfigFromKernelRecord({
     id: "pub-1",
