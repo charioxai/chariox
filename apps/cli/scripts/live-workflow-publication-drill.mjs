@@ -233,24 +233,32 @@ async function runHumanHttpBrowserDrill({ url, root }) {
       '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${debuggingPort}`,
       `--user-data-dir=${userDataDir}`,
-      url,
+      'about:blank',
     ],
     process.env,
     'chrome-human-http-publication',
   )
   let cdp = null
   try {
-    const target = await waitForChromeTarget(debuggingPort, url, chrome)
+    const target = await waitForChromeTarget(debuggingPort, 'about:blank', chrome)
     cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
-    await waitForBrowserFinalOutput(cdp)
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
+    await cdp.send('Page.navigate', { url })
+    const finalState = await waitForBrowserFinalOutput(cdp)
+    const statuses = finalState.statuses ?? []
+    for (const expectedStatus of ['Running', 'Completed']) {
+      if (!statuses.includes(expectedStatus)) {
+        throw new Error(`browser did not observe ${expectedStatus} status; statuses=${JSON.stringify(statuses)}`)
+      }
+    }
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error('browser screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
-    logStep('browser_screenshot_ok', { screenshotPath })
+    logStep('browser_screenshot_ok', { screenshotPath, statuses })
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
@@ -328,14 +336,47 @@ async function waitForBrowserFinalOutput(cdp) {
       expression: `(() => {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const output = document.querySelector('#output')?.textContent?.trim() || '';
-        return { status, output, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
+        const statuses = Array.isArray(window.__arrobaPublicationDrillStatuses) ? window.__arrobaPublicationDrillStatuses : [];
+        return { status, output, statuses, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
       })()`,
     })
     lastState = evaluated.result?.value ?? null
-    if (lastState?.ok) return
+    if (lastState?.ok) return lastState
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
   throw new Error(`browser did not render final workflow output: ${JSON.stringify(lastState)}`)
+}
+
+function browserStatusRecorderScript() {
+  return `
+    (() => {
+      const statuses = [];
+      let last = null;
+      Object.defineProperty(window, '__arrobaPublicationDrillStatuses', {
+        value: statuses,
+        configurable: true,
+      });
+      const record = () => {
+        const status = document.querySelector('#status')?.textContent?.trim();
+        if (status && status !== last) {
+          last = status;
+          statuses.push(status);
+        }
+      };
+      const install = () => {
+        record();
+        const statusEl = document.querySelector('#status');
+        if (statusEl) {
+          new MutationObserver(record).observe(statusEl, { childList: true, subtree: true, characterData: true });
+        }
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+      } else {
+        install();
+      }
+    })();
+  `
 }
 
 async function waitForProcessExit(child, timeoutMs = 10_000) {
@@ -855,7 +896,7 @@ async function main() {
     }
     const browserResponse = await fetch(`${gatewayUrl}/qa/browser-publication`, { headers: { accept: 'text/html' } })
     const browserHtml = await browserResponse.text()
-    if (browserResponse.status !== 200 || !browserHtml.includes('EventSource')) {
+    if (browserResponse.status !== 200 || !browserHtml.includes('EventSource') || !browserHtml.includes("addEventListener('queued'")) {
       throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserHtml.slice(0, 200)}`)
     }
 
@@ -868,7 +909,7 @@ async function main() {
     const tunnelBrowserUrl = new URL('qa/browser-publication-tunnel', registeredPublication.open_url).toString()
     const tunnelBrowserResponse = await fetch(tunnelBrowserUrl, { headers: { accept: 'text/html' } })
     const tunnelBrowserHtml = await tunnelBrowserResponse.text()
-    if (tunnelBrowserResponse.status !== 200 || !tunnelBrowserHtml.includes('EventSource')) {
+    if (tunnelBrowserResponse.status !== 200 || !tunnelBrowserHtml.includes('EventSource') || !tunnelBrowserHtml.includes("addEventListener('queued'")) {
       throw new Error(`expected tunnel browser invocation HTML with SSE subscription, got ${tunnelBrowserResponse.status}: ${tunnelBrowserHtml.slice(0, 200)}`)
     }
 
@@ -887,7 +928,7 @@ async function main() {
       }),
     })
     const uploadHtml = await uploadResponse.text()
-    if (uploadResponse.status !== 200 || !uploadHtml.includes('EventSource')) {
+    if (uploadResponse.status !== 200 || !uploadHtml.includes('EventSource') || !uploadHtml.includes("addEventListener('queued'")) {
       throw new Error(`expected browser upload invocation HTML with SSE subscription, got ${uploadResponse.status}: ${uploadHtml.slice(0, 200)}`)
     }
 

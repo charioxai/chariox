@@ -184,6 +184,7 @@ function humanHttpStatusPage(
       "  if (initialResult.queued) statusEl.textContent = 'Queued';",
       "} else {",
       "  const events = new EventSource(publicationEventsUrl(eventsUrl));",
+      "  events.addEventListener('queued', () => { statusEl.textContent = 'Queued'; });",
       "  events.addEventListener('status', (event) => renderRun(JSON.parse(event.data).workflow_run));",
       "  events.addEventListener('final', (event) => { renderRun(JSON.parse(event.data).workflow_run); events.close(); });",
       "  events.addEventListener('timeout', () => { statusEl.textContent = 'Still running'; events.close(); });",
