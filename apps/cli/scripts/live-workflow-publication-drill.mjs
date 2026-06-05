@@ -1225,6 +1225,7 @@ async function main() {
     await writeFile(path.join(exportDir, 'requirements.json'), JSON.stringify({
       schema_version: 1,
       skills: [{ name: 'missing-publication-skill' }],
+      credentials: [{ name: 'missing-publication-credential' }],
     }, null, 2))
     gateway = startProcess(
       cliBinary,
@@ -1240,7 +1241,7 @@ async function main() {
     if (failedServe.code === 0) {
       throw new Error('expected missing-requirements serve to fail')
     }
-    if (!/publication requirements are missing: skill:missing-publication-skill/.test(gateway.logs.stderr)) {
+    if (!/publication requirements are missing: skill:missing-publication-skill, credential:missing-publication-credential/.test(gateway.logs.stderr)) {
       throw new Error(`expected missing-requirements error, got stderr:\n${gateway.logs.stderr}`)
     }
     gateway = null
