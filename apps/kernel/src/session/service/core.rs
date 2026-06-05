@@ -763,6 +763,34 @@ impl SessionService {
         Ok(publication.clone())
     }
 
+    pub fn register_workflow_publication_endpoint(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        status: impl Into<String>,
+        open_url: impl Into<String>,
+        deployment: Value,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let publication = session
+            .workflow_publication_mut(&publication_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "register workflow publication endpoint",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            })?;
+        publication.mark_served(status, open_url, deployment);
+        Ok(publication.clone())
+    }
+
     pub fn list_workflow_runs(
         &self,
         session_id: &str,

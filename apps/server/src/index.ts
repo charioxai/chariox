@@ -1,11 +1,16 @@
 import process from "node:process"
 
 import Fastify from "fastify"
+import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import {
+  registerWorkflowPublicationEndpointRequest,
+} from "@arroba/kernel-client/ipc-requests"
 
 import {
+  defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
-import { createProcessLogger } from "./logging.js"
+import { ArrobaLogger, createProcessLogger } from "./logging.js"
 import {
   installApiSseJsonRoutes,
   isApiSseJsonPublication,
@@ -208,11 +213,73 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   app
     .listen({ host, port })
-    .then((address) => {
+    .then(async (address) => {
       logger.info("workflow gateway listening", { host, port, address })
+      await registerServedPublicationEndpoint(config, host, port, logger)
+      schedulePublicationEndpointRegistration(config, host, port, logger)
     })
     .catch((error) => {
       logger.error("workflow gateway failed to start", { error: error.message, host, port })
       process.exit(1)
     })
+}
+
+function schedulePublicationEndpointRegistration(
+  publication: WorkflowPublicationConfig | undefined,
+  host: string,
+  port: number,
+  logger: ArrobaLogger,
+) {
+  if (!publication) return
+  const interval = setInterval(() => {
+    void registerServedPublicationEndpoint(publication, host, port, logger)
+  }, 5 * 60 * 1_000)
+  interval.unref?.()
+}
+
+async function registerServedPublicationEndpoint(
+  publication: WorkflowPublicationConfig | undefined,
+  host: string,
+  port: number,
+  logger: ArrobaLogger,
+) {
+  if (!publication) return
+  const sessionId = publication.source_session_id ?? publication.session_id
+  if (!sessionId || !publication.publication_id) return
+  const localUrl = servedLocalUrl(publication, host, port)
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const response = await client.send<Record<string, unknown>>(
+      registerWorkflowPublicationEndpointRequest(sessionId, publication.publication_id, localUrl, {
+        runtimeSessionId: publication.session_id,
+      }),
+    )
+    const registered = response.WorkflowPublicationEndpointRegistered as {
+      open_url?: string
+      access?: string
+      expires_at_ms?: number | null
+    } | undefined
+    logger.info("registered workflow publication endpoint", {
+      publication_id: publication.publication_id,
+      local_url: localUrl,
+      open_url: registered?.open_url ?? localUrl,
+      access: registered?.access ?? "local",
+      expires_at_ms: registered?.expires_at_ms ?? null,
+    })
+  } catch (error) {
+    logger.warn("failed to register workflow publication endpoint", {
+      publication_id: publication.publication_id,
+      local_url: localUrl,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+function servedLocalUrl(publication: WorkflowPublicationConfig, host: string, port: number) {
+  const scheme = publication.tls?.enabled === false || !publication.tls ? "http" : "https"
+  const hostname = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host
+  const bracketed = hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname
+  return `${scheme}://${bracketed}:${port}/`
 }

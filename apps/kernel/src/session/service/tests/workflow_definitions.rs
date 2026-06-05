@@ -121,6 +121,32 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
         publication.id()
     );
 
+    let served = service
+        .register_workflow_publication_endpoint(
+            session.id(),
+            publication.id(),
+            "running",
+            "https://relay.example.test/display/publication-1/",
+            serde_json::json!({
+                "kind": "tunnel",
+                "url": "https://relay.example.test/display/publication-1/",
+                "local_url": "http://127.0.0.1:3000/"
+            }),
+        )
+        .expect("publication endpoint should register");
+    assert_eq!(served.status(), Some("running"));
+    assert_eq!(
+        served.open_url(),
+        Some("https://relay.example.test/display/publication-1/")
+    );
+    assert_eq!(
+        served
+            .deployment()
+            .and_then(|deployment| deployment.pointer("/kind"))
+            .and_then(serde_json::Value::as_str),
+        Some("tunnel")
+    );
+
     let disabled = service
         .disable_workflow_publication(session.id(), publication.id())
         .expect("publication should be disabled");

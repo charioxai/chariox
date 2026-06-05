@@ -25,6 +25,12 @@ pub struct WorkflowPublicationDefinition {
     input_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    open_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deployment: Option<Value>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -62,6 +68,9 @@ impl WorkflowPublicationDefinition {
             parser,
             input_schema,
             mode,
+            status: None,
+            open_url: None,
+            deployment: None,
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
@@ -100,8 +109,32 @@ impl WorkflowPublicationDefinition {
         &self.created_by_user_id
     }
 
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    pub fn open_url(&self) -> Option<&str> {
+        self.open_url.as_deref()
+    }
+
+    pub fn deployment(&self) -> Option<&Value> {
+        self.deployment.as_ref()
+    }
+
     pub fn disable(&mut self) {
         self.enabled = false;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn mark_served(
+        &mut self,
+        status: impl Into<String>,
+        open_url: impl Into<String>,
+        deployment: Value,
+    ) {
+        self.status = Some(status.into());
+        self.open_url = Some(open_url.into());
+        self.deployment = Some(deployment);
         self.updated_at_ms = unix_epoch_ms();
     }
 }

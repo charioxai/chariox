@@ -981,6 +981,8 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
+    assert.match(response.body, /publicationEventsUrl\(eventsUrl\)/)
+    assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
     assert.match(response.body, /run-1/)
     assert.deepEqual(seenInput, { prompt: "make tea" })
   } finally {

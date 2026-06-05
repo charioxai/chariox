@@ -68,6 +68,17 @@ pub struct DisableWorkflowPublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterWorkflowPublicationEndpointRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub local_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MaterializeWorkflowPublicationRequest {
     pub publication_id: String,
     pub snapshot: WorkflowPublicationSnapshot,

@@ -112,6 +112,26 @@ export function disableWorkflowPublicationRequest(sessionId: string, publication
   }
 }
 
+export function registerWorkflowPublicationEndpointRequest(
+  sessionId: string,
+  publicationRef: string,
+  localUrl: string,
+  options: {
+    runtimeSessionId?: string | null
+    ttlMs?: number | null
+  } = {},
+) {
+  return {
+    RegisterWorkflowPublicationEndpoint: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+      local_url: localUrl,
+      runtime_session_id: options.runtimeSessionId ?? null,
+      ttl_ms: options.ttlMs ?? null,
+    },
+  }
+}
+
 export function materializeWorkflowPublicationRequest(
   publicationId: string,
   snapshot: WorkflowPublicationSnapshot,

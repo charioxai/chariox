@@ -91,6 +91,45 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    pub(super) fn workflow_register_publication_endpoint(
+        &self,
+        request: crate::local::RegisterWorkflowPublicationEndpointRequest,
+        caller_user_id: &str,
+        open_url: String,
+        access: String,
+        expires_at_ms: Option<u64>,
+        deployment: serde_json::Value,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let publication = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
+        if publication.created_by_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                publication.created_by_user_id(),
+                format!("workflow publication `{}`", request.publication_ref),
+                "register workflow publication endpoint",
+            ));
+        }
+        let publication = self
+            .session_store
+            .write()
+            .register_workflow_publication_endpoint(
+                &request.session_id,
+                &request.publication_ref,
+                "running",
+                open_url.clone(),
+                deployment,
+            )?;
+        Ok(LocalDaemonResponse::WorkflowPublicationEndpointRegistered {
+            publication,
+            open_url,
+            access,
+            expires_at_ms,
+        })
+    }
+
     pub(super) fn workflow_materialize_publication(
         &self,
         request: crate::local::MaterializeWorkflowPublicationRequest,
