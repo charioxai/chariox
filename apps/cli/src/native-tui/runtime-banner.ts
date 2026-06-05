@@ -67,7 +67,9 @@ function nativeBannerExtensionGrants(
 }
 
 function formatGrantedExtensions(agent: AgentInstance, mcps: readonly string[], skills: readonly string[]): string {
-  if (mcps.length === 0 && skills.length === 0) return "none"
+  if (mcps.length === 0 && skills.length === 0) {
+    return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
+  }
   const remote = Boolean(agent.remote_execution)
   const activePlacement = formatExtensionGrantPlacement([{ kind: "mcp" }], remote)
   const skillPlacement = formatExtensionGrantPlacement([{ kind: "skill" }], remote)

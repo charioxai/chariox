@@ -152,6 +152,33 @@ test("native TUI runtime banner surfaces blocked remote extension sync", () => {
   assert.match(banner, /ext sync next:  keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
 })
 
+test("native TUI runtime banner keeps final revokes visible after grants are gone", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "managed" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [],
+      remote_extension_manifest_sync: {
+        state: "failed",
+        pending_revoke: true,
+        manifest_hash: "empty-hash",
+        last_error: "worker offline",
+      },
+    }),
+    worktree: "/repo",
+  })
+
+  assert.match(banner, /extensions:     none \(final revoke pending\)/)
+  assert.match(banner, /remote ext sync: failed, pending revoke, hash=empty-hash, error=worker offline/)
+  assert.match(banner, /ext sync next:  keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+})
+
 test("native TUI runtime banner surfaces provider run recovery actions", () => {
   const mismatched = formatNativeTuiRuntimeBanner({
     surface: "codex native-tui",
