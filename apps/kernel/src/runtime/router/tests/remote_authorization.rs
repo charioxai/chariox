@@ -583,6 +583,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         endpoint_ref: endpoint.id().to_string(),
         prompt: Some("should be denied".to_string()),
         queue_ref: None,
+        publication_invocation: None,
     });
     assert_ownership_denied(
         router

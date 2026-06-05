@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowPublicationInvocationEnvelope;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
@@ -261,6 +262,8 @@ pub struct InvokeWorkflowEndpointRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_ref: Option<String>,
     pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

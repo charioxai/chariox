@@ -24,12 +24,16 @@ impl KernelRuntimeOwnedState {
             queued_prompt.endpoint_id(),
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
-        let workflow_run = self.session_store.write().invoke_workflow_endpoint(
-            session_id,
-            workflow.id(),
-            endpoint.id(),
-            queued_prompt.prompt().map(str::to_string),
-        )?;
+        let workflow_run = self
+            .session_store
+            .write()
+            .invoke_workflow_endpoint_with_publication_invocation(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                queued_prompt.prompt().map(str::to_string),
+                queued_prompt.publication_invocation().cloned(),
+            )?;
         let dispatches = match self.workflow_schedule_entry_node(session_id, &workflow_run) {
             Ok(dispatches) => dispatches,
             Err(error) => {

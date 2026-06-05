@@ -80,6 +80,8 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     source_session_id: publication.source_session_id ?? null,
     workflow_ref: publication.workflow_ref,
     endpoint_ref: publication.endpoint_ref,
+    hook_id: publication.hook_id ?? null,
+    queue_ref: publication.queue_ref ?? "default",
     transport: publication.transport ?? "human_http",
     mode: publication.mode ?? "sync",
     route: publication.route ?? "/*",

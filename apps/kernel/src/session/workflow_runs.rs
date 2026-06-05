@@ -6,6 +6,7 @@ use super::workflow_diagnostics::WorkflowFailureEvent;
 use super::workflow_graph::{WorkflowEndpointDefinition, WorkflowNodeDefinition};
 use super::workflow_outputs::{WorkflowIntermediateOutput, WorkflowOutputPayload};
 use super::workflow_run_records::{WorkflowMessage, WorkflowNodeRun};
+use super::workflow_scheduling::WorkflowPublicationInvocationEnvelope;
 use super::workflow_turns::WorkflowRunStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +17,8 @@ pub struct WorkflowRun {
     entry_node_id: String,
     status: WorkflowRunStatus,
     invocation_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     active_node_run_id: Option<String>,
     node_runs: Vec<WorkflowNodeRun>,
     messages: Vec<WorkflowMessage>,
@@ -43,6 +46,7 @@ impl WorkflowRun {
         endpoint_id: impl Into<String>,
         entry_node_id: impl Into<String>,
         invocation_prompt: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
         node_runs: Vec<WorkflowNodeRun>,
         messages: Vec<WorkflowMessage>,
     ) -> Self {
@@ -54,6 +58,7 @@ impl WorkflowRun {
             entry_node_id: entry_node_id.into(),
             status: WorkflowRunStatus::Created,
             invocation_prompt,
+            publication_invocation,
             active_node_run_id,
             node_runs,
             messages,
@@ -93,6 +98,10 @@ impl WorkflowRun {
         self.invocation_prompt.as_deref()
     }
 
+    pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
+        self.publication_invocation.as_ref()
+    }
+
     pub fn active_node_run_id(&self) -> Option<&str> {
         self.active_node_run_id.as_deref()
     }
@@ -125,6 +134,7 @@ impl WorkflowRun {
             .map(WorkflowEndpointDefinition::owner_user_id);
         if endpoint_owner != Some(user_id) {
             self.invocation_prompt = None;
+            self.publication_invocation = None;
         }
         self.node_runs = self
             .node_runs

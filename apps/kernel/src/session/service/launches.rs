@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowPublicationInvocationEnvelope;
 
 impl SessionService {
     pub fn invoke_workflow_endpoint(
@@ -7,6 +8,23 @@ impl SessionService {
         workflow_ref: &str,
         endpoint_ref: &str,
         prompt: Option<String>,
+    ) -> Result<WorkflowRun, DaemonError> {
+        self.invoke_workflow_endpoint_with_publication_invocation(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+            None,
+        )
+    }
+
+    pub fn invoke_workflow_endpoint_with_publication_invocation(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowRun, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
@@ -48,6 +66,7 @@ impl SessionService {
             endpoint.id().to_string(),
             entry_node.id().to_string(),
             prompt,
+            publication_invocation,
             vec![node_run],
             messages,
         );
@@ -261,6 +280,29 @@ impl SessionService {
         source: WorkflowQueuedPromptSource,
         watchdog_id: Option<String>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        self.enqueue_workflow_prompt_with_publication_invocation(
+            session_id,
+            workflow_id,
+            endpoint_id,
+            prompt,
+            queue_ref,
+            source,
+            watchdog_id,
+            None,
+        )
+    }
+
+    pub fn enqueue_workflow_prompt_with_publication_invocation(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+    ) -> Result<WorkflowQueuedPrompt, DaemonError> {
         let queue_ref = queue_ref.unwrap_or("default");
         let workflow = self.resolve_workflow_ref(session_id, workflow_id)?;
         let queue_id =
@@ -274,6 +316,7 @@ impl SessionService {
             workflow.id().to_string(),
             endpoint.id().to_string(),
             prompt,
+            publication_invocation,
             source,
             watchdog_id,
         );

@@ -34,6 +34,8 @@ export type WorkflowPublicationConfig = {
   source_session_id?: string
   workflow_ref: string
   endpoint_ref: string
+  hook_id?: string
+  queue_ref?: string
   kernel_endpoint?: string
   transport?: string
   route?: string
@@ -117,12 +119,26 @@ export type NormalizedInvocation = {
   mode: "sync" | "async"
 }
 
+export type WorkflowPublicationInvocationEnvelope = {
+  publication_id: string
+  hook_id?: string | null
+  invocation_id: string
+  transport: string
+  endpoint_id: string
+  queue_ref?: string | null
+  input: unknown
+  artifacts: unknown[]
+  mode: "sync" | "async"
+  caller: Record<string, unknown>
+}
+
 export type WorkflowRun = {
   id: string
   status: string
   workflow_id?: string
   endpoint_id?: string
   invocation_prompt?: string | null
+  publication_invocation?: WorkflowPublicationInvocationEnvelope | null
   intermediate_outputs?: Array<{
     id: string
     source_node_run_id?: string

@@ -19,6 +19,46 @@ pub enum WorkflowQueuedPromptSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationInvocationEnvelope {
+    pub publication_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_id: Option<String>,
+    pub invocation_id: String,
+    pub transport: String,
+    pub endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    #[serde(
+        default = "serde_json_null",
+        skip_serializing_if = "serde_json_value_is_null"
+    )]
+    pub input: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(
+        default = "serde_json_null",
+        skip_serializing_if = "serde_json_value_is_null"
+    )]
+    pub caller: serde_json::Value,
+}
+
+impl WorkflowPublicationInvocationEnvelope {
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+}
+
+fn serde_json_null() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+fn serde_json_value_is_null(value: &serde_json::Value) -> bool {
+    value.is_null()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPromptQueueDefinition {
     id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -109,6 +149,8 @@ pub struct WorkflowQueuedPrompt {
     workflow_id: String,
     endpoint_id: String,
     prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     source: WorkflowQueuedPromptSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     watchdog_id: Option<String>,
@@ -128,6 +170,7 @@ impl WorkflowQueuedPrompt {
         workflow_id: impl Into<String>,
         endpoint_id: impl Into<String>,
         prompt: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
         source: WorkflowQueuedPromptSource,
         watchdog_id: Option<String>,
     ) -> Self {
@@ -138,6 +181,7 @@ impl WorkflowQueuedPrompt {
             workflow_id: workflow_id.into(),
             endpoint_id: endpoint_id.into(),
             prompt,
+            publication_invocation,
             source,
             watchdog_id,
             status: WorkflowQueuedPromptStatus::Queued,
@@ -162,6 +206,9 @@ impl WorkflowQueuedPrompt {
     }
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+    pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
+        self.publication_invocation.as_ref()
     }
     pub fn source(&self) -> WorkflowQueuedPromptSource {
         self.source

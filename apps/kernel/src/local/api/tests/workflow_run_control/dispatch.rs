@@ -138,6 +138,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("route this workflow".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("workflow invoke should succeed")
@@ -396,6 +397,7 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("run the join drill".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("workflow invoke should succeed")
@@ -690,6 +692,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("background work".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("workflow invoke should block instead of fail")
@@ -797,6 +800,7 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
                 endpoint_ref: first_endpoint.id().to_string(),
                 prompt: Some("hold the workflow claim".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("first workflow should start")
@@ -857,6 +861,7 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
                 endpoint_ref: blocked_endpoint.id().to_string(),
                 prompt: Some("wait for claim release".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("blocked workflow invoke should wait on workspace claim")

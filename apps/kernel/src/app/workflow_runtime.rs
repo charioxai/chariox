@@ -114,6 +114,7 @@ impl DaemonApp {
         endpoint_ref: &str,
         prompt: Option<String>,
         queue_ref: Option<&str>,
+        publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowLaunchOutcome, DaemonError> {
         let workflow = self
             .sessions()
@@ -124,15 +125,18 @@ impl DaemonApp {
             endpoint_ref,
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
-        let queued_prompt = self.sessions_mut().enqueue_workflow_prompt(
-            session_id,
-            workflow.id(),
-            endpoint.id(),
-            prompt,
-            queue_ref,
-            WorkflowQueuedPromptSource::Manual,
-            None,
-        )?;
+        let queued_prompt = self
+            .sessions_mut()
+            .enqueue_workflow_prompt_with_publication_invocation(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                prompt,
+                queue_ref,
+                WorkflowQueuedPromptSource::Manual,
+                None,
+                publication_invocation,
+            )?;
         if self
             .sessions()
             .get_session(session_id)?
@@ -166,6 +170,7 @@ impl DaemonApp {
             workflow_ref,
             endpoint_ref,
             prompt,
+            None,
             None,
         )? {
             WorkflowLaunchOutcome::Started {
@@ -250,12 +255,15 @@ impl DaemonApp {
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
         WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)?;
-        let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
-            session_id,
-            workflow.id(),
-            endpoint.id(),
-            queued_prompt.prompt().map(str::to_string),
-        )?;
+        let workflow_run = self
+            .sessions_mut()
+            .invoke_workflow_endpoint_with_publication_invocation(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                queued_prompt.prompt().map(str::to_string),
+                queued_prompt.publication_invocation().cloned(),
+            )?;
         if let Err(error) =
             WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
         {

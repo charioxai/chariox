@@ -248,6 +248,7 @@ mod tests {
             "endpoint",
             "node",
             None,
+            None,
             Vec::new(),
             Vec::new(),
         ));
@@ -260,6 +261,7 @@ mod tests {
             "workflow",
             "endpoint",
             "node",
+            None,
             None,
             Vec::new(),
             Vec::new(),

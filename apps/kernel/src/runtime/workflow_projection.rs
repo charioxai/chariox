@@ -106,6 +106,7 @@ mod tests {
             "endpoint-1",
             "node-1",
             None,
+            None,
             Vec::new(),
             Vec::new(),
         ));
@@ -114,6 +115,7 @@ mod tests {
             "workflow-beta",
             "endpoint-1",
             "node-1",
+            None,
             None,
             Vec::new(),
             Vec::new(),

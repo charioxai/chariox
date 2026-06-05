@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 113
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 114
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1811,6 +1811,7 @@ export type WorkflowQueuedPrompt = {
   workflow_id: string
   endpoint_id: string
   prompt?: string | null
+  publication_invocation?: WorkflowPublicationInvocationEnvelope | null
   source: "manual" | "watchdog"
   watchdog_id?: string | null
   status: "queued" | "dispatching" | "running" | "completed" | "cancelled"
@@ -1818,6 +1819,19 @@ export type WorkflowQueuedPrompt = {
   updated_at_ms: number
   dispatched_at_ms?: number | null
   workflow_run_id?: string | null
+}
+
+export type WorkflowPublicationInvocationEnvelope = {
+  publication_id: string
+  hook_id?: string | null
+  invocation_id: string
+  transport: string
+  endpoint_id: string
+  queue_ref?: string | null
+  input?: unknown
+  artifacts?: unknown[]
+  mode?: string | null
+  caller?: unknown
 }
 
 export type WorkflowNodeDefinition = {
@@ -1903,6 +1917,7 @@ export type WorkflowRun = {
   entry_node_id: string
   status: string
   invocation_prompt: string | null
+  publication_invocation?: WorkflowPublicationInvocationEnvelope | null
   active_node_run_id: string | null
   node_runs: WorkflowNodeRun[]
   messages: WorkflowMessage[]

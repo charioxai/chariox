@@ -36,6 +36,7 @@ export async function waitForWorkflowRunByInvocationRequestId(
 }
 
 function workflowRunMatchesInvocationRequestId(workflowRun: WorkflowRun, requestId: string) {
+  if (workflowRun.publication_invocation?.invocation_id === requestId) return true
   const prompt = workflowRun.invocation_prompt
   if (!prompt) return false
   try {

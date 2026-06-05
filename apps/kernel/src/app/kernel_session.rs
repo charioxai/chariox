@@ -209,6 +209,7 @@ mod tests {
                 "endpoint-1",
                 "node-1",
                 Some("invoke".to_string()),
+                None,
                 vec![node_run],
                 Vec::new(),
             );

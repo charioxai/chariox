@@ -329,14 +329,21 @@ export function invokeWorkflowEndpointRequest(
   endpointRef: string,
   prompt?: string | null,
   queueRef?: string | null,
+  publicationInvocation?: Record<string, unknown> | null,
 ) {
+  const payload: Record<string, unknown> = {
+    session_id: sessionId,
+    workflow_ref: workflowRef,
+    endpoint_ref: endpointRef,
+    queue_ref: queueRef ?? null,
+    prompt: prompt ?? null,
+  }
+  if (publicationInvocation) {
+    payload.publication_invocation = publicationInvocation
+  }
   return {
     InvokeWorkflowEndpoint: {
-      session_id: sessionId,
-      workflow_ref: workflowRef,
-      endpoint_ref: endpointRef,
-      queue_ref: queueRef ?? null,
-      prompt: prompt ?? null,
+      ...payload,
     },
   }
 }

@@ -98,6 +98,46 @@ fn creates_lists_resolves_and_cancels_workflow_runs() {
 }
 
 #[test]
+fn workflow_run_keeps_publication_invocation_metadata_separate_from_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "published", "agent-1");
+    let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+        publication_id: "publication-1".to_string(),
+        hook_id: Some("hook-1".to_string()),
+        invocation_id: "req-1".to_string(),
+        transport: "human_http".to_string(),
+        endpoint_id: endpoint.id().to_string(),
+        queue_ref: Some("default".to_string()),
+        input: serde_json::json!({ "prompt": "make tea" }),
+        artifacts: Vec::new(),
+        mode: Some("sync".to_string()),
+        caller: serde_json::json!({ "type": "anonymous" }),
+    };
+
+    let workflow_run = service
+        .invoke_workflow_endpoint_with_publication_invocation(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("make tea".to_string()),
+            Some(publication_invocation),
+        )
+        .expect("workflow run should be created");
+
+    assert_eq!(workflow_run.invocation_prompt(), Some("make tea"));
+    let metadata = workflow_run
+        .publication_invocation()
+        .expect("publication invocation should be stored on workflow run");
+    assert_eq!(metadata.invocation_id(), "req-1");
+    assert_eq!(metadata.input, serde_json::json!({ "prompt": "make tea" }));
+}
+
+#[test]
 fn provider_failure_marks_workflow_and_node_failed() {
     let mut service = SessionService::new(&test_config());
     let session = service

@@ -6,6 +6,7 @@ import {
 
 import type {
   NormalizedInvocation,
+  WorkflowPublicationInvocationEnvelope,
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
   WorkflowRun,
@@ -23,12 +24,15 @@ export async function invokeKernelWorkflow(
 ): Promise<WorkflowInvocationResult> {
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
-    const prompt = JSON.stringify(invocation, null, 2)
+    const prompt = promptFromInvocationInput(invocation.input)
+    const publicationInvocation = publicationInvocationEnvelope(publication, invocation)
     const response = await client.send<Record<string, unknown>>(invokeWorkflowEndpointRequest(
       publication.session_id,
       publication.workflow_ref,
       publication.endpoint_ref,
       prompt,
+      publication.queue_ref ?? null,
+      publicationInvocation as unknown as Record<string, unknown>,
     ))
     if ("WorkflowPromptEnqueued" in response) {
       return { accepted: true, queued: true, response: response.WorkflowPromptEnqueued }
@@ -45,6 +49,40 @@ export async function invokeKernelWorkflow(
   } finally {
     await client.close().catch(() => {})
   }
+}
+
+export function promptFromInvocationInput(input: unknown): string | null {
+  if (typeof input === "string") return input
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const prompt = (input as Record<string, unknown>).prompt
+    if (typeof prompt === "string") return prompt
+  }
+  if (input == null) return null
+  return JSON.stringify(input)
+}
+
+export function publicationInvocationEnvelope(
+  publication: WorkflowPublicationConfig,
+  invocation: NormalizedInvocation,
+): WorkflowPublicationInvocationEnvelope {
+  return {
+    publication_id: invocation.publication_id,
+    hook_id: publication.hook_id ?? null,
+    invocation_id: invocation.request_id,
+    transport: publication.transport ?? "human_http",
+    endpoint_id: publication.endpoint_ref,
+    queue_ref: publication.queue_ref ?? "default",
+    input: invocation.input,
+    artifacts: invocationArtifacts(invocation.input),
+    mode: invocation.mode,
+    caller: invocation.caller,
+  }
+}
+
+function invocationArtifacts(input: unknown): unknown[] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return []
+  const artifacts = (input as Record<string, unknown>).artifacts
+  return Array.isArray(artifacts) ? artifacts : []
 }
 
 async function waitForWorkflowRun(

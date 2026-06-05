@@ -121,6 +121,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("review this diff".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("workflow run invocation should succeed")
@@ -190,6 +191,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
                 endpoint_ref: endpoint.id().to_string(),
                 prompt: Some("review this diff again".to_string()),
                 queue_ref: None,
+                publication_invocation: None,
             },
         ))
         .expect("second workflow run invocation should succeed")

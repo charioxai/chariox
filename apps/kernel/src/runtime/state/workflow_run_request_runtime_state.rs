@@ -27,6 +27,7 @@ impl KernelRuntimeState {
                 let endpoint_ref = request.endpoint_ref.clone();
                 let prompt = request.prompt.clone();
                 let queue_ref = request.queue_ref.clone();
+                let publication_invocation = request.publication_invocation.clone();
                 let outcome = self
                     .with_app_side_effect(move |app| {
                         app.enqueue_workflow_prompt_and_maybe_start(
@@ -35,6 +36,7 @@ impl KernelRuntimeState {
                             &endpoint_ref,
                             prompt,
                             queue_ref.as_deref(),
+                            publication_invocation,
                         )
                     })
                     .await;

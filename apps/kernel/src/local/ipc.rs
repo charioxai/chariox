@@ -913,6 +913,7 @@ mod tests {
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket drill".to_string()),
                     queue_ref: None,
+                    publication_invocation: None,
                 },
             ))
             .expect("workflow invoke should succeed")
@@ -985,6 +986,7 @@ mod tests {
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket drill again".to_string()),
                     queue_ref: None,
+                    publication_invocation: None,
                 },
             ))
             .expect("second workflow invoke should succeed")
@@ -1185,6 +1187,7 @@ mod tests {
                     endpoint_ref: endpoint.id().to_string(),
                     prompt: Some("socket chain drill".to_string()),
                     queue_ref: None,
+                    publication_invocation: None,
                 },
             ))
             .expect("workflow invoke should succeed")

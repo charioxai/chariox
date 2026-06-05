@@ -13,6 +13,7 @@ import {
   publicationConfigFromPackage,
   type WorkflowPublicationConfig,
 } from "./index.js"
+import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { WebSocket } from "ws"
 
@@ -67,6 +68,8 @@ test("GET publication status reports runtime binding", async () => {
       source_session_id: "source-session-1",
       workflow_ref: "workflow-1",
       endpoint_ref: "endpoint-1",
+      hook_id: null,
+      queue_ref: "default",
       transport: "api_sse_json",
       mode: "async",
       route: "/invoke",
@@ -100,6 +103,7 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
     session_id: "session-1",
     workflow_ref: "workflow-1",
     endpoint_ref: "endpoint-1",
+    queue_ref: "default",
     kernel_endpoint: "ws://kernel",
     route: "/qa",
     methods: ["POST"],
@@ -191,6 +195,8 @@ test("gateway maps exported publication packages to runtime config", async () =>
     source_session_id: "session-1",
     workflow_ref: "workflow-1",
     endpoint_ref: "endpoint-1",
+    hook_id: "hook-human",
+    queue_ref: "default",
     kernel_endpoint: "ws://kernel",
     transport: "human_http",
     route: "/*",
@@ -1014,11 +1020,17 @@ test("workflow run correlation resolves queued publication invocations by reques
         workflow_runs: [{
           id: "run-1",
           status: "Completed",
-          invocation_prompt: JSON.stringify({
+          invocation_prompt: "ship",
+          publication_invocation: {
             publication_id: "pub-test",
-            request_id: "api_123",
+            invocation_id: "api_123",
+            transport: "api_sse_json",
+            endpoint_id: "endpoint-1",
             input: { prompt: "ship" },
-          }),
+            artifacts: [],
+            mode: "async",
+            caller: {},
+          },
         }, {
           id: "run-2",
           status: "Completed",
@@ -1031,6 +1043,35 @@ test("workflow run correlation resolves queued publication invocations by reques
   const workflowRun = await findWorkflowRunByInvocationRequestId(client, baseConfig, "api_123")
 
   assert.equal(workflowRun?.id, "run-1")
+})
+
+test("kernel publication client splits prompt from publication invocation envelope", () => {
+  const invocation = {
+    publication_id: "pub-test",
+    request_id: "req-1",
+    caller: { type: "anonymous" },
+    input: { prompt: "describe this", artifacts: [{ id: "artifact-1" }] },
+    mode: "sync" as const,
+  }
+
+  assert.equal(promptFromInvocationInput(invocation.input), "describe this")
+  assert.deepEqual(publicationInvocationEnvelope({
+    ...baseConfig,
+    hook_id: "hook-1",
+    queue_ref: "priority",
+    transport: "human_http",
+  }, invocation), {
+    publication_id: "pub-test",
+    hook_id: "hook-1",
+    invocation_id: "req-1",
+    transport: "human_http",
+    endpoint_id: "endpoint-1",
+    queue_ref: "priority",
+    input: invocation.input,
+    artifacts: [{ id: "artifact-1" }],
+    mode: "sync",
+    caller: { type: "anonymous" },
+  })
 })
 
 test("gateway supports regex and path-template parsers", async () => {
