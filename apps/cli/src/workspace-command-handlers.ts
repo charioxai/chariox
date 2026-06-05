@@ -415,7 +415,7 @@ function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {
     return "inspect /workspace sync conflicts, ask an agent to reconcile, then rerun /workspace sync status"
   }
   if (status.mode === "unrestricted" || status.footer_state === "off") {
-    return "enable with /workspace sync managed, or use /workspace sync tracked for turn-end fanout"
+    return "enable with /workspace sync tracked for turn-end fanout, or use /workspace sync managed on hosts with managed write fencing"
   }
   if (status.targets.length === 0) {
     return "link another repo or worktree with /workspace sync link <name-or-id> [repo-root]"
@@ -447,7 +447,7 @@ async function attachWorkspaceLink(
   if (payload.session) deps.applySessionState(payload.session)
   deps.flashFooter(
     messages?.success?.(repoRoot, payload.link)
-      ?? `attached ${repoRoot} to workspace link ${payload.link.name}; enable with /workspace sync managed, or use /workspace sync tracked when managed write fencing is unavailable`,
+      ?? `attached ${repoRoot} to workspace link ${payload.link.name}; enable with /workspace sync tracked, or use /workspace sync managed on hosts with managed write fencing`,
     "info",
   )
 }
