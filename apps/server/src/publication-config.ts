@@ -93,6 +93,7 @@ export function publicationConfigFromPackage(
     workflow_ref: workflowId,
     endpoint_ref: endpointId,
     kernel_endpoint: kernelEndpoint,
+    transport: hook.transport,
     route: hook.route ?? "/*",
     parser: hook.parser ?? { kind: "json" },
     mode: hook.mode === "async" ? "async" : "sync",
@@ -140,6 +141,8 @@ export function publicationConfigFromKernelRecord(
     parser: asParserConfig(publication.parser) ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
+  const transport = publication.transport as { kind?: unknown } | null | undefined
+  if (typeof transport?.kind === "string") config.transport = transport.kind
   const methods = normalizeHttpMethods(publication.methods)
   if (methods) config.methods = methods
   const inputSchema = asInputSchema(publication.input_schema)

@@ -34,6 +34,7 @@ export type WorkflowPublicationConfig = {
   workflow_ref: string
   endpoint_ref: string
   kernel_endpoint?: string
+  transport?: string
   route?: string
   methods?: Array<"GET" | "POST">
   parser?: ParserConfig

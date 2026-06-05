@@ -1,0 +1,247 @@
+import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
+
+import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import type {
+  GatewayRequest,
+  WorkflowInvocationResult,
+  WorkflowPublicationConfig,
+  WorkflowRun,
+} from "./publication-types.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
+
+type HumanHttpApp = {
+  get: (path: string, handler: (request: { params?: unknown }, reply: HumanHttpReply) => unknown) => unknown
+}
+
+type HumanHttpReply = {
+  code: (code: number) => HumanHttpReply
+  type: (contentType: string) => HumanHttpReply
+  hijack: () => void
+  raw: {
+    destroyed?: boolean
+    writeHead: (statusCode: number, headers: Record<string, string>) => unknown
+    write: (chunk: string) => unknown
+    end: () => unknown
+  }
+}
+
+export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowPublicationConfig) {
+  app.get("/", async (_request, reply) => {
+    if (!isHumanHttpPublication(publication)) {
+      reply.code(404)
+      return { error: "not found" }
+    }
+    reply.type("text/html; charset=utf-8")
+    return humanHttpFormPage(publication)
+  })
+
+  app.get("/.well-known/arroba/publication/runs/:workflowRunId/events", async (request, reply) => {
+    const params = request.params as { workflowRunId?: string }
+    const workflowRunId = params.workflowRunId
+    if (!workflowRunId) {
+      reply.code(400)
+      return { error: "workflow run id is required" }
+    }
+    await streamWorkflowRunEvents(reply, publication, workflowRunId)
+  })
+}
+
+export function shouldReturnHumanHtml(
+  request: GatewayRequest,
+  publication: WorkflowPublicationConfig,
+) {
+  if (!isHumanHttpPublication(publication)) return false
+  if (request.method.toUpperCase() !== "GET") return false
+  const accept = request.headers.accept
+  const values = Array.isArray(accept) ? accept : [accept]
+  return values.some((value) => typeof value === "string" && value.includes("text/html"))
+}
+
+export function forwardHumanHttpResult(
+  reply: Pick<HumanHttpReply, "code" | "type">,
+  publication: WorkflowPublicationConfig,
+  result: WorkflowInvocationResult,
+) {
+  reply.code(200).type("text/html; charset=utf-8")
+  return humanHttpStatusPage(publication, result)
+}
+
+function isHumanHttpPublication(publication: WorkflowPublicationConfig) {
+  return !publication.transport || publication.transport === "human_http"
+}
+
+function humanHttpFormPage(publication: WorkflowPublicationConfig) {
+  const promptTarget = promptTargetParts(publication.route ?? "/*")
+  return htmlDocument(
+    "Workflow",
+    [
+      "<main>",
+      "  <section class=\"panel\">",
+      "    <h1>Workflow</h1>",
+      "    <form id=\"invoke-form\">",
+      "      <textarea name=\"prompt\" rows=\"8\" autofocus></textarea>",
+      "      <div class=\"actions\">",
+      "        <input type=\"file\" name=\"artifact\">",
+      "        <button type=\"submit\">Run</button>",
+      "      </div>",
+      "    </form>",
+      "  </section>",
+      "</main>",
+      "<script>",
+      `const promptTarget = ${safeJson(promptTarget)};`,
+      "document.querySelector('#invoke-form')?.addEventListener('submit', (event) => {",
+      "  event.preventDefault();",
+      "  const data = new FormData(event.currentTarget);",
+      "  const prompt = String(data.get('prompt') ?? '').trim();",
+      "  const encoded = encodeURIComponent(prompt);",
+      "  window.location.href = `${promptTarget.prefix}${encoded}${promptTarget.suffix}`;",
+      "});",
+      "</script>",
+    ].join("\n"),
+  )
+}
+
+function humanHttpStatusPage(
+  publication: WorkflowPublicationConfig,
+  result: WorkflowInvocationResult,
+) {
+  const workflowRunId = result.workflow_run?.id ?? null
+  const eventsUrl = workflowRunId
+    ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
+    : null
+  return htmlDocument(
+    "Workflow Run",
+    [
+      "<main>",
+      "  <section class=\"panel\">",
+      "    <h1>Workflow Run</h1>",
+      "    <p id=\"status\">Accepted</p>",
+      "    <pre id=\"output\"></pre>",
+      "  </section>",
+      "</main>",
+      "<script>",
+      `const initialResult = ${safeJson(result)};`,
+      `const eventsUrl = ${safeJson(eventsUrl)};`,
+      "const statusEl = document.querySelector('#status');",
+      "const outputEl = document.querySelector('#output');",
+      "function renderRun(run) {",
+      "  if (!run) return;",
+      "  statusEl.textContent = run.status || 'accepted';",
+      "  if (run.final_output) outputEl.textContent = typeof run.final_output.message === 'string' ? run.final_output.message : JSON.stringify(run.final_output, null, 2);",
+      "}",
+      "renderRun(initialResult.workflow_run);",
+      "if (!eventsUrl) {",
+      "  if (initialResult.queued) statusEl.textContent = 'Queued';",
+      "} else {",
+      "  const events = new EventSource(eventsUrl);",
+      "  events.addEventListener('status', (event) => renderRun(JSON.parse(event.data).workflow_run));",
+      "  events.addEventListener('final', (event) => { renderRun(JSON.parse(event.data).workflow_run); events.close(); });",
+      "  events.addEventListener('timeout', () => { statusEl.textContent = 'Still running'; events.close(); });",
+      "  events.addEventListener('error', () => { statusEl.textContent = 'Connection interrupted'; });",
+      "}",
+      "</script>",
+    ].join("\n"),
+  )
+}
+
+async function streamWorkflowRunEvents(
+  reply: HumanHttpReply,
+  publication: WorkflowPublicationConfig,
+  workflowRunId: string,
+) {
+  reply.hijack()
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  })
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const timeoutMs = publication.sync_timeout_ms ?? 30_000
+    const pollMs = publication.poll_ms ?? 500
+    const deadline = Date.now() + timeoutMs
+    let lastStatus: string | null = null
+    while (Date.now() < deadline && !reply.raw.destroyed) {
+      const response = await client.send<Record<string, unknown>>(
+        getWorkflowRunRequest(publication.session_id, workflowRunId),
+      )
+      const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
+      if (workflowRun && workflowRun.status !== lastStatus) {
+        lastStatus = workflowRun.status
+        writeSse(reply, "status", { workflow_run: workflowRun })
+      }
+      if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
+        writeSse(reply, "final", { workflow_run: workflowRun })
+        return
+      }
+      await sleep(pollMs)
+    }
+    writeSse(reply, "timeout", { workflow_run_id: workflowRunId })
+  } catch (error) {
+    writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
+  } finally {
+    await client.close().catch(() => {})
+    reply.raw.end()
+  }
+}
+
+function writeSse(reply: HumanHttpReply, event: string, payload: unknown) {
+  reply.raw.write(`event: ${event}\n`)
+  reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function promptTargetParts(route: string) {
+  const wildcardIndex = route.indexOf("*")
+  if (wildcardIndex >= 0) {
+    return {
+      prefix: route.slice(0, wildcardIndex),
+      suffix: route.slice(wildcardIndex + 1),
+    }
+  }
+  const prefix = route.endsWith("/") ? route : `${route}/`
+  return { prefix, suffix: "" }
+}
+
+function htmlDocument(title: string, body: string) {
+  return [
+    "<!doctype html>",
+    "<html lang=\"en\">",
+    "<head>",
+    "  <meta charset=\"utf-8\">",
+    "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    `  <title>${escapeHtml(title)}</title>`,
+    "  <style>",
+    "    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; background: #f6f6f3; color: #1f2328; }",
+    "    main { max-width: 780px; margin: 0 auto; padding: 32px 20px; }",
+    "    .panel { border: 1px solid #d0d0c8; background: #fff; border-radius: 8px; padding: 20px; }",
+    "    h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.2; }",
+    "    textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #bbb; border-radius: 6px; font: inherit; resize: vertical; }",
+    "    .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }",
+    "    button { padding: 9px 14px; border: 0; border-radius: 6px; background: #1f2328; color: #fff; font: inherit; }",
+    "    pre { white-space: pre-wrap; overflow-wrap: anywhere; }",
+    "  </style>",
+    "</head>",
+    "<body>",
+    body,
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n")
+}
+
+function safeJson(value: unknown) {
+  return JSON.stringify(value).replace(/</g, "\\u003c")
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}

@@ -7,6 +7,11 @@ import {
 } from "./kernel-publication-client.js"
 import { createProcessLogger } from "./logging.js"
 import {
+  forwardHumanHttpResult,
+  installHumanHttpRoutes,
+  shouldReturnHumanHtml,
+} from "./publication-human-http.js"
+import {
   defaultPublicationConfig,
   loadGatewayPublicationConfig,
   resolveHttpsOptions,
@@ -49,6 +54,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
   const webSocketServer = installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
+  installHumanHttpRoutes(app, publication)
 
   app.get("/health", async () => {
     logger.debug("handled health request")
@@ -78,6 +84,9 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
         const result = deps.invokeWorkflow
           ? await deps.invokeWorkflow(invocation)
           : await invokeKernelWorkflow(publication, invocation)
+        if (shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)) {
+          return forwardHumanHttpResult(reply, publication, result)
+        }
         return forwardWorkflowResult(reply, result)
       },
     })

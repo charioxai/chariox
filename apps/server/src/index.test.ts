@@ -137,6 +137,7 @@ test("gateway maps exported publication packages to runtime config", async () =>
     workflow_ref: "workflow-1",
     endpoint_ref: "endpoint-1",
     kernel_endpoint: "ws://kernel",
+    transport: "human_http",
     route: "/*",
     methods: ["GET"],
     parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
@@ -221,6 +222,58 @@ test("gateway parses JSON and forwards transport-shaped workflow output", async 
     assert.equal(accepted.headers["content-type"], "text/plain")
     assert.equal(accepted.body, "hello miguel")
     assert.deepEqual(seenInput, { name: "miguel" })
+  } finally {
+    await app.close()
+  }
+})
+
+test("human HTTP root returns a browser invocation form", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/qa/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/qa/(?<prompt>.+)$" },
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.headers["content-type"] as string, /text\/html/)
+    assert.match(response.body, /invoke-form/)
+    assert.match(response.body, /\/qa\//)
+  } finally {
+    await app.close()
+  }
+})
+
+test("human HTTP browser GET returns an HTML status page with SSE subscription", async () => {
+  let seenInput: unknown = null
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      seenInput = invocation.input
+      return {
+        accepted: true,
+        workflow_run: { id: "run-1", status: "Running" },
+      }
+    },
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/make%20tea", headers: { accept: "text/html" } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.headers["content-type"] as string, /text\/html/)
+    assert.match(response.body, /EventSource/)
+    assert.match(response.body, /run-1/)
+    assert.deepEqual(seenInput, { prompt: "make tea" })
   } finally {
     await app.close()
   }

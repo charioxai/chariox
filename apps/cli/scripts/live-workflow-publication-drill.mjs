@@ -347,6 +347,18 @@ async function main() {
     )
     await waitForGateway(gatewayUrl)
 
+    logStep('invoke_browser_html')
+    const rootHtmlResponse = await fetch(`${gatewayUrl}/`, { headers: { accept: 'text/html' } })
+    const rootHtml = await rootHtmlResponse.text()
+    if (rootHtmlResponse.status !== 200 || !rootHtml.includes('invoke-form')) {
+      throw new Error(`expected browser root form HTML, got ${rootHtmlResponse.status}: ${rootHtml.slice(0, 200)}`)
+    }
+    const browserResponse = await fetch(`${gatewayUrl}/qa/browser-publication`, { headers: { accept: 'text/html' } })
+    const browserHtml = await browserResponse.text()
+    if (browserResponse.status !== 200 || !browserHtml.includes('EventSource')) {
+      throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserHtml.slice(0, 200)}`)
+    }
+
     logStep('invoke_http')
     const response = await fetch(`${gatewayUrl}/qa/ship-publication`)
     const body = await response.json()
