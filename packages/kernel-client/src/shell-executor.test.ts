@@ -10,7 +10,6 @@ import type {
   ArrobaSkillMetadata,
   DaemonHealthProjection,
   ProviderProcessInfo,
-  WorkflowPublicationTrustedSender,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"

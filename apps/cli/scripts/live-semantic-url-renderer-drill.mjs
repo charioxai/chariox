@@ -388,7 +388,7 @@ async function main() {
         source_html: { type: 'string' },
       },
     })
-    const publicationResult = await runShell(`workflow publication create $workflow $endpoint semantic-render --route /render/* --method GET --auth-json '{"mode":"anonymous"}' --parser-json '${parserJson}' --input-schema-json '${inputSchemaJson}' --mode async`)
+    const publicationResult = await runShell(`workflow publication create $workflow $endpoint semantic-render --route /render/* --method GET --parser-json '${parserJson}' --input-schema-json '${inputSchemaJson}' --mode async`)
     const publication = publicationResult.data.publication
 
     logStep('start_gateway', { publicationId: publication.id })

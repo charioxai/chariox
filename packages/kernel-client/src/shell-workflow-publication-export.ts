@@ -35,7 +35,6 @@ function workflowPublicationGatewayConfig(
     workflow_ref: publication.workflow_id,
     endpoint_ref: publication.endpoint_id,
     route: publication.route ?? "/*",
-    auth: publication.auth ?? { mode: "anonymous" },
     parser: publication.parser ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
@@ -88,25 +87,9 @@ function workflowPublicationReadme(
   const examplePath = route.includes("*") ? route.replace("*", "example") : route
   const methods = Array.isArray(config.methods) && config.methods.length ? config.methods.map(String) : ["GET", "POST"]
   const primaryMethod = methods[0] ?? "GET"
-  const paired = isPairedSenderPublication(publication)
-  const authHint = paired
-    ? [
-        "This publication uses paired sender auth.",
-        "",
-        "```bash",
-        "PAIR_CODE=\"paste-code-here\"",
-        "curl -sS -X POST \"$BASE_URL/.well-known/arroba/publication/pair\" \\",
-        "  -H 'content-type: application/json' \\",
-        "  -d \"{\\\"pair_code\\\":\\\"$PAIR_CODE\\\",\\\"display_name\\\":\\\"example sender\\\"}\"",
-        "```",
-        "",
-        "Use the returned credential as `Authorization: Bearer <credential>`.",
-      ].join("\n")
-    : "This publication does not require paired sender auth unless its auth config says otherwise."
   const body = primaryMethod === "GET"
     ? ""
     : " \\\n  -H 'content-type: application/json' \\\n  -d '{\"input\":\"hello\"}'"
-  const authHeader = paired ? " \\\n  -H \"authorization: Bearer $SENDER_CREDENTIAL\"" : ""
   return [
     `# Workflow Publication ${publication.alias ?? publication.id}`,
     "",
@@ -129,7 +112,7 @@ function workflowPublicationReadme(
     "",
     "```bash",
     "BASE_URL=http://127.0.0.1:3000",
-    `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${authHeader}${body}`,
+    `curl -sS -X ${primaryMethod} "$BASE_URL${examplePath}"${body}`,
     "```",
     "",
     "## WebSocket",
@@ -151,14 +134,5 @@ function workflowPublicationReadme(
     "arroba-workflow-call --config ./publication.config.json --input '{\"input\":\"hello\"}'",
     "```",
     "",
-    "## Auth",
-    "",
-    authHint,
-    "",
   ].join("\n")
-}
-
-function isPairedSenderPublication(publication: WorkflowPublicationDefinition) {
-  const auth = publication.auth as { mode?: string; paired_senders?: { enabled?: boolean } } | null | undefined
-  return auth?.mode === "arroba" && auth.paired_senders?.enabled === true
 }

@@ -8,7 +8,6 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use jsonschema::JSONSchema;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
@@ -20,8 +19,7 @@ use super::{
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowPublicationPairingCode,
-    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowQueuedPrompt,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
     WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
     WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
     WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
@@ -98,8 +96,6 @@ pub struct SessionService {
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
     next_workflow_publication_number: u64,
-    next_workflow_publication_pairing_code_number: u64,
-    next_workflow_publication_sender_number: u64,
     next_workflow_prompt_queue_number: u64,
     next_workflow_queued_prompt_number: u64,
     max_workflow_queues_per_workflow: Option<usize>,

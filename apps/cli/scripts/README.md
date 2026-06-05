@@ -160,8 +160,8 @@ Anthropic SDK/API-key environment variables.
 
 ## Workflow Publication Drill
 
-Use this after touching the workflow gateway, publication auth, publication
-export packaging, or HTTP invocation path:
+Use this after touching the workflow gateway, publication export packaging, or
+HTTP invocation path:
 
 ```bash
 pnpm --filter @arroba/cli run publication:drill
@@ -173,12 +173,7 @@ invokes the same publication over WebSocket, restarts the gateway with
 self-signed HTTPS/TLS and invokes it again over HTTPS and WSS, exports it with
 `workflow publication export`, starts the gateway from the exported
 `publication.config.json`, invokes the exported package through
-`arroba-workflow-call`, validates signed Slack URL verification and signed
-Slack slash-command invocation, validates Telegram webhook-secret rejection and
-accepted invocation, validates Discord Ed25519 ping, signature rejection, and
-accepted invocation, validates WhatsApp webhook challenge/HMAC invocation,
-validates Signal bridge-secret invocation, then validates paired sender
-reject/redeem/invoke/revoke/reject behavior.
+`arroba-workflow-call`, and validates accepted workflow-run metadata.
 
 Use this after touching cross-kernel publication calls or the custom parser
 path:
@@ -190,20 +185,6 @@ pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill
 It launches two isolated kernels and gateways. Workflow A's published gateway
 uses a custom parser that calls workflow B's published HTTP endpoint, then
 passes B's accepted run id into workflow A's normalized input.
-
-Use this after touching connector ingress, gateway bind behavior, Docker/local
-network assumptions, or provider-shaped webhook verification:
-
-```bash
-pnpm --filter @arroba/cli run publication:docker-connectors-drill
-```
-
-It builds a Docker client image, launches an isolated kernel and gateway, then
-invokes workflow publications from inside the container over HTTP, HTTPS,
-WebSocket, WSS, Slack-shaped signed slash commands, Telegram webhook-secret
-requests, Discord Ed25519 interactions, WhatsApp HMAC webhooks, and Signal
-bridge-secret webhooks. IPC is intentionally excluded because it is a local
-process connector rather than a network ingress connector.
 
 Use this to validate the semantic URL renderer application shape on top of
 workflow publication:

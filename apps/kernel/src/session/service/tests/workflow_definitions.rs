@@ -95,7 +95,6 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             Some("/review".to_string()),
             vec!["POST".to_string()],
             Some(serde_json::json!({"kind": "http"})),
-            Some(serde_json::json!({"mode": "anonymous"})),
             Some(serde_json::json!({"kind": "webhook"})),
             None,
             Some("async".to_string()),
@@ -124,121 +123,6 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
         .disable_workflow_publication(session.id(), publication.id())
         .expect("publication should be disabled");
     assert!(!disabled.enabled());
-}
-
-#[test]
-fn workflow_publication_pairing_codes_manage_trusted_senders() {
-    let mut service = SessionService::new(&test_config());
-    let session = service
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-    let workflow = service
-        .create_workflow(session.id(), Some("review".to_string()))
-        .expect("workflow should be created");
-    let node = service
-        .add_workflow_node(session.id(), workflow.id(), "agent-1")
-        .expect("workflow node should be added");
-    let endpoint = service
-        .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
-        .expect("workflow endpoint should be created");
-    let publication = service
-        .create_workflow_publication(
-            session.id(),
-            workflow.id(),
-            endpoint.id(),
-            Some("public_review".to_string()),
-            None,
-            vec![],
-            None,
-            Some(serde_json::json!({"mode": "arroba", "paired_senders": {"enabled": true}})),
-            None,
-            None,
-            None,
-            "local".to_string(),
-        )
-        .expect("workflow publication should be created");
-
-    let pair_code = service
-        .create_workflow_publication_pairing_code(
-            session.id(),
-            publication.id(),
-            "pair-code-hash",
-            "local".to_string(),
-            None,
-            Some(1),
-        )
-        .expect("pairing code should be created");
-    let sender_credential = service
-        .redeem_workflow_publication_pairing_code(
-            session.id(),
-            publication.id(),
-            pair_code.code_id(),
-            "pair-code-hash",
-            "sender-secret",
-            Some("Marketing".to_string()),
-            vec!["http".to_string()],
-            None,
-            100,
-        )
-        .expect("pairing code should redeem");
-    assert_eq!(sender_credential.credential, "sender-secret");
-    assert_eq!(sender_credential.sender.display_name(), Some("Marketing"));
-    assert!(service
-        .redeem_workflow_publication_pairing_code(
-            session.id(),
-            publication.id(),
-            pair_code.code_id(),
-            "pair-code-hash",
-            "second-secret",
-            None,
-            vec!["http".to_string()],
-            None,
-            101,
-        )
-        .is_err());
-
-    let sender = service
-        .authenticate_workflow_publication_sender(
-            session.id(),
-            publication.id(),
-            "sender-secret",
-            "http",
-            102,
-        )
-        .expect("sender should authenticate");
-    assert_eq!(sender.sender_id(), sender_credential.sender.sender_id());
-    assert!(service
-        .authenticate_workflow_publication_sender(
-            session.id(),
-            publication.id(),
-            "sender-secret",
-            "slack",
-            103,
-        )
-        .is_err());
-
-    let senders = service
-        .list_workflow_publication_senders(session.id(), publication.id())
-        .expect("senders should list");
-    assert_eq!(senders.len(), 1);
-    let revoked = service
-        .revoke_workflow_publication_sender(
-            session.id(),
-            publication.id(),
-            sender_credential.sender.sender_id(),
-            104,
-        )
-        .expect("sender should revoke");
-    assert!(revoked.is_revoked());
-    assert!(service
-        .authenticate_workflow_publication_sender(
-            session.id(),
-            publication.id(),
-            "sender-secret",
-            "http",
-            105,
-        )
-        .is_err());
 }
 
 #[test]

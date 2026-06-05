@@ -4,15 +4,8 @@ import Fastify from "fastify"
 
 import {
   invokeKernelWorkflow,
-  redeemPublicationPairCode,
 } from "./kernel-publication-client.js"
 import { createProcessLogger } from "./logging.js"
-import {
-  authenticateRequest,
-  handleConnectorHandshake,
-  isPairedSenderAuthEnabled,
-  objectBody,
-} from "./publication-auth.js"
 import {
   defaultPublicationConfig,
   loadGatewayPublicationConfig,
@@ -60,49 +53,12 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return { status: "ok" }
   })
 
-  if (isPairedSenderAuthEnabled(publication.auth)) {
-    app.post("/.well-known/arroba/publication/pair", async (request, reply) => {
-      const body = objectBody(request.body)
-      const pairCode = String(body.pair_code ?? "")
-      if (!pairCode) {
-        reply.code(400)
-        return { error: "missing pair_code" }
-      }
-      const senderCredential = deps.redeemPublicationPairCode
-        ? await deps.redeemPublicationPairCode(publication, pairCode, optionalString(body.display_name))
-        : await redeemPublicationPairCode(publication, pairCode, optionalString(body.display_name))
-      return {
-        sender: senderCredential.sender,
-        credential: senderCredential.credential,
-      }
-    })
-  } else {
-    app.post("/.well-known/arroba/publication/pair", async (_request, reply) => {
-      reply.code(404)
-      return { error: "publication pairing is not enabled" }
-    })
-  }
-
   const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
   for (const method of methods) {
     app.route({
       method,
       url: publication.route ?? "/*",
       handler: async (request, reply) => {
-        const handshake = handleConnectorHandshake(request as unknown as GatewayRequest, reply, publication)
-        if (handshake.handled) return handshake.payload
-
-        const auth = await authenticateRequest(
-          request as unknown as GatewayRequest,
-          publication,
-          publication.auth ?? { mode: "anonymous" },
-          deps,
-        )
-        if (!auth.ok) {
-          reply.code(401).headers({ "content-type": "application/json" })
-          return { error: auth.message }
-        }
-
         const parsed = await parseAndValidateRequest(request as unknown as GatewayRequest, publication).catch((error) => {
           reply.code(400).headers({ "content-type": "application/json" })
           return { __arroba_parse_error: error instanceof Error ? error.message : String(error) }
@@ -113,7 +69,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
         const invocation: NormalizedInvocation = {
           publication_id: publication.publication_id,
           request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-          caller: auth.caller,
+          caller: { type: "anonymous" },
           input: parsed,
           mode: publication.mode ?? "sync",
         }
@@ -143,7 +99,7 @@ export async function invokePublicationInput(
     request_id: `${options.requestIdPrefix ?? "ipc"}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     caller: options.caller ?? {
       type: "ipc",
-      proof: { auth: "ipc", connector: "ipc" },
+      proof: { transport: "ipc" },
     },
     input: options.input,
     mode: options.mode ?? publication.mode ?? "sync",
@@ -151,10 +107,6 @@ export async function invokePublicationInput(
   return options.deps?.invokeWorkflow
     ? await options.deps.invokeWorkflow(invocation)
     : await invokeKernelWorkflow(publication, invocation)
-}
-
-function optionalString(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : null
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

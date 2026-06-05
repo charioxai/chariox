@@ -57,7 +57,6 @@ export type CreateWorkflowPublicationOptions = {
   route?: string | null
   methods?: string[]
   transport?: unknown | null
-  auth?: unknown | null
   parser?: unknown | null
   inputSchema?: unknown | null
   mode?: string | null
@@ -78,7 +77,6 @@ export function createWorkflowPublicationRequest(
       route: options.route ?? null,
       methods: options.methods ?? [],
       transport: options.transport ?? null,
-      auth: options.auth ?? null,
       parser: options.parser ?? null,
       input_schema: options.inputSchema ?? null,
       mode: options.mode ?? null,
@@ -108,77 +106,6 @@ export function disableWorkflowPublicationRequest(sessionId: string, publication
     DisableWorkflowPublication: {
       session_id: sessionId,
       publication_ref: publicationRef,
-    },
-  }
-}
-
-export function createWorkflowPublicationPairCodeRequest(
-  sessionId: string,
-  publicationRef: string,
-  expiresInMs: number | null = null,
-  maxUses: number | null = null,
-) {
-  return {
-    CreateWorkflowPublicationPairCode: {
-      session_id: sessionId,
-      publication_ref: publicationRef,
-      expires_in_ms: expiresInMs,
-      max_uses: maxUses,
-    },
-  }
-}
-
-export function redeemWorkflowPublicationPairCodeRequest(
-  sessionId: string,
-  publicationRef: string,
-  pairCode: string,
-  displayName: string | null = null,
-  allowedTransports: string[] = [],
-  expiresInMs: number | null = null,
-) {
-  return {
-    RedeemWorkflowPublicationPairCode: {
-      session_id: sessionId,
-      publication_ref: publicationRef,
-      pair_code: pairCode,
-      display_name: displayName,
-      allowed_transports: allowedTransports,
-      expires_in_ms: expiresInMs,
-    },
-  }
-}
-
-export function listWorkflowPublicationSendersRequest(sessionId: string, publicationRef: string) {
-  return {
-    ListWorkflowPublicationSenders: {
-      session_id: sessionId,
-      publication_ref: publicationRef,
-    },
-  }
-}
-
-export function revokeWorkflowPublicationSenderRequest(sessionId: string, publicationRef: string, senderRef: string) {
-  return {
-    RevokeWorkflowPublicationSender: {
-      session_id: sessionId,
-      publication_ref: publicationRef,
-      sender_ref: senderRef,
-    },
-  }
-}
-
-export function authenticateWorkflowPublicationSenderRequest(
-  sessionId: string,
-  publicationRef: string,
-  credential: string,
-  transport: string,
-) {
-  return {
-    AuthenticateWorkflowPublicationSender: {
-      session_id: sessionId,
-      publication_ref: publicationRef,
-      credential,
-      transport,
     },
   }
 }

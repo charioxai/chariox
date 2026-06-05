@@ -1,4 +1,4 @@
-//! Workflow publication, pairing-code, and sender credential mutations.
+//! Workflow publication mutations.
 //!
 //! This module owns public endpoint publication administration. Workflow graph design and run
 //! administration stay in `workflow_admin`.
@@ -26,7 +26,6 @@ impl KernelRuntimeOwnedState {
             request.route,
             request.methods,
             request.transport,
-            request.auth,
             request.parser,
             request.input_schema,
             request.mode,

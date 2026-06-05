@@ -2,7 +2,6 @@ import type {
   WorkflowDefinition,
   WorkflowPromptQueueDefinition,
   WorkflowPublicationDefinition,
-  WorkflowPublicationTrustedSender,
   WorkflowQueuedPrompt,
   WorkflowRun,
   WorkflowWatchdogDefinition,
@@ -60,18 +59,6 @@ export function formatWorkflowPublications(publications: WorkflowPublicationDefi
     const route = publication.route ? ` route=${publication.route}` : ""
     const methods = publication.methods?.length ? ` methods=${publication.methods.join(",")}` : ""
     return `${formatWorkflowPublicationLabel(publication)} workflow=${publication.workflow_id} endpoint=${publication.endpoint_id} enabled=${String(publication.enabled)}${route}${methods}`
-  }).join("\n")
-}
-
-export function formatWorkflowPublicationSenders(senders: WorkflowPublicationTrustedSender[]): string {
-  if (senders.length === 0) {
-    return "no trusted senders configured"
-  }
-  return senders.map((sender) => {
-    const name = sender.display_name ? ` (${sender.display_name})` : ""
-    const transports = sender.allowed_transports?.length ? ` transports=${sender.allowed_transports.join(",")}` : ""
-    const revoked = sender.revoked_at_ms ? " revoked=true" : ""
-    return `${sender.sender_id}${name} publication=${sender.publication_id}${transports}${revoked}`
   }).join("\n")
 }
 

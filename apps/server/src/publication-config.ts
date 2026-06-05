@@ -10,7 +10,6 @@ import type {
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import type {
-  AuthConfig,
   InputSchema,
   KernelLookupClient,
   ParserConfig,
@@ -82,7 +81,6 @@ export function publicationConfigFromKernelRecord(
     endpoint_ref: publication.endpoint_id,
     kernel_endpoint: kernelEndpoint,
     route: publication.route ?? "/*",
-    auth: asAuthConfig(publication.auth) ?? { mode: "anonymous" },
     parser: asParserConfig(publication.parser) ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
@@ -132,10 +130,6 @@ function normalizeHttpMethods(methods: string[] | undefined): Array<"GET" | "POS
     .map((method) => method.toUpperCase())
     .filter((method): method is "GET" | "POST" => method === "GET" || method === "POST")
   return normalized.length > 0 ? normalized : undefined
-}
-
-function asAuthConfig(value: unknown): AuthConfig | undefined {
-  return isPlainObject(value) && typeof value.mode === "string" ? value as AuthConfig : undefined
 }
 
 function asParserConfig(value: unknown): ParserConfig | undefined {

@@ -26,10 +26,8 @@ use crate::session::{
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowPromptQueueDefinition,
-    WorkflowPublicationDefinition, WorkflowPublicationPairingCodeRecord,
-    WorkflowPublicationSenderCredential, WorkflowPublicationTrustedSender, WorkflowQueuedPrompt,
-    WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition,
+    WorkflowPublicationDefinition, WorkflowQueuedPrompt, WorkflowRun, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
 };
 use crate::session_history_page::SessionHistoryPageEntry;
 use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};

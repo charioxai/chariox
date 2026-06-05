@@ -422,19 +422,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkflowPublications(_) => "workflow_publication.list",
         LocalDaemonRequest::GetWorkflowPublication(_) => "workflow_publication.get",
         LocalDaemonRequest::DisableWorkflowPublication(_) => "workflow_publication.disable",
-        LocalDaemonRequest::CreateWorkflowPublicationPairCode(_) => {
-            "workflow_publication.pair_code.create"
-        }
-        LocalDaemonRequest::RedeemWorkflowPublicationPairCode(_) => {
-            "workflow_publication.pair_code.redeem"
-        }
-        LocalDaemonRequest::ListWorkflowPublicationSenders(_) => "workflow_publication.sender.list",
-        LocalDaemonRequest::RevokeWorkflowPublicationSender(_) => {
-            "workflow_publication.sender.revoke"
-        }
-        LocalDaemonRequest::AuthenticateWorkflowPublicationSender(_) => {
-            "workflow_publication.sender.authenticate"
-        }
         LocalDaemonRequest::CreateWorkflowEndpoint(_) => "workflow_endpoint.create",
         LocalDaemonRequest::AliasWorkflowEndpoint(_) => "workflow_endpoint.alias",
         LocalDaemonRequest::BindWorkflowEndpoint(_) => "workflow_endpoint.bind",

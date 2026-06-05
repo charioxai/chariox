@@ -1,17 +1,10 @@
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import {
-  authenticateWorkflowPublicationSenderRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
-  redeemWorkflowPublicationPairCodeRequest,
 } from "@arroba/kernel-client/ipc-requests"
-import type {
-  WorkflowPublicationSenderCredential,
-  WorkflowPublicationTrustedSender,
-} from "@arroba/kernel-client/kernel-types"
 
 import type {
-  ConnectorKind,
   NormalizedInvocation,
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
@@ -48,53 +41,6 @@ export async function invokeKernelWorkflow(
     }
     const workflowRun = await waitForWorkflowRun(client, publication, invoked.workflow_run.id)
     return { accepted: true, workflow_run: workflowRun }
-  } finally {
-    await client.close().catch(() => {})
-  }
-}
-
-export async function redeemPublicationPairCode(
-  publication: WorkflowPublicationConfig,
-  pairCode: string,
-  displayName?: string | null,
-): Promise<WorkflowPublicationSenderCredential> {
-  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
-  try {
-    const response = await client.send<Record<string, unknown>>(redeemWorkflowPublicationPairCodeRequest(
-      publication.session_id,
-      publication.publication_id,
-      pairCode,
-      displayName ?? null,
-      ["http"],
-    ))
-    const payload = response.WorkflowPublicationSenderPaired as { sender_credential?: WorkflowPublicationSenderCredential } | undefined
-    if (!payload?.sender_credential) {
-      throw new Error(`unexpected publication pair response: ${JSON.stringify(response)}`)
-    }
-    return payload.sender_credential
-  } finally {
-    await client.close().catch(() => {})
-  }
-}
-
-export async function authenticatePublicationSender(
-  publication: WorkflowPublicationConfig,
-  credential: string,
-  transport: ConnectorKind,
-): Promise<WorkflowPublicationTrustedSender> {
-  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
-  try {
-    const response = await client.send<Record<string, unknown>>(authenticateWorkflowPublicationSenderRequest(
-      publication.session_id,
-      publication.publication_id,
-      credential,
-      transport,
-    ))
-    const payload = response.WorkflowPublicationSenderAuthenticated as { sender?: WorkflowPublicationTrustedSender } | undefined
-    if (!payload?.sender) {
-      throw new Error(`unexpected publication sender auth response: ${JSON.stringify(response)}`)
-    }
-    return payload.sender
   } finally {
     await client.close().catch(() => {})
   }

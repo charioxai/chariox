@@ -9,7 +9,6 @@ import type {
   ArrobaMcpServerConfig,
   ArrobaSkillMetadata,
   ProviderProcessInfo,
-  WorkflowPublicationTrustedSender,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
 import { applyShellCommandResult, createDefaultShellContext, parseShellCommand } from "./shell-core.js"

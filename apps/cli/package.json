@@ -46,7 +46,6 @@
     "remote-git-observation:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-remote-git-observation-drill.mjs",
     "postgres-archive:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-postgres-archive-adapter-drill.mjs",
     "publication:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-publication-drill.mjs",
-    "publication:docker-connectors-drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-publication-docker-connectors-drill.mjs",
     "semantic-url-renderer:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-semantic-url-renderer-drill.mjs",
     "workflow-to-workflow-publication:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-to-workflow-publication-drill.mjs",
     "relay-identity:drill": "node scripts/live-relay-identity-security-drill.mjs",

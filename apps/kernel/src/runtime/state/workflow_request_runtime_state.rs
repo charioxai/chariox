@@ -59,29 +59,6 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::CreateWorkflowPublicationPairCode(request) => {
-                let result = owned.workflow_create_publication_pair_code(request, &caller_user_id);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::RedeemWorkflowPublicationPairCode(request) => {
-                let result = owned.workflow_redeem_publication_pair_code(request);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::ListWorkflowPublicationSenders(request) => (
-                owned.workflow_list_publication_senders(request, &caller_user_id),
-                None,
-            ),
-            LocalDaemonRequest::RevokeWorkflowPublicationSender(request) => {
-                let result = owned.workflow_revoke_publication_sender(request, &caller_user_id);
-                let session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, session)
-            }
-            LocalDaemonRequest::AuthenticateWorkflowPublicationSender(request) => (
-                owned.workflow_authenticate_publication_sender(request),
-                None,
-            ),
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
                 let result = owned.workflow_create_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -272,9 +249,6 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
         | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationPairCodeCreated { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationSenderPaired { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationSenderRevoked { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointBound { session, .. }

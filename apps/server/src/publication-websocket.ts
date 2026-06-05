@@ -10,11 +10,9 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
-import { authenticateRequest } from "./publication-auth.js"
 import { validateInput } from "./publication-parser.js"
 import type {
   GatewayDeps,
-  GatewayRequest,
   NormalizedInvocation,
   WorkflowPublicationConfig,
   WorkflowRun,
@@ -48,19 +46,12 @@ export function installPublicationWebSocket(
 
 async function handlePublicationWebSocket(
   webSocket: WsSocket,
-  request: IncomingMessage,
+  _request: IncomingMessage,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
-  const gatewayRequest = gatewayRequestFromIncomingMessage(request)
-  const auth = await authenticateRequest(gatewayRequest, publication, publication.auth ?? { mode: "anonymous" }, deps)
-  if (!auth.ok) {
-    sendWebSocketJson(webSocket, { type: "error", error: auth.message })
-    webSocket.close(1008, auth.message)
-    return
-  }
   webSocket.on("message", (data) => {
-    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, auth.caller)
+    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, { type: "anonymous" })
   })
   sendWebSocketJson(webSocket, { type: "ready", publication_id: publication.publication_id })
 }
@@ -125,16 +116,6 @@ async function streamWorkflowRun(webSocket: WsSocket, publication: WorkflowPubli
     sendWebSocketJson(webSocket, { type: "timeout", workflow_run_id: workflowRunId })
   } finally {
     await client.close().catch(() => {})
-  }
-}
-
-function gatewayRequestFromIncomingMessage(request: IncomingMessage): GatewayRequest {
-  return {
-    method: request.method ?? "GET",
-    url: request.url ?? "/",
-    headers: request.headers as Record<string, string | string[] | undefined>,
-    query: Object.fromEntries(new URL(request.url ?? "/", "http://127.0.0.1").searchParams),
-    raw: request,
   }
 }
 

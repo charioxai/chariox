@@ -3,20 +3,13 @@ import { resolve as resolvePath } from "node:path"
 import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
-  WorkflowPublicationPairingCodeRecord,
-  WorkflowPublicationSenderCredential,
-  WorkflowPublicationTrustedSender,
 } from "./kernel-types.js"
 import {
   type CreateWorkflowPublicationOptions,
-  createWorkflowPublicationPairCodeRequest,
   createWorkflowPublicationRequest,
   disableWorkflowPublicationRequest,
   getWorkflowPublicationRequest,
-  listWorkflowPublicationSendersRequest,
   listWorkflowPublicationsRequest,
-  redeemWorkflowPublicationPairCodeRequest,
-  revokeWorkflowPublicationSenderRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -24,7 +17,6 @@ import { writeWorkflowPublicationExportPackage } from "./shell-workflow-publicat
 import {
   formatWorkflowPublicationLabel,
   formatWorkflowPublications,
-  formatWorkflowPublicationSenders,
 } from "./shell-workflow-format.js"
 
 type ShellKernelClient = {
@@ -95,75 +87,6 @@ export async function executeWorkflowPublicationCommand(
     }
   }
 
-  if (action === "pair-code") {
-    const publicationRef = rest[0]
-    if (!publicationRef) {
-      return { ok: false, message: "usage: workflow publication pair-code <publication-ref> [--expires-ms N] [--max-uses N]" }
-    }
-    const options = parseNumericFlags(rest.slice(1), ["--expires-ms", "--max-uses"])
-    if (!options.ok) return { ok: false, message: options.message }
-    const response = await deps.client.send(createWorkflowPublicationPairCodeRequest(
-      sessionId,
-      publicationRef,
-      options.values["--expires-ms"] ?? null,
-      options.values["--max-uses"] ?? null,
-    ))
-    const payload = expectVariant<{ pair_code: WorkflowPublicationPairingCodeRecord; session: RuntimeSession }>(response, "WorkflowPublicationPairCodeCreated")
-    return {
-      ok: true,
-      message: `pair_code ${payload.pair_code.code.code_id}\n${payload.pair_code.pair_code}`,
-      data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
-    }
-  }
-
-  if (action === "redeem-code") {
-    const [publicationRef, pairCode, ...displayNameParts] = rest
-    if (!publicationRef || !pairCode) {
-      return { ok: false, message: "usage: workflow publication redeem-code <publication-ref> <pair-code> [display-name]" }
-    }
-    const displayName = displayNameParts.join(" ").trim() || null
-    const response = await deps.client.send(redeemWorkflowPublicationPairCodeRequest(
-      sessionId,
-      publicationRef,
-      pairCode,
-      displayName,
-      ["http"],
-    ))
-    const payload = expectVariant<{ sender_credential: WorkflowPublicationSenderCredential; session: RuntimeSession }>(response, "WorkflowPublicationSenderPaired")
-    return {
-      ok: true,
-      message: `sender ${payload.sender_credential.sender.sender_id}\n${payload.sender_credential.credential}`,
-      data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
-    }
-  }
-
-  if (action === "senders") {
-    const publicationRef = rest[0]
-    if (!publicationRef) {
-      return { ok: false, message: "usage: workflow publication senders <publication-ref>" }
-    }
-    const response = await deps.client.send(listWorkflowPublicationSendersRequest(sessionId, publicationRef))
-    const senders = expectVariant<{ senders: WorkflowPublicationTrustedSender[] }>(response, "WorkflowPublicationSendersListed").senders
-    return { ok: true, message: formatWorkflowPublicationSenders(senders), data: { senders } }
-  }
-
-  if (action === "revoke-sender") {
-    const [publicationRef, senderRef] = rest
-    if (!publicationRef || !senderRef) {
-      return { ok: false, message: "usage: workflow publication revoke-sender <publication-ref> <sender-ref>" }
-    }
-    const response = await deps.client.send(revokeWorkflowPublicationSenderRequest(sessionId, publicationRef, senderRef))
-    const payload = expectVariant<{ sender: WorkflowPublicationTrustedSender; session: RuntimeSession }>(response, "WorkflowPublicationSenderRevoked")
-    return {
-      ok: true,
-      message: `revoked workflow publication sender ${payload.sender.sender_id}`,
-      data: payload,
-      contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
-    }
-  }
-
   if (action === "create" || action === "new") {
     const parsed = parseWorkflowPublicationCreateOptions(rest, context.workflowId)
     if (!parsed.ok) {
@@ -185,7 +108,7 @@ export async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|export|disable|pair-code|redeem-code|senders|revoke-sender" }
+  return { ok: false, message: "usage: workflow publication list|create|show|export|disable" }
 }
 
 function parseWorkflowPublicationCreateOptions(
@@ -212,10 +135,6 @@ function parseWorkflowPublicationCreateOptions(
       const parsed = parseJsonOption(args[++index], "--transport-json")
       if (!parsed.ok) return parsed
       options.transport = parsed.value
-    } else if (arg === "--auth-json") {
-      const parsed = parseJsonOption(args[++index], "--auth-json")
-      if (!parsed.ok) return parsed
-      options.auth = parsed.value
     } else if (arg === "--parser-json") {
       const parsed = parseJsonOption(args[++index], "--parser-json")
       if (!parsed.ok) return parsed
@@ -241,7 +160,7 @@ function parseWorkflowPublicationCreateOptions(
   const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
   const alias = positional.length >= 3 ? positional[2] : positional[1]
   if (!workflowRef || !endpointRef) {
-    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--route <route>] [--method POST] [--auth-json <json>] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]" }
+    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]" }
   }
   if (positional.length > 3 || (!currentWorkflowId && positional.length < 2)) {
     return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] ..." }
@@ -265,26 +184,6 @@ function parseWorkflowPublicationExportOptions(
     }
   }
   return { ok: true, kernelUrl }
-}
-
-function parseNumericFlags(
-  args: string[],
-  allowedFlags: string[],
-): { ok: true; values: Record<string, number> } | { ok: false; message: string } {
-  const values: Record<string, number> = {}
-  for (let index = 0; index < args.length; index += 1) {
-    const flag = args[index]
-    if (!flag || !allowedFlags.includes(flag)) {
-      return { ok: false, message: `unsupported option ${flag ?? ""}`.trim() }
-    }
-    const raw = args[++index]
-    const value = Number(raw)
-    if (!raw || !Number.isFinite(value) || value < 0) {
-      return { ok: false, message: `expected non-negative number after ${flag}` }
-    }
-    values[flag] = value
-  }
-  return { ok: true, values }
 }
 
 function parseJsonOption(

@@ -88,7 +88,6 @@ export function makeWorkflowPublication(overrides: Partial<WorkflowPublicationDe
     enabled: true,
     route: "/qa",
     methods: ["POST"],
-    auth: { mode: "anonymous" },
     parser: { kind: "json" },
     created_by_user_id: "local",
     created_at_ms: 0,

@@ -40,8 +40,6 @@ pub struct CreateWorkflowPublicationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parser: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
@@ -64,50 +62,6 @@ pub struct GetWorkflowPublicationRequest {
 pub struct DisableWorkflowPublicationRequest {
     pub session_id: String,
     pub publication_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateWorkflowPublicationPairCodeRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-    #[serde(default)]
-    pub expires_in_ms: Option<u64>,
-    #[serde(default)]
-    pub max_uses: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedeemWorkflowPublicationPairCodeRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-    pub pair_code: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_transports: Vec<String>,
-    #[serde(default)]
-    pub expires_in_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListWorkflowPublicationSendersRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RevokeWorkflowPublicationSenderRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-    pub sender_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthenticateWorkflowPublicationSenderRequest {
-    pub session_id: String,
-    pub publication_ref: String,
-    pub credential: String,
-    pub transport: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

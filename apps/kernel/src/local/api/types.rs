@@ -42,7 +42,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 110;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 111;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -248,11 +248,6 @@ pub enum LocalDaemonRequest {
     ListWorkflowPublications(ListWorkflowPublicationsRequest),
     GetWorkflowPublication(GetWorkflowPublicationRequest),
     DisableWorkflowPublication(DisableWorkflowPublicationRequest),
-    CreateWorkflowPublicationPairCode(CreateWorkflowPublicationPairCodeRequest),
-    RedeemWorkflowPublicationPairCode(RedeemWorkflowPublicationPairCodeRequest),
-    ListWorkflowPublicationSenders(ListWorkflowPublicationSendersRequest),
-    RevokeWorkflowPublicationSender(RevokeWorkflowPublicationSenderRequest),
-    AuthenticateWorkflowPublicationSender(AuthenticateWorkflowPublicationSenderRequest),
     CreateWorkflowEndpoint(CreateWorkflowEndpointRequest),
     AliasWorkflowEndpoint(AliasWorkflowEndpointRequest),
     BindWorkflowEndpoint(BindWorkflowEndpointRequest),
@@ -908,24 +903,6 @@ pub enum LocalDaemonResponse {
     WorkflowPublicationDisabled {
         publication: WorkflowPublicationDefinition,
         session: RuntimeSession,
-    },
-    WorkflowPublicationPairCodeCreated {
-        pair_code: WorkflowPublicationPairingCodeRecord,
-        session: RuntimeSession,
-    },
-    WorkflowPublicationSenderPaired {
-        sender_credential: WorkflowPublicationSenderCredential,
-        session: RuntimeSession,
-    },
-    WorkflowPublicationSendersListed {
-        senders: Vec<WorkflowPublicationTrustedSender>,
-    },
-    WorkflowPublicationSenderRevoked {
-        sender: WorkflowPublicationTrustedSender,
-        session: RuntimeSession,
-    },
-    WorkflowPublicationSenderAuthenticated {
-        sender: WorkflowPublicationTrustedSender,
     },
     WorkflowDesignOpAccepted {
         session: RuntimeSession,
