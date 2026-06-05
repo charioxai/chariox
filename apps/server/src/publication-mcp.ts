@@ -19,6 +19,7 @@ import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type McpApp = {
   post: (path: string, handler: (request: { body?: unknown }, reply: McpReply) => unknown) => unknown
+  options: (path: string, handler: (_request: unknown, reply: McpReply) => unknown) => unknown
 }
 
 type McpReply = {
@@ -38,11 +39,20 @@ const MCP_PROTOCOL_VERSION = "2025-03-26"
 export const PUBLICATION_MCP_PATH = "/mcp"
 
 export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPublicationConfig, deps: GatewayDeps) {
+  app.options(PUBLICATION_MCP_PATH, async (_request, reply) => {
+    if (!isMcpPublication(publication)) {
+      reply.code(404)
+      return { error: "not found" }
+    }
+    reply.code(204).headers(mcpCorsHeaders())
+    return null
+  })
   app.post(PUBLICATION_MCP_PATH, async (request, reply) => {
     if (!isMcpPublication(publication)) {
       reply.code(404)
       return { error: "not found" }
     }
+    reply.headers(mcpCorsHeaders())
 
     const rpc = parseJsonRpcRequest(request.body)
     if (!rpc) return jsonRpcError(null, -32600, "invalid request")
@@ -198,6 +208,14 @@ function jsonRpcResult(id: unknown, result: unknown) {
 
 function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: JSON_RPC_VERSION, id: id ?? null, error: { code, message } }
+}
+
+function mcpCorsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type, accept",
+  }
 }
 
 async function sleep(ms: number) {

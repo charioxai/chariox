@@ -875,6 +875,36 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   }
 })
 
+test("api_sse_json accepts browser preflight for publication invocation", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "api_sse_json",
+    route: "/invoke",
+    methods: ["POST"],
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/invoke",
+      headers: {
+        origin: "https://cloud.example.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    })
+
+    assert.equal(response.statusCode, 204)
+    assert.equal(response.headers["access-control-allow-origin"], "*")
+    assert.equal(response.headers["access-control-allow-methods"], "POST, OPTIONS")
+    assert.equal(response.headers["access-control-allow-headers"], "content-type, accept")
+  } finally {
+    await app.close()
+  }
+})
+
 test("mcp exposes a published workflow as a tool and returns final output", async () => {
   let seenInput: unknown = null
   let seenCaller: unknown = null
@@ -944,6 +974,37 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
 
     const genericRoute = await app.inject({ method: "POST", url: "/ignored", payload: { prompt: "nope" } })
     assert.equal(genericRoute.statusCode, 404)
+  } finally {
+    await app.close()
+  }
+})
+
+test("mcp accepts browser preflight for JSON-RPC tool calls", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    publication_id: "pub-mcp",
+    transport: "mcp",
+    route: "/mcp",
+    methods: ["POST"],
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/mcp",
+      headers: {
+        origin: "https://cloud.example.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    })
+
+    assert.equal(response.statusCode, 204)
+    assert.equal(response.headers["access-control-allow-origin"], "*")
+    assert.equal(response.headers["access-control-allow-methods"], "POST, OPTIONS")
+    assert.equal(response.headers["access-control-allow-headers"], "content-type, accept")
   } finally {
     await app.close()
   }

@@ -19,6 +19,7 @@ import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type ApiSseApp = {
   post: (path: string, handler: (request: { body?: unknown }, reply: ApiSseReply) => unknown) => unknown
+  options: (path: string, handler: (_request: unknown, reply: ApiSseReply) => unknown) => unknown
 }
 
 type ApiSseReply = {
@@ -45,6 +46,14 @@ export function installApiSseJsonRoutes(
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
+  app.options(API_SSE_INVOKE_PATH, async (_request, reply) => {
+    if (!isApiSseJsonPublication(publication)) {
+      reply.code(404)
+      return { error: "not found" }
+    }
+    reply.code(204).headers(apiSseCorsHeaders())
+    return null
+  })
   app.post(API_SSE_INVOKE_PATH, async (request, reply) => {
     if (!isApiSseJsonPublication(publication)) {
       reply.code(404)
@@ -53,7 +62,7 @@ export function installApiSseJsonRoutes(
     try {
       validateInput(request.body ?? {}, publication.input_schema)
     } catch (error) {
-      reply.code(400).headers({ "content-type": "application/json" })
+      reply.code(400).headers({ "content-type": "application/json", ...apiSseCorsHeaders() })
       return { error: error instanceof Error ? error.message : String(error) }
     }
 
@@ -83,6 +92,7 @@ async function streamApiSseInvocation(
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
+    ...apiSseCorsHeaders(),
   })
   const state: StreamState = { started: false, partialIds: new Set() }
   try {
@@ -214,6 +224,14 @@ function emitWorkflowRunEvents(reply: ApiSseReply, workflowRun: WorkflowRun, sta
 function writeSse(reply: ApiSseReply, event: string, payload: unknown) {
   reply.raw.write(`event: ${event}\n`)
   reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function apiSseCorsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type, accept",
+  }
 }
 
 async function sleep(ms: number) {
