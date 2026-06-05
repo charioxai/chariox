@@ -134,6 +134,9 @@ function formatAgentListGrantCount(agent: AgentInstance): string {
   const grants = agent.extension_grants?.length ?? 0
   const grantList = agent.extension_grants ?? []
   const count = `${grantList.length} grant${grantList.length === 1 ? "" : "s"}`
+  if (grants === 0 && agent.remote_extension_manifest_sync?.pending_revoke) {
+    return `${count} (final revoke pending)`
+  }
   return grants > 0 ? `${count} (${formatAgentExtensionPlacementSummary(agent)})` : count
 }
 

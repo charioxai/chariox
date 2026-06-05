@@ -229,6 +229,35 @@ test("remote skill-only agent summaries do not report pending home-proxy manifes
   assert.doesNotMatch(inspectSummary, /pending, next=/)
 })
 
+test("agent summaries keep final remote extension revokes visible after grants are gone", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [],
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+  })
+
+  const listSummary = formatAgentListSummary([remoteAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteAgent)
+
+  assert.match(listSummary, /0 grants \(final revoke pending\)/)
+  assert.match(listSummary, /manifest failed abcdef12 pending revoke error worker offline; see \/extension sync-status agent-remote/)
+  assert.match(inspectSummary, /extensions: none/)
+  assert.match(inspectSummary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(inspectSummary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+})
+
 test("agent summaries make settling home-proxy manifests actionable", () => {
   const remoteAgent = agent({
     id: "agent-remote",
