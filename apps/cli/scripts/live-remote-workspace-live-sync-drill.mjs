@@ -229,7 +229,7 @@ function mirrorFixturesToHetznerCommand(options, rootDir) {
   const remoteCommand = [
     `rm -rf ${shellQuote(rootDir)}`,
     `mkdir -p ${shellQuote(parent)}`,
-    `tar -C ${shellQuote(parent)} -xf -`,
+    `tar --no-same-owner -C ${shellQuote(parent)} -xf -`,
   ].join(' && ')
   return [
     `COPYFILE_DISABLE=1 tar -C ${shellQuote(parent)} -cf - ${shellQuote(base)}`,
@@ -535,6 +535,7 @@ async function main() {
       '--tracked-target-count', String(options.trackedTargetCount),
       ...(childRootDir ? ['--root-dir', childRootDir] : []),
       ...(options.hetznerWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToHetznerCommand(options, childRootDir)] : []),
+      ...(options.hetznerWorker && options.mode === 'tracked' ? ['--remote-source-side-effects'] : []),
       ...(options.trackedBidirectional ? ['--tracked-bidirectional'] : []),
       ...(options.full ? [] : ['--positive-only']),
       ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
@@ -544,6 +545,9 @@ async function main() {
     const lastJsonIndex = trimmed.lastIndexOf('\n{')
     const jsonText = lastJsonIndex >= 0 ? trimmed.slice(lastJsonIndex + 1) : trimmed
     const result = JSON.parse(jsonText)
+    if (options.hetznerWorker && options.mode === 'tracked' && childRootDir) {
+      await assertHetznerTrackedSourceSideEffects(options, childRootDir, options.providers)
+    }
     console.log(JSON.stringify({
       status: 'ok',
       mode: 'remote-workspace-live-sync-live-drill',
@@ -585,6 +589,19 @@ async function main() {
       console.error(`remote workspace live sync drill transient CLI modules kept at ${cliRuntimeDir}`)
     }
   }
+}
+
+async function assertHetznerTrackedSourceSideEffects(options, rootDir, providers) {
+  const checks = []
+  for (const provider of providers) {
+    const ignoredPath = path.posix.join(rootDir, 'workspace', 'ignored', `${provider}-ignored.txt`)
+    const siblingPath = path.posix.join(rootDir, 'sibling-repo', `${provider}-tracked-sibling.txt`)
+    checks.push(
+      `test "$(cat ${shellQuote(ignoredPath)})" = ${shellQuote(`${provider}-ignored`)}`,
+      `test "$(cat ${shellQuote(siblingPath)})" = ${shellQuote(`${provider}-tracked-sibling`)}`,
+    )
+  }
+  await runHetznerCommand(options, checks.join(' && '))
 }
 
 await main()

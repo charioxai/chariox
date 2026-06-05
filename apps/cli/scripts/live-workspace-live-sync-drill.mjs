@@ -54,6 +54,7 @@ function parseArgs(argv) {
     targetBranch: 'main',
     trackedTargetCount: 1,
     trackedBidirectional: false,
+    remoteSourceSideEffects: false,
     rootDir: null,
     afterFixtureCommand: null,
   }
@@ -84,6 +85,7 @@ function parseArgs(argv) {
     else if (arg === '--target-branch') options.targetBranch = argv[++i]
     else if (arg === '--tracked-target-count') options.trackedTargetCount = Number(argv[++i])
     else if (arg === '--tracked-bidirectional') options.trackedBidirectional = true
+    else if (arg === '--remote-source-side-effects') options.remoteSourceSideEffects = true
     else if (arg === '--root-dir') options.rootDir = argv[++i]
     else if (arg === '--after-fixture-command') options.afterFixtureCommand = argv[++i]
     else if (arg === '--help') options.help = true
@@ -1276,6 +1278,7 @@ async function waitForTrackedFanout({
   sourceWorkspace,
   targetWorkspaces,
   provider,
+  remoteSourceSideEffects,
   timeoutMs,
   pollMs,
 }) {
@@ -1339,7 +1342,9 @@ async function waitForTrackedFanout({
     }
     let deletedOk = !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-delete.txt`))) &&
       !(await fileExists(path.join(sourceOutputs, `${provider}-tracked-rename-source.txt`)))
-    let ignoredOk = await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`))
+    let ignoredOk = remoteSourceSideEffects
+      ? !(await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`)))
+      : await fileExists(path.join(sourceWorkspace, 'ignored', `${provider}-ignored.txt`))
     let hasTargets = true
     let hasExpectedConflicts = true
     for (const targetWorkspace of targetWorkspaces) {
@@ -1557,6 +1562,9 @@ async function runTrackedConflictResolutionPhase({
   const relativePath = `outputs/${provider}-tracked-conflict.txt`
   const sourceSideContent = `one\n${provider}-tracked-source-conflict\nthree\n`
   const resolvedContent = `one\n${provider}-tracked-resolved\nthree\n`
+  const targetConflictPaths = targetWorkspaces.map((targetWorkspace) =>
+    path.join(targetWorkspace, relativePath)
+  )
 
   const alignSinceMs = Date.now()
   const alignMarker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_CONFLICT_ALIGNED`
@@ -1564,6 +1572,9 @@ async function runTrackedConflictResolutionPhase({
     'This is a live Arroba workspace live sync tracked-mode conflict alignment drill.',
     'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
     `Run a direct write in the current workspace so that ${relativePath} becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
+    ...targetConflictPaths.slice(1).map((targetPath) =>
+      `Also run a direct write so that ${targetPath} becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`
+    ),
     `After that direct filesystem write completes, reply exactly ${alignMarker} and nothing else.`,
   ].join('\n'), []))
 
@@ -1574,7 +1585,7 @@ async function runTrackedConflictResolutionPhase({
     events,
     expectedCompletionCount: 1,
     completionSinceMs: alignSinceMs,
-    requiredFiles: [path.join(targetWorkspaces[0], relativePath)],
+    requiredFiles: targetConflictPaths,
     forbiddenFiles: [],
     timeoutMs,
     pollMs,
@@ -1772,8 +1783,10 @@ async function runTrackedWorkspaceLiveSyncDrill({
     requiredFiles: [
       path.join(workspace, 'outputs', `${provider}-tracked-added.txt`),
       path.join(workspace, 'outputs', `${provider}-tracked-renamed.txt`),
-      path.join(workspace, 'ignored', `${provider}-ignored.txt`),
-      siblingWritePath,
+      ...(options.remoteSourceSideEffects ? [] : [
+        path.join(workspace, 'ignored', `${provider}-ignored.txt`),
+        siblingWritePath,
+      ]),
     ],
     forbiddenFiles: [],
     timeoutMs,
@@ -1788,7 +1801,9 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
-  await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)
+  if (!options.remoteSourceSideEffects) {
+    await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)
+  }
   await waitForAgentsIdle({
     client,
     sessionId: session.id,
@@ -1807,6 +1822,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     sourceWorkspace: workspace,
     targetWorkspaces: trackedTargetWorkspaces,
     provider,
+    remoteSourceSideEffects: options.remoteSourceSideEffects,
     timeoutMs,
     pollMs,
   })
@@ -1925,7 +1941,8 @@ async function runTrackedWorkspaceLiveSyncDrill({
       outsideTurnSourceFileExists: await fileExists(outsideTurnPath),
       outsideTurnTargetFileExists: await fileExists(outsideTurnTargetPaths[0]),
       outsideTurnTargetFileExistsByTarget: Object.fromEntries(await Promise.all(outsideTurnTargetPaths.map(async (targetPath) => [targetPath, await fileExists(targetPath)]))),
-      siblingRepoWriteContent: await readFile(siblingWritePath, 'utf8'),
+      siblingRepoWriteContent: options.remoteSourceSideEffects ? null : await readFile(siblingWritePath, 'utf8'),
+      sourceSideEffectsLocation: options.remoteSourceSideEffects ? 'remote-worker' : 'local-mirror',
       sourceHeadBefore,
       sourceHeadAfter,
       targetHeadBefore: targetHeadsBefore[targetWorkspace],
@@ -2117,7 +2134,7 @@ async function main() {
           providers: options.providers,
           modelForProvider: (provider) => modelForProvider(provider, options),
           workspace: targetWorkspace,
-          kernelRef: workerKernelRef,
+          kernelRef: options.remoteSourceSideEffects ? null : workerKernelRef,
           spawnAgentRequest,
           aliasSuffix: 'target-origin',
         })

@@ -218,7 +218,7 @@ function mirrorFixturesToHetznerCommand(options, rootDir) {
   const remoteCommand = [
     `rm -rf ${shellQuote(rootDir)}`,
     `mkdir -p ${shellQuote(parent)}`,
-    `tar -C ${shellQuote(parent)} -xf -`,
+    `tar --no-same-owner -C ${shellQuote(parent)} -xf -`,
   ].join(' && ')
   return [
     `COPYFILE_DISABLE=1 tar -C ${shellQuote(parent)} -cf - ${shellQuote(base)}`,
