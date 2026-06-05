@@ -20,6 +20,14 @@ test("remote extension sync formatter renders status and recovery consistently",
     "home keeps stale home-proxy calls blocked; run /extension sync-status agent-1; run /machine kernels worker-1; use /extension sync-retry agent-1 after worker connectivity is healthy",
   )
   assert.equal(
+    remoteExtensionSyncNextAction({ state: "failed" }, "agent-1", null),
+    "home keeps stale home-proxy calls blocked; run /extension sync-status agent-1; run /kernel remote-runtime to identify worker connectivity; use /extension sync-retry agent-1 after worker connectivity is healthy",
+  )
+  assert.equal(
+    remoteExtensionSyncNextAction({ state: "synced", pending_revoke: true }, "agent-1", null),
+    "keep the home revoke in place; run /extension sync-status agent-1; run /kernel remote-runtime to identify worker connectivity if the revoke stays pending; use /extension sync-retry agent-1 after the worker reconnects",
+  )
+  assert.equal(
     formatRemoteExtensionSyncStatusLine({ state: "failed", manifest_hash: "abcdef1234567890", last_error: "worker offline" }, {
       includeHash: true,
       includeNext: true,

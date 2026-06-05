@@ -287,17 +287,17 @@ export function remoteExtensionSyncNextAction(
   if (status?.pending_revoke) {
     return workerMachineId
       ? `keep the home revoke in place; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if the revoke stays pending; use /extension sync-retry ${agentRef} after the worker reconnects`
-      : `keep the home revoke in place; run /extension sync-status ${agentRef}; use /extension sync-retry ${agentRef} after the worker reconnects`
+      : `keep the home revoke in place; run /extension sync-status ${agentRef}; run /kernel remote-runtime to identify worker connectivity if the revoke stays pending; use /extension sync-retry ${agentRef} after the worker reconnects`
   }
   if (!status || status.state === "pending" || status.state === "syncing") {
     return workerMachineId
       ? `home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
-      : `home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status ${agentRef} if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `home keeps stale home-proxy calls blocked until the worker manifest settles; run /extension sync-status ${agentRef}; run /kernel remote-runtime if it does not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   if (status.state === "failed" || status.state === "stale" || status.state === "missing") {
     return workerMachineId
       ? `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
-      : `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; check worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; run /kernel remote-runtime to identify worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
   }
   return null
 }
