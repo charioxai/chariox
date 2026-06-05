@@ -74,6 +74,38 @@ impl KernelRuntimeState {
                 &final_states,
             )? {
                 result = rejection;
+            } else {
+                let finalize_response = self
+                    .with_app_side_effect(|app| {
+                        app.block_on_relay_future(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                app.config(),
+                                ClientTarget {
+                                    daemon_id: Some(remote_context.home_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
+                                    context: remote_context.clone(),
+                                    tool_name: tool_name.to_string(),
+                                    arguments: arguments.clone(),
+                                    initial_artifact_states: artifact_states.clone(),
+                                    final_artifact_states: final_states.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .await?;
+                if !matches!(
+                    finalize_response,
+                    RelayPeerResponse::WorkspaceLiveSyncRuntimeToolFinalized
+                ) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "finalize leased workspace live sync runtime tool",
+                        message: format!(
+                            "unexpected forwarded workspace live sync finalize response: {finalize_response:?}"
+                        ),
+                    });
+                }
             }
         }
         add_workspace_live_sync_workspace_payload(&mut result.payload, &workspace_context);

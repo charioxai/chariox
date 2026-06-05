@@ -93,12 +93,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .unwrap_or(false)
         })?;
         let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        let backing_session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)
+            .ok()?;
         Some(RemoteWorkspaceLiveSyncContext {
             home_kernel_id: lease.home_kernel_id.clone(),
             home_session_id: lease.home_session_id.clone(),
             home_agent_id: lease.home_agent_id.clone(),
             leased_agent_id: leased_agent.id.clone(),
+            worker_kernel_id: lease.worker_kernel_id.clone(),
+            worker_machine_id: lease.machine_id.clone(),
             worker_provider_run_id: provider_run_id.to_string(),
+            worker_worktree_path: backing_session.worktree_id().to_string(),
             worker_workspace_identity,
         })
     }

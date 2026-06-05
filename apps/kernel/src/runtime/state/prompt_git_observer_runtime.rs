@@ -214,7 +214,7 @@ impl KernelRuntimeState {
             Ok(Some(Ok((events, tracked_change, retry_attempts, after_status_fingerprint)))) => {
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
-                    self.record_and_fanout_workspace_live_sync_change(change, None)
+                    self.record_and_fanout_workspace_live_sync_change(change, None, None)
                         .await;
                     crate::logging::info_with_fields(
                         "daemon.workspace_live_sync",
@@ -289,6 +289,7 @@ impl KernelRuntimeState {
         &self,
         change: crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
+        source_machine_id: Option<&str>,
     ) {
         let link = self.workspace_live_sync_link_for_change(&change);
         let target_results = match link.as_ref() {
@@ -296,6 +297,7 @@ impl KernelRuntimeState {
                 self.apply_workspace_live_sync_change_to_link_targets(
                     &change,
                     source_kernel_id,
+                    source_machine_id,
                     link,
                 )
                 .await
@@ -334,10 +336,12 @@ impl KernelRuntimeState {
         &self,
         change: &crate::git_observer::WorkspaceLiveSyncChange,
         source_kernel_id: Option<&str>,
+        source_machine_id: Option<&str>,
         link: &crate::session::WorkspaceLinkDefinition,
     ) -> Vec<crate::git_observer::WorkspaceLiveSyncTargetResult> {
         let config = self.config_snapshot().await;
         let source_kernel_id = source_kernel_id.unwrap_or(&config.daemon_id);
+        let source_machine_id = source_machine_id.unwrap_or(&config.host_machine_id);
         let source_repo_root =
             crate::session::normalize_workspace_link_repo_root(change.worktree_path.clone());
         let mut results = Vec::new();
@@ -346,6 +350,7 @@ impl KernelRuntimeState {
                 attachment,
                 &source_repo_root,
                 source_kernel_id,
+                source_machine_id,
             ) {
                 continue;
             }
@@ -758,8 +763,11 @@ fn workspace_live_sync_should_skip_source_attachment(
     attachment: &crate::session::WorkspaceLinkAttachment,
     source_repo_root: &str,
     source_kernel_id: &str,
+    source_machine_id: &str,
 ) -> bool {
-    attachment.repo_root() == source_repo_root && attachment.kernel_id() == source_kernel_id
+    attachment.repo_root() == source_repo_root
+        && (attachment.kernel_id() == source_kernel_id
+            || attachment.machine_id() == source_machine_id)
 }
 
 fn forwarded_workspace_live_sync_attachment_matches_context(
@@ -885,26 +893,52 @@ mod tests {
     }
 
     #[test]
-    fn workspace_live_sync_source_attachment_skip_requires_same_root_and_kernel() {
+    fn workspace_live_sync_source_attachment_skip_matches_root_and_origin_machine_or_kernel() {
         let source = attachment("/tmp/source", "kernel-source");
-        let same_path_remote_kernel = attachment("/tmp/source/", "kernel-remote");
+        let same_path_same_machine = crate::session::WorkspaceLinkAttachment::new(
+            "link-1",
+            "local",
+            "machine-source",
+            "kernel-remote",
+            "/tmp/source/",
+            Some("main".to_string()),
+            Some("fingerprint".to_string()),
+        );
+        let same_path_remote_machine = crate::session::WorkspaceLinkAttachment::new(
+            "link-1",
+            "local",
+            "machine-remote",
+            "kernel-remote",
+            "/tmp/source/",
+            Some("main".to_string()),
+            Some("fingerprint".to_string()),
+        );
         let same_kernel_other_path = attachment("/tmp/target", "kernel-source");
         let source_root = crate::session::normalize_workspace_link_repo_root("/tmp/source/");
 
         assert!(workspace_live_sync_should_skip_source_attachment(
             &source,
             &source_root,
-            "kernel-source"
+            "kernel-source",
+            "machine-source"
+        ));
+        assert!(workspace_live_sync_should_skip_source_attachment(
+            &same_path_same_machine,
+            &source_root,
+            "kernel-source",
+            "machine-source"
         ));
         assert!(!workspace_live_sync_should_skip_source_attachment(
-            &same_path_remote_kernel,
+            &same_path_remote_machine,
             &source_root,
-            "kernel-source"
+            "kernel-source",
+            "machine-source"
         ));
         assert!(!workspace_live_sync_should_skip_source_attachment(
             &same_kernel_other_path,
             &source_root,
-            "kernel-source"
+            "kernel-source",
+            "machine-source"
         ));
     }
 
@@ -1063,7 +1097,7 @@ mod tests {
         );
 
         runtime
-            .record_and_fanout_workspace_live_sync_change(change, None)
+            .record_and_fanout_workspace_live_sync_change(change, None, None)
             .await;
 
         let notices = runtime
@@ -1114,7 +1148,7 @@ mod tests {
         );
 
         runtime
-            .record_and_fanout_workspace_live_sync_change(peer_change, None)
+            .record_and_fanout_workspace_live_sync_change(peer_change, None, None)
             .await;
 
         assert_eq!(

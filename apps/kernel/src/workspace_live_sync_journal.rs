@@ -209,7 +209,10 @@ pub(crate) fn workspace_live_sync_notice_messages(
     if target_results.is_empty() {
         return Vec::new();
     }
-    let mode_label = if change.status_fingerprint == "managed_workspace_live_sync" {
+    let mode_label = if matches!(
+        change.status_fingerprint.as_str(),
+        "managed_workspace_live_sync" | "remote_managed_workspace_live_sync"
+    ) {
         "managed"
     } else {
         "tracked turn"

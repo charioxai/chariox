@@ -70,7 +70,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 110);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -149,7 +149,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 110);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -195,37 +195,50 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 109);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 110);
 
-    let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
-        context: RemoteWorkspaceLiveSyncContext {
-            home_kernel_id: "kernel-home".to_string(),
-            home_session_id: "session-1".to_string(),
-            home_agent_id: "agent-1".to_string(),
-            leased_agent_id: "leased-agent-1".to_string(),
-            worker_provider_run_id: "provider-run-worker".to_string(),
-            worker_workspace_identity: crate::io::WorkspaceIdentity {
-                vcs_provider: Some("git".to_string()),
-                repo_id: None,
-                repo_url: Some("https://example.test/repo.git".to_string()),
-                branch: Some("main".to_string()),
-                head_commit: Some("commit-1".to_string()),
-                worktree_root_fingerprint: "fingerprint-1".to_string(),
-            },
+    let context = RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: "kernel-home".to_string(),
+        home_session_id: "session-1".to_string(),
+        home_agent_id: "agent-1".to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_kernel_id: "kernel-worker".to_string(),
+        worker_machine_id: "machine-worker".to_string(),
+        worker_provider_run_id: "provider-run-worker".to_string(),
+        worker_worktree_path: "/tmp/worker-worktree".to_string(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity {
+            vcs_provider: Some("git".to_string()),
+            repo_id: None,
+            repo_url: Some("https://example.test/repo.git".to_string()),
+            branch: Some("main".to_string()),
+            head_commit: Some("commit-1".to_string()),
+            worktree_root_fingerprint: "fingerprint-1".to_string(),
         },
+    };
+    let arguments = serde_json::json!({
+        "path": "src/lib.rs",
+        "content_text": "after\n",
+        "domain": "text"
+    });
+    let initial_artifact_states = vec![RemoteWorkspaceLiveSyncArtifactState {
+        path: "src/lib.rs".to_string(),
+        exists: true,
+        domain: Some("text".to_string()),
+        content_text: Some("before\n".to_string()),
+        content_base64: None,
+    }];
+    let final_artifact_states = vec![RemoteWorkspaceLiveSyncArtifactState {
+        path: "src/lib.rs".to_string(),
+        exists: true,
+        domain: Some("text".to_string()),
+        content_text: Some("after\n".to_string()),
+        content_base64: None,
+    }];
+    let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
+        context: context.clone(),
         tool_name: "arroba.write_artifact".to_string(),
-        arguments: serde_json::json!({
-            "path": "src/lib.rs",
-            "content_text": "after\n",
-            "domain": "text"
-        }),
-        artifact_states: vec![RemoteWorkspaceLiveSyncArtifactState {
-            path: "src/lib.rs".to_string(),
-            exists: true,
-            domain: Some("text".to_string()),
-            content_text: Some("before\n".to_string()),
-            content_base64: None,
-        }],
+        arguments: arguments.clone(),
+        artifact_states: initial_artifact_states.clone(),
     };
     let response = RelayPeerResponse::WorkspaceLiveSyncRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult {
@@ -235,16 +248,18 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
                 "path": "src/lib.rs"
             }),
         },
-        final_artifact_states: vec![RemoteWorkspaceLiveSyncArtifactState {
-            path: "src/lib.rs".to_string(),
-            exists: true,
-            domain: Some("text".to_string()),
-            content_text: Some("after\n".to_string()),
-            content_base64: None,
-        }],
+        final_artifact_states: final_artifact_states.clone(),
     };
+    let finalize_request = RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
+        context,
+        tool_name: "arroba.write_artifact".to_string(),
+        arguments,
+        initial_artifact_states,
+        final_artifact_states,
+    };
+    let finalize_response = RelayPeerResponse::WorkspaceLiveSyncRuntimeToolFinalized;
 
-    let snapshot = serde_json::json!([request, response]);
+    let snapshot = serde_json::json!([request, response, finalize_request, finalize_response]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
         Some(&serde_json::json!(
@@ -269,11 +284,23 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
         snapshot.pointer("/1/final_artifact_states/0/content_text"),
         Some(&serde_json::json!("after\n"))
     );
+    assert_eq!(
+        snapshot.pointer("/2/kind"),
+        Some(&serde_json::json!(
+            "finalize_workspace_live_sync_runtime_tool"
+        ))
+    );
+    assert_eq!(
+        snapshot.pointer("/3/kind"),
+        Some(&serde_json::json!(
+            "workspace_live_sync_runtime_tool_finalized"
+        ))
+    );
     let serialized = serde_json::to_string(&snapshot)
         .expect("workspace live sync relay runtime tool should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8ad2180809c7c2fce18ed7e36de472227c56baef7dd950a12f8d643824475534"
+        "477cffef64399a8d0b9979accc8d6a0d1517883ec48c53d280508b8240aa18b4"
     );
 }

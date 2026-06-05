@@ -86,6 +86,29 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn finalize_forwarded_workspace_live_sync_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+        initial_artifact_states: Vec<
+            crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState,
+        >,
+        final_artifact_states: Vec<
+            crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState,
+        >,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .finalize_forwarded_workspace_live_sync_runtime_tool_call(
+                context,
+                tool_name,
+                arguments,
+                initial_artifact_states,
+                final_artifact_states,
+            )
+            .await
+    }
+
     pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,

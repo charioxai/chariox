@@ -112,6 +112,7 @@ impl KernelRuntimeState {
                     self.record_and_fanout_workspace_live_sync_change(
                         change,
                         Some(&remote_execution.worker_kernel_id),
+                        Some(&remote_execution.worker_machine_id),
                     )
                     .await;
                 }

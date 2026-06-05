@@ -26,8 +26,11 @@ mod workflow_authenticated;
 mod workflow_forwarding;
 mod workspace_live_sync_access;
 mod workspace_live_sync_local;
+mod workspace_live_sync_managed_fanout;
 mod workspace_live_sync_permission;
 mod workspace_live_sync_remote_dispatch;
+
+use workspace_live_sync_managed_fanout::*;
 
 impl KernelRuntimeState {
     pub(crate) fn runtime_tool_specs_for_auth_token(

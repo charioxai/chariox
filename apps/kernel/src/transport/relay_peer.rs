@@ -25,7 +25,10 @@ pub struct RemoteWorkspaceLiveSyncContext {
     pub home_session_id: String,
     pub home_agent_id: String,
     pub leased_agent_id: String,
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
     pub worker_provider_run_id: String,
+    pub worker_worktree_path: String,
     pub worker_workspace_identity: WorkspaceIdentity,
 }
 
@@ -262,6 +265,13 @@ pub enum RelayPeerRequest {
         arguments: serde_json::Value,
         artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
+    FinalizeWorkspaceLiveSyncRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+        initial_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+        final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+    },
     ForwardCapabilityRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
@@ -368,6 +378,7 @@ pub enum RelayPeerResponse {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
+    WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]

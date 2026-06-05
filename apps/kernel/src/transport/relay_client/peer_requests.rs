@@ -440,6 +440,32 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+            initial_artifact_states,
+            final_artifact_states,
+        } => {
+            let finalized = router
+                .finalize_forwarded_workspace_live_sync_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    initial_artifact_states,
+                    final_artifact_states,
+                )
+                .await;
+            match finalized {
+                Ok(()) => RelayPeerResponse::WorkspaceLiveSyncRuntimeToolFinalized,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ForwardCapabilityRuntimeTool {
             context,
             tool_name,
