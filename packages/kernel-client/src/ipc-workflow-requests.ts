@@ -54,6 +54,7 @@ export function resolveWorkflowRequest(sessionId: string, workflowRef: string) {
 
 export type CreateWorkflowPublicationOptions = {
   alias?: string | null
+  queueRef?: string | null
   route?: string | null
   methods?: string[]
   transport?: unknown | null
@@ -73,6 +74,7 @@ export function createWorkflowPublicationRequest(
       session_id: sessionId,
       workflow_ref: workflowRef,
       endpoint_ref: endpointRef,
+      queue_ref: options.queueRef ?? null,
       alias: options.alias ?? null,
       route: options.route ?? null,
       methods: options.methods ?? [],

@@ -315,7 +315,7 @@ test("executeShellCommand forwards workflow node instruction edits as design ops
 })
 
 test("executeShellCommand manages workflow publications", async () => {
-  const publication = makeWorkflowPublication()
+  const publication = makeWorkflowPublication({ queue_ref: "priority" })
   const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
   const fake = fakeClient((request) => {
     if ("CreateWorkflowPublication" in request) {
@@ -337,7 +337,7 @@ test("executeShellCommand manages workflow publications", async () => {
   })
 
   const createResult = await executeShellCommand(
-    parseShellCommand("workflow publication create endpoint-1 public_qa --route /qa --method POST"),
+    parseShellCommand("workflow publication create endpoint-1 public_qa --queue priority --route /qa --method POST"),
     context,
     { client: fake.client },
   )
@@ -349,7 +349,7 @@ test("executeShellCommand manages workflow publications", async () => {
   assert.match(createResult.message ?? "", /created workflow publication publication-1/)
   assert.deepEqual(createResult.contextUpdates, { sessionId: "session-1", agentId: "agent-1", workflowId: "workflow-1" })
   assert.equal(listResult.ok, true)
-  assert.match(listResult.message ?? "", /publication-1 \(public_qa\) workflow=workflow-1 endpoint=endpoint-1 enabled=true route=\/qa methods=POST/)
+  assert.match(listResult.message ?? "", /publication-1 \(public_qa\) workflow=workflow-1 endpoint=endpoint-1 queue=priority enabled=true route=\/qa methods=POST/)
   assert.equal(showResult.ok, true)
   assert.equal(showResult.format, "json")
   assert.equal(disableResult.ok, true)
@@ -360,6 +360,7 @@ test("executeShellCommand manages workflow publications", async () => {
         session_id: "session-1",
         workflow_ref: "workflow-1",
         endpoint_ref: "endpoint-1",
+        queue_ref: "priority",
         alias: "public_qa",
         route: "/qa",
         methods: ["POST"],
@@ -380,6 +381,7 @@ test("executeShellCommand exports a workflow publication package", async () => {
   try {
     const publication = makeWorkflowPublication({
       mode: "async",
+      queue_ref: "priority",
     })
     const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
     const watchdog = makeWorkflowWatchdog({ policy: "queue", invocation_prompt: "published schedule" })
@@ -420,7 +422,7 @@ test("executeShellCommand exports a workflow publication package", async () => {
     const packageJson = JSON.parse(await readFile(join(root, "exported", "publication.json"), "utf8"))
     assert.equal(packageJson.schema_version, 1)
     assert.equal(packageJson.hooks[0].transport, "human_http")
-    assert.equal(packageJson.hooks[0].queue_ref, "default")
+    assert.equal(packageJson.hooks[0].queue_ref, "priority")
     const snapshot = JSON.parse(await readFile(join(root, "exported", "workflow.snapshot.json"), "utf8"))
     assert.equal(snapshot.workflow.id, "workflow-1")
     assert.equal(snapshot.endpoint.id, "endpoint-1")

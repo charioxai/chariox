@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 114
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 115
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1744,6 +1744,7 @@ export type WorkflowPublicationDefinition = {
   session_id: string
   workflow_id: string
   endpoint_id: string
+  queue_ref?: string | null
   alias?: string | null
   enabled: boolean
   route?: string | null

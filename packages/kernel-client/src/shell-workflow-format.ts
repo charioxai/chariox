@@ -56,9 +56,10 @@ export function formatWorkflowPublications(publications: WorkflowPublicationDefi
     return "no workflow publications configured"
   }
   return publications.map((publication) => {
+    const queue = publication.queue_ref ? ` queue=${publication.queue_ref}` : ""
     const route = publication.route ? ` route=${publication.route}` : ""
     const methods = publication.methods?.length ? ` methods=${publication.methods.join(",")}` : ""
-    return `${formatWorkflowPublicationLabel(publication)} workflow=${publication.workflow_id} endpoint=${publication.endpoint_id} enabled=${String(publication.enabled)}${route}${methods}`
+    return `${formatWorkflowPublicationLabel(publication)} workflow=${publication.workflow_id} endpoint=${publication.endpoint_id}${queue} enabled=${String(publication.enabled)}${route}${methods}`
   }).join("\n")
 }
 

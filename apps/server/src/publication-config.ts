@@ -199,7 +199,7 @@ export function publicationConfigFromKernelRecord(
     session_id: publication.session_id,
     workflow_ref: publication.workflow_id,
     endpoint_ref: publication.endpoint_id,
-    queue_ref: "default",
+    queue_ref: publication.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
     route: publication.route ?? "/*",
     parser: asParserConfig(publication.parser) ?? { kind: "json" },

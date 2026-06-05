@@ -58,7 +58,7 @@ function workflowPublicationPackage(publication: WorkflowPublicationDefinition) 
       publication_id: publication.id,
       transport: hookTransport(publication),
       endpoint_id: publication.endpoint_id,
-      queue_ref: "default",
+      queue_ref: publication.queue_ref ?? "default",
       route: publication.route ?? "/*",
       methods: publication.methods?.length ? publication.methods : ["GET"],
       parser: publication.parser ?? { kind: "json" },

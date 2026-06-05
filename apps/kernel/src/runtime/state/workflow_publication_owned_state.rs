@@ -22,6 +22,7 @@ impl KernelRuntimeOwnedState {
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
+            request.queue_ref,
             request.alias,
             request.route,
             request.methods,

@@ -91,6 +91,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            Some("default".to_string()),
             Some("public_review".to_string()),
             Some("/review".to_string()),
             vec!["POST".to_string()],
@@ -104,6 +105,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
 
     assert_eq!(publication.workflow_id(), workflow.id());
     assert_eq!(publication.endpoint_id(), endpoint.id());
+    assert_eq!(publication.queue_ref(), Some("default"));
     assert_eq!(publication.alias(), Some("public_review"));
     assert!(publication.enabled());
 

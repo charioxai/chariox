@@ -33,6 +33,8 @@ pub struct CreateWorkflowPublicationRequest {
     pub workflow_ref: String,
     pub endpoint_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,

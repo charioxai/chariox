@@ -186,6 +186,10 @@ function parseWorkflowPublicationCreateOptions(
       const value = args[++index]
       if (!value) return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] --route <route>" }
       options.route = value
+    } else if (arg === "--queue") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] --queue <queue-ref>" }
+      options.queueRef = value
     } else if (arg === "--method") {
       const value = args[++index]
       if (!value) return { ok: false, message: "usage: workflow publication create ... --method <GET|POST|...>" }
@@ -219,7 +223,7 @@ function parseWorkflowPublicationCreateOptions(
   const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
   const alias = positional.length >= 3 ? positional[2] : positional[1]
   if (!workflowRef || !endpointRef) {
-    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]" }
+    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--queue <queue-ref>] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]" }
   }
   if (positional.length > 3 || (!currentWorkflowId && positional.length < 2)) {
     return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] ..." }

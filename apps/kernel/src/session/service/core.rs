@@ -639,6 +639,7 @@ impl SessionService {
         session_id: &str,
         workflow_ref: &str,
         endpoint_ref: &str,
+        queue_ref: Option<String>,
         alias: Option<String>,
         route: Option<String>,
         methods: Vec<String>,
@@ -651,6 +652,8 @@ impl SessionService {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
+        let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
+        self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         let alias = normalize_workflow_publication_alias(alias)?;
         if let Some(alias) = alias.as_deref() {
             self.ensure_workflow_publication_alias_available(session_id, alias)?;
@@ -660,6 +663,7 @@ impl SessionService {
             session_id.to_string(),
             workflow.id().to_string(),
             endpoint.id().to_string(),
+            Some(normalized_queue_ref),
             alias,
             route,
             methods,
@@ -917,6 +921,15 @@ fn normalize_workspace_link_name(name: &str) -> Result<String, DaemonError> {
         });
     }
     Ok(normalized)
+}
+
+fn normalize_workflow_publication_queue_ref(queue_ref: Option<String>) -> String {
+    queue_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string()
 }
 
 fn ensure_workspace_link_name_available(

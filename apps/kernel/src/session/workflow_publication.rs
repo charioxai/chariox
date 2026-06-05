@@ -9,6 +9,8 @@ pub struct WorkflowPublicationDefinition {
     session_id: String,
     workflow_id: String,
     endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue_ref: Option<String>,
     alias: Option<String>,
     enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +37,7 @@ impl WorkflowPublicationDefinition {
         session_id: impl Into<String>,
         workflow_id: impl Into<String>,
         endpoint_id: impl Into<String>,
+        queue_ref: Option<String>,
         alias: Option<String>,
         route: Option<String>,
         methods: Vec<String>,
@@ -50,6 +53,7 @@ impl WorkflowPublicationDefinition {
             session_id: session_id.into(),
             workflow_id: workflow_id.into(),
             endpoint_id: endpoint_id.into(),
+            queue_ref,
             alias,
             enabled: true,
             route,
@@ -78,6 +82,10 @@ impl WorkflowPublicationDefinition {
 
     pub fn endpoint_id(&self) -> &str {
         &self.endpoint_id
+    }
+
+    pub fn queue_ref(&self) -> Option<&str> {
+        self.queue_ref.as_deref()
     }
 
     pub fn alias(&self) -> Option<&str> {
