@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
@@ -24,6 +24,7 @@ const {
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   endSessionRequest,
+  getSessionStateRequest,
   getWorkflowPublicationRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
@@ -399,6 +400,39 @@ async function waitForGateway(baseUrl) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error(`gateway did not become ready: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function assertPublicationRuntimeSessionHidden(client, runtimeSessionId) {
+  const session = variant(await client.send(getSessionStateRequest(runtimeSessionId)), 'SessionState').session
+  if (session?.id !== runtimeSessionId || session.hidden !== true) {
+    throw new Error(`expected publication runtime session ${runtimeSessionId} to be hidden, got ${JSON.stringify(session)}`)
+  }
+  const sessions = variant(await client.send(listSessionsRequest()), 'SessionsListed').sessions ?? []
+  if (sessions.some((candidate) => candidate.id === runtimeSessionId)) {
+    throw new Error(`publication runtime session ${runtimeSessionId} leaked into normal session list`)
+  }
+}
+
+async function assertPackageDoesNotContain(exportDir, forbiddenValues) {
+  const forbidden = forbiddenValues.filter((value) => typeof value === 'string' && value.length > 0)
+  async function visit(dir) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await visit(entryPath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const contents = await readFile(entryPath, 'utf8').catch(() => null)
+      if (contents == null) continue
+      for (const value of forbidden) {
+        if (contents.includes(value)) {
+          throw new Error(`publication package file ${entryPath} contains forbidden runtime token material`)
+        }
+      }
+    }
+  }
+  await visit(exportDir)
 }
 
 async function waitForTcpPort(host, port, timeoutMs = 20_000) {
@@ -1082,6 +1116,9 @@ async function main() {
     if (!exportResult.ok) {
       throw new Error(`publication export failed: ${exportResult.message}`)
     }
+    await assertPackageDoesNotContain(exportDir, [
+      relayToken,
+    ])
     gateway = startProcess(
       cliBinary,
       ['serve', exportDir, String(gatewayPort), '--kernel-url', kernelUrl],
@@ -1092,6 +1129,14 @@ async function main() {
       'arroba-serve-exported',
     )
     await waitForGateway(gatewayUrl)
+    const exportedStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const exportedStatusBody = await exportedStatusResponse.json()
+    const exportedRuntimeSessionId = exportedStatusBody.runtime_session_id
+    if (exportedStatusResponse.status !== 200 || typeof exportedRuntimeSessionId !== 'string') {
+      throw new Error(`expected exported publication status with runtime session id, got ${exportedStatusResponse.status}: ${JSON.stringify(exportedStatusBody)}`)
+    }
+    sessionIds.push(exportedRuntimeSessionId)
+    await assertPublicationRuntimeSessionHidden(client, exportedRuntimeSessionId)
     const exportedResponse = await fetch(`${gatewayUrl}/qa/exported-publication`)
     const exportedBody = await exportedResponse.json()
     if (exportedResponse.status !== 202 || !hasAcceptedRunMetadata(exportedBody)) {
@@ -1166,6 +1211,7 @@ async function main() {
       throw new Error(`expected publication status with runtime session id, got ${statusResponse.status}: ${JSON.stringify(statusBody)}`)
     }
     sessionIds.push(runtimeSessionId)
+    await assertPublicationRuntimeSessionHidden(client, runtimeSessionId)
     const watchdogRun = await waitForWatchdogWorkflowRun(client, runtimeSessionId, apiSseWorkflow.id)
     logStep('watchdog_publication_ok', {
       runtimeSessionId,

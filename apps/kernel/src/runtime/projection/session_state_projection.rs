@@ -73,7 +73,12 @@ impl SessionStateProjectionStore {
                 .session_states
                 .insert(session.id().to_string(), session.clone());
         }
-        state.session_list = Some(sessions);
+        state.session_list = Some(
+            sessions
+                .into_iter()
+                .filter(|session| !session.is_hidden())
+                .collect(),
+        );
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
@@ -171,6 +176,10 @@ fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: Runti
     let Some(session_list) = session_list.as_mut() else {
         return;
     };
+    if session.is_hidden() {
+        session_list.retain(|existing| existing.id() != session.id());
+        return;
+    }
     if let Some(existing) = session_list
         .iter_mut()
         .find(|existing| existing.id() == session.id())
@@ -178,5 +187,41 @@ fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: Runti
         *existing = session;
     } else {
         session_list.push(session);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str) -> RuntimeSession {
+        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "daemon")
+    }
+
+    #[test]
+    fn hidden_sessions_remain_addressable_but_do_not_enter_warmed_list() {
+        let store = SessionStateProjectionStore::default();
+        let visible = session("visible");
+        store.update_list(vec![visible.clone()]);
+
+        let mut hidden = session("hidden");
+        hidden.set_hidden(true);
+        store.update(hidden.clone());
+
+        assert_eq!(store.get("hidden"), Some(hidden));
+        assert_eq!(store.list(), Some(vec![visible]));
+    }
+
+    #[test]
+    fn hidden_sessions_are_filtered_when_list_is_warmed_from_mixed_snapshot() {
+        let store = SessionStateProjectionStore::default();
+        let visible = session("visible");
+        let mut hidden = session("hidden");
+        hidden.set_hidden(true);
+
+        store.update_list(vec![visible.clone(), hidden.clone()]);
+
+        assert_eq!(store.get("hidden"), Some(hidden));
+        assert_eq!(store.list(), Some(vec![visible]));
     }
 }
