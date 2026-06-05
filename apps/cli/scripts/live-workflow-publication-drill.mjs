@@ -24,6 +24,7 @@ const {
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
   endSessionRequest,
+  getWorkflowPublicationRequest,
   getProviderRunRequest,
   launchProviderRunRequest,
   listSessionsRequest,
@@ -396,6 +397,27 @@ async function waitForGateway(baseUrl) {
   throw new Error(`gateway did not become ready: ${lastError?.message ?? String(lastError)}`)
 }
 
+async function waitForRegisteredPublicationEndpoint(client, sessionId, publicationId, expectedUrl) {
+  const deadline = Date.now() + 20_000
+  let lastPublication = null
+  while (Date.now() < deadline) {
+    const response = variant(
+      await client.send(getWorkflowPublicationRequest(sessionId, publicationId)),
+      'WorkflowPublication',
+    )
+    lastPublication = response.publication ?? null
+    if (
+      lastPublication?.status === 'running'
+      && lastPublication.open_url === expectedUrl
+      && lastPublication.deployment?.local_url === expectedUrl
+    ) {
+      return lastPublication
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`publication endpoint did not register as running at ${expectedUrl}: ${JSON.stringify(lastPublication)}`)
+}
+
 async function waitForProviderRunReady(client, providerRunId) {
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
@@ -702,6 +724,13 @@ async function main() {
       'gateway',
     )
     await waitForGateway(gatewayUrl)
+    const registeredPublication = await waitForRegisteredPublicationEndpoint(client, session.id, publication.id, `${gatewayUrl}/`)
+    logStep('publication_endpoint_registered', {
+      publicationId: registeredPublication.id,
+      status: registeredPublication.status,
+      openUrl: registeredPublication.open_url,
+      deployment: registeredPublication.deployment?.kind ?? null,
+    })
 
     logStep('invoke_browser_html')
     const rootHtmlResponse = await fetch(`${gatewayUrl}/`, { headers: { accept: 'text/html' } })
