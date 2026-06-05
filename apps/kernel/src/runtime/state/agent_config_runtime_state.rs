@@ -37,8 +37,12 @@ impl KernelRuntimeState {
                     caller_user_id,
                     &grant,
                 )?;
-                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
-                    .await?;
+                self.sync_remote_extension_manifest_for_agent(
+                    &agent,
+                    Some(caller_user_id),
+                    Some(false),
+                )
+                .await?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -62,8 +66,12 @@ impl KernelRuntimeState {
                     caller_user_id,
                     &grant,
                 )?;
-                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
-                    .await?;
+                self.sync_remote_extension_manifest_for_agent(
+                    &agent,
+                    Some(caller_user_id),
+                    Some(false),
+                )
+                .await?;
                 Ok(agent)
             }
         }
@@ -177,8 +185,12 @@ impl KernelRuntimeState {
                     crate::extension::ExtensionKind::Script,
                     name,
                 )?;
-                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
-                    .await?;
+                self.sync_remote_extension_manifest_for_agent(
+                    &agent,
+                    Some(caller_user_id),
+                    Some(true),
+                )
+                .await?;
                 Ok(agent)
             }
             crate::extension::ExtensionKind::Connector => {
@@ -201,8 +213,12 @@ impl KernelRuntimeState {
                     crate::extension::ExtensionKind::Connector,
                     name,
                 )?;
-                self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
-                    .await?;
+                self.sync_remote_extension_manifest_for_agent(
+                    &agent,
+                    Some(caller_user_id),
+                    Some(true),
+                )
+                .await?;
                 Ok(agent)
             }
         }
@@ -242,7 +258,7 @@ impl KernelRuntimeState {
             crate::extension::ExtensionKind::Mcp,
             &name,
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
@@ -272,7 +288,7 @@ impl KernelRuntimeState {
             crate::extension::ExtensionKind::Mcp,
             name,
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(true))
             .await?;
         let _ = self
             .apply_provider_reload_policy(ProviderReloadTrigger::AgentMcpChanged {
@@ -303,7 +319,7 @@ impl KernelRuntimeState {
             crate::extension::ExtensionKind::Skill,
             &name,
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         Ok(agent)
     }
@@ -326,7 +342,7 @@ impl KernelRuntimeState {
             crate::extension::ExtensionKind::Skill,
             name,
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         Ok(agent)
     }
@@ -335,15 +351,21 @@ impl KernelRuntimeState {
         &self,
         agent: &crate::agent::AgentInstance,
         caller_user_id: Option<&str>,
+        pending_revoke_intent: Option<bool>,
     ) -> Result<(), DaemonError> {
-        self.sync_remote_extension_manifest_for_agent_inner::<true>(agent, caller_user_id)
-            .await
+        self.sync_remote_extension_manifest_for_agent_inner::<true>(
+            agent,
+            caller_user_id,
+            pending_revoke_intent,
+        )
+        .await
     }
 
     async fn sync_remote_extension_manifest_for_agent_inner<const SCHEDULE_RETRIES: bool>(
         &self,
         agent: &crate::agent::AgentInstance,
         caller_user_id: Option<&str>,
+        pending_revoke_intent: Option<bool>,
     ) -> Result<(), DaemonError> {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(());
@@ -351,10 +373,10 @@ impl KernelRuntimeState {
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
         let manifest_hash = manifest.manifest_hash();
         let tool_count = manifest.tools.len();
-        let pending_revoke = agent
-            .remote_extension_manifest_sync()
-            .and_then(|status| status.manifest_hash.as_ref())
-            .is_some_and(|previous_hash| previous_hash != &manifest_hash);
+        let pending_revoke = remote_extension_manifest_pending_revoke(
+            agent.remote_extension_manifest_sync(),
+            pending_revoke_intent,
+        );
         let syncing_status = crate::extension::RemoteExtensionManifestSyncStatus::pending(
             manifest_hash.clone(),
             pending_revoke,
@@ -526,7 +548,7 @@ impl KernelRuntimeState {
                     return;
                 }
                 let _ = state
-                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None)
+                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None, None)
                     .await;
             });
         });
@@ -547,7 +569,7 @@ impl KernelRuntimeState {
             caller_user_id,
             "remote extension manifest sync retry",
         )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id))
+        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), None)
             .await?;
         self.owned.agent_store.get_agent(agent.id())
     }
@@ -865,6 +887,18 @@ fn remote_extension_manifest_retry_key(agent_id: &str, manifest_hash: &str) -> S
     format!("{agent_id}:{manifest_hash}")
 }
 
+fn remote_extension_manifest_pending_revoke(
+    current_status: Option<&crate::extension::RemoteExtensionManifestSyncStatus>,
+    intent: Option<bool>,
+) -> bool {
+    match intent {
+        Some(pending_revoke) => pending_revoke,
+        None => current_status
+            .and_then(|status| status.pending_revoke)
+            .unwrap_or(false),
+    }
+}
+
 fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
     crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
         .into_iter()
@@ -874,4 +908,43 @@ fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
         .chain(crate::transport::runtime_tools::slice_runtime_tool_specs())
         .map(|spec| spec.name)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_extension_manifest_pending_revoke_uses_explicit_intent_not_hash_change() {
+        let previous = crate::extension::RemoteExtensionManifestSyncStatus::synced(
+            "hash-before-grant".to_string(),
+        );
+
+        assert!(!remote_extension_manifest_pending_revoke(
+            Some(&previous),
+            Some(false),
+        ));
+        assert!(remote_extension_manifest_pending_revoke(
+            Some(&previous),
+            Some(true),
+        ));
+    }
+
+    #[test]
+    fn remote_extension_manifest_pending_revoke_preserves_retry_state_only_without_intent() {
+        let pending_revoke = crate::extension::RemoteExtensionManifestSyncStatus::pending(
+            "hash-after-revoke".to_string(),
+            true,
+        )
+        .failed("worker unavailable".to_string());
+
+        assert!(remote_extension_manifest_pending_revoke(
+            Some(&pending_revoke),
+            None,
+        ));
+        assert!(!remote_extension_manifest_pending_revoke(
+            Some(&pending_revoke),
+            Some(false),
+        ));
+    }
 }
