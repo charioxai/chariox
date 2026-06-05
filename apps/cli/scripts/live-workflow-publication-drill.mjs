@@ -122,7 +122,19 @@ async function invokePublicationWebSocket(url, input, options = {}) {
     if (accepted.type !== 'accepted' || (!accepted.workflow_run?.id && !accepted.queued)) {
       throw new Error(`expected websocket accepted run metadata, got ${JSON.stringify(accepted)}`)
     }
-    return accepted
+    if (!options.waitForFinal) {
+      return { accepted, messages: [accepted] }
+    }
+    const messages = [accepted]
+    const deadline = Date.now() + (options.timeoutMs ?? 30_000)
+    while (Date.now() < deadline) {
+      const message = await reader.read()
+      messages.push(message)
+      if (message.type === 'final' || message.type === 'error' || message.type === 'timeout') {
+        return { accepted, messages }
+      }
+    }
+    throw new Error(`timed out waiting for websocket final message: ${JSON.stringify(messages)}`)
   } finally {
     socket.close()
   }
@@ -303,9 +315,15 @@ async function runHumanHttpBrowserDrill({ url, root }) {
     await cdp.send('Page.navigate', { url })
     const finalState = await waitForBrowserFinalOutput(cdp)
     const statuses = finalState.statuses ?? []
+    const outputs = finalState.outputs ?? []
     for (const expectedStatus of ['Running', 'Completed']) {
       if (!statuses.includes(expectedStatus)) {
         throw new Error(`browser did not observe ${expectedStatus} status; statuses=${JSON.stringify(statuses)}`)
+      }
+    }
+    for (const expectedValue of ['"value":1841', '"value":1842']) {
+      if (!outputs.some((output) => output.includes(expectedValue))) {
+        throw new Error(`browser did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}`)
       }
     }
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
@@ -313,7 +331,7 @@ async function runHumanHttpBrowserDrill({ url, root }) {
       throw new Error('browser screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
-    logStep('browser_screenshot_ok', { screenshotPath, statuses })
+    logStep('browser_screenshot_ok', { screenshotPath, statuses, outputs })
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
@@ -392,7 +410,8 @@ async function waitForBrowserFinalOutput(cdp) {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const output = document.querySelector('#output')?.textContent?.trim() || '';
         const statuses = Array.isArray(window.__arrobaPublicationDrillStatuses) ? window.__arrobaPublicationDrillStatuses : [];
-        return { status, output, statuses, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
+        const outputs = Array.isArray(window.__arrobaPublicationDrillOutputs) ? window.__arrobaPublicationDrillOutputs : [];
+        return { status, output, statuses, outputs, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
       })()`,
     })
     lastState = evaluated.result?.value ?? null
@@ -406,16 +425,49 @@ function browserStatusRecorderScript() {
   return `
     (() => {
       const statuses = [];
+      const outputs = [];
       let last = null;
+      let lastOutput = null;
+      const NativeEventSource = window.EventSource;
       Object.defineProperty(window, '__arrobaPublicationDrillStatuses', {
         value: statuses,
         configurable: true,
       });
+      Object.defineProperty(window, '__arrobaPublicationDrillOutputs', {
+        value: outputs,
+        configurable: true,
+      });
+      if (typeof NativeEventSource === 'function') {
+        window.EventSource = function(...args) {
+          const source = new NativeEventSource(...args);
+          source.addEventListener('partial', (event) => {
+            try {
+              const message = JSON.parse(event.data).message;
+              if (typeof message === 'string' && message) outputs.push(message);
+            } catch {
+            }
+          });
+          source.addEventListener('final', (event) => {
+            try {
+              const message = JSON.parse(event.data).workflow_run?.final_output?.message;
+              if (typeof message === 'string' && message) outputs.push(message);
+            } catch {
+            }
+          });
+          return source;
+        };
+        window.EventSource.prototype = NativeEventSource.prototype;
+      }
       const record = () => {
         const status = document.querySelector('#status')?.textContent?.trim();
         if (status && status !== last) {
           last = status;
           statuses.push(status);
+        }
+        const output = document.querySelector('#output')?.textContent?.trim();
+        if (output && output !== lastOutput) {
+          lastOutput = output;
+          outputs.push(output);
         }
       };
       const install = () => {
@@ -681,6 +733,7 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-drill-'))
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
+  const websocketWorkspace = path.join(root, 'websocket-workspace')
   const browserWorkspace = path.join(root, 'browser-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const home = path.join(root, 'home')
@@ -845,6 +898,47 @@ async function main() {
       })),
       'WorkflowPublicationCreated',
     ).publication
+    logStep('create_websocket_session')
+    const websocketSession = variant(
+      await client.send(createSessionRequest(websocketWorkspace, websocketWorkspace, 'publication-drill-websocket-final')),
+      'SessionCreated',
+    ).session
+    sessionIds.push(websocketSession.id)
+    await client.send(attachToSessionRequest(websocketSession.id, `publication-drill-websocket-final-${process.pid}`))
+    const websocketAgent = variant(
+      await client.send(spawnAgentRequest(websocketSession.id, 'dev-stub', 'websocket-final', 'workflow-intermediate-node', websocketWorkspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    const websocketProviderRun = variant(
+      await client.send(launchProviderRunRequest(websocketSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', websocketAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    await waitForProviderRunReady(client, websocketProviderRun.id)
+    const websocketWorkflow = variant(await client.send(createWorkflowRequest(websocketSession.id, 'published-websocket-final')), 'WorkflowCreated').workflow
+    const websocketNode = variant(await client.send(addWorkflowNodeRequest(websocketSession.id, websocketWorkflow.id, websocketAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(
+      websocketSession.id,
+      websocketWorkflow.id,
+      websocketNode.id,
+      'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
+    ))
+    await client.send(setWorkflowNodeCanCompleteRunRequest(websocketSession.id, websocketWorkflow.id, websocketNode.id, true))
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(websocketSession.id, websocketWorkflow.id, websocketNode.id, true))
+    const websocketEndpoint = variant(
+      await client.send(createWorkflowEndpointRequest(websocketSession.id, websocketWorkflow.id, websocketNode.id, 'websocket')),
+      'WorkflowEndpointCreated',
+    ).endpoint
+    const websocketFinalPublication = variant(
+      await client.send(createWorkflowPublicationRequest(websocketSession.id, websocketWorkflow.id, websocketEndpoint.id, {
+        alias: 'public_websocket_final',
+        route: '/.well-known/arroba/publication/ws',
+        methods: ['GET'],
+        transport: { kind: 'websocket_json' },
+        parser: { kind: 'json' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
     logStep('create_browser_session')
     const browserSession = variant(
       await client.send(createSessionRequest(browserWorkspace, browserWorkspace, 'publication-drill-human-http-final')),
@@ -853,11 +947,11 @@ async function main() {
     sessionIds.push(browserSession.id)
     await client.send(attachToSessionRequest(browserSession.id, `publication-drill-human-http-final-${process.pid}`))
     const browserAgent = variant(
-      await client.send(spawnAgentRequest(browserSession.id, 'dev-stub', 'human-http-final', 'workflow-single-turn-node', browserWorkspace, 'low')),
+      await client.send(spawnAgentRequest(browserSession.id, 'dev-stub', 'human-http-final', 'workflow-intermediate-node', browserWorkspace, 'low')),
       'AgentSpawned',
     ).agent
     const browserProviderRun = variant(
-      await client.send(launchProviderRunRequest(browserSession.id, 'dev-stub', 'default', 'workflow-single-turn-node', 'low', browserAgent.id)),
+      await client.send(launchProviderRunRequest(browserSession.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', browserAgent.id)),
       'ProviderRunLaunchAccepted',
     ).provider_run
     await waitForProviderRunReady(client, browserProviderRun.id)
@@ -870,6 +964,7 @@ async function main() {
       'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
     ))
     await client.send(setWorkflowNodeCanCompleteRunRequest(browserSession.id, browserWorkflow.id, browserNode.id, true))
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(browserSession.id, browserWorkflow.id, browserNode.id, true))
     const browserEndpoint = variant(
       await client.send(createWorkflowEndpointRequest(browserSession.id, browserWorkflow.id, browserNode.id, 'browser')),
       'WorkflowEndpointCreated',
@@ -1027,7 +1122,7 @@ async function main() {
       `ws://127.0.0.1:${gatewayPort}/.well-known/arroba/publication/ws`,
       { task: 'websocket-publication' },
     )
-    logStep('websocket_ok', { workflowRunId: webSocketAccepted.workflow_run?.id ?? null, queued: webSocketAccepted.queued === true })
+    logStep('websocket_ok', { workflowRunId: webSocketAccepted.accepted.workflow_run?.id ?? null, queued: webSocketAccepted.accepted.queued === true })
 
     await stopProcess(gateway)
     gateway = null
@@ -1056,6 +1151,10 @@ async function main() {
           name: 'input.txt',
           type: 'text/plain',
           base64: 'YXBpLXN0cmVhbQ==',
+        }, {
+          name: 'input-url.txt',
+          type: 'text/plain',
+          url: 'https://example.invalid/arroba-publication-input.txt',
         }],
       }),
     })
@@ -1103,6 +1202,43 @@ async function main() {
       throw new Error(`expected API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_websocket_final')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: websocketSession.id,
+        ARROBA_PUBLICATION_ID: websocketFinalPublication.id,
+      },
+      'gateway-websocket-final',
+    )
+    await waitForGateway(gatewayUrl)
+    const webSocketFinal = await invokePublicationWebSocket(
+      `ws://127.0.0.1:${gatewayPort}/.well-known/arroba/publication/ws`,
+      { prompt: 'websocket-final-publication' },
+      { waitForFinal: true },
+    )
+    const webSocketFinalTypes = webSocketFinal.messages.map((message) => message.type)
+    const webSocketFinalBody = JSON.stringify(webSocketFinal.messages)
+    if (
+      !webSocketFinalTypes.includes('accepted')
+      || !webSocketFinalTypes.includes('queued')
+      || !webSocketFinalTypes.includes('started')
+      || !webSocketFinalTypes.includes('partial')
+      || !webSocketFinalTypes.includes('final')
+      || (!webSocketFinalBody.includes('"value":1841') && !webSocketFinalBody.includes('\\"value\\":1841'))
+      || (!webSocketFinalBody.includes('"value":1842') && !webSocketFinalBody.includes('\\"value\\":1842'))
+    ) {
+      throw new Error(`expected websocket accepted/queued/started/partial/final with deterministic output, got ${JSON.stringify(webSocketFinal.messages)}`)
+    }
+    logStep('websocket_final_ok', { events: webSocketFinalTypes })
     await stopProcess(gateway)
     gateway = null
 
@@ -1209,7 +1345,7 @@ async function main() {
         { task: 'wss-publication' },
         { rejectUnauthorized: false },
       )
-      logStep('wss_ok', { workflowRunId: wssAccepted.workflow_run?.id ?? null, queued: wssAccepted.queued === true })
+      logStep('wss_ok', { workflowRunId: wssAccepted.accepted.workflow_run?.id ?? null, queued: wssAccepted.accepted.queued === true })
     } finally {
       if (previousTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsReject

@@ -46,6 +46,8 @@ type WebSocketReadyArtifact = {
 type WebSocketConnectionState = {
   pendingArtifacts: Map<string, WebSocketArtifactUpload>
   readyArtifacts: Map<string, WebSocketReadyArtifact>
+  partialIds: Set<string>
+  started: boolean
 }
 
 export function installPublicationWebSocket(
@@ -76,6 +78,8 @@ async function handlePublicationWebSocket(
   const state: WebSocketConnectionState = {
     pendingArtifacts: new Map(),
     readyArtifacts: new Map(),
+    partialIds: new Set(),
+    started: false,
   }
   webSocket.on("message", (data) => {
     void handlePublicationWebSocketMessage(webSocket, data, publication, deps, { type: "anonymous" }, state)
@@ -112,11 +116,18 @@ async function handlePublicationWebSocketMessage(
       ? await deps.invokeWorkflow(invocation)
       : await invokeKernelWorkflow(publication, invocation)
     sendWebSocketJson(webSocket, { type: "accepted", ...result })
+    sendWebSocketJson(webSocket, {
+      type: "queued",
+      invocation_id: invocation.request_id,
+      result: result.queued ? result.response ?? null : null,
+    })
     if (!deps.invokeWorkflow && result.workflow_run?.id) {
-      await streamWorkflowRun(webSocket, publication, result.workflow_run.id)
+      await streamWorkflowRun(webSocket, publication, result.workflow_run.id, state)
     } else if (!deps.invokeWorkflow && result.queued) {
-      await streamQueuedWorkflowRun(webSocket, publication, invocation.request_id)
+      await streamQueuedWorkflowRun(webSocket, publication, invocation.request_id, state)
     } else if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
+      sendStarted(webSocket, result.workflow_run, state)
+      sendPartialOutputs(webSocket, result.workflow_run, state)
       sendWebSocketJson(webSocket, { type: "final", workflow_run: result.workflow_run })
     }
   } catch (error) {
@@ -124,7 +135,12 @@ async function handlePublicationWebSocketMessage(
   }
 }
 
-async function streamQueuedWorkflowRun(webSocket: WsSocket, publication: WorkflowPublicationConfig, requestId: string) {
+async function streamQueuedWorkflowRun(
+  webSocket: WsSocket,
+  publication: WorkflowPublicationConfig,
+  requestId: string,
+  state: WebSocketConnectionState,
+) {
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, publication, requestId, {
@@ -134,18 +150,25 @@ async function streamQueuedWorkflowRun(webSocket: WsSocket, publication: Workflo
       sendWebSocketJson(webSocket, { type: "timeout", invocation_id: requestId })
       return
     }
+    sendStarted(webSocket, workflowRun, state)
     sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
+    sendPartialOutputs(webSocket, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
       return
     }
-    await streamWorkflowRun(webSocket, publication, workflowRun.id)
+    await streamWorkflowRun(webSocket, publication, workflowRun.id, state)
   } finally {
     await client.close().catch(() => {})
   }
 }
 
-async function streamWorkflowRun(webSocket: WsSocket, publication: WorkflowPublicationConfig, workflowRunId: string) {
+async function streamWorkflowRun(
+  webSocket: WsSocket,
+  publication: WorkflowPublicationConfig,
+  workflowRunId: string,
+  state: WebSocketConnectionState,
+) {
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     const timeoutMs = publication.sync_timeout_ms ?? 30_000
@@ -158,9 +181,15 @@ async function streamWorkflowRun(webSocket: WsSocket, publication: WorkflowPubli
         getWorkflowRunRequest(publication.session_id, workflowRunId),
       )
       const workflowRun = (response.WorkflowRun as { workflow_run: WorkflowRun } | undefined)?.workflow_run ?? null
+      if (workflowRun) {
+        sendStarted(webSocket, workflowRun, state)
+      }
       if (workflowRun && workflowRun.status !== lastStatus) {
         lastStatus = workflowRun.status
         sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
+      }
+      if (workflowRun) {
+        sendPartialOutputs(webSocket, workflowRun, state)
       }
       if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
         sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
@@ -171,6 +200,39 @@ async function streamWorkflowRun(webSocket: WsSocket, publication: WorkflowPubli
     sendWebSocketJson(webSocket, { type: "timeout", workflow_run_id: workflowRunId })
   } finally {
     await client.close().catch(() => {})
+  }
+}
+
+function sendStarted(
+  webSocket: WsSocket,
+  workflowRun: WorkflowRun,
+  state: WebSocketConnectionState,
+) {
+  if (state.started) return
+  state.started = true
+  sendWebSocketJson(webSocket, {
+    type: "started",
+    workflow_run_id: workflowRun.id,
+    workflow_run: workflowRun,
+  })
+}
+
+function sendPartialOutputs(
+  webSocket: WsSocket,
+  workflowRun: WorkflowRun,
+  state: WebSocketConnectionState,
+) {
+  for (const output of workflowRun.intermediate_outputs ?? []) {
+    if (state.partialIds.has(output.id)) continue
+    state.partialIds.add(output.id)
+    sendWebSocketJson(webSocket, {
+      type: "partial",
+      id: output.id,
+      workflow_run_id: workflowRun.id,
+      message: output.output.message,
+      valid: output.valid,
+      warning: output.warning ?? null,
+    })
   }
 }
 

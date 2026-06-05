@@ -28,6 +28,10 @@ type HumanHttpReply = {
   }
 }
 
+type HumanHttpStreamState = {
+  partialIds: Set<string>
+}
+
 export const HUMAN_HTTP_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
 
 export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowPublicationConfig) {
@@ -186,6 +190,7 @@ function humanHttpStatusPage(
       "  const events = new EventSource(publicationEventsUrl(eventsUrl));",
       "  events.addEventListener('queued', () => { statusEl.textContent = 'Queued'; });",
       "  events.addEventListener('status', (event) => renderRun(JSON.parse(event.data).workflow_run));",
+      "  events.addEventListener('partial', (event) => { outputEl.textContent = JSON.parse(event.data).message || ''; });",
       "  events.addEventListener('final', (event) => { renderRun(JSON.parse(event.data).workflow_run); events.close(); });",
       "  events.addEventListener('timeout', () => { statusEl.textContent = 'Still running'; events.close(); });",
       "  events.addEventListener('error', () => { statusEl.textContent = 'Connection interrupted'; });",
@@ -222,11 +227,13 @@ async function streamInvocationEvents(
       return
     }
     writeSse(reply, "status", { workflow_run: workflowRun })
+    const state: HumanHttpStreamState = { partialIds: new Set() }
+    emitPartialOutputs(reply, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
-    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client)
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client, state)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -248,7 +255,7 @@ async function streamWorkflowRunEvents(
   })
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
-    await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client)
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client, { partialIds: new Set() })
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -262,6 +269,7 @@ async function streamWorkflowRunEventsWithClient(
   publication: WorkflowPublicationConfig,
   workflowRunId: string,
   client: LocalIpcClient,
+  state: HumanHttpStreamState,
 ) {
   const timeoutMs = publication.sync_timeout_ms ?? 30_000
   const pollMs = publication.poll_ms ?? 500
@@ -277,6 +285,9 @@ async function streamWorkflowRunEventsWithClient(
       lastStatus = workflowRun.status
       writeSse(reply, "status", { workflow_run: workflowRun })
     }
+    if (workflowRun) {
+      emitPartialOutputs(reply, workflowRun, state)
+    }
     if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
@@ -284,6 +295,24 @@ async function streamWorkflowRunEventsWithClient(
     await sleep(pollMs)
   }
   writeSse(reply, "timeout", { workflow_run_id: workflowRunId })
+}
+
+function emitPartialOutputs(
+  reply: HumanHttpReply,
+  workflowRun: WorkflowRun,
+  state: HumanHttpStreamState,
+) {
+  for (const output of workflowRun.intermediate_outputs ?? []) {
+    if (state.partialIds.has(output.id)) continue
+    state.partialIds.add(output.id)
+    writeSse(reply, "partial", {
+      id: output.id,
+      workflow_run_id: workflowRun.id,
+      message: output.output.message,
+      valid: output.valid,
+      warning: output.warning ?? null,
+    })
+  }
 }
 
 function writeSse(reply: HumanHttpReply, event: string, payload: unknown) {

@@ -936,6 +936,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
+    assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.deepEqual(seenInput, {
       prompt: "read image",
       artifacts: [{
@@ -981,6 +982,7 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
+    assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /publicationEventsUrl\(eventsUrl\)/)
     assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
     assert.match(response.body, /run-1/)
@@ -1200,6 +1202,11 @@ test("gateway accepts WebSocket publication invocations", async () => {
         workflow_run: {
           id: "run-ws",
           status: "Completed",
+          intermediate_outputs: [{
+            id: "partial-ws",
+            output: { message: "working" },
+            valid: true,
+          }],
           final_output: { message: "done" },
         },
       }
@@ -1242,6 +1249,16 @@ test("gateway accepts WebSocket publication invocations", async () => {
       const accepted = await reader.read() as { type?: string; workflow_run?: { id?: string } }
       assert.equal(accepted.type, "accepted")
       assert.equal(accepted.workflow_run?.id, "run-ws")
+      const queued = await reader.read() as { type?: string; invocation_id?: string }
+      assert.equal(queued.type, "queued")
+      assert.match(queued.invocation_id ?? "", /^ws_/)
+      const started = await reader.read() as { type?: string; workflow_run_id?: string }
+      assert.equal(started.type, "started")
+      assert.equal(started.workflow_run_id, "run-ws")
+      const partial = await reader.read() as { type?: string; message?: string; workflow_run_id?: string }
+      assert.equal(partial.type, "partial")
+      assert.equal(partial.workflow_run_id, "run-ws")
+      assert.equal(partial.message, "working")
       const final = await reader.read() as { type?: string; workflow_run?: { status?: string } }
       assert.equal(final.type, "final")
       assert.equal(final.workflow_run?.status, "Completed")
