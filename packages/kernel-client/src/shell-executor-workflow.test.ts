@@ -375,15 +375,20 @@ test("executeShellCommand manages workflow publications", async () => {
   ])
 })
 
-test("executeShellCommand exports a workflow publication gateway package", async () => {
+test("executeShellCommand exports a workflow publication package", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-publication-export-test-"))
   try {
     const publication = makeWorkflowPublication({
       mode: "async",
     })
+    const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
+    const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication], workflow_prompt_queues: [queue] })
     const fake = fakeClient((request) => {
       if ("GetWorkflowPublication" in request) {
         return { WorkflowPublication: { publication } }
+      }
+      if ("GetSessionState" in request) {
+        return { SessionState: { session } }
       }
       throw new Error(`unexpected request ${JSON.stringify(request)}`)
     })
@@ -406,6 +411,21 @@ test("executeShellCommand exports a workflow publication gateway package", async
     assert.equal(config.publication_id, "publication-1")
     assert.equal(config.kernel_endpoint, "ws://kernel.example")
     assert.equal("auth" in config, false)
+    const packageJson = JSON.parse(await readFile(join(root, "exported", "publication.json"), "utf8"))
+    assert.equal(packageJson.schema_version, 1)
+    assert.equal(packageJson.hooks[0].transport, "human_http")
+    assert.equal(packageJson.hooks[0].queue_ref, "default")
+    const snapshot = JSON.parse(await readFile(join(root, "exported", "workflow.snapshot.json"), "utf8"))
+    assert.equal(snapshot.workflow.id, "workflow-1")
+    assert.equal(snapshot.endpoint.id, "endpoint-1")
+    assert.equal(snapshot.queues[0].id, "default")
+    assert.equal(snapshot.agents[0].id, "agent-1")
+    const requirements = JSON.parse(await readFile(join(root, "exported", "requirements.json"), "utf8"))
+    assert.deepEqual(requirements.mcps, [])
+    const bindings = JSON.parse(await readFile(join(root, "exported", "bindings.example.json"), "utf8"))
+    assert.equal(bindings.provider_model_overrides[0].agent_id, "agent-1")
+    const html = await readFile(join(root, "exported", "public", "index.html"), "utf8")
+    assert.match(html, /public_qa/)
     const launcher = await readFile(join(root, "exported", "run.sh"), "utf8")
     assert.match(launcher, /arroba-workflow-gateway/)
     const readme = await readFile(join(root, "exported", "README.md"), "utf8")
@@ -413,6 +433,7 @@ test("executeShellCommand exports a workflow publication gateway package", async
     assert.doesNotMatch(readme, /well-known\/arroba\/publication\/pair/)
     assert.deepEqual(fake.requests, [
       { GetWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
+      { GetSessionState: { session_id: "session-1" } },
     ])
   } finally {
     await rm(root, { recursive: true, force: true })

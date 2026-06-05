@@ -10,6 +10,7 @@ import {
   disableWorkflowPublicationRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
+  getSessionStateRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -63,8 +64,10 @@ export async function executeWorkflowPublicationCommand(
     if (!options.ok) return { ok: false, message: options.message }
     const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
     const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
+    const sessionResponse = await deps.client.send(getSessionStateRequest(sessionId))
+    const session = expectVariant<{ session: RuntimeSession }>(sessionResponse, "SessionState").session
     const outputRoot = resolvePath(context.worktree ?? context.workspace ?? process.cwd(), outputDirectory)
-    const packageFiles = await writeWorkflowPublicationExportPackage(publication, outputRoot, options.kernelUrl)
+    const packageFiles = await writeWorkflowPublicationExportPackage(publication, session, outputRoot, options.kernelUrl)
     return {
       ok: true,
       message: `exported workflow publication ${formatWorkflowPublicationLabel(publication)} to ${outputRoot}`,
