@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatRemoteExtensionSyncStatus,
   formatRemoteExtensionSyncStatusLine,
   remoteExtensionSyncNextAction,
 } from "./shell-capability-format.js"
@@ -45,6 +46,44 @@ test("remote extension sync formatter renders status and recovery consistently",
     }),
     "synced, hash=abcdef123456",
   )
+})
+
+test("remote extension sync status keeps final revokes visible after grants are gone", () => {
+  const output = formatRemoteExtensionSyncStatus({
+    id: "agent-1",
+    agent_ref: "agent-ref-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "default",
+    worktree_id: "/repo",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    extension_grants: [],
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "empty-hash",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+  })
+
+  assert.match(output, /agent-ref-1 remote extension sync: failed, pending revoke, worker offline/)
+  assert.match(output, /grants: 0 grants \(final revoke pending\)/)
+  assert.match(output, /revoke state: pending worker acknowledgement/)
+  assert.match(output, /next: keep the home revoke in place; run \/extension sync-status agent-ref-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-ref-1 after the worker reconnects/)
 })
 
 test("home extension audit policy gives binding-specific recovery for worker denials", () => {

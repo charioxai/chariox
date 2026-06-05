@@ -157,6 +157,7 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
     `runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, true)}`,
     `authority boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, true)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
+    `grants: ${formatRemoteExtensionGrantCount(agent)}`,
     `worker kernel: ${agent.remote_execution.worker_kernel_id}`,
     `worker machine: ${agent.remote_execution.worker_machine_id}`,
     `execution lease: ${agent.remote_execution.execution_lease_id}`,
@@ -175,6 +176,14 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   )
   if (nextAction) rows.push(`next: ${nextAction}`)
   return rows.join("\n")
+}
+
+function formatRemoteExtensionGrantCount(agent: AgentInstance): string {
+  const count = agent.extension_grants?.length ?? 0
+  const label = `${count} grant${count === 1 ? "" : "s"}`
+  return count === 0 && agent.remote_extension_manifest_sync?.pending_revoke
+    ? `${label} (final revoke pending)`
+    : label
 }
 
 function formatRemoteExtensionPlacement(remote: NonNullable<AgentInstance["remote_execution"]>): string {
