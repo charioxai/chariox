@@ -1,609 +1,473 @@
 # M9 Workflow Publication Plan
 
-M9 turns selected workflow endpoints into externally callable services without moving workflow execution out of the Arroba kernel.
+M9 makes a workflow runnable outside the interactive authoring session. A
+published workflow is not a live pointer to an editable session. It is a
+portable publication package plus a kernel-owned runtime that is materialized
+when the publication is served or deployed.
 
-The published process is a publication gateway: it owns transport and client interaction, not output semantics.
+The first implementation target is one transport, `human_http`, with HTTP GET
+address-bar invocation and an HTML/SSE status page. The remaining transports
+come after the package/runtime model is validated end to end.
 
-It owns:
+## M9.0 Reset and Cleanup
 
-- listening on HTTP, WebSocket, IPC, and later other connectors
-- authentication and caller identity
-- request parsing
-- input validation when configured
-- invoking the kernel workflow endpoint
-- sync, async, and streaming interaction control
-- forwarding workflow-produced output to the client
+Before adding the new model, remove the old active publication surfaces that do
+not belong to v1.
 
-It does not own:
+Delete from the active publication product/code path:
 
-- rendering HTML
-- compiling or testing generated code
-- validating domain-specific correctness
-- transforming workflow output semantically
-- deciding what the final product means
+- built-in publication auth modes and paired-sender auth
+- Slack, Telegram, Discord, WhatsApp, and Signal publication connectors
+- connector-specific publication drills and docs that treat those connectors as
+  v1 publication transports
+- session-bound publication behavior where a gateway invokes an editable source
+  session as the runtime authority
 
-Agents and workflows own final output generation and domain validation. The gateway forwards the workflow's transport-shaped response mechanically.
+Keep only reusable low-level code when it directly supports the new transport
+model. If a removed feature is needed later, recover it intentionally as a new
+hook type over the published-workflow runtime.
 
-## M9.1 Publication Model
+## M9.1 Core Concepts
 
-Add workflow publication records that point to existing workflow endpoints.
+### Published Workflow
 
-Canonical fields:
+A published workflow is the deployable/runtime unit. It contains:
+
+- a workflow snapshot
+- workflow endpoints
+- workflow queues
+- agent/provider/model/permission settings captured from existing concepts
+- extension requirements
+- packaged scripts and editable app assets when present
+- one or more hooks
+
+The published workflow owns one materialized runtime session while served. That
+runtime is hidden, non-editable, and excluded from normal local/web CLI session
+lists. It should be inspectable only through publication-specific logs, runs,
+status, and stop/start surfaces.
+
+### Hook
+
+A hook is an access surface into a published workflow runtime. A hook binds:
+
+- a transport
+- one workflow endpoint
+- one workflow queue
+- parser/input rules
+- response/event mode
+
+Multiple hooks may feed the same published workflow runtime, endpoints, and
+queues. This is required so queue priorities continue to compete inside one
+workflow runtime.
+
+### Publication Package
+
+Publishing creates an external program/package that can be shared and edited.
+The package should be a normal directory, not only a kernel database record.
+
+Target shape:
 
 ```text
-publication_id
-session_id
-workflow_id
-endpoint_id
-alias/name
-enabled
-transport config
-auth policy
-parser config
-input schema reference
-response mode
-created/updated metadata
+published-workflow/
+  publication.json
+  workflow.snapshot.json
+  requirements.json
+  bindings.example.json
+  public/
+    index.html
+    app.js
+    styles.css
+  scripts/
+  run.sh
+  README.md
 ```
 
-Implementation status:
+`publication.json` describes hooks, default host/port behavior, package
+version, and generated app assets. `workflow.snapshot.json` stores the captured
+workflow/session-derived runtime state using existing Arroba concepts.
+`requirements.json` lists required extensions and credentials. Local provider
+and model substitutions are stored outside the package in a local binding file.
 
-- The gateway can still load a publication file directly for standalone drills.
-- The kernel now owns workflow publication records inside session state.
-- Local API and kernel-client request helpers support publication create, list,
-  get, and disable.
-- Shell command routing exposes publication records through
-  `workflow publication ...`, so the CLI shell pane and `arroba-shell` use the
-  same executor path.
-- The gateway can load a kernel-owned publication by
-  `ARROBA_PUBLICATION_SESSION_ID` plus `ARROBA_PUBLICATION_ID` when explicit
-  workflow/endpoint env vars are not provided.
+The generated app/server is editable and distributable. It owns transport and
+client interaction only. The kernel remains the authority for workflow
+scheduling, queues, agents, provider runs, outputs, artifacts, and state.
 
-## M9.2 Endpoint Input Contracts
+## M9.2 Serve Lifecycle
 
-Parsers are endpoint-level concepts, not only publication-level concepts. An endpoint can define how raw connector input becomes normalized workflow input so CLI, shell, gateway, and future workflow-to-workflow calls can share input semantics.
+`arroba serve <publication-package-or-ref> <port>` starts a published workflow.
 
-V1 parser kinds:
+Serve sequence:
 
-- `json`
-- `form`
-- `query_params`
-- `headers`
-- `path_template`
-- `regex`
-- `webhook`
-- `custom_command`
+1. Load the publication package.
+2. Resolve provider/model availability. If the captured provider/model is not
+   available, prompt on stdin for a replacement from providers/models known to
+   the kernel, then persist the answer in local publication bindings.
+3. Verify extension and credential requirements.
+4. Materialize a hidden publication runtime session from the workflow snapshot.
+5. Start agents/provider runs/extensions/slices required by that runtime.
+6. Start the selected transport server/listener.
+7. Mark the published workflow ready only after validation and listener startup
+   succeed.
 
-`custom_command` runs an external command with a JSON request envelope on stdin and expects normalized JSON on stdout. Future parser SDKs can wrap this contract.
+Published runtime sessions:
 
-## M9.3 Kernel Invocation Contract
+- are kernel-owned
+- are hidden from normal session lists and side panels
+- are non-editable through ordinary workflow/session commands
+- use the workflow queues captured in the publication snapshot
+- accept prompts only through published hooks or publication management
+  commands
 
-The gateway submits normalized input to the kernel through existing workflow endpoint invocation first. The stable publication invocation envelope is:
+There is no workflow-run concurrency within one published workflow runtime. The
+existing workflow queue system decides when each prompt runs.
+
+## M9.3 Invocation Envelope
+
+An invocation envelope is created at call time, after transport parsing and
+before enqueueing into the published runtime.
+
+Logical shape:
 
 ```json
 {
   "publication_id": "pub_...",
+  "hook_id": "hook_...",
+  "invocation_id": "inv_...",
+  "transport": "human_http",
   "endpoint_id": "endpoint_...",
-  "request_id": "req_...",
-  "caller": {},
-  "input": {},
-  "mode": "sync"
+  "queue_ref": "default",
+  "input": {
+    "prompt": "..."
+  },
+  "artifacts": [],
+  "mode": "stream"
 }
 ```
 
-The current kernel invocation prompt is a compatibility bridge. Later slices can add a native structured workflow invocation payload.
+This envelope should become a kernel-native structured invocation. It must not
+remain only a JSON string hidden inside the prompt compatibility path.
 
-## M9.4 Publication Gateway
+## M9.4 Transports
 
-Add a deployable app at the same level as CLI and shell. The gateway loads a publication config, connects to an Arroba kernel, exposes configured transports, authenticates callers, parses input, invokes the workflow endpoint, and forwards the workflow output.
+V1 transport set:
 
-V1 transport:
+- `human_http`
+- `api_sse_json`
+- `websocket_json`
+- `mcp`
 
-- HTTP and HTTPS/TLS
-- Slack connector
-- Discord connector
-- Telegram connector
-- WhatsApp connector
-- Signal connector
+Do not expose all transports by default. A hook chooses one transport. A
+published workflow can have several hooks.
 
-Later in the milestone:
+### `human_http`
 
-- WebSocket
-- IPC
-
-## M9.5 Auth V1
-
-Support production-usable simple auth:
-
-- bearer token
-- API key header
-- paired sender
-- registered Arroba user/team identity
-- explicit anonymous mode
-
-Every accepted request is associated with a caller identity in the normalized invocation metadata.
-
-Arroba has one publication authorization model. Connectors are identity-proof
-mechanisms that feed that model, not separate user systems.
-
-- Connector ingress verification proves an external identity claim. Examples:
-  Slack signing secret plus Slack workspace/user id, Telegram webhook secret
-  plus Telegram user id, Discord interaction signature plus Discord user id,
-  WhatsApp/Signal transport identity, or HTTPS/API-key checks for generic HTTP.
-- Arroba identity authorization maps that verified external identity to one
-  Arroba principal and decides whether that principal can invoke the
-  publication.
-- Publication policy can restrict which connectors a principal may use. A user
-  linked to Slack can still be denied through Discord if the publication only
-  allows that user through Slack.
-
-Users should not register separately per connector. They register once in
-Arroba and link external connector identities to that Arroba user/team. Paired
-sender flow is a bootstrap/linking path for external callers that do not yet
-have an Arroba identity or are intentionally limited to a publication. Anonymous
-access remains an explicit publication policy for public HTTP-style services.
-
-### Paired Senders
-
-Paired sender auth is the workflow-publication equivalent of pairing a trusted
-external caller with a published endpoint. A pairing code is only a bootstrap
-credential; it is not used for steady-state request auth.
-
-Pairing is optional per publication. A workflow publication can use
-`auth.mode = "anonymous"`, bearer/API-key auth, registered Arroba principals, or
-Arroba auth with `paired_senders.enabled = true`. If paired senders are not
-enabled for that publication, the gateway does not expose the pairing endpoint
-for that workflow.
-
-Flow:
-
-1. The owner generates a short-lived pairing code for a publication or endpoint
-   scope.
-2. The sender redeems the code against the publication gateway.
-3. The gateway asks the kernel to create a trusted sender record.
-4. The sender receives a durable credential for subsequent requests.
-5. Future requests authenticate as that sender and are recorded in invocation
-   metadata.
-
-Trusted sender records are kernel-owned state and include:
+For a human using a browser:
 
 ```text
-sender_id
-publication_id / endpoint scope
-display name / external subject
-auth method
-credential hash or public key
-allowed transports
-created / last_used / expires_at metadata
-revoked flag
+GET /<url-encoded-prompt>
 ```
 
-V1 should support bearer-style issued tokens because they are easy to use from
-curl, scripts, and other workflows. The record stores only a credential hash.
-The design must keep room for signed requests later: a sender can redeem a
-pairing code with a public key, then sign requests with timestamp and nonce
-headers.
+Behavior:
 
-CLI/shell shape:
+- parse the prompt from the path with a regex parser that can URL-decode named
+  captures
+- enqueue the prompt into the hook's configured workflow queue
+- return an HTML status page
+- the page opens an SSE stream to show queued/running/partial/final output
+
+Root behavior:
 
 ```text
-workflow publication pair-code <publication> [--expires-ms N] [--max-uses N]
-workflow publication redeem-code <publication> <pair-code> [display-name]
-workflow publication senders <publication>
-workflow publication revoke-sender <publication> <sender_id>
+GET /
 ```
 
-HTTP shape:
+returns an editable HTML input form. The form can accept text and file uploads,
+then transition into the same output/status page.
+
+### `api_sse_json`
+
+For scripts and applications:
+
+```http
+POST /invoke
+Accept: text/event-stream
+Content-Type: application/json
+```
+
+The request body is JSON. Artifacts are represented as JSON, either as base64
+content or remote URLs.
+
+The response is an SSE stream:
 
 ```text
-POST /.well-known/arroba/publication/pair
+event: queued
+data: {"invocation_id":"inv_..."}
+
+event: started
+data: {"workflow_run_id":"run_..."}
+
+event: partial
+data: {"message":"..."}
+
+event: final
+data: {"message":"...","artifacts":[]}
 ```
 
-The endpoint redeems the pairing code and returns the sender id plus the issued
-credential once. The gateway must not log the raw credential.
+Polling is not part of the primary v1 API shape.
 
-Implementation status:
+### `websocket_json`
 
-- Kernel session state now owns publication pairing codes and trusted sender
-  records. Pairing codes store only a hash of the opaque code; trusted senders
-  store only a credential hash.
-- Local API, kernel-client helpers, and shell commands support creating pairing
-  codes, redeeming codes, listing senders, revoking senders, and authenticating
-  sender credentials.
-- The gateway supports optional paired-sender auth per publication through
-  `auth.mode = "arroba"` plus `paired_senders.enabled = true`.
-- The gateway exposes `POST /.well-known/arroba/publication/pair` only when
-  pairing is enabled for that publication, authenticates subsequent HTTP calls
-  through the configured sender credential header, and forwards the sender
-  identity in invocation metadata.
-- Unit coverage verifies optional pairing behavior, redemption, sender auth,
-  and revocation. The live publication drill now covers anonymous publication
-  plus paired publication reject/redeem/invoke/revoke/reject.
+For bidirectional live clients. Messages are JSON.
 
-## M9.6 HTTP Connector
-
-Support `GET` and `POST` over HTTP or HTTPS/TLS. HTTPS is not a separate
-connector; it is TLS configuration on the HTTP publication gateway.
-
-Pipeline:
-
-```text
-HTTP request
--> auth
--> parser
--> input validation
--> kernel workflow invoke
--> response forwarding
-```
-
-TLS configuration:
-
-- file/config: `tls.enabled`, `tls.key_file`, `tls.cert_file`
-- env override: `ARROBA_PUBLICATION_TLS_KEY_FILE`,
-  `ARROBA_PUBLICATION_TLS_CERT_FILE`, `ARROBA_PUBLICATION_TLS_ENABLED`
-- if TLS is enabled without both key and cert files, gateway startup fails
-  clearly rather than serving insecurely by accident
-
-Response modes:
-
-- `sync`: wait up to configured timeout
-- `async`: return accepted run/status metadata immediately
-- `stream`: SSE/WebSocket in later slices
-
-HTTP passthrough output contract:
+Artifact upload can happen over WebSocket using base64 chunks:
 
 ```json
-{
-  "kind": "http_response",
-  "status": 200,
-  "headers": {
-    "content-type": "text/html"
-  },
-  "body": null,
-  "body_artifact_id": "art_123"
-}
+{ "type": "artifact.begin", "name": "image.png", "media_type": "image/png" }
+{ "type": "artifact.chunk", "artifact_id": "art_...", "data_base64": "..." }
+{ "type": "artifact.end", "artifact_id": "art_..." }
 ```
 
-If the workflow does not produce a transport-shaped response yet, the gateway returns workflow run metadata and final output message when available.
-
-## M9.7 WebSocket Connector
-
-For long-running workflows, clients can connect, submit a request envelope,
-receive accepted/status/final events, and keep the client interaction open
-while the workflow runs. This is the primary fit for semantic
-rendering/checkouts where generation should stream progress.
-
-WSS is not a separate connector. It is WebSocket over the same gateway TLS
-configuration used for HTTPS.
-
-V1 endpoint:
-
-```text
-ws://host/.well-known/arroba/publication/ws
-wss://host/.well-known/arroba/publication/ws
-```
-
-V1 client message:
+Invocation:
 
 ```json
 {
   "type": "invoke",
-  "input": {}
+  "input": { "prompt": "describe this image" },
+  "artifacts": [{ "id": "art_..." }]
 }
 ```
 
-V1 gateway messages:
+### `mcp`
+
+A published workflow can be exposed as an MCP tool. The tool invocation enters
+the same published runtime and queue system. Progress should use MCP progress
+notifications where the client supports them, and final output should include
+message plus resource/artifact references.
+
+## M9.5 Artifacts
+
+Inbound artifacts:
+
+- `human_http`: root form supports upload; address-bar GET is prompt-only
+- `api_sse_json`: JSON base64 artifacts or URL references
+- `websocket_json`: WebSocket JSON/base64 artifact chunks
+- `mcp`: MCP content/resource mechanisms where available
+
+Outbound artifacts:
+
+- workflow outputs include message plus artifact references
+- HTML pages render links/previews through the publication app
+- API/WebSocket/MCP transports return artifact refs in final output events
+
+Secrets must never be exported. Credentials required by MCPs/connectors/API
+extensions are declared in `requirements.json` and resolved against the local or
+hosted vault at serve/deploy time.
+
+## M9.6 Requirements and Bindings
+
+`requirements.json` lists extension requirements only. V1 does not attempt to
+install missing remote dependencies automatically.
+
+Example:
 
 ```json
-{ "type": "ready", "publication_id": "pub_..." }
-{ "type": "accepted", "workflow_run": {} }
-{ "type": "accepted", "queued": true, "result": {} }
-{ "type": "status", "workflow_run": {} }
-{ "type": "final", "workflow_run": {} }
-{ "type": "error", "error": "..." }
+{
+  "mcps": [{ "name": "github" }],
+  "skills": [{ "name": "ios-debugger-agent" }],
+  "scripts": [{ "name": "summarize", "path": "scripts/summarize" }],
+  "connectors": [{ "name": "linear" }],
+  "credentials": [{ "name": "GITHUB_TOKEN", "used_by": "github" }]
+}
 ```
 
-Implementation status:
+At serve/deploy time the kernel must verify:
 
-- The gateway exposes WebSocket upgrade handling at
-  `/.well-known/arroba/publication/ws`.
-- WebSocket auth reuses the publication auth config and HTTP upgrade headers.
-- WebSocket invocation validates the configured input schema and invokes the
-  same kernel workflow endpoint as HTTP.
-- For direct workflow-run responses, the gateway can stream status/final
-  messages by polling the kernel run state. Queued launches return an accepted
-  queued event in v1.
-- WSS works by starting the gateway with TLS, using the same config/env shape as
-  HTTPS.
-- Unit coverage verifies WebSocket invocation and validation errors. The
-  publication live drill covers WS and WSS against the kernel-backed gateway.
+- required MCPs exist
+- required skills exist
+- packaged scripts are present and valid
+- required connectors exist if referenced by granted extensions
+- required credentials exist in the configured vault
 
-## M9.8 IPC Connector
+Provider/model substitutions remain supported. If the exact captured
+provider/model is unavailable, `arroba serve` prompts the user for a replacement
+from available kernel providers/models and persists that choice in local
+bindings. Additional commands must allow editing bindings per workflow node for
+future runs.
 
-Local program/script integration without the interactive CLI:
+## M9.7 Local, Remote, and Hosted Deployment
 
-```bash
-arroba-workflow-call --config ./publication.config.json --input '{"task":"ship"}'
-arroba-workflow-call --session-id <session> --publication-id <publication> --input-file input.json
-```
+### Localhost
 
-V1 behavior:
+`arroba serve` binds `127.0.0.1` by default. Local callers access the published
+transport directly.
 
-- loads an exported `publication.config.json`, or looks up a kernel-owned
-  publication by session id plus publication id
-- accepts JSON input from `--input`, `--input-file`, or stdin
-- validates the publication input schema before invoking the workflow endpoint
-- invokes the same kernel workflow endpoint as HTTP and WebSocket
-- returns the workflow invocation result as JSON on stdout
-- treats local filesystem/kernel access as the v1 trust boundary and marks
-  caller metadata as `auth=ipc`
+Remote Arroba terminals and Arroba Cloud may call locally available published
+workflows through a relay/kernel tunnel. The caller still uses the published
+transport shape; the kernel relays the transport request and response on behalf
+of the remote user.
 
-Implementation status:
+### Remote Ingress, Local Runtime
 
-- Added `arroba-workflow-call` as a server package executable.
-- Exported publication README files document local IPC invocation.
-- Unit coverage verifies IPC-shaped caller metadata and validation failures.
-- The publication live drill now invokes the exported publication package
-  through `arroba-workflow-call`.
+A public ingress service exposes a URL and forwards requests over an outbound
+publication tunnel to a local workflow runtime. The local machine keeps running
+the kernel and published workflow. External callers should not be able to tell
+whether the URL terminates at ingress-only hosting or a full hosted container.
 
-## M9.9 Export Command
+This mode can be offered by Arroba Cloud or self-hosted by users, analogous to
+self-hosted relay.
 
-CLI/shell commands:
+### Hosted Container
+
+A container includes:
+
+- kernel
+- publication app/gateway
+- workflow snapshot
+- requirements manifest
+- packaged scripts/assets
+- startup config
+
+It can run in Arroba Cloud or any user-managed environment. It should not
+depend on the original user's machine being online.
+
+### Access Policy
+
+Access policy is separate from deployment mode:
+
+- `personal`: only the owner can access through Arroba auth or local-only access
+- `public`: no Arroba auth required; dangerous and must be explicit
+- `authorized`: user-managed or future Arroba-managed team/user access
+
+For v1 local serve, bind localhost by default. Public exposure requires an
+explicit host/config choice and should warn loudly.
+
+## M9.8 Web CLI and Cloud UX
+
+Web CLI gets a dedicated side-panel tab:
 
 ```text
-workflow publication create [workflow_ref] <endpoint_ref> [alias] [--route <route>] [--method POST] [--auth-json <json>] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--mode async]
-workflow publication list
-workflow publication show <publication>
-workflow publication export <publication> <directory> [--kernel-url <url>]
-workflow publication disable <publication>
+Published Workflows
 ```
 
-Gateway export/package output will include publication config, launcher, README,
-env var template, and example curl/websocket commands.
+It is not nested under the existing workflow tab.
 
-Implementation status:
+The tab should show:
 
-- `workflow publication export <publication> <directory>` writes a deployable
-  gateway package with `publication.config.json`, `.env.example`, `run.sh`, and
-  `README.md`.
-- The exported config is a file-based gateway config, so it can run without
-  re-querying publication metadata at process startup as long as the target
-  Arroba kernel remains reachable.
-- The package preserves publication auth/parser/method/mode config and includes
-  paired-sender pairing instructions when the publication enables paired sender
-  auth.
-- The publication live drill now exports a kernel-owned publication and starts
-  the gateway from the exported `publication.config.json` before continuing to
-  paired-sender coverage.
-- Exported `.env.example` files include optional HTTPS/TLS variables for
-  deployments that terminate TLS inside the Arroba gateway rather than at a
-  proxy/load balancer.
+- published workflow name/ref
+- hook transports
+- status: stopped, starting, running, error
+- deployment: localhost, cloud ingress, hosted container, self-hosted
+- runtime location
+- last invocation/run
+- actions: start, stop, open, invoke, configure, logs
 
-## M9.10 Workflow-To-Workflow Drill
+For v1, web terminal invocation of a local-only published workflow uses the
+relay/kernel tunnel and renders the returned transport response. Browser drills
+must verify that a `human_http` HTML status page opens and updates when invoked
+from web terminal.
 
-M9 does not add a dedicated workflow-to-workflow protocol. Instead, add a live drill where workflow A in one kernel calls workflow B in another kernel through B's published HTTP endpoint.
+## M9.9 Watchdog Publications
 
-This proves the application shape while keeping protocol discovery and mesh semantics out of v1.
+Watchdog endpoints have no external request trigger, but they should be
+publishable as scheduled hooks.
 
-Implementation status:
+Scheduled publication behavior:
 
-- Added `pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill`.
-- The drill starts two isolated kernels and two workflow gateways.
-- Workflow B is published over HTTP from the worker kernel.
-- Workflow A is published over HTTP from the home kernel with a custom parser
-  that calls workflow B's published HTTP endpoint, captures B's accepted
-  workflow run id, and passes that metadata into workflow A's normalized input.
-- The drill validates both A and B return accepted async workflow run metadata,
-  proving cross-kernel workflow interaction through the v1 publication HTTP
-  surface without adding the future mesh/discovery protocol.
+- publish captures the workflow snapshot and watchdog definition
+- serve/deploy materializes the hidden runtime session
+- the internal scheduler enqueues runs according to the watchdog policy
+- the published workflow appears in the Published Workflows side-panel tab
+- actions include start, stop, run now, logs, and outputs
 
-## M9.11 Live Drills
+Local and hosted-container watchdog publications are in scope after
+`human_http`. Remote ingress for watchdog-only publications is unnecessary
+unless the user also publishes a status/output UI hook.
 
-Required drills:
+## M9.10 Implementation Plan
 
-- publish an existing workflow endpoint over HTTP/HTTPS: `pnpm --filter @arroba/cli run publication:drill`
-- auth accepted/rejected
-- paired sender code generation, redemption, accepted request, revoked request
-- connector ingress verification plus Arroba identity authorization for Slack,
-  Discord, Telegram, WhatsApp, and Signal
-- JSON parser success/failure
-- regex/path parser success/failure
-- custom parser success/failure
-- sync response returns workflow output or run metadata
-- async response returns run id/status metadata
-- artifact-backed HTTP response passthrough
-- WebSocket stream returns progress/final output
-- IPC invocation works through `arroba-workflow-call`
-- workflow A calls workflow B through B's published HTTP endpoint in a separate kernel
-- Docker-backed external client drill kicks off workflow runs over HTTP, HTTPS,
-  WS, WSS, Slack, Discord, Telegram, WhatsApp, and Signal
+### Phase 1: Cleanup
 
-Docker connector drill:
+- Delete old publication auth and paired-sender code paths from the active v1
+  publication surface.
+- Delete Slack/Telegram/Discord/WhatsApp/Signal publication connector surfaces,
+  commands, docs, and drills.
+- Adjust tests so CI reflects the v1 transport set only.
 
-```bash
-pnpm --filter @arroba/cli run publication:docker-connectors-drill
-```
+### Phase 2: Package and Snapshot Model
 
-This drill proves provider-shaped ingress from outside the Arroba process. The
-container client signs or authenticates requests using the same webhook
-contracts as the real providers, then verifies each connector receives accepted
-workflow run metadata. It does not replace a public-reachability drill through a
-real deployed URL or tunnel.
+- Define `publication.json`, `workflow.snapshot.json`, `requirements.json`, and
+  local bindings format.
+- Change publish/export to produce a durable package instead of a live
+  session-bound gateway config.
+- Add snapshot validation for endpoints, queues, agents, provider/model
+  availability, and extension requirements.
+- Add provider/model override prompts in `arroba serve`.
+- Add publication configuration commands for per-node provider/model bindings.
 
-Semantic URL renderer drill:
+### Phase 3: Publication Runtime Sessions
 
-```bash
-pnpm --filter @arroba/cli run semantic-url-renderer:drill
-```
+- Add a hidden/non-editable publication runtime session kind.
+- Materialize runtime sessions from publication snapshots at serve time.
+- Recreate workflow queues and agent/provider runs from the snapshot.
+- Exclude publication runtime sessions from normal local/web CLI session lists.
+- Expose publication-specific status, logs, runs, and stop/start commands.
 
-This drill validates the example application discussed during M9: a normal
-static site exposes pages such as `/about` and `/contact`, while a wrapper route
-like `/about/<prompt>` starts an async published workflow, returns a loading
-page immediately, polls the workflow run, and eventually serves the workflow's
-rendered HTML output. The v1 implementation keeps the publication gateway as
-the workflow ingress and puts loading/polling behavior in the application layer.
+### Phase 4: `human_http`
 
-## M9.12 Slack Connector
+- Add `human_http` hook config.
+- Extend regex parser with URL-decoding for named captures.
+- Implement `GET /<prompt>` -> enqueue -> HTML/SSE status page.
+- Implement `GET /` input/upload form.
+- Implement SSE event stream for queued/running/partial/final output.
+- Implement local `arroba serve <package-or-ref> <port>`.
+- Add local end-to-end drill: publish, serve, open browser URL, verify HTML and
+  SSE final output by screenshot.
+- Add web-terminal tunnel drill: invoke local `human_http` publication from web
+  terminal, render returned HTML/status page, verify with browser screenshot.
 
-Slack is implemented as a connector-specific ingress path on the publication
-gateway, feeding the same Arroba auth model as HTTP.
+### Phase 5: `api_sse_json`
 
-V1 behavior:
+- Add `POST /invoke` JSON-only input.
+- Support base64 and URL artifact refs.
+- Stream SSE events until final output.
+- Add script/curl drill proving queued/partial/final events.
 
-- verifies Slack request signatures with `x-slack-request-timestamp`,
-  `x-slack-signature`, and the configured signing secret
-- rejects stale or invalid signatures
-- handles signed `url_verification` challenges directly without invoking the
-  workflow
-- accepts signed JSON events and slash-command form payloads
-- normalizes Slack identity as `team_id:user_id` and maps it to an Arroba
-  principal through `auth.external_identities`
+### Phase 6: `websocket_json`
 
-Implementation status:
+- Add JSON WebSocket protocol.
+- Add WebSocket artifact begin/chunk/end messages.
+- Add invocation, output, final, and error events.
+- Add browser drill with file upload over WebSocket and screenshot verification.
 
-- Unit coverage verifies signed challenge handling does not invoke workflows,
-  invalid signatures reject, and signed slash-command form payloads map to the
-  configured Arroba principal.
-- The publication live drill now creates a Slack-shaped publication, verifies
-  signed URL verification, and invokes the workflow through a signed
-  slash-command payload.
+### Phase 7: `mcp`
 
-## M9.13 Telegram Connector
+- Expose published workflow hooks as MCP tools.
+- Map progress/final/artifacts onto MCP tool and resource concepts.
+- Add MCP client drill proving invocation and final output.
 
-Telegram is implemented as a connector-specific ingress path on the publication
-gateway, feeding the same Arroba auth model as HTTP and Slack.
+### Phase 8: Deployment Extensions
 
-V1 behavior:
+- Add local-to-cloud/web-terminal tunnel support for published transports.
+- Add Cloud Published Workflows tab and controls.
+- Add remote ingress/local runtime design and drill.
+- Add hosted-container packaging for Arroba Cloud and self-hosted deployment.
 
-- verifies `x-telegram-bot-api-secret-token` when `webhook_secret_env` is
-  configured
-- rejects missing or invalid webhook secrets
-- extracts sender identity from `message.from`, `callback_query.from`, or
-  `edited_message.from`
-- normalizes Telegram identity as the Telegram user id string and maps it to an
-  Arroba principal through `auth.external_identities`
-- forwards the Telegram webhook envelope through the existing `webhook` parser
+## M9.11 Validation Matrix
 
-Implementation status:
+Required before considering the publication model complete:
 
-- Unit coverage verifies webhook-secret rejection, accepted sender mapping,
-  username metadata, and chat id metadata.
-- The publication live drill now creates a Telegram-shaped publication,
-  verifies invalid webhook-secret rejection, and invokes the workflow through an
-  accepted Telegram webhook payload.
-
-## M9.14 Discord Connector
-
-Discord is implemented as a connector-specific ingress path on the publication
-gateway, feeding the same Arroba auth model as HTTP, Slack, and Telegram.
-
-V1 behavior:
-
-- verifies `x-signature-ed25519` and `x-signature-timestamp` with the
-  configured Discord public key
-- signs/verifies the Discord-required `timestamp + raw_body` payload
-- handles signed PING interactions (`type: 1`) directly without invoking the
-  workflow
-- rejects invalid signatures
-- extracts sender identity from `member.user.id` or `user.id`
-- normalizes Discord identity as `guild_id:user_id` when a guild is present,
-  otherwise as the user id string, and maps it to an Arroba principal through
-  `auth.external_identities`
-- forwards the Discord interaction envelope through the existing `webhook`
-  parser
-
-Implementation status:
-
-- Unit coverage verifies signed PING handling without workflow invocation,
-  invalid signature rejection, accepted interaction sender mapping, username
-  metadata, and guild/user metadata.
-- The publication live drill now creates a Discord-shaped publication with a
-  generated Ed25519 key pair, verifies PING handling, invalid signature
-  rejection, and accepted signed interaction invocation.
-
-## M9.15 WhatsApp Connector
-
-WhatsApp is implemented as a connector-specific ingress path on the publication
-gateway, feeding the same Arroba auth model as the other publication
-connectors.
-
-V1 behavior:
-
-- handles Meta webhook verification over `GET` with `hub.mode=subscribe`,
-  `hub.verify_token`, and `hub.challenge`
-- verifies `x-hub-signature-256` HMAC-SHA256 over the raw request body when
-  `app_secret_env` is configured
-- rejects invalid verification tokens and invalid HMAC signatures
-- extracts sender identity from `messages[0].from` or `contacts[0].wa_id`
-- normalizes WhatsApp identity as the sender phone/wa id string and maps it to
-  an Arroba principal through `auth.external_identities`
-- forwards the WhatsApp webhook envelope through the existing `webhook` parser
-
-Implementation status:
-
-- Unit coverage verifies Meta webhook challenge handling, invalid verify-token
-  rejection, invalid HMAC rejection, accepted sender mapping, and phone-number
-  metadata.
-- The publication live drill now creates a WhatsApp-shaped publication,
-  verifies the challenge endpoint, invalid signature rejection, and accepted
-  signed message invocation.
-
-## M9.16 Signal Connector
-
-Signal is implemented as a bridge-style webhook connector because Signal does
-not provide a universal first-party bot webhook equivalent to Slack, Telegram,
-Discord, or WhatsApp. The gateway verifies a bridge-supplied shared secret and
-normalizes the bridge envelope into Arroba identity.
-
-V1 behavior:
-
-- verifies `x-signal-webhook-secret` when `webhook_secret_env` is configured
-- rejects missing or invalid bridge secrets
-- extracts sender identity from `envelope.sourceUuid`,
-  `envelope.sourceNumber`, `envelope.source`, or matching top-level fields
-- normalizes Signal identity as the bridge source UUID/number string and maps it
-  to an Arroba principal through `auth.external_identities`
-- forwards the Signal bridge webhook envelope through the existing `webhook`
-  parser
-
-Implementation status:
-
-- Unit coverage verifies bridge-secret rejection, accepted sender mapping,
-  source UUID metadata, and source number metadata.
-- The publication live drill now creates a Signal-shaped publication, verifies
-  invalid bridge-secret rejection, and invokes the workflow through an accepted
-  Signal bridge webhook payload.
-
-## V2
-
-- Dedicated workflow-to-workflow invocation protocol with signed caller identity, reply routing, status/result URLs, and optional streaming.
-- Workflow mesh discovery, trust policies, capability metadata, quotas, revocation, and federation.
-- Parser SDKs/libraries for Python, TypeScript, Rust, and other languages so users can define custom parsers programmatically while targeting the same stdin/stdout parser protocol.
-- Packaged publication templates for common hosting targets.
-- Connector plugin SDK for additional chat and collaboration surfaces such as Matrix, Mattermost, Google Chat, LINE, IRC, Nostr, Microsoft Teams, Feishu/Lark, Twitch, QQ, Zalo, Nextcloud Talk, Synology Chat, BlueBubbles/iMessage, Tlon, and self-hosted/custom channels.
-- Connector-specific security contracts: provider webhook signature verification, raw-body HMAC checks where required, stable sender-id allowlists, mention/command gating for group contexts, per-connector rate limits, SecretRef-style credential indirection, and security-audit checks for dangerous public ingress.
-
-## OpenClaw Reference Notes
-
-OpenClaw source inspection was done from `https://github.com/openclaw/openclaw`
-at commit `f1df354`. Relevant local files:
-
-- `/tmp/openclaw-source/docs/channels/index.md`
-- `/tmp/openclaw-source/docs/channels/pairing.md`
-- `/tmp/openclaw-source/docs/cli/security.md`
-- `/tmp/openclaw-source/docs/plugins/sdk-channel-plugins.md`
-- `/tmp/openclaw-source/extensions/*/channel-plugin-api.ts`
-
-Useful mechanisms to adapt:
-
-- Keep connector transport code pluggable, but normalize inbound requests into
-  one core invocation envelope.
-- Make pairing and allowlists core concepts instead of each connector inventing
-  unrelated trusted-sender storage.
-- Split direct-message/private sender policy from group/channel policy.
-- Prefer stable provider ids over mutable names, usernames, tags, or emails.
-- Treat group/public-channel ingress as mention-gated by default.
-- Keep provider webhook verification beside the connector because each provider
-  has different signature, token, and raw-body requirements.
-- Add a security audit command for publication/connectors that flags anonymous
-  public ingress, wildcard sender rules, weak tokens, missing webhook
-  signatures, missing TLS/proxy assumptions, and dangerous connector settings.
+- publish package is portable and contains no secrets
+- `arroba serve` fails before listening when providers/extensions/credentials
+  are missing
+- provider/model overrides are prompted and persisted locally
+- publication runtime sessions do not appear in normal session lists
+- `human_http` works from local browser address bar
+- `human_http` root page supports prompt plus artifact upload
+- SSE page updates through queued/running/final states
+- web-terminal tunnel can open and render a local-only published workflow
+- API SSE streams queued/partial/final events
+- WebSocket supports JSON invocation and artifact chunks
+- MCP tool invocation returns final output/artifact refs
+- watchdog publication starts scheduled runs without external trigger
+- published workflow side-panel tab shows status/actions independently from the
+  workflow authoring tab

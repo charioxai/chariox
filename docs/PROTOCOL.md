@@ -557,6 +557,60 @@ Workflow endpoint direction:
 - once accepted by the kernel, the workflow should treat the resulting input message the same way regardless of source
 - disconnected subgraphs are allowed; a subgraph is reachable only if some endpoint points into it
 
+Published workflow direction:
+
+- a published workflow is a durable package plus a materialized publication
+  runtime session, not a live pointer to an editable workspace session
+- a publication package contains `publication.json`, `workflow.snapshot.json`,
+  `requirements.json`, optional generated app assets, and packaged scripts
+- a publication runtime session is kernel-owned, hidden from ordinary session
+  lists, and non-editable through normal workspace commands
+- a hook binds one transport to one workflow endpoint and one workflow queue
+  inside a published workflow runtime
+- multiple hooks MAY feed one published workflow runtime and therefore share
+  the same queue namespace and agents
+- serving a publication MUST validate provider/model bindings, extension
+  requirements, and credential requirements before it accepts traffic
+- if the captured provider/model is unavailable, a local binding may substitute
+  another available provider/model without mutating the exported package
+
+Publication invocation envelope:
+
+- `publication_id`
+- `hook_id`
+- `invocation_id`
+- `transport`
+- `endpoint_id`
+- `queue_ref`
+- `input`
+- `artifacts`
+- `mode`
+
+The invocation envelope is created after hook transport parsing. It should be a
+kernel-native structured value, not only a JSON string submitted through the
+ordinary prompt compatibility path.
+
+Publication event direction:
+
+- every accepted publication invocation should have a stable `invocation_id`
+- events should cover at least `queued`, `started`, `partial`, `final`, and
+  `error`
+- `human_http` returns an HTML page that subscribes to publication events by SSE
+- `api_sse_json` streams publication events directly from `POST /invoke`
+- `websocket_json` sends publication events over the WebSocket connection
+- `mcp` maps publication progress/final output to MCP tool progress and result
+  concepts
+
+Remote terminal and Cloud invocation:
+
+- remote Arroba terminals must invoke a published workflow through its published
+  transport, not by directly calling the workflow endpoint in the kernel
+- when a local-only published workflow is invoked remotely, the kernel/relay may
+  tunnel the transport request and response between the remote terminal and the
+  local publication server
+- the relay remains transport-only and must not inspect workflow prompts,
+  artifacts, outputs, or published transport payloads
+
 Workflow output direction:
 
 - a workflow run may emit zero or more outputs

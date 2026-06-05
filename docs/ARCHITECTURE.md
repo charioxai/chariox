@@ -363,7 +363,77 @@ Rules:
 - output-producing nodes may be the same nodes used as workflow entry targets
 - explicit first-class output endpoints may be added later if publishing/integration needs them
 
-### 3.3.5 Workflow/Agent Binding and Missing Agents
+### 3.3.5 Workflow Publication Runtime
+
+Workflow publication turns a workflow snapshot into an externally callable or
+scheduled runtime without making the publication gateway a workflow authority.
+
+Target concepts:
+
+- `published workflow`
+  - the deployable runtime unit
+  - contains a durable workflow snapshot, endpoints, queue definitions, agent
+    settings, extension requirements, generated app assets, and hooks
+- `hook`
+  - an access surface into one published workflow runtime
+  - binds one transport to one workflow endpoint and one workflow queue
+- `publication package`
+  - an editable, shareable external program directory containing
+    `publication.json`, `workflow.snapshot.json`, `requirements.json`, app
+    assets, packaged scripts, and a launcher
+- `publication runtime session`
+  - a hidden, non-editable kernel-owned session materialized from a publication
+    package when the publication is served or deployed
+
+Rules:
+
+- publication runtime sessions MUST NOT appear in normal local/web CLI session
+  lists
+- publication runtime sessions MUST NOT be editable through ordinary workflow,
+  session, or agent authoring commands
+- the kernel remains the authority for materialized publication runtime
+  sessions, workflow queues, workflow runs, provider runs, artifacts, and
+  outputs
+- the generated publication app/gateway owns transport handling, static/editable
+  HTML/assets, request parsing, SSE/WebSocket/MCP interaction, and response
+  forwarding only
+- a published workflow may have multiple hooks; those hooks share the same
+  materialized runtime session and queue namespace so workflow queue priority
+  semantics remain meaningful
+- publishing a workflow captures extension requirements but does not export
+  secrets
+- serving or deploying a publication MUST verify required providers, models,
+  extensions, and credentials before accepting traffic
+- if the captured provider/model is unavailable, `arroba serve` may prompt for
+  a replacement provider/model from the kernel's available catalog and persist
+  the choice in local publication bindings
+
+V1 transports:
+
+- `human_http`: browser GET prompt entry plus HTML/SSE output page
+- `api_sse_json`: JSON API invocation with SSE events until final output
+- `websocket_json`: JSON WebSocket invocation, output, and artifact chunk
+  protocol
+- `mcp`: MCP tool surface over the same published runtime
+
+Deployment modes:
+
+- localhost: local publication server bound to `127.0.0.1` by default
+- remote ingress with local runtime: public ingress forwards requests over an
+  outbound publication tunnel to the user's local runtime
+- hosted container: kernel, publication runtime, gateway, snapshot,
+  requirements, scripts, and assets run together on Arroba Cloud or any
+  self-hosted container platform
+
+Arroba Cloud may host ingress or containers, but hosted published workflows
+should behave as independent web apps. Callers do not need Arroba accounts
+unless the owner configures Arroba-managed access.
+
+The web CLI should expose a dedicated `Published Workflows` side-panel tab
+rather than nesting publication runtime management under the workflow authoring
+tab.
+
+### 3.3.6 Workflow/Agent Binding and Missing Agents
 
 Workflow definitions are user-authored artifacts and should not silently mutate when workspace agents change.
 
@@ -374,7 +444,7 @@ Rules:
 - a workflow node whose referenced agent no longer exists should remain in the workflow and be marked missing/unavailable
 - workflows with missing endpoint targets or required nodes should remain listable/editable but be considered invalid for execution until repaired
 
-### 3.3.6 Observability and Debug Logging Baseline
+### 3.3.7 Observability and Debug Logging Baseline
 
 Arroba should treat debug logging as a shared local-runtime subsystem rather than as ad hoc per-process stderr output.
 
