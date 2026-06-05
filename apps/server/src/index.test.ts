@@ -646,6 +646,79 @@ test("gateway parses JSON and forwards transport-shaped workflow output", async 
   }
 })
 
+test("api_sse_json streams queued, started, partial, and final events", async () => {
+  let seenInput: unknown = null
+  let seenCaller: unknown = null
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "api_sse_json",
+    route: "/ignored",
+    methods: ["POST"],
+    input_schema: {
+      type: "object",
+      required: ["prompt"],
+      properties: { prompt: { type: "string" } },
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      seenInput = invocation.input
+      seenCaller = invocation.caller
+      return {
+        accepted: true,
+        workflow_run: {
+          id: "run-api",
+          status: "Completed",
+          intermediate_outputs: [{
+            id: "partial-1",
+            output: { message: "working" },
+            valid: true,
+          }],
+          final_output: {
+            message: "done",
+            artifacts: [{ name: "result.txt", url: "artifact://result" }],
+          },
+        },
+      }
+    },
+  })
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/invoke",
+      headers: { accept: "text/event-stream" },
+      payload: {
+        prompt: "ship",
+        artifacts: [{
+          name: "input.txt",
+          type: "text/plain",
+          base64: "aGVsbG8=",
+        }],
+      },
+    })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.headers["content-type"] as string, /text\/event-stream/)
+    assert.deepEqual(sseEventNames(response.body), ["queued", "started", "partial", "final"])
+    assert.match(response.body, /"workflow_run_id":"run-api"/)
+    assert.match(response.body, /"message":"working"/)
+    assert.match(response.body, /"message":"done"/)
+    assert.deepEqual(seenInput, {
+      prompt: "ship",
+      artifacts: [{
+        name: "input.txt",
+        type: "text/plain",
+        base64: "aGVsbG8=",
+      }],
+    })
+    assert.deepEqual(seenCaller, { type: "anonymous", proof: { transport: "api_sse_json" } })
+
+    const genericRoute = await app.inject({ method: "POST", url: "/ignored", payload: { prompt: "nope" } })
+    assert.equal(genericRoute.statusCode, 404)
+  } finally {
+    await app.close()
+  }
+})
+
 test("human HTTP root returns a browser invocation form", async () => {
   const { app } = buildServer({
     ...baseConfig,
@@ -1006,6 +1079,13 @@ function createWebSocketReader(socket: WebSocket) {
       })
     },
   }
+}
+
+function sseEventNames(body: string) {
+  return body
+    .split("\n")
+    .filter((line) => line.startsWith("event: "))
+    .map((line) => line.slice("event: ".length))
 }
 
 function providerCatalogResponse(providers: Record<string, string[]>) {

@@ -361,6 +361,19 @@ async function main() {
       'WorkflowPublicationCreated',
     ).publication
 
+    logStep('create_api_sse_publication')
+    const apiSsePublication = variant(
+      await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+        alias: 'public_api_sse',
+        route: '/invoke',
+        methods: ['POST'],
+        transport: { kind: 'api_sse_json' },
+        parser: { kind: 'json' },
+        mode: 'async',
+      })),
+      'WorkflowPublicationCreated',
+    ).publication
+
     logStep('start_gateway', { publicationId: publication.id })
     gateway = startProcess(
       process.execPath,
@@ -435,6 +448,41 @@ async function main() {
     )
     logStep('websocket_ok', { workflowRunId: webSocketAccepted.workflow_run?.id ?? null, queued: webSocketAccepted.queued === true })
 
+    await stopProcess(gateway)
+    gateway = null
+
+    logStep('invoke_api_sse')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: session.id,
+        ARROBA_PUBLICATION_ID: apiSsePublication.id,
+      },
+      'gateway-api-sse',
+    )
+    await waitForGateway(gatewayUrl)
+    const apiSseResponse = await fetch(`${gatewayUrl}/invoke`, {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'api-sse-publication',
+        artifacts: [{
+          name: 'input.txt',
+          type: 'text/plain',
+          base64: 'YXBpLXN0cmVhbQ==',
+        }],
+      }),
+    })
+    const apiSseBody = await apiSseResponse.text()
+    if (apiSseResponse.status !== 200 || !apiSseBody.includes('event: queued')) {
+      throw new Error(`expected API SSE queued event, got ${apiSseResponse.status}: ${apiSseBody.slice(0, 400)}`)
+    }
+    logStep('api_sse_ok')
     await stopProcess(gateway)
     gateway = null
 

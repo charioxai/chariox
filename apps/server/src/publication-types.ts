@@ -122,6 +122,14 @@ export type WorkflowRun = {
   status: string
   workflow_id?: string
   endpoint_id?: string
+  intermediate_outputs?: Array<{
+    id: string
+    source_node_run_id?: string
+    output: { message: string }
+    valid: boolean
+    warning?: string | null
+    timestamp_ms?: number
+  }>
   final_output?: { message: string; artifacts?: unknown[] } | null
 }
 
