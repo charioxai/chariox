@@ -662,7 +662,66 @@ test("human HTTP root returns a browser invocation form", async () => {
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /invoke-form/)
+    assert.match(response.body, /type="file" name="artifact" multiple/)
     assert.match(response.body, /\/qa\//)
+  } finally {
+    await app.close()
+  }
+})
+
+test("human HTTP root form can submit prompt and uploaded artifacts", async () => {
+  let seenInput: unknown = null
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      seenInput = invocation.input
+      return {
+        accepted: true,
+        workflow_run: { id: "run-upload", status: "Running" },
+      }
+    },
+  })
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/publication/human-http/invoke",
+      headers: { accept: "text/html" },
+      payload: {
+        prompt: "read image",
+        artifacts: [{
+          name: "image.png",
+          type: "image/png",
+          size_bytes: 11,
+          data_url: "data:image/png;base64,aGVsbG8=",
+        }],
+      },
+    })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.headers["content-type"] as string, /text\/html/)
+    assert.match(response.body, /EventSource/)
+    assert.deepEqual(seenInput, {
+      prompt: "read image",
+      artifacts: [{
+        name: "image.png",
+        type: "image/png",
+        size_bytes: 11,
+        data_url: "data:image/png;base64,aGVsbG8=",
+      }],
+    })
+
+    const empty = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/publication/human-http/invoke",
+      payload: { prompt: "", artifacts: [] },
+    })
+    assert.equal(empty.statusCode, 400)
+    assert.match(empty.json().error, /prompt or artifact is required/)
   } finally {
     await app.close()
   }

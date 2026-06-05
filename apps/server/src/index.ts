@@ -8,6 +8,7 @@ import {
 import { createProcessLogger } from "./logging.js"
 import {
   forwardHumanHttpResult,
+  HUMAN_HTTP_FORM_INVOKE_PATH,
   installHumanHttpRoutes,
   shouldReturnHumanHtml,
 } from "./publication-human-http.js"
@@ -62,6 +63,29 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return { status: "ok" }
   })
 
+  app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
+    if (publication.transport && publication.transport !== "human_http") {
+      reply.code(404)
+      return { error: "not found" }
+    }
+    const parsed = parseHumanHttpFormBody(request.body)
+    if (!parsed.ok) {
+      reply.code(400).headers({ "content-type": "application/json" })
+      return { error: parsed.error }
+    }
+    const invocation: NormalizedInvocation = {
+      publication_id: publication.publication_id,
+      request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      caller: { type: "anonymous", proof: { transport: "human_http_form" } },
+      input: parsed.input,
+      mode: publication.mode ?? "sync",
+    }
+    const result = deps.invokeWorkflow
+      ? await deps.invokeWorkflow(invocation)
+      : await invokeKernelWorkflow(publication, invocation)
+    return forwardHumanHttpResult(reply, publication, result)
+  })
+
   const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
   for (const method of methods) {
     app.route({
@@ -99,6 +123,33 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   })
 
   return { app, logger }
+}
+
+function parseHumanHttpFormBody(body: unknown): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "expected JSON form payload" }
+  }
+  const record = body as Record<string, unknown>
+  const prompt = typeof record.prompt === "string" ? record.prompt : ""
+  const artifacts = Array.isArray(record.artifacts)
+    ? record.artifacts.filter(isHumanHttpArtifact)
+    : []
+  if (!prompt.trim() && artifacts.length === 0) {
+    return { ok: false, error: "prompt or artifact is required" }
+  }
+  return {
+    ok: true,
+    input: artifacts.length > 0 ? { prompt, artifacts } : { prompt },
+  }
+}
+
+function isHumanHttpArtifact(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.name === "string"
+    && typeof record.type === "string"
+    && typeof record.size_bytes === "number"
+    && typeof record.data_url === "string"
 }
 
 export async function invokePublicationInput(

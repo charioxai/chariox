@@ -383,10 +383,32 @@ async function main() {
     if (rootHtmlResponse.status !== 200 || !rootHtml.includes('invoke-form')) {
       throw new Error(`expected browser root form HTML, got ${rootHtmlResponse.status}: ${rootHtml.slice(0, 200)}`)
     }
+    if (!rootHtml.includes('type="file" name="artifact" multiple')) {
+      throw new Error(`expected browser root form artifact upload input, got: ${rootHtml.slice(0, 300)}`)
+    }
     const browserResponse = await fetch(`${gatewayUrl}/qa/browser-publication`, { headers: { accept: 'text/html' } })
     const browserHtml = await browserResponse.text()
     if (browserResponse.status !== 200 || !browserHtml.includes('EventSource')) {
       throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserHtml.slice(0, 200)}`)
+    }
+
+    logStep('invoke_browser_upload')
+    const uploadResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/human-http/invoke`, {
+      method: 'POST',
+      headers: { accept: 'text/html', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'browser-upload-publication',
+        artifacts: [{
+          name: 'upload.txt',
+          type: 'text/plain',
+          size_bytes: 18,
+          data_url: 'data:text/plain;base64,cHVibGljYXRpb24tdXBsb2Fk',
+        }],
+      }),
+    })
+    const uploadHtml = await uploadResponse.text()
+    if (uploadResponse.status !== 200 || !uploadHtml.includes('EventSource')) {
+      throw new Error(`expected browser upload invocation HTML with SSE subscription, got ${uploadResponse.status}: ${uploadHtml.slice(0, 200)}`)
     }
 
     logStep('invoke_http')
