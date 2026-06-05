@@ -7,11 +7,14 @@ import {
   loadGatewayPublicationConfig,
   loadPublicationConfig,
   loadPublicationConfigFromKernel,
+  loadPublicationPackageConfig,
   type WorkflowPublicationConfig,
 } from "./index.js"
 
 type CallOptions = {
   configPath?: string
+  packagePath?: string
+  hookId?: string
   kernelUrl?: string
   sessionId?: string
   publicationId?: string
@@ -42,6 +45,10 @@ function parseArgs(args: string[]): CallOptions {
     const arg = args[index]
     if (arg === "--config") {
       options.configPath = requireValue(args[++index], arg)
+    } else if (arg === "--package") {
+      options.packagePath = requireValue(args[++index], arg)
+    } else if (arg === "--hook") {
+      options.hookId = requireValue(args[++index], arg)
     } else if (arg === "--kernel-url") {
       options.kernelUrl = requireValue(args[++index], arg)
     } else if (arg === "--session-id") {
@@ -76,6 +83,12 @@ function requireValue(value: string | undefined, option: string) {
 
 async function loadPublication(options: CallOptions): Promise<WorkflowPublicationConfig> {
   if (options.configPath) return loadPublicationConfig(options.configPath)
+  if (options.packagePath) {
+    const packageOptions: { kernelEndpoint?: string; hookId?: string } = {}
+    if (options.kernelUrl) packageOptions.kernelEndpoint = options.kernelUrl
+    if (options.hookId) packageOptions.hookId = options.hookId
+    return loadPublicationPackageConfig(options.packagePath, packageOptions)
+  }
   if (options.sessionId && options.publicationId) {
     return loadPublicationConfigFromKernel(options.sessionId, options.publicationId, options.kernelUrl ?? defaultKernelEndpoint())
   }
@@ -117,6 +130,8 @@ function printHelp() {
     "",
     "Options:",
     "  --config <path>             Load exported publication.config.json",
+    "  --package <path>            Load exported publication package directory or publication.json",
+    "  --hook <id>                 Select a hook from the publication package",
     "  --session-id <id>           Kernel session id for kernel-owned publication lookup",
     "  --publication-id <id>       Kernel-owned publication id/ref",
     "  --kernel-url <url>          Kernel WebSocket URL",

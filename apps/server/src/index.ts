@@ -36,7 +36,9 @@ export {
   loadGatewayPublicationConfig,
   loadPublicationConfig,
   loadPublicationConfigFromKernel,
+  loadPublicationPackageConfig,
   publicationConfigFromKernelRecord,
+  publicationConfigFromPackage,
 } from "./publication-config.js"
 
 export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDeps = {}) => {

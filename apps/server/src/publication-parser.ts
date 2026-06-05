@@ -53,7 +53,7 @@ async function parseRequest(request: GatewayRequest, config: ParserConfig): Prom
     case "webhook":
       return { headers: request.headers, body: request.body ?? {}, query: request.query ?? {} }
     case "regex":
-      return parseRegex(sourceValue(request, config.source ?? "path"), config)
+      return parseRegex(sourceValue(request, config.source ?? "path"), config, config.source ?? "path")
     case "path_template":
       return parsePathTemplate(String(request.url.split("?")[0] ?? "/"), config)
     case "custom_command":
@@ -61,11 +61,15 @@ async function parseRequest(request: GatewayRequest, config: ParserConfig): Prom
   }
 }
 
-function parseRegex(source: string, config: ParserConfig) {
+function parseRegex(source: string, config: ParserConfig, sourceKind: ParserConfig["source"]) {
   if (!config.pattern) throw new Error("regex parser requires pattern")
   const match = new RegExp(config.pattern).exec(source)
   if (!match) throw new Error("request did not match regex parser")
-  return { ...(match.groups ?? {}) }
+  if (sourceKind !== "path") return { ...(match.groups ?? {}) }
+  return Object.fromEntries(Object.entries(match.groups ?? {}).map(([key, value]) => [
+    key,
+    decodeURIComponent(value),
+  ]))
 }
 
 function parsePathTemplate(pathname: string, config: ParserConfig) {

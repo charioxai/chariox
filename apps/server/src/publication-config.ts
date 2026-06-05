@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
@@ -13,7 +14,10 @@ import type {
   InputSchema,
   KernelLookupClient,
   ParserConfig,
+  PublicationHookConfig,
   TlsConfig,
+  WorkflowPublicationPackage,
+  WorkflowPublicationSnapshot,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
 
@@ -45,6 +49,58 @@ export function resolveHttpsOptions(tls: TlsConfig | undefined) {
 
 export async function loadPublicationConfig(path: string) {
   return JSON.parse(await readFile(path, "utf8")) as WorkflowPublicationConfig
+}
+
+export async function loadPublicationPackageConfig(
+  path: string,
+  options: { kernelEndpoint?: string; hookId?: string } = {},
+): Promise<WorkflowPublicationConfig> {
+  const packagePath = path.endsWith(".json") ? path : join(path, "publication.json")
+  const root = dirname(resolve(packagePath))
+  const publicationPackage = JSON.parse(await readFile(packagePath, "utf8")) as WorkflowPublicationPackage
+  const snapshotPath = join(root, "workflow.snapshot.json")
+  const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as WorkflowPublicationSnapshot
+  return publicationConfigFromPackage(
+    publicationPackage,
+    snapshot,
+    options.kernelEndpoint ?? defaultKernelEndpoint(),
+    options.hookId,
+  )
+}
+
+export function publicationConfigFromPackage(
+  publicationPackage: WorkflowPublicationPackage,
+  snapshot: WorkflowPublicationSnapshot,
+  kernelEndpoint = defaultKernelEndpoint(),
+  hookId?: string,
+): WorkflowPublicationConfig {
+  if (publicationPackage.schema_version !== 1) {
+    throw new Error(`unsupported publication package schema_version ${publicationPackage.schema_version}`)
+  }
+  if (snapshot.schema_version !== 1) {
+    throw new Error(`unsupported workflow snapshot schema_version ${snapshot.schema_version}`)
+  }
+  const hook = selectPublicationHook(publicationPackage.hooks, hookId)
+  const sessionId = publicationPackage.source_session_id ?? snapshot.source_session?.id
+  const workflowId = publicationPackage.workflow_id ?? snapshot.workflow?.id
+  const endpointId = hook.endpoint_id ?? snapshot.endpoint?.id
+  if (!sessionId) throw new Error("publication package is missing source_session_id")
+  if (!workflowId) throw new Error("publication package is missing workflow_id")
+  if (!endpointId) throw new Error("publication hook is missing endpoint_id")
+  const config: WorkflowPublicationConfig = {
+    publication_id: hook.publication_id ?? publicationPackage.publication_id,
+    session_id: sessionId,
+    workflow_ref: workflowId,
+    endpoint_ref: endpointId,
+    kernel_endpoint: kernelEndpoint,
+    route: hook.route ?? "/*",
+    parser: hook.parser ?? { kind: "json" },
+    mode: hook.mode === "async" ? "async" : "sync",
+  }
+  const methods = normalizeHttpMethods(hook.methods)
+  if (methods) config.methods = methods
+  if (hook.input_schema) config.input_schema = hook.input_schema
+  return config
 }
 
 export async function loadPublicationConfigFromKernel(
@@ -92,6 +148,15 @@ export function publicationConfigFromKernelRecord(
 }
 
 export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
+  if (process.env.ARROBA_PUBLICATION_PACKAGE) {
+    const packageOptions: { kernelEndpoint?: string; hookId?: string } = {
+      kernelEndpoint: defaultKernelEndpoint(),
+    }
+    if (process.env.ARROBA_PUBLICATION_HOOK_ID) {
+      packageOptions.hookId = process.env.ARROBA_PUBLICATION_HOOK_ID
+    }
+    return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.ARROBA_PUBLICATION_PACKAGE, packageOptions))
+  }
   if (process.env.ARROBA_PUBLICATION_CONFIG) {
     return withEnvTlsConfig(await loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG))
   }
@@ -130,6 +195,16 @@ function normalizeHttpMethods(methods: string[] | undefined): Array<"GET" | "POS
     .map((method) => method.toUpperCase())
     .filter((method): method is "GET" | "POST" => method === "GET" || method === "POST")
   return normalized.length > 0 ? normalized : undefined
+}
+
+function selectPublicationHook(hooks: PublicationHookConfig[], hookId?: string) {
+  if (!Array.isArray(hooks) || hooks.length === 0) {
+    throw new Error("publication package must include at least one hook")
+  }
+  if (!hookId) return hooks[0] as PublicationHookConfig
+  const hook = hooks.find((candidate) => candidate.id === hookId)
+  if (!hook) throw new Error(`publication hook ${hookId} was not found`)
+  return hook
 }
 
 function asParserConfig(value: unknown): ParserConfig | undefined {

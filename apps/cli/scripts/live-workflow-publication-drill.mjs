@@ -436,7 +436,7 @@ async function main() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_PUBLICATION_CONFIG: path.join(exportDir, 'publication.config.json'),
+        ARROBA_PUBLICATION_PACKAGE: path.join(exportDir, 'publication.json'),
       },
       'gateway-exported',
     )
@@ -452,8 +452,8 @@ async function main() {
     logStep('invoke_ipc_exported')
     const ipcResult = await run(process.execPath, [
       path.join(repoRoot, 'apps/server/dist/workflow-call.js'),
-      '--config',
-      path.join(exportDir, 'publication.config.json'),
+      '--package',
+      path.join(exportDir, 'publication.json'),
       '--input',
       JSON.stringify({ task: 'ipc-exported-publication' }),
       '--mode',

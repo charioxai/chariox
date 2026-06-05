@@ -44,6 +44,44 @@ export type WorkflowPublicationConfig = {
   poll_ms?: number
 }
 
+export type PublicationHookConfig = {
+  id: string
+  publication_id?: string
+  transport: string
+  endpoint_id: string
+  queue_ref?: string
+  route?: string
+  methods?: string[]
+  parser?: ParserConfig
+  input_schema?: InputSchema | null
+  mode?: "sync" | "async"
+  response_mode?: string
+}
+
+export type WorkflowPublicationPackage = {
+  schema_version: number
+  package_version?: number
+  publication_id: string
+  alias?: string | null
+  source_session_id?: string
+  workflow_id: string
+  default_bindings_path?: string
+  hooks: PublicationHookConfig[]
+}
+
+export type WorkflowPublicationSnapshot = {
+  schema_version: number
+  source_session?: {
+    id?: string
+  }
+  workflow?: {
+    id?: string
+  }
+  endpoint?: {
+    id?: string
+  }
+}
+
 export type NormalizedInvocation = {
   publication_id: string
   request_id: string

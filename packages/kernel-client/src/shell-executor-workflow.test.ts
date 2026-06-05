@@ -428,7 +428,9 @@ test("executeShellCommand exports a workflow publication package", async () => {
     assert.match(html, /public_qa/)
     const launcher = await readFile(join(root, "exported", "run.sh"), "utf8")
     assert.match(launcher, /arroba-workflow-gateway/)
+    assert.match(launcher, /ARROBA_PUBLICATION_PACKAGE/)
     const readme = await readFile(join(root, "exported", "README.md"), "utf8")
+    assert.match(readme, /arroba-workflow-call --package/)
     assert.doesNotMatch(readme, /paired sender auth/)
     assert.doesNotMatch(readme, /well-known\/arroba\/publication\/pair/)
     assert.deepEqual(fake.requests, [

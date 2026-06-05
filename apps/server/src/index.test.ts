@@ -1,11 +1,16 @@
 import assert from "node:assert/strict"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import test from "node:test"
 
 import {
   buildServer,
   invokePublicationInput,
   loadPublicationConfigFromKernel,
+  loadPublicationPackageConfig,
   publicationConfigFromKernelRecord,
+  publicationConfigFromPackage,
   type WorkflowPublicationConfig,
 } from "./index.js"
 import { WebSocket } from "ws"
@@ -102,6 +107,80 @@ test("gateway can load publication config from kernel lookup", async () => {
   assert.deepEqual(config.methods, ["GET"])
 })
 
+test("gateway maps exported publication packages to runtime config", async () => {
+  const config = publicationConfigFromPackage({
+    schema_version: 1,
+    package_version: 1,
+    publication_id: "pub-1",
+    source_session_id: "session-1",
+    workflow_id: "workflow-1",
+    hooks: [{
+      id: "hook-human",
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      route: "/*",
+      methods: ["GET", "PATCH"],
+      parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+      input_schema: { type: "object", required: ["prompt"] },
+      mode: "async",
+    }],
+  }, {
+    schema_version: 1,
+    source_session: { id: "session-1" },
+    workflow: { id: "workflow-1" },
+    endpoint: { id: "endpoint-1" },
+  }, "ws://kernel")
+
+  assert.deepEqual(config, {
+    publication_id: "pub-1",
+    session_id: "session-1",
+    workflow_ref: "workflow-1",
+    endpoint_ref: "endpoint-1",
+    kernel_endpoint: "ws://kernel",
+    route: "/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+    input_schema: { type: "object", required: ["prompt"] },
+    mode: "async",
+  })
+})
+
+test("gateway loads publication package directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-package-"))
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+        parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: { id: "session-1" },
+      workflow: { id: "workflow-1" },
+      endpoint: { id: "endpoint-1" },
+    }))
+
+    const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
+
+    assert.equal(config.publication_id, "pub-1")
+    assert.equal(config.session_id, "session-1")
+    assert.equal(config.workflow_ref, "workflow-1")
+    assert.equal(config.endpoint_ref, "endpoint-1")
+    assert.equal(config.kernel_endpoint, "ws://kernel")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("gateway parses JSON and forwards transport-shaped workflow output", async () => {
   let seenInput: unknown = null
   const { app } = buildServer({
@@ -164,9 +243,9 @@ test("gateway supports regex and path-template parsers", async () => {
   })
 
   try {
-    const response = await regexServer.app.inject({ method: "GET", url: "/page/about/make-it-green" })
+    const response = await regexServer.app.inject({ method: "GET", url: "/page/about/make-it-green%20now" })
     assert.equal(response.statusCode, 202)
-    assert.deepEqual(regexInputs[0], { source_path: "about", instruction: "make-it-green" })
+    assert.deepEqual(regexInputs[0], { source_path: "about", instruction: "make-it-green now" })
   } finally {
     await regexServer.app.close()
   }
