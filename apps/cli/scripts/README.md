@@ -165,6 +165,7 @@ HTTP invocation path:
 
 ```bash
 pnpm --filter @arroba/cli run publication:drill
+pnpm --filter @arroba/cli run publication:container-drill
 ```
 
 It launches an isolated kernel and gateway, creates a kernel-owned HTTP
@@ -173,7 +174,10 @@ invokes the same publication over WebSocket, restarts the gateway with
 self-signed HTTPS/TLS and invokes it again over HTTPS and WSS, exports it with
 `workflow publication export`, starts the gateway from the exported
 `publication.config.json`, invokes the exported package through
-`arroba-workflow-call`, and validates accepted workflow-run metadata.
+`arroba-workflow-call`, and validates accepted workflow-run metadata. The
+container variant also builds `docker/publication/Dockerfile`, runs exported
+`human_http` and `api_sse_json` packages in standalone kernel+gateway
+containers, and verifies missing requirements fail before the gateway listens.
 
 Use this after touching cross-kernel publication calls or the custom parser
 path:

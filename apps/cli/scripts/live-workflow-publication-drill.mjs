@@ -164,6 +164,18 @@ async function run(command, args, options = {}) {
   })
 }
 
+async function runChecked(command, args, options = {}) {
+  const result = await run(command, args, options)
+  if (result.code !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  }
+  return result
+}
+
+async function ensureDockerAvailable() {
+  await runChecked('docker', ['version', '--format', '{{.Server.Version}}'])
+}
+
 async function buildRustBinary(binaryName) {
   const manifestPath = binaryName === 'arroba-relay'
     ? path.join(repoRoot, 'apps/relay/Cargo.toml')
@@ -174,6 +186,71 @@ async function buildRustBinary(binaryName) {
   }
   const targetRoot = binaryName === 'arroba-relay' ? 'apps/relay' : 'apps/kernel'
   return path.join(repoRoot, targetRoot, 'target/debug', binaryName)
+}
+
+async function buildPublicationContainerImage(tag) {
+  await ensureDockerAvailable()
+  await runChecked('docker', [
+    'build',
+    '-f',
+    path.join(repoRoot, 'docker/publication/Dockerfile'),
+    '-t',
+    tag,
+    repoRoot,
+  ], { env: process.env })
+}
+
+function startPublicationContainer({
+  image,
+  name,
+  packageDir,
+  workspaceDir,
+  port,
+}) {
+  return startProcess('docker', [
+    'run',
+    '--rm',
+    '--name',
+    name,
+    '-p',
+    `127.0.0.1:${port}:3000`,
+    '-v',
+    `${packageDir}:/publication:ro`,
+    '-v',
+    `${workspaceDir}:/workspace`,
+    '-e',
+    'ARROBA_PUBLICATION_PACKAGE=/publication',
+    '-e',
+    'HOST=0.0.0.0',
+    '-e',
+    'PORT=3000',
+    image,
+    'standalone',
+  ], process.env, name)
+}
+
+async function removeDockerContainer(name) {
+  await run('docker', ['rm', '-f', name], { env: process.env })
+}
+
+async function removeDockerImage(tag) {
+  await run('docker', ['image', 'rm', '-f', tag], { env: process.env })
+}
+
+async function createContainerPortablePackage(sourceDir, targetDir) {
+  await rm(targetDir, { recursive: true, force: true })
+  await cp(sourceDir, targetDir, { recursive: true })
+  const snapshotPath = path.join(targetDir, 'workflow.snapshot.json')
+  const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'))
+  if (snapshot.source_session) {
+    snapshot.source_session.workspace_id = '/workspace'
+    snapshot.source_session.worktree_id = '/workspace'
+  }
+  for (const agent of snapshot.agents ?? []) {
+    if (agent.workspace_id != null) agent.workspace_id = '/workspace'
+    if (agent.worktree_id != null) agent.worktree_id = '/workspace'
+  }
+  await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
 }
 
 async function freePort() {
@@ -542,8 +619,8 @@ async function waitForKernel(kernelUrl) {
   throw new Error(`kernel did not become ready: ${lastError?.message ?? String(lastError)}`)
 }
 
-async function waitForGateway(baseUrl) {
-  const deadline = Date.now() + 20_000
+async function waitForGateway(baseUrl, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
   let lastError = null
   while (Date.now() < deadline) {
     try {
@@ -865,6 +942,8 @@ async function main() {
   let gateway = null
   let client = null
   const sessionIds = []
+  const dockerContainers = []
+  const dockerImages = []
   let succeeded = false
   try {
     await mkdir(workspace, { recursive: true })
@@ -1808,6 +1887,160 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    if (process.env.ARROBA_PUBLICATION_CONTAINER_DRILL === '1') {
+      logStep('container_publication_build')
+      const publicationContainerImage = `arroba-publication-drill:${process.pid}`
+      dockerImages.push(publicationContainerImage)
+      await buildPublicationContainerImage(publicationContainerImage)
+
+      logStep('container_human_http_export')
+      const humanHttpContainerExportDir = path.join(root, 'container-human-http-package')
+      const humanHttpContainerPackageDir = path.join(root, 'container-human-http-portable')
+      const humanHttpContainerExportResult = await executeShellCommand(
+        parseShellCommand(`workflow publication export ${humanHttpFinalPublication.id} ${humanHttpContainerExportDir} --kernel-url ${kernelUrl}`),
+        createDefaultShellContext({
+          workspace: browserWorkspace,
+          worktree: browserWorkspace,
+          sessionId: browserSession.id,
+          workflowId: browserWorkflow.id,
+        }),
+        { client },
+      )
+      if (!humanHttpContainerExportResult.ok) {
+        throw new Error(`human_http container publication export failed: ${humanHttpContainerExportResult.message}`)
+      }
+      await createContainerPortablePackage(humanHttpContainerExportDir, humanHttpContainerPackageDir)
+      const containerHumanPort = await freePort()
+      const containerHumanUrl = `http://127.0.0.1:${containerHumanPort}`
+      const containerHumanName = `arroba-publication-human-${process.pid}`
+      dockerContainers.push(containerHumanName)
+      let containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerHumanName,
+        packageDir: humanHttpContainerPackageDir,
+        workspaceDir: browserWorkspace,
+        port: containerHumanPort,
+      })
+      try {
+        await waitForGateway(containerHumanUrl, 60_000)
+        const containerStatusResponse = await fetch(`${containerHumanUrl}/.well-known/arroba/publication/status`)
+        const containerStatusBody = await containerStatusResponse.json()
+        if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
+          throw new Error(`expected container human_http status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
+        }
+        const containerHumanResponse = await fetch(`${containerHumanUrl}/final/container-human-http`, {
+          headers: { accept: 'text/html' },
+        })
+        const containerHumanBody = await containerHumanResponse.text()
+        if (
+          containerHumanResponse.status !== 200
+          || !containerHumanBody.includes('EventSource')
+          || !containerHumanBody.includes(containerStatusBody.runtime_session_id)
+        ) {
+          throw new Error(`expected container human_http HTML/SSE page, got ${containerHumanResponse.status}: ${containerHumanBody.slice(0, 1_000)}`)
+        }
+        await runHumanHttpBrowserDrill({ url: `${containerHumanUrl}/final/container-human-http-browser`, root })
+        logStep('container_human_http_ok', { runtimeSessionId: containerStatusBody.runtime_session_id })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerHumanName).catch(() => {})
+        containerProcess = null
+      }
+
+      logStep('container_api_sse_export')
+      const apiSseContainerExportDir = path.join(root, 'container-api-sse-package')
+      const apiSseContainerPackageDir = path.join(root, 'container-api-sse-portable')
+      const apiSseContainerExportResult = await executeShellCommand(
+        parseShellCommand(`workflow publication export ${apiSseFinalPublication.id} ${apiSseContainerExportDir} --kernel-url ${kernelUrl}`),
+        createDefaultShellContext({
+          workspace: apiSseWorkspace,
+          worktree: apiSseWorkspace,
+          sessionId: apiSseSession.id,
+          workflowId: apiSseWorkflow.id,
+        }),
+        { client },
+      )
+      if (!apiSseContainerExportResult.ok) {
+        throw new Error(`api_sse_json container publication export failed: ${apiSseContainerExportResult.message}`)
+      }
+      await createContainerPortablePackage(apiSseContainerExportDir, apiSseContainerPackageDir)
+      const containerApiPort = await freePort()
+      const containerApiUrl = `http://127.0.0.1:${containerApiPort}`
+      const containerApiName = `arroba-publication-api-${process.pid}`
+      dockerContainers.push(containerApiName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerApiName,
+        packageDir: apiSseContainerPackageDir,
+        workspaceDir: apiSseWorkspace,
+        port: containerApiPort,
+      })
+      try {
+        await waitForGateway(containerApiUrl, 60_000)
+        const containerApiStatusResponse = await fetch(`${containerApiUrl}/.well-known/arroba/publication/status`)
+        const containerApiStatusBody = await containerApiStatusResponse.json()
+        if (containerApiStatusResponse.status !== 200 || typeof containerApiStatusBody.runtime_session_id !== 'string') {
+          throw new Error(`expected container api_sse_json status with runtime session id, got ${containerApiStatusResponse.status}: ${JSON.stringify(containerApiStatusBody)}`)
+        }
+        const containerApiResponse = await fetch(`${containerApiUrl}/invoke`, {
+          method: 'POST',
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: 'container-api-sse-publication' }),
+        })
+        const containerApiBody = await containerApiResponse.text()
+        const containerApiEvents = sseEventNames(containerApiBody)
+        if (
+          containerApiResponse.status !== 200
+          || !containerApiEvents.includes('queued')
+          || !containerApiEvents.includes('started')
+          || !containerApiEvents.includes('partial')
+          || !containerApiEvents.includes('final')
+          || (!containerApiBody.includes('"value":1841') && !containerApiBody.includes('\\"value\\":1841'))
+          || (!containerApiBody.includes('"value":1842') && !containerApiBody.includes('\\"value\\":1842'))
+        ) {
+          throw new Error(`expected container API SSE queued/started/partial/final with deterministic output, got ${containerApiResponse.status} ${JSON.stringify(containerApiEvents)}: ${containerApiBody.slice(0, 2_000)}`)
+        }
+        logStep('container_api_sse_ok', { runtimeSessionId: containerApiStatusBody.runtime_session_id, events: containerApiEvents })
+      } finally {
+        await stopProcess(containerProcess)
+        await removeDockerContainer(containerApiName).catch(() => {})
+        containerProcess = null
+      }
+
+      logStep('container_missing_requirements_fail_before_listen')
+      const missingContainerPackageDir = path.join(root, 'container-missing-requirements')
+      await createContainerPortablePackage(apiSseContainerExportDir, missingContainerPackageDir)
+      await writeFile(path.join(missingContainerPackageDir, 'requirements.json'), JSON.stringify({
+        schema_version: 1,
+        skills: [{ name: 'missing-container-publication-skill' }],
+        credentials: [{ name: 'missing-container-publication-credential' }],
+      }, null, 2))
+      const containerMissingPort = await freePort()
+      const containerMissingUrl = `http://127.0.0.1:${containerMissingPort}`
+      const containerMissingName = `arroba-publication-missing-${process.pid}`
+      dockerContainers.push(containerMissingName)
+      containerProcess = startPublicationContainer({
+        image: publicationContainerImage,
+        name: containerMissingName,
+        packageDir: missingContainerPackageDir,
+        workspaceDir: apiSseWorkspace,
+        port: containerMissingPort,
+      })
+      const failedContainerServe = await waitForProcessExit(containerProcess, 60_000)
+      await assertGatewayDoesNotListen(containerMissingUrl)
+      if (failedContainerServe.code === 0) {
+        throw new Error('expected container missing-requirements serve to fail')
+      }
+      if (!/publication requirements are missing: skill:missing-container-publication-skill, credential:missing-container-publication-credential/.test(containerProcess.logs.stderr)) {
+        throw new Error(`expected container missing-requirements error, got stdout:\n${containerProcess.logs.stdout}\nstderr:\n${containerProcess.logs.stderr}`)
+      }
+      await removeDockerContainer(containerMissingName).catch(() => {})
+      containerProcess = null
+      logStep('container_missing_requirements_fail_before_listen_ok')
+    } else {
+      logStep('container_publication_skipped', { reason: 'set ARROBA_PUBLICATION_CONTAINER_DRILL=1 to run Docker container validation' })
+    }
+
     logStep('missing_requirements_fail_before_listen')
     await writeFile(path.join(exportDir, 'requirements.json'), JSON.stringify({
       schema_version: 1,
@@ -1848,6 +2081,12 @@ async function main() {
     await stopProcess(gateway)
     await stopProcess(kernel)
     await stopProcess(relay)
+    for (const name of dockerContainers.reverse()) {
+      await removeDockerContainer(name).catch(() => {})
+    }
+    for (const image of dockerImages.reverse()) {
+      await removeDockerImage(image).catch(() => {})
+    }
     if (!succeeded) {
       console.error('[publication-drill] relay logs', relay?.logs ?? null)
       console.error('[publication-drill] kernel logs', kernel?.logs ?? null)
