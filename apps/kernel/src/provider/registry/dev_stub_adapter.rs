@@ -163,7 +163,7 @@ fn dev_stub_workflow_html_final_script() -> String {
     })
     .to_string();
     format!(
-        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
+        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
     )
 }
 

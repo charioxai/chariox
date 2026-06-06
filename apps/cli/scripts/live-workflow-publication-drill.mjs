@@ -15,6 +15,7 @@ const { createDefaultShellContext, parseShellCommand } = await import('../../../
 const { executeShellCommand } = await import('../../../packages/kernel-client/dist/shell-executor.js')
 
 const {
+  addWorkflowEdgeRequest,
   addWorkflowNodeRequest,
   attachToSessionRequest,
   createSessionRequest,
@@ -378,6 +379,7 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
       '--disable-gpu',
       '--disable-background-networking',
       '--disable-extensions',
+      '--window-size=1440,1000',
       '--no-first-run',
       '--no-default-browser-check',
       '--no-sandbox',
@@ -430,6 +432,7 @@ async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000
   }
   const debuggingPort = await freePort()
   const userDataDir = path.join(root, 'chrome-html-final-profile')
+  const partialScreenshotPath = path.join(root, 'human-http-html-partial.png')
   const screenshotPath = path.join(root, 'human-http-html-final.png')
   await mkdir(userDataDir, { recursive: true })
   const chrome = startProcess(
@@ -439,6 +442,7 @@ async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000
       '--disable-gpu',
       '--disable-background-networking',
       '--disable-extensions',
+      '--window-size=1440,1000',
       '--no-first-run',
       '--no-default-browser-check',
       '--no-sandbox',
@@ -458,14 +462,24 @@ async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000
     await cdp.send('Runtime.enable')
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
     await cdp.send('Page.navigate', { url })
+    const partialState = await waitForBrowserHtmlPartialOutput(cdp, timeoutMs)
+    const partialScreenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    if (typeof partialScreenshot.data !== 'string' || partialScreenshot.data.length < 1000) {
+      throw new Error('browser HTML partial screenshot was empty')
+    }
+    await writeFile(partialScreenshotPath, Buffer.from(partialScreenshot.data, 'base64'))
+    await preserveVisualArtifact(partialScreenshotPath, 'local-human-http-dashboard-partial.png')
     const finalState = await waitForBrowserHtmlFinalOutput(cdp, timeoutMs)
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error('browser HTML final screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    await preserveVisualArtifact(screenshotPath, 'local-human-http-dashboard-final.png')
     logStep('browser_html_final_screenshot_ok', {
+      partialScreenshotPath,
       screenshotPath,
+      partialOutput: partialState.output,
       status: finalState.status,
       traceCount: finalState.traceCount,
     })
@@ -473,6 +487,40 @@ async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
   }
+}
+
+async function preserveVisualArtifact(sourcePath, fileName) {
+  const targetRoot = process.env.ARROBA_PUBLICATION_VISUAL_ARTIFACTS_DIR
+  if (!targetRoot) return
+  await mkdir(targetRoot, { recursive: true })
+  await cp(sourcePath, path.join(targetRoot, fileName), { force: true })
+}
+
+async function waitForBrowserHtmlPartialOutput(cdp, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const status = document.querySelector('#status')?.textContent?.trim() || '';
+        const output = document.querySelector('#output')?.textContent?.trim() || '';
+        const iframe = document.querySelector('#html-output iframe');
+        const traceCount = document.querySelectorAll('#trace-feed .trace-item').length;
+        return {
+          status,
+          output,
+          hasHtmlFinal: !!iframe,
+          traceCount,
+          ok: output.includes('"value":1841') && !iframe && traceCount > 0,
+        };
+      })()`,
+    })
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.ok) return lastState
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`browser did not render HTML workflow partial output before final dashboard: ${JSON.stringify(lastState)}`)
 }
 
 async function waitForBrowserHtmlFinalOutput(cdp, timeoutMs = 30_000) {
@@ -1037,6 +1085,89 @@ async function createDeterministicPublicationSession(client, sessionIds, options
   return { session, workflow, node, agent, providerRun, endpoint, publication }
 }
 
+async function createDashboardPublicationSession(client, sessionIds, options) {
+  const session = variant(
+    await client.send(createSessionRequest(options.workspace, options.workspace, options.sessionAlias)),
+    'SessionCreated',
+  ).session
+  sessionIds.push(session.id)
+  await client.send(attachToSessionRequest(session.id, `${options.attachAlias}-${process.pid}`))
+
+  const producerAgent = variant(
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', `${options.agentAlias}-producer`, 'workflow-intermediate-node', options.workspace, 'low')),
+    'AgentSpawned',
+  ).agent
+  const producerRun = variant(
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', producerAgent.id)),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, producerRun.id)
+
+  const dashboardAgent = variant(
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', options.agentAlias, 'workflow-html-final-node', options.workspace, 'low')),
+    'AgentSpawned',
+  ).agent
+  const dashboardRun = variant(
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-html-final-node', 'low', dashboardAgent.id)),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, dashboardRun.id)
+
+  const workflow = variant(await client.send(createWorkflowRequest(session.id, options.workflowAlias)), 'WorkflowCreated').workflow
+  const producerNode = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, producerAgent.id)), 'WorkflowNodeAdded').node
+  const dashboardNode = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, dashboardAgent.id)), 'WorkflowNodeAdded').node
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    producerNode.id,
+    'Emit the deterministic intermediate output and then hand off to the dashboard renderer.',
+  ))
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    dashboardNode.id,
+    'Render the deterministic vibrant dashboard HTML final output.',
+  ))
+  await client.send(addWorkflowEdgeRequest(session.id, workflow.id, producerNode.id, dashboardNode.id))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, producerNode.id, false))
+  await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, producerNode.id, true))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, dashboardNode.id, true))
+
+  const endpoint = variant(
+    await client.send(createWorkflowEndpointRequest(session.id, workflow.id, producerNode.id, options.endpointAlias)),
+    'WorkflowEndpointCreated',
+  ).endpoint
+  const publication = variant(
+    await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+      alias: options.publicationAlias,
+      route: options.route,
+      methods: options.methods,
+      transport: { kind: options.transportKind },
+      parser: { kind: 'json' },
+      traceExposure: {
+        nodes: {
+          [producerNode.id]: ['output_summary', 'assistant_messages', 'tool_use'],
+          [dashboardNode.id]: ['output_summary', 'assistant_messages', 'tool_use'],
+        },
+      },
+      mode: 'async',
+    })),
+    'WorkflowPublicationCreated',
+  ).publication
+  return {
+    session,
+    workflow,
+    producerNode,
+    dashboardNode,
+    producerAgent,
+    dashboardAgent,
+    producerRun,
+    dashboardRun,
+    endpoint,
+    publication,
+  }
+}
+
 async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
   const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
   let lastRuns = []
@@ -1539,7 +1670,7 @@ async function main() {
       traceExposure: 'all',
     })
     logStep('create_browser_html_final_session')
-    const browserHtml = await createDeterministicPublicationSession(client, sessionIds, {
+    const browserHtml = await createDashboardPublicationSession(client, sessionIds, {
       workspace: browserHtmlWorkspace,
       sessionAlias: 'publication-drill-human-http-html-final',
       attachAlias: 'publication-drill-human-http-html-final',
@@ -1550,8 +1681,6 @@ async function main() {
       route: '/dashboard/*',
       methods: ['GET'],
       transportKind: 'human_http',
-      model: 'workflow-html-final-node',
-      traceExposure: 'all',
     })
     logStep('create_mcp_session')
     const mcpSession = variant(
@@ -1649,6 +1778,11 @@ async function main() {
           transport: 'human_http',
           sessionId: browserSession.id,
           publication: humanHttpFinalPublication,
+        }, {
+          key: 'human_http_dashboard',
+          transport: 'human_http',
+          sessionId: browserHtml.session.id,
+          publication: browserHtml.publication,
         }, {
           key: 'api_sse_json',
           transport: 'api_sse_json',
