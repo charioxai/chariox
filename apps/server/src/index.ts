@@ -39,6 +39,7 @@ import {
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationStatusPayload } from "./publication-status.js"
+import { installPublicationViewerRoutes } from "./publication-viewer.js"
 import type {
   GatewayDeps,
   GatewayRequest,
@@ -71,6 +72,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
   const webSocketServer = installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
+  installPublicationViewerRoutes(app, publication)
   installHumanHttpRoutes(app, publication)
   installApiSseJsonRoutes(app, publication, deps)
   installPublicationMcpRoutes(app, publication, deps)

@@ -610,11 +610,15 @@ Publication event direction:
 - trace filtering is part of the publication runtime contract: clients and
   publication gateways must not infer or expose hidden workflow internals
   beyond the policy
-- `human_http` returns an HTML page that subscribes to publication events by SSE
-  and renders a split viewer: output/status on the left and exposed traces on
-  the right
+- browser-compatible transports share one publication viewer HTML app. The
+  viewer renders output/status on the left and exposed traces on the right, and
+  selects a small client-side adapter for the configured transport
+- `human_http` can invoke from an address-bar GET path or from the shared viewer
+  form; GET result pages subscribe to publication events by SSE
 - `api_sse_json` streams publication events directly from `POST /invoke`
 - `websocket_json` sends publication events over the WebSocket connection
+- the shared viewer can drive `api_sse_json` with browser `fetch` streaming and
+  can drive `websocket_json` over the publication WebSocket path
 - `mcp` maps publication progress/final output to MCP tool progress and result
   concepts
 

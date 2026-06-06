@@ -1201,6 +1201,44 @@ test("human HTTP root returns a browser invocation form", async () => {
   }
 })
 
+test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket transports", async () => {
+  const cases: Array<{
+    transport: "human_http" | "api_sse_json" | "websocket_json"
+    methods: Array<"GET" | "POST">
+    route: string
+    adapterMarker: RegExp
+  }> = [
+    { transport: "human_http", methods: ["GET"], route: "/qa/*", adapterMarker: /invokeHumanHttp/ },
+    { transport: "api_sse_json", methods: ["POST"], route: "/invoke", adapterMarker: /invokeApiSse/ },
+    { transport: "websocket_json", methods: ["GET"], route: "/.well-known/arroba/publication/ws", adapterMarker: /invokeWebSocket/ },
+  ]
+
+  for (const item of cases) {
+    const { app } = buildServer({
+      ...baseConfig,
+      transport: item.transport,
+      route: item.route,
+      methods: item.methods,
+      parser: { kind: "json" },
+    }, {
+      invokeWorkflow: async () => ({ accepted: true }),
+    })
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } })
+      assert.equal(response.statusCode, 200)
+      assert.match(response.headers["content-type"] as string, /text\/html/)
+      assert.match(response.body, /split-viewer/)
+      assert.match(response.body, /invoke-form/)
+      assert.match(response.body, /type="file" name="artifact" multiple/)
+      assert.match(response.body, new RegExp(`"transport":"${item.transport}"`))
+      assert.match(response.body, item.adapterMarker)
+    } finally {
+      await app.close()
+    }
+  }
+})
+
 test("human HTTP root form can submit prompt and uploaded artifacts", async () => {
   let seenInput: unknown = null
   const { app } = buildServer({
@@ -1284,7 +1322,7 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
-    assert.match(response.body, /publicationEventsUrl\(eventsUrl\)/)
+    assert.match(response.body, /subscribeHumanHttpEvents\(viewerConfig\.eventsUrl\)/)
     assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
     assert.match(response.body, /run-1/)
     assert.deepEqual(seenInput, { prompt: "make tea" })

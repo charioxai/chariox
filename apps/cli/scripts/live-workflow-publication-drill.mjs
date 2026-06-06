@@ -417,6 +417,7 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
       throw new Error('browser screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    await preserveVisualArtifact(screenshotPath, 'local-human-http-final.png')
     logStep('browser_screenshot_ok', { screenshotPath, statuses, outputs })
   } finally {
     await cdp?.close?.().catch(() => {})
@@ -631,7 +632,86 @@ async function runHumanHttpRootFormBrowserDrill({ baseUrl, root, timeoutMs = 30_
       throw new Error('browser root form screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    await preserveVisualArtifact(screenshotPath, 'local-human-http-root-form-final.png')
     logStep('browser_root_form_screenshot_ok', { screenshotPath, statuses, outputs })
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+  }
+}
+
+async function runSharedViewerBrowserDrill({ baseUrl, root, label, prompt, timeoutMs = 30_000 }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) {
+    logStep(`${label}_browser_viewer_skipped`, { reason: 'chrome-not-found' })
+    return
+  }
+  const safeLabel = label.replace(/[^a-z0-9-]/gi, '-').toLowerCase()
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(root, `chrome-${safeLabel}-profile`)
+  const screenshotPath = path.join(root, `${safeLabel}-viewer-final.png`)
+  await mkdir(userDataDir, { recursive: true })
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--window-size=1440,1000',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    process.env,
+    `chrome-${safeLabel}-publication`,
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, 'about:blank', chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await cdp.send('DOM.enable')
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
+    await cdp.send('Page.navigate', { url: baseUrl })
+    await waitForBrowserRootForm(cdp)
+    const submitted = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const form = document.querySelector('#invoke-form');
+        const prompt = form?.querySelector('[name="prompt"]');
+        if (!form || !prompt) return false;
+        prompt.value = ${JSON.stringify(prompt)};
+        form.requestSubmit();
+        return true;
+      })()`,
+    })
+    if (submitted.result?.value !== true) {
+      throw new Error(`${label} browser viewer could not be submitted`)
+    }
+    const finalState = await waitForBrowserFinalOutput(cdp, timeoutMs)
+    const statuses = finalState.statuses ?? []
+    const outputs = finalState.outputs ?? []
+    if (finalState.status !== 'Completed' && !statuses.includes('Completed')) {
+      throw new Error(`${label} browser viewer did not complete; state=${JSON.stringify(finalState)}`)
+    }
+    for (const expectedValue of ['"value":1841', '"value":1842']) {
+      if (!outputs.some((output) => output.includes(expectedValue)) && !String(finalState.output ?? '').includes(expectedValue)) {
+        throw new Error(`${label} browser viewer did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}, state=${JSON.stringify(finalState)}`)
+      }
+    }
+    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error(`${label} browser viewer screenshot was empty`)
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    await preserveVisualArtifact(screenshotPath, `${safeLabel}-viewer-final.png`)
+    logStep(`${label}_browser_viewer_ok`, { screenshotPath, statuses, outputs })
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
@@ -2023,6 +2103,13 @@ async function main() {
       throw new Error(`expected repeated API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalRepeatResponse.status} ${JSON.stringify(apiSseFinalRepeatEvents)}: ${diagnostic}; runtime=${JSON.stringify(runtimeDiagnostic)}`)
     }
     logStep('api_sse_final_repeat_ok', { events: apiSseFinalRepeatEvents })
+    await runSharedViewerBrowserDrill({
+      baseUrl: `${gatewayUrl}/`,
+      root,
+      label: 'api_sse_shared_viewer',
+      prompt: 'api-sse-browser-viewer-publication',
+      timeoutMs: 90_000,
+    })
     await stopProcess(gateway)
     gateway = null
 
@@ -2112,6 +2199,13 @@ async function main() {
       throw new Error(`expected websocket trace event tagged with agent alias, got ${webSocketFinalBody.slice(0, 2_000)}`)
     }
     logStep('websocket_final_ok', { events: webSocketFinalTypes })
+    await runSharedViewerBrowserDrill({
+      baseUrl: `${gatewayUrl}/`,
+      root,
+      label: 'websocket_shared_viewer',
+      prompt: 'websocket-browser-viewer-publication',
+      timeoutMs: 90_000,
+    })
     await stopProcess(gateway)
     gateway = null
 
