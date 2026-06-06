@@ -28,6 +28,30 @@ The current validation baseline proves:
 This baseline does not yet prove every partial/final output path for every
 transport both locally and through Cloud.
 
+## 1.1 Trace Fanout And Embedded Viewer Extension
+
+The next hardening slice extends the publication contract beyond partial/final
+outputs:
+
+- a rapid repeated invocation drill must prove one published runtime can accept
+  a second prompt immediately after a first workflow run reaches a terminal
+  state
+- publication packages and kernel-owned publication records carry a
+  per-node `trace_exposure` policy
+- trace levels are `output_summary`, `assistant_messages`, `thinking`, and
+  `tool_use`
+- trace events are exposed only when the node-specific policy allows the level
+- `human_http`, `api_sse_json`, and `websocket_json` forward `trace` events
+  using their native event mechanisms
+- `mcp` remains final-output first; trace/progress mapping is optional until an
+  MCP client surface consumes it cleanly
+- the `human_http` page becomes a split viewer with output/status on the left
+  and exposed traces on the right
+- final output shaped as `{ "kind": "html", "html": "..." }` is rendered in a
+  sandboxed iframe in the left pane
+- Cloud opens `human_http` publications in the central terminal panel by
+  embedding the relay display URL; the embedded HTML owns output and traces
+
 ## 2. Transport Output Contract
 
 Each transport should have an explicit output contract.
@@ -38,6 +62,10 @@ Each transport should have an explicit output contract.
 - Browser requests receive an HTML page.
 - The HTML page follows an SSE stream through queued, running, partial, final,
   and error states.
+- When enabled by publication policy, the HTML page also renders `trace` events
+  in a right-side pane tagged by node or agent alias.
+- Renderable HTML final output replaces the left output pane with a sandboxed
+  iframe.
 - `GET /` renders a prompt and artifact upload form.
 
 ### `api_sse_json`
@@ -47,6 +75,8 @@ Each transport should have an explicit output contract.
   supported.
 - The response is an SSE stream with queued, started, partial, final, and error
   events.
+- The response also includes `trace` events when the publication policy exposes
+  them.
 - Final events carry the normalized workflow output envelope.
 
 ### `websocket_json`
@@ -55,6 +85,7 @@ Each transport should have an explicit output contract.
 - Artifact upload uses begin, chunk, and end messages.
 - Invocation emits accepted, queued, started, partial, final, and error
   messages.
+- Invocation emits `trace` messages when the publication policy exposes them.
 - Final messages carry the normalized workflow output envelope.
 
 ### `mcp`
@@ -75,6 +106,10 @@ Each transport should have an explicit output contract.
   partial, final, and error events.
 - Keep screenshot verification for the final HTML status page.
 - Keep root-page prompt and artifact upload coverage.
+- Verify the split viewer renders the trace pane and tags trace entries by
+  node/agent alias when traces are enabled.
+- Verify renderable HTML final output replaces the left output pane with a
+  sandboxed iframe and leaves the trace pane visible.
 
 ### `api_sse_json`
 
@@ -82,6 +117,8 @@ Each transport should have an explicit output contract.
 - Add artifact input coverage for base64 payloads.
 - Add URL artifact ref coverage if URL refs are supported by the parser.
 - Assert final output body shape, not only event names.
+- Add `trace` event assertions for enabled nodes and absence assertions for
+  disabled nodes/levels.
 
 ### `websocket_json`
 
@@ -90,6 +127,7 @@ Each transport should have an explicit output contract.
   - invocation accepted metadata
   - queued and started messages
   - partial output message
+  - trace messages when the publication policy enables them
   - final output message
   - structured error on invalid input
 
@@ -152,7 +190,8 @@ The browser drill should assert:
 - regular publications are listed
 - watchdog publications are listed distinctly
 - local-only publications without URLs show the correct disabled/manual state
-- relay display tunnel URLs open through the Cloud view route
+- relay display tunnel URLs open through the Cloud central embedded view for
+  `human_http`
 
 ## 6. Cloud Tunnel Invocation Matrix
 
@@ -161,9 +200,10 @@ Cloud tunnel validation is the main missing area.
 ### `human_http`
 
 - Open the publication from the Published Workflows tab.
-- Render the HTML status page through the relay display tunnel.
+- Render the split HTML viewer through the relay display tunnel.
 - Verify queued, running, partial, and final states.
-- Capture a browser screenshot of the final page.
+- Verify exposed traces appear in the right pane when configured.
+- Capture browser screenshots of the final page and generated HTML iframe.
 
 ### `api_sse_json`
 
@@ -264,4 +304,8 @@ green:
 | provider/model override | yes | n/a | n/a |
 | missing requirements fail before listen | yes | n/a | n/a |
 | hidden runtime sessions | yes | yes, not normal sessions | yes |
+| rapid repeated invocation | yes | yes | yes |
+| trace fanout per node/level | yes | listed | yes |
+| split human HTTP viewer | yes | yes | yes |
+| renderable HTML final output | yes | yes | yes |
 | container deployment | future | future | future |

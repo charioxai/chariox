@@ -400,6 +400,19 @@ Rules:
 - a published workflow may have multiple hooks; those hooks share the same
   materialized runtime session and queue namespace so workflow queue priority
   semantics remain meaningful
+- output fanout and trace fanout are distinct publication surfaces. Outputs are
+  the endpoint consumer result stream. Traces are an explicitly configured
+  observability stream filtered before they leave the publication runtime.
+- trace exposure is configured per workflow node. One node may expose only
+  output summaries while another exposes assistant messages and tool use.
+  Thinking traces are disabled unless a publication policy explicitly enables
+  them for that node.
+- the `human_http` transport owns a self-contained split viewer. The left side
+  shows invocation status, partial outputs, and final output. The right side
+  shows exposed traces tagged by the responsible node or agent alias.
+- if a final output is a renderable HTML payload, the `human_http` viewer
+  replaces the left output region with a sandboxed iframe containing the
+  generated HTML while the trace pane remains visible in the parent viewer.
 - publishing a workflow captures extension requirements but does not export
   secrets
 - serving or deploying a publication MUST verify required providers, models,
@@ -432,6 +445,12 @@ unless the owner configures Arroba-managed access.
 The web CLI should expose a dedicated `Published Workflows` side-panel tab
 rather than nesting publication runtime management under the workflow authoring
 tab.
+
+For `human_http`, the preferred web CLI action is central-panel embedding:
+selecting/opening a publication embeds the publication display URL in the main
+terminal stage. Cloud does not independently render output or traces; the
+embedded publication HTML owns the split viewer so the same surface works
+locally, over relay display, and in future hosted ingress/container modes.
 
 ### 3.3.6 Workflow/Agent Binding and Missing Agents
 

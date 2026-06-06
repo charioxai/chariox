@@ -595,11 +595,69 @@ Publication event direction:
 - every accepted publication invocation should have a stable `invocation_id`
 - events should cover at least `queued`, `started`, `partial`, `final`, and
   `error`
+- events MAY also include `trace` when the publication explicitly exposes
+  workflow traces for the node and trace level that produced the record
+- trace fanout is governed by a per-node publication policy, not by transport
+  defaults; if no policy is present, trace events are not exposed
+- trace levels are `output_summary`, `assistant_messages`, `thinking`, and
+  `tool_use`
+- each `trace` event must include `invocation_id`, `workflow_run_id`,
+  `node_id`, `node_label`, `agent_id`, `agent_alias`, `level`, `sequence`,
+  `timestamp_ms`, and a structured `payload`
+- trace filtering is part of the publication runtime contract: clients and
+  publication gateways must not infer or expose hidden workflow internals
+  beyond the policy
 - `human_http` returns an HTML page that subscribes to publication events by SSE
+  and renders a split viewer: output/status on the left and exposed traces on
+  the right
 - `api_sse_json` streams publication events directly from `POST /invoke`
 - `websocket_json` sends publication events over the WebSocket connection
 - `mcp` maps publication progress/final output to MCP tool progress and result
   concepts
+
+Publication trace exposure policy:
+
+```json
+{
+  "trace_exposure": {
+    "default": {
+      "output_summary": false,
+      "assistant_messages": false,
+      "thinking": false,
+      "tool_use": false
+    },
+    "nodes": {
+      "node-a": {
+        "output_summary": true,
+        "assistant_messages": true,
+        "thinking": false,
+        "tool_use": true
+      },
+      "node-b": {
+        "output_summary": true,
+        "assistant_messages": false,
+        "thinking": false,
+        "tool_use": false
+      }
+    }
+  }
+}
+```
+
+Trace exposure policy is evaluated per workflow node. `default` applies to
+nodes without an explicit entry. A node policy overrides the default for the
+levels it specifies. Unknown node ids or trace levels should fail publication
+validation before a server accepts traffic.
+
+Human HTTP renderable output:
+
+- a final workflow output whose message parses as `{ "kind": "html", "html":
+  "..." }` is renderable HTML for `human_http`
+- the split viewer must render that HTML in a sandboxed `iframe srcdoc` in the
+  left pane, replacing the textual output/status region
+- generated HTML must not be injected directly into the publication viewer DOM
+- the right trace pane remains visible and continues to show exposed traces
+  after the generated HTML is rendered
 
 Remote terminal and Cloud invocation:
 
