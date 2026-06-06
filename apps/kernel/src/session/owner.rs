@@ -124,6 +124,16 @@ impl SessionStateStore {
             .note_agent_output_sequence(session_id, agent_id, sequence)
     }
 
+    pub(crate) fn record_workflow_node_thinking_trace(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        message: impl Into<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        self.write()
+            .record_workflow_node_thinking_trace(session_id, agent_id, message)
+    }
+
     pub(crate) fn acknowledge_agent_output_seen(
         &self,
         session_id: &str,

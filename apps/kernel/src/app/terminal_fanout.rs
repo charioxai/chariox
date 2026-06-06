@@ -1,3 +1,4 @@
+use crate::app::provider_output_fanout::ProviderOutputFanout;
 use crate::app::DaemonApp;
 use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::prompt_transcript::render_prompt_transcript;
@@ -54,34 +55,14 @@ impl DaemonApp {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
-        let agent_id = self
-            .providers
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let record = self.terminal.fan_out_output(
+        ProviderOutputFanout::new(self).fan_out(
             session_id,
             provider_run_id,
-            agent_id.as_deref(),
-            kind.clone(),
-            merge_key.clone(),
+            kind,
+            merge_key,
             recipient_attachment_ids,
             bytes,
-        );
-        if kind != TerminalOutputKind::PromptEcho {
-            self.append_history_entry(
-                session_id,
-                SessionHistoryEntry::provider_output(
-                    session_id,
-                    provider_run_id,
-                    agent_id.as_deref(),
-                    kind,
-                    merge_key,
-                    String::from_utf8_lossy(bytes).into_owned(),
-                ),
-            );
-        }
-        record
+        )
     }
 
     pub(crate) fn record_notice(

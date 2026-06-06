@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 117
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 118
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1912,6 +1912,11 @@ export type WorkflowNodeRun = {
     acknowledged_at_ms?: number | null
     validated_completed_at_ms?: number | null
   } | null
+  thinking_traces?: {
+    id: string
+    message: string
+    timestamp_ms: number
+  }[]
   created_at_ms: number
   started_at_ms: number | null
   completed_at_ms: number | null

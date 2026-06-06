@@ -223,6 +223,34 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn record_workflow_node_thinking_trace(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        message: impl Into<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return Ok(None);
+        }
+        let session = self.get_session_mut_for_operation(session_id, "record workflow thinking")?;
+        let Some(workflow_node_run_id) = session
+            .active_prompt_for_agent(agent_id)
+            .and_then(|prompt| prompt.workflow_node_run_id())
+            .map(str::to_string)
+        else {
+            return Ok(None);
+        };
+        let Some(node_run) = session.workflow_node_run_mut(&workflow_node_run_id) else {
+            return Ok(None);
+        };
+        if node_run.add_thinking_trace(message).is_none() {
+            return Ok(None);
+        }
+        session.touch();
+        Ok(Some(session.clone()))
+    }
+
     pub fn acknowledge_agent_output_seen(
         &mut self,
         session_id: &str,

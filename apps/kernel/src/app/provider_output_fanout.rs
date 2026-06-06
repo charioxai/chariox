@@ -64,6 +64,27 @@ impl ProviderOutputFanout {
             bytes,
         );
         if kind != TerminalOutputKind::PromptEcho {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            if kind == TerminalOutputKind::ProviderReasoning {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    if let Err(error) = self.session_store.record_workflow_node_thinking_trace(
+                        session_id,
+                        agent_id,
+                        text.clone(),
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.workflow",
+                            "failed to record workflow thinking trace",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "provider_run_id": provider_run_id,
+                                "agent_id": agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+            }
             self.append_history_entry(
                 session_id,
                 SessionHistoryEntry::provider_output(
@@ -72,7 +93,7 @@ impl ProviderOutputFanout {
                     agent_id.as_deref(),
                     kind,
                     merge_key,
-                    String::from_utf8_lossy(bytes).into_owned(),
+                    text,
                 ),
             );
         }

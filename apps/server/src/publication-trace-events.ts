@@ -60,6 +60,16 @@ export function collectPublicationTraceEvents(
         })
       }
     }
+    if (levels.has("thinking")) {
+      for (const trace of nodeRun.thinking_traces ?? []) {
+        pushTraceEvent(events, state, publication, workflowRun, nodeRun, "thinking", {
+          key: `thinking:${trace.id}`,
+          timestampMs: trace.timestamp_ms,
+          message: trace.message,
+          data: trace,
+        })
+      }
+    }
     if (levels.has("tool_use")) {
       for (const [index, toolCall] of (nodeRun.turn_envelope?.runtime_tool_calls ?? []).entries()) {
         pushTraceEvent(events, state, publication, workflowRun, nodeRun, "tool_use", {

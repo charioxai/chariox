@@ -36,15 +36,19 @@ test("publication trace events honor per-node level policy", () => {
     ...baseConfig,
     trace_exposure: {
       nodes: {
-        "node-a": ["assistant_messages", "tool_use"],
-        "node-b": ["output_summary"],
+        "node-a": ["output_summary"],
+        "node-b": ["output_summary", "assistant_messages"],
+        "node-c": ["output_summary", "assistant_messages", "thinking"],
+        "node-d": ["output_summary", "assistant_messages", "thinking", "tool_use"],
       },
     },
     trace_context: {
       nodes: {
-        "node-a": { node_id: "node-a", node_label: "Research", agent_id: "agent-a", agent_alias: "researcher" },
-        "node-b": { node_id: "node-b", node_label: "Writer", agent_id: "agent-b", agent_alias: "writer" },
-        "node-c": { node_id: "node-c", node_label: "Hidden", agent_id: "agent-c", agent_alias: "hidden" },
+        "node-a": { node_id: "node-a", node_label: "Summarizer", agent_id: "agent-a", agent_alias: "summary" },
+        "node-b": { node_id: "node-b", node_label: "Research", agent_id: "agent-b", agent_alias: "researcher" },
+        "node-c": { node_id: "node-c", node_label: "Planner", agent_id: "agent-c", agent_alias: "planner" },
+        "node-d": { node_id: "node-d", node_label: "Builder", agent_id: "agent-d", agent_alias: "builder" },
+        "node-e": { node_id: "node-e", node_label: "Hidden", agent_id: "agent-e", agent_alias: "hidden" },
       },
     },
   }
@@ -56,16 +60,9 @@ test("publication trace events honor per-node level policy", () => {
       node_id: "node-a",
       agent_id: "agent-a-runtime",
       status: "Completed",
-      completion: { summary: "A summary", output: { message: "A assistant output" } },
-      turn_envelope: {
-        runtime_tool_calls: [{
-          tool_name: "lookup",
-          arguments_json: "{\"q\":\"a\"}",
-          result_json: "{\"ok\":true}",
-          ok: true,
-          timestamp_ms: 10,
-        }],
-      },
+      summary: "A summary",
+      completion: { summary: "A completion", output: { message: "A assistant output" } },
+      thinking_traces: [{ id: "thinking-a", message: "A private reasoning", timestamp_ms: 11 }],
       completed_at_ms: 20,
     }, {
       id: "run-node-b",
@@ -73,7 +70,8 @@ test("publication trace events honor per-node level policy", () => {
       agent_id: "agent-b-runtime",
       status: "Completed",
       summary: "B summary",
-      completion: { summary: "B completion" },
+      completion: { summary: "B completion", output: { message: "B assistant output" } },
+      thinking_traces: [{ id: "thinking-b", message: "B private reasoning", timestamp_ms: 21 }],
       completed_at_ms: 30,
     }, {
       id: "run-node-c",
@@ -81,17 +79,63 @@ test("publication trace events honor per-node level policy", () => {
       agent_id: "agent-c-runtime",
       status: "Completed",
       completion: { summary: "C summary", output: { message: "C assistant output" } },
+      thinking_traces: [{ id: "thinking-c", message: "C thinking", timestamp_ms: 31 }],
       completed_at_ms: 40,
+    }, {
+      id: "run-node-d",
+      node_id: "node-d",
+      agent_id: "agent-d-runtime",
+      status: "Completed",
+      completion: { summary: "D summary", output: { message: "D assistant output" } },
+      thinking_traces: [{ id: "thinking-d", message: "D thinking", timestamp_ms: 41 }],
+      turn_envelope: {
+        runtime_tool_calls: [{
+          tool_name: "lookup",
+          arguments_json: "{\"q\":\"d\"}",
+          result_json: "{\"ok\":true}",
+          ok: true,
+          timestamp_ms: 42,
+        }],
+      },
+      completed_at_ms: 50,
+    }, {
+      id: "run-node-e",
+      node_id: "node-e",
+      agent_id: "agent-e-runtime",
+      status: "Completed",
+      completion: { summary: "E summary", output: { message: "E assistant output" } },
+      thinking_traces: [{ id: "thinking-e", message: "E thinking", timestamp_ms: 51 }],
+      completed_at_ms: 60,
     }],
-    messages: [{
-      id: "message-a",
-      source_node_run_id: "run-node-a",
-      target_node_id: "node-b",
-      message_type: "handoff",
-      summary: "A handoff",
-      handoff_payload: "{\"summary\":\"A handoff\"}",
-      created_at_ms: 15,
-    }],
+    messages: [
+      {
+        id: "message-b",
+        source_node_run_id: "run-node-b",
+        target_node_id: "node-c",
+        message_type: "handoff",
+        summary: "B handoff",
+        handoff_payload: "{\"summary\":\"B handoff\"}",
+        created_at_ms: 25,
+      },
+      {
+        id: "message-c",
+        source_node_run_id: "run-node-c",
+        target_node_id: "node-d",
+        message_type: "handoff",
+        summary: "C handoff",
+        handoff_payload: "{\"summary\":\"C handoff\"}",
+        created_at_ms: 35,
+      },
+      {
+        id: "message-d",
+        source_node_run_id: "run-node-d",
+        target_node_id: "node-e",
+        message_type: "handoff",
+        summary: "D handoff",
+        handoff_payload: "{\"summary\":\"D handoff\"}",
+        created_at_ms: 45,
+      },
+    ],
   }
 
   const state = createPublicationTraceStreamState()
@@ -99,13 +143,22 @@ test("publication trace events honor per-node level policy", () => {
   const secondPass = collectPublicationTraceEvents(publication, workflowRun, state)
 
   assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
-    ["node-a", "researcher", "assistant_messages", "A handoff"],
-    ["node-a", "researcher", "assistant_messages", "A assistant output"],
-    ["node-a", "researcher", "tool_use", "lookup ok"],
-    ["node-b", "writer", "output_summary", "B completion"],
+    ["node-a", "summary", "output_summary", "A completion"],
+    ["node-b", "researcher", "output_summary", "B completion"],
+    ["node-b", "researcher", "assistant_messages", "B handoff"],
+    ["node-b", "researcher", "assistant_messages", "B assistant output"],
+    ["node-c", "planner", "output_summary", "C summary"],
+    ["node-c", "planner", "assistant_messages", "C handoff"],
+    ["node-c", "planner", "assistant_messages", "C assistant output"],
+    ["node-c", "planner", "thinking", "C thinking"],
+    ["node-d", "builder", "output_summary", "D summary"],
+    ["node-d", "builder", "assistant_messages", "D handoff"],
+    ["node-d", "builder", "assistant_messages", "D assistant output"],
+    ["node-d", "builder", "thinking", "D thinking"],
+    ["node-d", "builder", "tool_use", "lookup ok"],
   ])
-  assert.equal(firstPass.some((event) => event.node_id === "node-c"), false)
-  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4])
+  assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
+  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   assert.deepEqual(secondPass, [])
 })
 

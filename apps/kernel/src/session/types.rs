@@ -34,7 +34,9 @@ pub use super::workflow_outputs::{
     WorkflowTurnOutputSubmissions, WorkflowTurnSubmissionKind,
 };
 pub use super::workflow_publication::WorkflowPublicationDefinition;
-pub use super::workflow_run_records::{WorkflowMessage, WorkflowNodeRun};
+pub use super::workflow_run_records::{
+    WorkflowMessage, WorkflowNodeRun, WorkflowNodeThinkingTrace,
+};
 pub use super::workflow_runs::WorkflowRun;
 pub use super::workflow_scheduling::{
     WorkflowPromptQueueDefinition, WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt,

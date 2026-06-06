@@ -601,6 +601,9 @@ Publication event direction:
   defaults; if no policy is present, trace events are not exposed
 - trace levels are `output_summary`, `assistant_messages`, `thinking`, and
   `tool_use`
+- `thinking` trace events are sourced from provider reasoning chunks persisted
+  on the active `WorkflowNodeRun.thinking_traces` list while the workflow node
+  prompt is running
 - each `trace` event must include `invocation_id`, `workflow_run_id`,
   `node_id`, `node_label`, `agent_id`, `agent_alias`, `level`, `sequence`,
   `timestamp_ms`, and a structured `payload`
@@ -620,34 +623,19 @@ Publication trace exposure policy:
 ```json
 {
   "trace_exposure": {
-    "default": {
-      "output_summary": false,
-      "assistant_messages": false,
-      "thinking": false,
-      "tool_use": false
-    },
     "nodes": {
-      "node-a": {
-        "output_summary": true,
-        "assistant_messages": true,
-        "thinking": false,
-        "tool_use": true
-      },
-      "node-b": {
-        "output_summary": true,
-        "assistant_messages": false,
-        "thinking": false,
-        "tool_use": false
-      }
+      "node-a": ["output_summary", "assistant_messages", "thinking"],
+      "node-b": ["output_summary", "tool_use"]
     }
   }
 }
 ```
 
-Trace exposure policy is evaluated per workflow node. `default` applies to
-nodes without an explicit entry. A node policy overrides the default for the
-levels it specifies. Unknown node ids or trace levels should fail publication
-validation before a server accepts traffic.
+Trace exposure policy is evaluated per workflow node. Nodes without an explicit
+entry expose no traces. Unknown node ids or trace levels fail publication or
+serve-time validation before a server accepts traffic. Trace policy is fixed by
+the publication artifact; changing exposure requires republishing or creating a
+new publication.
 
 Human HTTP renderable output:
 

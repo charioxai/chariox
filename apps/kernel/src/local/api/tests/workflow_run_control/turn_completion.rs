@@ -171,6 +171,14 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         app.fan_out_output(
             session.id(),
             &provider_run_id,
+            TerminalOutputKind::ProviderReasoning,
+            Some("thinking:first".to_string()),
+            Vec::new(),
+            b"First node is reasoning about the handoff.",
+        );
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
             TerminalOutputKind::ProviderOutput,
             None,
             Vec::new(),
@@ -194,6 +202,11 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .iter()
         .find(|node_run| node_run.id() == first_run_id)
         .expect("first node run should remain");
+    assert_eq!(first_completed.thinking_traces().len(), 1);
+    assert_eq!(
+        first_completed.thinking_traces()[0].message(),
+        "First node is reasoning about the handoff."
+    );
     let first_envelope = first_completed
         .turn_envelope()
         .expect("first node run should retain its envelope");
@@ -244,6 +257,14 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         app.fan_out_output(
             session.id(),
             &second_provider_run_id,
+            TerminalOutputKind::ProviderReasoning,
+            Some("thinking:second".to_string()),
+            Vec::new(),
+            b"Second node is reasoning about the final answer.",
+        );
+        app.fan_out_output(
+            session.id(),
+            &second_provider_run_id,
             TerminalOutputKind::ProviderOutput,
             None,
             Vec::new(),
@@ -271,6 +292,11 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .iter()
         .find(|node_run| node_run.id() == second_run_id)
         .expect("second node should complete");
+    assert_eq!(second_completed.thinking_traces().len(), 1);
+    assert_eq!(
+        second_completed.thinking_traces()[0].message(),
+        "Second node is reasoning about the final answer."
+    );
     let second_envelope = second_completed
         .turn_envelope()
         .expect("second node turn envelope should exist");

@@ -196,6 +196,11 @@ export type WorkflowRun = {
         timestamp_ms: number
       }[]
     } | null
+    thinking_traces?: {
+      id: string
+      message: string
+      timestamp_ms: number
+    }[]
     completed_at_ms?: number | null
   }>
   messages?: Array<{

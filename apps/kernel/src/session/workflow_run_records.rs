@@ -76,6 +76,35 @@ impl WorkflowMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowNodeThinkingTrace {
+    id: String,
+    message: String,
+    timestamp_ms: u64,
+}
+
+impl WorkflowNodeThinkingTrace {
+    pub fn new(id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            message: message.into(),
+            timestamp_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        self.timestamp_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowNodeRun {
     id: String,
     node_id: String,
@@ -86,6 +115,8 @@ pub struct WorkflowNodeRun {
     completion: Option<WorkflowCompletionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_envelope: Option<WorkflowTurnEnvelope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    thinking_traces: Vec<WorkflowNodeThinkingTrace>,
     created_at_ms: u64,
     started_at_ms: Option<u64>,
     completed_at_ms: Option<u64>,
@@ -106,6 +137,7 @@ impl WorkflowNodeRun {
             summary: None,
             completion: None,
             turn_envelope: None,
+            thinking_traces: Vec::new(),
             created_at_ms: unix_epoch_ms(),
             started_at_ms: None,
             completed_at_ms: None,
@@ -142,6 +174,10 @@ impl WorkflowNodeRun {
 
     pub fn turn_envelope(&self) -> Option<&WorkflowTurnEnvelope> {
         self.turn_envelope.as_ref()
+    }
+
+    pub fn thinking_traces(&self) -> &[WorkflowNodeThinkingTrace] {
+        &self.thinking_traces
     }
 
     pub fn has_valid_pending_final_output(&self) -> bool {
@@ -189,6 +225,22 @@ impl WorkflowNodeRun {
 
     pub fn set_turn_envelope(&mut self, turn_envelope: Option<WorkflowTurnEnvelope>) {
         self.turn_envelope = turn_envelope;
+    }
+
+    pub fn add_thinking_trace(
+        &mut self,
+        message: impl Into<String>,
+    ) -> Option<WorkflowNodeThinkingTrace> {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return None;
+        }
+        let trace = WorkflowNodeThinkingTrace::new(
+            format!("{}-thinking-{}", self.id, self.thinking_traces.len() + 1),
+            message,
+        );
+        self.thinking_traces.push(trace.clone());
+        Some(trace)
     }
 
     pub fn resume(&mut self) {
