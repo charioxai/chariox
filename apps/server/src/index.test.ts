@@ -1240,6 +1240,42 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
   }
 })
 
+test("human HTTP status page renders split trace viewer and sandboxed HTML output support", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/*",
+    methods: ["GET"],
+    parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
+  }, {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-html",
+        status: "Completed",
+        final_output: {
+          message: JSON.stringify({
+            kind: "html",
+            html: "<!doctype html><html><body><main>dashboard</main></body></html>",
+          }),
+        },
+      },
+    }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/dashboard", headers: { accept: "text/html" } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /class="split-viewer"/)
+    assert.match(response.body, /id="trace-feed"/)
+    assert.match(response.body, /events\.addEventListener\('trace'/)
+    assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals'\)/)
+    assert.match(response.body, /frame\.srcdoc = html/)
+  } finally {
+    await app.close()
+  }
+})
+
 test("human HTTP queued browser GET opens an invocation SSE subscription", async () => {
   const { app } = buildServer({
     ...baseConfig,

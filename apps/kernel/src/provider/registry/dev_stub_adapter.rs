@@ -126,6 +126,7 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             1841,
             1842,
         )),
+        "workflow-html-final-node" => Some(dev_stub_workflow_html_final_script()),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
@@ -142,9 +143,27 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
             | "workflow-drill-node-2"
             | "workflow-single-turn-node"
             | "workflow-intermediate-node"
+            | "workflow-html-final-node"
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
             | "large-output-drill"
+    )
+}
+
+fn dev_stub_workflow_html_final_script() -> String {
+    let html = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><style>body{margin:0;font-family:Inter,system-ui,sans-serif;background:#101418;color:#f7fbff}.dashboard{min-height:100vh;padding:28px;display:grid;gap:18px;grid-template-columns:repeat(3,minmax(0,1fr))}.tile{border:1px solid rgba(255,255,255,.2);border-radius:12px;padding:18px;background:linear-gradient(135deg,#ff4d6d,#2ec4b6)}.wide{grid-column:span 2;background:linear-gradient(135deg,#7b2ff7,#f107a3)}h1{grid-column:1/-1;margin:0;font-size:32px}.metric{font-size:42px;font-weight:800}@media(max-width:760px){.dashboard{grid-template-columns:1fr}.wide{grid-column:auto}}</style></head><body><main class="dashboard"><h1>Vibrant Workflow Dashboard</h1><section class="tile wide"><p>Revenue pulse</p><div class="metric">$84.2K</div></section><section class="tile"><p>Conversion</p><div class="metric">18%</div></section><section class="tile"><p>Latency</p><div class="metric">42ms</div></section><section class="tile"><p>Users</p><div class="metric">9,481</div></section></main></body></html>"#;
+    let payload = serde_json::json!({
+        "summary": "generated vibrant dashboard html",
+        "output": {
+            "message": {
+                "kind": "html",
+                "html": html
+            }
+        }
+    })
+    .to_string();
+    format!(
+        "stty -echo 2>/dev/null || true; printed=0; while IFS= read -r _line; do if [ \"$printed\" -eq 0 ]; then printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; printed=1; fi; done"
     )
 }
 

@@ -422,6 +422,85 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
   }
 }
 
+async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000 }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) {
+    logStep('browser_html_final_screenshot_skipped', { reason: 'chrome-not-found' })
+    return
+  }
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(root, 'chrome-html-final-profile')
+  const screenshotPath = path.join(root, 'human-http-html-final.png')
+  await mkdir(userDataDir, { recursive: true })
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    process.env,
+    'chrome-human-http-html-final-publication',
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, 'about:blank', chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
+    await cdp.send('Page.navigate', { url })
+    const finalState = await waitForBrowserHtmlFinalOutput(cdp, timeoutMs)
+    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error('browser HTML final screenshot was empty')
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    logStep('browser_html_final_screenshot_ok', {
+      screenshotPath,
+      status: finalState.status,
+      traceCount: finalState.traceCount,
+    })
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+  }
+}
+
+async function waitForBrowserHtmlFinalOutput(cdp, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const status = document.querySelector('#status')?.textContent?.trim() || '';
+        const iframe = document.querySelector('#html-output iframe');
+        const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
+        const traceCount = document.querySelectorAll('#trace-feed .trace-item').length;
+        return {
+          status,
+          iframeSrcdoc,
+          traceCount,
+          ok: status === 'Completed' && iframeSrcdoc.includes('Vibrant Workflow Dashboard') && traceCount > 0,
+        };
+      })()`,
+    })
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.ok) return lastState
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  throw new Error(`browser did not render HTML final workflow output: ${JSON.stringify(lastState)}`)
+}
+
 async function runHumanHttpRootFormBrowserDrill({ baseUrl, root, timeoutMs = 30_000 }) {
   const chromePath = await findChromeExecutable()
   if (!chromePath) {
@@ -909,6 +988,7 @@ async function waitForProviderRunReady(client, providerRunId) {
 }
 
 async function createDeterministicPublicationSession(client, sessionIds, options) {
+  const model = options.model ?? 'workflow-intermediate-node'
   const session = variant(
     await client.send(createSessionRequest(options.workspace, options.workspace, options.sessionAlias)),
     'SessionCreated',
@@ -916,11 +996,11 @@ async function createDeterministicPublicationSession(client, sessionIds, options
   sessionIds.push(session.id)
   await client.send(attachToSessionRequest(session.id, `${options.attachAlias}-${process.pid}`))
   const agent = variant(
-    await client.send(spawnAgentRequest(session.id, 'dev-stub', options.agentAlias, 'workflow-intermediate-node', options.workspace, 'low')),
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', options.agentAlias, model, options.workspace, 'low')),
     'AgentSpawned',
   ).agent
   const providerRun = variant(
-    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-intermediate-node', 'low', agent.id)),
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', model, 'low', agent.id)),
     'ProviderRunLaunchAccepted',
   ).provider_run
   await waitForProviderRunReady(client, providerRun.id)
@@ -933,7 +1013,9 @@ async function createDeterministicPublicationSession(client, sessionIds, options
     'Complete this publication drill workflow with the deterministic final output envelope emitted by the dev stub.',
   ))
   await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, node.id, true))
-  await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, node.id, true))
+  if (model === 'workflow-intermediate-node') {
+    await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, node.id, true))
+  }
   const endpoint = variant(
     await client.send(createWorkflowEndpointRequest(session.id, workflow.id, node.id, options.endpointAlias)),
     'WorkflowEndpointCreated',
@@ -945,11 +1027,14 @@ async function createDeterministicPublicationSession(client, sessionIds, options
       methods: options.methods,
       transport: { kind: options.transportKind },
       parser: { kind: 'json' },
+      traceExposure: options.traceExposure === 'all'
+        ? { nodes: { [node.id]: ['output_summary', 'assistant_messages', 'tool_use'] } }
+        : options.traceExposure ?? null,
       mode: 'async',
     })),
     'WorkflowPublicationCreated',
   ).publication
-  return { session, publication }
+  return { session, workflow, node, agent, providerRun, endpoint, publication }
 }
 
 async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
@@ -1152,6 +1237,7 @@ async function main() {
   const websocketTunnelWorkspace = path.join(root, 'websocket-tunnel-workspace')
   const browserWorkspace = path.join(root, 'browser-workspace')
   const browserRootWorkspace = path.join(root, 'browser-root-workspace')
+  const browserHtmlWorkspace = path.join(root, 'browser-html-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const watchdogWorkspace = path.join(root, 'watchdog-workspace')
   const home = path.join(root, 'home')
@@ -1203,6 +1289,7 @@ async function main() {
     await mkdir(websocketTunnelWorkspace, { recursive: true })
     await mkdir(browserWorkspace, { recursive: true })
     await mkdir(browserRootWorkspace, { recursive: true })
+    await mkdir(browserHtmlWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(watchdogWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -1277,6 +1364,7 @@ async function main() {
         methods: ['POST'],
         transport: { kind: 'api_sse_json' },
         parser: { kind: 'json' },
+        traceExposure: { nodes: { [node.id]: ['output_summary', 'assistant_messages', 'tool_use'] } },
         mode: 'async',
       })),
       'WorkflowPublicationCreated',
@@ -1319,6 +1407,7 @@ async function main() {
         methods: ['POST'],
         transport: { kind: 'api_sse_json' },
         parser: { kind: 'json' },
+        traceExposure: { nodes: { [apiSseNode.id]: ['output_summary', 'assistant_messages', 'tool_use'] } },
         mode: 'async',
       })),
       'WorkflowPublicationCreated',
@@ -1335,6 +1424,7 @@ async function main() {
       route: '/invoke',
       methods: ['POST'],
       transportKind: 'api_sse_json',
+      traceExposure: 'all',
     })
     logStep('create_websocket_session')
     const websocketSession = variant(
@@ -1373,6 +1463,7 @@ async function main() {
         methods: ['GET'],
         transport: { kind: 'websocket_json' },
         parser: { kind: 'json' },
+        traceExposure: { nodes: { [websocketNode.id]: ['output_summary', 'assistant_messages', 'tool_use'] } },
         mode: 'async',
       })),
       'WorkflowPublicationCreated',
@@ -1389,6 +1480,7 @@ async function main() {
       route: '/.well-known/arroba/publication/ws',
       methods: ['GET'],
       transportKind: 'websocket_json',
+      traceExposure: 'all',
     })
     logStep('create_browser_session')
     const browserSession = variant(
@@ -1427,6 +1519,7 @@ async function main() {
         methods: ['GET'],
         transport: { kind: 'human_http' },
         parser: { kind: 'path_template', template: '/final/:task' },
+        traceExposure: { nodes: { [browserNode.id]: ['output_summary', 'assistant_messages', 'tool_use'] } },
         mode: 'async',
       })),
       'WorkflowPublicationCreated',
@@ -1443,6 +1536,22 @@ async function main() {
       route: '/final/*',
       methods: ['GET'],
       transportKind: 'human_http',
+      traceExposure: 'all',
+    })
+    logStep('create_browser_html_final_session')
+    const browserHtml = await createDeterministicPublicationSession(client, sessionIds, {
+      workspace: browserHtmlWorkspace,
+      sessionAlias: 'publication-drill-human-http-html-final',
+      attachAlias: 'publication-drill-human-http-html-final',
+      agentAlias: 'human-http-html-final',
+      workflowAlias: 'published-human-http-html-final',
+      endpointAlias: 'browser-html',
+      publicationAlias: 'public_human_http_html_final',
+      route: '/dashboard/*',
+      methods: ['GET'],
+      transportKind: 'human_http',
+      model: 'workflow-html-final-node',
+      traceExposure: 'all',
     })
     logStep('create_mcp_session')
     const mcpSession = variant(
@@ -1480,6 +1589,7 @@ async function main() {
         methods: ['POST'],
         transport: { kind: 'mcp' },
         parser: { kind: 'json' },
+        traceExposure: { nodes: { [mcpNode.id]: ['output_summary', 'assistant_messages'] } },
         mode: 'sync',
       })),
       'WorkflowPublicationCreated',
@@ -1607,9 +1717,9 @@ async function main() {
       throw new Error(`expected browser root form artifact upload input, got: ${rootHtml.slice(0, 300)}`)
     }
     const browserResponse = await fetch(`${gatewayUrl}/qa/browser-publication`, { headers: { accept: 'text/html' } })
-    const browserHtml = await browserResponse.text()
-    if (browserResponse.status !== 200 || !browserHtml.includes('EventSource') || !browserHtml.includes("addEventListener('queued'")) {
-      throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserHtml.slice(0, 200)}`)
+    const browserInvocationHtml = await browserResponse.text()
+    if (browserResponse.status !== 200 || !browserInvocationHtml.includes('EventSource') || !browserInvocationHtml.includes("addEventListener('queued'")) {
+      throw new Error(`expected browser invocation HTML with SSE subscription, got ${browserResponse.status}: ${browserInvocationHtml.slice(0, 200)}`)
     }
 
     logStep('invoke_browser_html_tunnel')
@@ -1737,6 +1847,7 @@ async function main() {
       || !apiSseFinalEvents.includes('queued')
       || !apiSseFinalEvents.includes('started')
       || !apiSseFinalEvents.includes('partial')
+      || !apiSseFinalEvents.includes('trace')
       || !apiSseFinalEvents.includes('final')
       || (!apiSseFinalBody.includes('"value":1841') && !apiSseFinalBody.includes('\\"value\\":1841'))
       || (!apiSseFinalBody.includes('"value":1842') && !apiSseFinalBody.includes('\\"value\\":1842'))
@@ -1744,6 +1855,9 @@ async function main() {
       const errorIndex = apiSseFinalBody.lastIndexOf('event: error')
       const diagnostic = errorIndex >= 0 ? apiSseFinalBody.slice(errorIndex, errorIndex + 800) : apiSseFinalBody.slice(0, 2_000)
       throw new Error(`expected API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
+    }
+    if (!apiSseFinalBody.includes('"agent_alias":"api-sse-final"')) {
+      throw new Error(`expected API SSE trace event tagged with agent alias, got ${apiSseFinalBody.slice(0, 2_000)}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
     logStep('invoke_api_sse_final_repeat')
@@ -1759,6 +1873,7 @@ async function main() {
       || !apiSseFinalRepeatEvents.includes('queued')
       || !apiSseFinalRepeatEvents.includes('started')
       || !apiSseFinalRepeatEvents.includes('partial')
+      || !apiSseFinalRepeatEvents.includes('trace')
       || !apiSseFinalRepeatEvents.includes('final')
       || (!apiSseFinalRepeatBody.includes('"value":1841') && !apiSseFinalRepeatBody.includes('\\"value\\":1841'))
       || (!apiSseFinalRepeatBody.includes('"value":1842') && !apiSseFinalRepeatBody.includes('\\"value\\":1842'))
@@ -1812,6 +1927,7 @@ async function main() {
       || !apiSseFinalTunnelEvents.includes('queued')
       || !apiSseFinalTunnelEvents.includes('started')
       || !apiSseFinalTunnelEvents.includes('partial')
+      || !apiSseFinalTunnelEvents.includes('trace')
       || !apiSseFinalTunnelEvents.includes('final')
       || (!apiSseFinalTunnelBody.includes('"value":1841') && !apiSseFinalTunnelBody.includes('\\"value\\":1841'))
       || (!apiSseFinalTunnelBody.includes('"value":1842') && !apiSseFinalTunnelBody.includes('\\"value\\":1842'))
@@ -1851,11 +1967,15 @@ async function main() {
       || !webSocketFinalTypes.includes('queued')
       || !webSocketFinalTypes.includes('started')
       || !webSocketFinalTypes.includes('partial')
+      || !webSocketFinalTypes.includes('trace')
       || !webSocketFinalTypes.includes('final')
       || (!webSocketFinalBody.includes('"value":1841') && !webSocketFinalBody.includes('\\"value\\":1841'))
       || (!webSocketFinalBody.includes('"value":1842') && !webSocketFinalBody.includes('\\"value\\":1842'))
     ) {
       throw new Error(`expected websocket accepted/queued/started/partial/final with deterministic output, got ${JSON.stringify(webSocketFinal.messages)}`)
+    }
+    if (!webSocketFinalBody.includes('"agent_alias":"websocket-final"')) {
+      throw new Error(`expected websocket trace event tagged with agent alias, got ${webSocketFinalBody.slice(0, 2_000)}`)
     }
     logStep('websocket_final_ok', { events: webSocketFinalTypes })
     await stopProcess(gateway)
@@ -1898,6 +2018,7 @@ async function main() {
       || !webSocketTunnelTypes.includes('queued')
       || !webSocketTunnelTypes.includes('started')
       || !webSocketTunnelTypes.includes('partial')
+      || !webSocketTunnelTypes.includes('trace')
       || !webSocketTunnelTypes.includes('final')
       || (!webSocketTunnelBody.includes('"value":1841') && !webSocketTunnelBody.includes('\\"value\\":1841'))
       || (!webSocketTunnelBody.includes('"value":1842') && !webSocketTunnelBody.includes('\\"value\\":1842'))
@@ -1953,6 +2074,29 @@ async function main() {
     await stopProcess(gateway)
     gateway = null
 
+    logStep('invoke_human_http_html_final_browser')
+    gateway = startProcess(
+      process.execPath,
+      [path.join(repoRoot, 'apps/server/dist/index.js')],
+      {
+        ...env,
+        HOST: '127.0.0.1',
+        PORT: String(gatewayPort),
+        ARROBA_KERNEL_URL: kernelUrl,
+        ARROBA_PUBLICATION_SESSION_ID: browserHtml.session.id,
+        ARROBA_PUBLICATION_ID: browserHtml.publication.id,
+      },
+      'gateway-human-http-html-final',
+    )
+    await waitForGateway(gatewayUrl)
+    await runHumanHttpHtmlFinalBrowserDrill({
+      url: `${gatewayUrl}/dashboard/generate%20a%20dashboard%20with%20vibrant%20colours`,
+      root,
+      timeoutMs: 90_000,
+    })
+    await stopProcess(gateway)
+    gateway = null
+
     logStep('invoke_mcp')
     gateway = startProcess(
       process.execPath,
@@ -1996,6 +2140,9 @@ async function main() {
       || (!mcpText.includes('"value":1842') && !mcpText.includes('\\"value\\":1842'))
     ) {
       throw new Error(`expected MCP tools/call final output, got ${mcpCallResponse.status}: ${JSON.stringify(mcpCallBody).slice(0, 1_200)}`)
+    }
+    if (!JSON.stringify(mcpCallBody.result?.structuredContent?.traces ?? []).includes('"agent_alias":"mcp-final"')) {
+      throw new Error(`expected MCP structuredContent traces tagged with agent alias, got ${JSON.stringify(mcpCallBody).slice(0, 1_200)}`)
     }
     logStep('mcp_ok', { tool: mcpToolName, workflowRunId: mcpCallBody.result?.structuredContent?.workflow_run_id ?? null })
     await stopProcess(gateway)
