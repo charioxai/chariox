@@ -163,7 +163,7 @@ fn dev_stub_workflow_html_final_script() -> String {
     })
     .to_string();
     format!(
-        "stty -echo 2>/dev/null || true; printed=0; while IFS= read -r _line; do if [ \"$printed\" -eq 0 ]; then printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; printed=1; fi; done"
+        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
     )
 }
 
@@ -194,7 +194,7 @@ fn dev_stub_workflow_read_through_script(summary: &str, value: i64) -> String {
     let payload =
         format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
     format!(
-        "stty -echo 2>/dev/null || true; printed=0; while IFS= read -r _line; do if [ \"$printed\" -eq 0 ]; then printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; printed=1; fi; done"
+        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
     )
 }
 
