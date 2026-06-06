@@ -224,8 +224,9 @@ pub(super) fn compose_command_router(
         prompt_state_owner,
         prompt_id_allocator,
     } = router_projection_stores(&app);
-    let runtime_state = KernelRuntimeState::new_with_owned_state(
+    let runtime_state = KernelRuntimeState::new_with_owned_state_and_lanes(
         Arc::clone(&app),
+        provider_runtime_lanes.clone(),
         config_projection.clone(),
         session_store.clone(),
         agent_store.clone(),

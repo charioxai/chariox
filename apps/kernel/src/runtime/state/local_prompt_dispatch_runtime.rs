@@ -96,10 +96,12 @@ impl KernelRuntimeState {
             &dispatch.source_attachment_id,
             &dispatch.prompt,
         );
+        let prompt_with_hidden_context =
+            join_hidden_context(&dispatch.hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
             &dispatch.session_id,
             &dispatch.agent_id,
-            &prompt_with_handoff,
+            &prompt_with_hidden_context,
         )?;
         self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
             .await;
@@ -160,12 +162,7 @@ impl KernelRuntimeState {
             self.spawn_detached_workflow_provider_launch(provider_run_id);
         }
         for dispatch in dispatches.local {
-            let state = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                    let _ = state.fail_prompt_dispatch(dispatch, error).await;
-                }
-            });
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
         }
         for dispatch in dispatches.remote {
             self.spawn_remote_prompt_dispatch(dispatch);

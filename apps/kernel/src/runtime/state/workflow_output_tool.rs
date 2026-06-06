@@ -132,6 +132,25 @@ impl KernelRuntimeOwnedState {
                 )?
         };
         let mut dispatches = WorkflowPromptDispatches::default();
+        if is_final && warning.is_none() && workflow_run.publication_invocation().is_some() {
+            let update = self.session_store.write().complete_workflow_node_run(
+                &context.session_id,
+                &workflow_run_id,
+                &context.workflow_node_run_id,
+                None,
+                self.workflow_max_turns(&context.session_id),
+            )?;
+            dispatches.extend(self.workflow_prepare_dispatches(
+                &context.session_id,
+                &workflow_run_id,
+                &update.dispatches,
+            ));
+            dispatches.extend(self.workflow_settle_completed_publication_prompt(
+                &context.session_id,
+                &workflow_run_id,
+                &context.workflow_node_run_id,
+            )?);
+        }
         if !is_final && warning.is_none() {
             let update = self
                 .session_store
@@ -188,5 +207,84 @@ impl KernelRuntimeOwnedState {
             },
             dispatches,
         ))
+    }
+
+    fn workflow_settle_completed_publication_prompt(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        if workflow_run.publication_invocation().is_none()
+            || !matches!(
+                workflow_run.status(),
+                crate::session::WorkflowRunStatus::Completed
+                    | crate::session::WorkflowRunStatus::Failed
+                    | crate::session::WorkflowRunStatus::Stopped
+            )
+        {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let Some(node_run) = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+        else {
+            return Ok(WorkflowPromptDispatches::default());
+        };
+        let agent_id = node_run.agent_id().to_string();
+        let session = self.session_store.get_session(session_id)?;
+        let Some(active_prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+        else {
+            return Ok(WorkflowPromptDispatches::default());
+        };
+        if active_prompt.workflow_run_id() != Some(workflow_run_id)
+            || active_prompt.workflow_node_run_id() != Some(workflow_node_run_id)
+        {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let provider_run_id = self
+            .provider_store
+            .get_run_for_agent(session_id, &agent_id)
+            .map(|run| run.id().to_string());
+        let next_queued_prompt = provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
+            .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+            .and_then(|_| {
+                self.prompt_state_owner
+                    .peek_next_queued_prompt(&session, &agent_id)
+            });
+        let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
+            self.complete_local_prompt_with_queued_advance(
+                session_id,
+                &agent_id,
+                provider_run_id.as_deref(),
+                next_queued_prompt,
+            )?
+        } else {
+            self.complete_local_prompt_without_advance(
+                session_id,
+                &agent_id,
+                provider_run_id.as_deref(),
+            )?
+        };
+        let mut dispatches = WorkflowPromptDispatches::default();
+        if let Some(mut completion) = completion {
+            if let Some(dispatch) = completion.dispatch.take() {
+                dispatches.local.push(dispatch);
+            }
+            if completion.released_claim {
+                dispatches.extend(self.workflow_retry_blocked_claims());
+            }
+        }
+        dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
+        Ok(dispatches)
     }
 }

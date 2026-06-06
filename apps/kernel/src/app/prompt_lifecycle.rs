@@ -121,12 +121,22 @@ impl<'a> ProviderPromptDispatcher<'a> {
             return Ok(());
         }
 
+        let provider_prompt = join_hidden_context(hidden_system_context, prompt);
         crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
             session_id,
             provider_run_id,
             attachment_id,
-            prompt.as_bytes(),
+            provider_prompt.as_bytes(),
         )
+    }
+}
+
+fn join_hidden_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        (first, "") => first.to_string(),
+        ("", second) => second.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
     }
 }
 

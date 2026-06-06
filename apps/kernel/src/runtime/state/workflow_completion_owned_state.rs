@@ -195,15 +195,6 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 )?;
         }
-        let claim_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
-            self.provider_store
-                .get_run_for_agent(session_id, prompt.target_agent_id())
-                .map(|run| run.id().to_string())
-        });
-        let released_claim = claim_provider_run_id
-            .as_deref()
-            .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
-            .unwrap_or(false);
         let released_workflow_claim = self.release_workflow_node_workspace_claim(
             session_id,
             workflow_run_id,
@@ -211,7 +202,7 @@ impl KernelRuntimeOwnedState {
         );
         let mut dispatches =
             self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
-        if released_claim || released_workflow_claim {
+        if released_workflow_claim {
             dispatches.extend(self.workflow_retry_blocked_claims());
         }
         let state_suffix = match update.workflow_run.status() {
@@ -237,7 +228,7 @@ impl KernelRuntimeOwnedState {
                 | crate::session::WorkflowRunStatus::Failed
                 | crate::session::WorkflowRunStatus::Stopped
         ) {
-            self.workflow_maybe_start_next_queued_prompt(session_id);
+            dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
         let _ = self.session_snapshot(session_id)?;
         Ok(dispatches)

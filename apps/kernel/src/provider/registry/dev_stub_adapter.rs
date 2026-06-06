@@ -193,7 +193,7 @@ const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
 const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
 const finalPayload = {payload_json};
 const intermediateOutput = {intermediate_json};
-let emittedTokenOccurrences = 0;
+const emittedDeliveryTokens = new Set();
 let emittedWithoutToken = false;
 let promptBuffer = "";
 let fallbackTimer = null;
@@ -229,6 +229,9 @@ function callRuntimeTool(name, args) {{
         if (response.result && response.result.isError) return reject(new Error(JSON.stringify(response.result)));
         resolve(response.result);
       }});
+    }});
+    req.setTimeout(3000, () => {{
+      req.destroy(new Error(`runtime MCP ${{name}} timeout`));
     }});
     req.on("error", reject);
     req.end(body);
@@ -269,14 +272,17 @@ async function emitOnce() {{
     clearTimeout(fallbackTimer);
     fallbackTimer = null;
   }}
-  if (tokenMatches.length <= emittedTokenOccurrences) return;
-  emittedTokenOccurrences = tokenMatches.length;
+  if (emittedDeliveryTokens.has(deliveryToken)) return;
+  emittedDeliveryTokens.add(deliveryToken);
   emitForDeliveryToken(deliveryToken).catch((error) => {{
     process.stdout.write("dev-stub intermediate error: " + error.message + "\n");
   }});
 }}
 
 process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {{
+  process.stdin.setRawMode(true);
+}}
 process.stdin.on("data", (chunk) => {{
   promptBuffer += chunk;
   emitOnce().catch((error) => {{

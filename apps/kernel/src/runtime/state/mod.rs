@@ -43,6 +43,7 @@ mod provider_run_read_state;
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: ProviderRunOperationLanes,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -182,8 +183,61 @@ mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
 
 impl KernelRuntimeState {
+    #[allow(dead_code)]
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
+        config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+        session_store: SessionStateStore,
+        agent_store: AgentServiceStore,
+        attachment_store: AttachmentServiceStore,
+        provider_store: ProviderProcessServiceStore,
+        provider_process_tracking: ProviderProcessTrackingStore,
+        slice_store: crate::slice::SliceStore,
+        session_projection: crate::runtime::projection::SessionStateProjectionStore,
+        provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
+        history_store: SessionHistoryStore,
+        operational_history_store: OperationalHistoryStore,
+        durable_state_store: DurableKernelStateStore,
+        history_projection: crate::runtime::projection::SessionHistoryProjectionStore,
+        prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
+        active_turns: ActiveTurnStore,
+        prompt_activity: PromptActivityStore,
+        prompt_workspace_claims: PromptWorkspaceClaimStore,
+        structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
+        terminal_stream: crate::terminal::TerminalStreamStore,
+        workflow_design_events: WorkflowDesignEventStore,
+        workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
+    ) -> Self {
+        Self::new_with_owned_state_and_lanes(
+            app,
+            ProviderRunOperationLanes::default(),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            history_projection,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            workspace_coordinator,
+        )
+    }
+
+    pub(crate) fn new_with_owned_state_and_lanes(
+        app: Arc<Mutex<DaemonApp>>,
+        provider_runtime_lanes: ProviderRunOperationLanes,
         config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
         session_store: SessionStateStore,
         agent_store: AgentServiceStore,
@@ -224,6 +278,7 @@ impl KernelRuntimeState {
             };
         Self {
             app,
+            provider_runtime_lanes,
             owned: KernelRuntimeOwnedState {
                 config_projection,
                 session_store,

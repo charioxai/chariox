@@ -999,6 +999,42 @@ async function waitForPublicationStatusLatestOutput(gatewayUrl, expectedMessage)
   throw new Error(`expected publication status latest final output ${expectedMessage}, got ${JSON.stringify(lastStatus)}`)
 }
 
+async function collectPublicationInvocationDiagnostic(client, {
+  sessionId,
+  workflowId,
+  agentId,
+  providerRunId,
+}) {
+  const diagnostic = {}
+  try {
+    const session = variant(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
+    diagnostic.prompt_state = session?.prompt_states?.[agentId] ?? null
+    diagnostic.active_provider_run_id = session?.active_provider_run_id ?? null
+  } catch (error) {
+    diagnostic.session_error = error instanceof Error ? error.message : String(error)
+  }
+  try {
+    diagnostic.provider_run = variant(await client.send(getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run ?? null
+  } catch (error) {
+    diagnostic.provider_run_error = error instanceof Error ? error.message : String(error)
+  }
+  try {
+    diagnostic.workflow_runs = variant(
+      await client.send(listWorkflowRunsRequest(sessionId, workflowId)),
+      'WorkflowRunsListed',
+    ).workflow_runs?.slice(0, 3) ?? []
+  } catch (error) {
+    diagnostic.workflow_runs_error = error instanceof Error ? error.message : String(error)
+  }
+  try {
+    const health = variant(await client.send(getDaemonHealthRequest()), 'DaemonHealth')
+    diagnostic.active_operation_claims = health.projection?.workspace_coordination?.active_operation_claims ?? []
+  } catch (error) {
+    diagnostic.health_error = error instanceof Error ? error.message : String(error)
+  }
+  return diagnostic
+}
+
 async function runLivePublicationManifestMode({
   manifestPath,
   client,
@@ -1710,6 +1746,34 @@ async function main() {
       throw new Error(`expected API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalResponse.status} ${JSON.stringify(apiSseFinalEvents)}: ${diagnostic}`)
     }
     logStep('api_sse_final_ok', { events: apiSseFinalEvents })
+    logStep('invoke_api_sse_final_repeat')
+    const apiSseFinalRepeatResponse = await fetch(`${gatewayUrl}/invoke`, {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'api-sse-final-publication-repeat' }),
+    })
+    const apiSseFinalRepeatBody = await apiSseFinalRepeatResponse.text()
+    const apiSseFinalRepeatEvents = sseEventNames(apiSseFinalRepeatBody)
+    if (
+      apiSseFinalRepeatResponse.status !== 200
+      || !apiSseFinalRepeatEvents.includes('queued')
+      || !apiSseFinalRepeatEvents.includes('started')
+      || !apiSseFinalRepeatEvents.includes('partial')
+      || !apiSseFinalRepeatEvents.includes('final')
+      || (!apiSseFinalRepeatBody.includes('"value":1841') && !apiSseFinalRepeatBody.includes('\\"value\\":1841'))
+      || (!apiSseFinalRepeatBody.includes('"value":1842') && !apiSseFinalRepeatBody.includes('\\"value\\":1842'))
+    ) {
+      const errorIndex = apiSseFinalRepeatBody.lastIndexOf('event: error')
+      const diagnostic = errorIndex >= 0 ? apiSseFinalRepeatBody.slice(errorIndex, errorIndex + 800) : apiSseFinalRepeatBody.slice(0, 2_000)
+      const runtimeDiagnostic = await collectPublicationInvocationDiagnostic(client, {
+        sessionId: apiSseSession.id,
+        workflowId: apiSseWorkflow.id,
+        agentId: apiSseAgent.id,
+        providerRunId: apiSseProviderRun.id,
+      })
+      throw new Error(`expected repeated API SSE queued/started/partial/final with deterministic output, got ${apiSseFinalRepeatResponse.status} ${JSON.stringify(apiSseFinalRepeatEvents)}: ${diagnostic}; runtime=${JSON.stringify(runtimeDiagnostic)}`)
+    }
+    logStep('api_sse_final_repeat_ok', { events: apiSseFinalRepeatEvents })
     await stopProcess(gateway)
     gateway = null
 

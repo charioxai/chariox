@@ -78,14 +78,17 @@ impl KernelRuntimeOwnedState {
         ))
     }
 
-    pub(super) fn workflow_maybe_start_next_queued_prompt(&self, session_id: &str) {
+    pub(super) fn workflow_maybe_start_next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> WorkflowPromptDispatches {
         let queued_prompt = match self
             .session_store
             .write()
             .dequeue_next_workflow_prompt(session_id)
         {
             Ok(Some(queued_prompt)) => queued_prompt,
-            Ok(None) => return,
+            Ok(None) => return WorkflowPromptDispatches::default(),
             Err(error) => {
                 self.record_notice(
                     session_id,
@@ -94,7 +97,7 @@ impl KernelRuntimeOwnedState {
                         .list_session_attachment_ids(session_id),
                     format!("Failed to start queued workflow prompt: {error}"),
                 );
-                return;
+                return WorkflowPromptDispatches::default();
             }
         };
         if let Some(watchdog_id) = queued_prompt.watchdog_id() {
@@ -110,7 +113,7 @@ impl KernelRuntimeOwnedState {
                     workflow,
                     endpoint,
                 },
-                _dispatches,
+                dispatches,
             )) => {
                 self.record_notice(
                     session_id,
@@ -124,6 +127,7 @@ impl KernelRuntimeOwnedState {
                         endpoint.id()
                     ),
                 );
+                return dispatches;
             }
             Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
             Err(error) => {
@@ -146,5 +150,6 @@ impl KernelRuntimeOwnedState {
                 );
             }
         }
+        WorkflowPromptDispatches::default()
     }
 }
