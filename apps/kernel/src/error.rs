@@ -126,6 +126,8 @@ pub enum DaemonError {
         reference: String,
         message: &'static str,
     },
+    #[error("workflow publication trace exposure is invalid: {message}")]
+    InvalidWorkflowPublicationTraceExposure { message: String },
     #[error("workflow run `{workflow_run_id}` cannot perform `{operation}` while {status:?}")]
     InvalidWorkflowRunState {
         workflow_run_id: String,

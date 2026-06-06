@@ -24,6 +24,8 @@ pub struct WorkflowPublicationDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    trace_exposure: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<String>,
@@ -50,6 +52,7 @@ impl WorkflowPublicationDefinition {
         transport: Option<Value>,
         parser: Option<Value>,
         input_schema: Option<Value>,
+        trace_exposure: Option<Value>,
         mode: Option<String>,
         created_by_user_id: impl Into<String>,
     ) -> Self {
@@ -67,6 +70,7 @@ impl WorkflowPublicationDefinition {
             transport,
             parser,
             input_schema,
+            trace_exposure,
             mode,
             status: None,
             open_url: None,
@@ -119,6 +123,10 @@ impl WorkflowPublicationDefinition {
 
     pub fn deployment(&self) -> Option<&Value> {
         self.deployment.as_ref()
+    }
+
+    pub fn trace_exposure(&self) -> Option<&Value> {
+        self.trace_exposure.as_ref()
     }
 
     pub fn disable(&mut self) {

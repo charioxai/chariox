@@ -8,6 +8,10 @@ import {
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+} from "./publication-trace-events.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -137,7 +141,7 @@ async function toolsCallResponse(
   const finalResult = deps.invokeWorkflow
     ? result
     : await resolveQueuedOrRunningResult(publication, invocation.request_id, result)
-  return jsonRpcResult(request.id, workflowResultToMcpToolResult(finalResult))
+  return jsonRpcResult(request.id, workflowResultToMcpToolResult(finalResult, publication))
 }
 
 async function resolveQueuedOrRunningResult(
@@ -179,10 +183,13 @@ async function waitForWorkflowRunFinal(
   return latest ?? { id: workflowRunId, status: "unknown" }
 }
 
-function workflowResultToMcpToolResult(result: WorkflowInvocationResult) {
+function workflowResultToMcpToolResult(result: WorkflowInvocationResult, publication: WorkflowPublicationConfig) {
   const workflowRun = result.workflow_run ?? null
   const finalOutput = workflowRun?.final_output ?? null
   const message = finalOutput?.message ?? (result.queued ? "workflow invocation queued" : "")
+  const traces = workflowRun
+    ? collectPublicationTraceEvents(publication, workflowRun, createPublicationTraceStreamState())
+    : []
   return {
     content: [{ type: "text", text: message }],
     structuredContent: {
@@ -192,6 +199,7 @@ function workflowResultToMcpToolResult(result: WorkflowInvocationResult) {
       status: workflowRun?.status ?? null,
       message,
       artifacts: finalOutput?.artifacts ?? [],
+      traces,
     },
     isError: workflowRun ? !isTerminalWorkflowRunStatus(workflowRun.status) || workflowRun.status !== "Completed" : result.queued === true,
   }

@@ -98,6 +98,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
             Some(serde_json::json!({"kind": "http"})),
             Some(serde_json::json!({"kind": "webhook"})),
             None,
+            None,
             Some("async".to_string()),
             "local".to_string(),
         )

@@ -5,10 +5,12 @@ import process from "node:process"
 
 import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import {
+  getSessionStateRequest,
   getWorkflowPublicationRequest,
   materializeWorkflowPublicationRequest,
 } from "@arroba/kernel-client/ipc-requests"
 import type {
+  RuntimeSession,
   WorkflowPublicationDefinition,
 } from "@arroba/kernel-client/kernel-types"
 
@@ -24,6 +26,8 @@ import type {
   KernelLookupClient,
   ParserConfig,
   PublicationHookConfig,
+  PublicationTraceContext,
+  PublicationTraceExposurePolicy,
   TlsConfig,
   WorkflowPublicationPackage,
   WorkflowPublicationRequirements,
@@ -145,6 +149,7 @@ export function publicationConfigFromPackage(
   if (!sessionId) throw new Error("publication package is missing source_session_id")
   if (!workflowId) throw new Error("publication package is missing workflow_id")
   if (!endpointId) throw new Error("publication hook is missing endpoint_id")
+  const traceExposure = validatePublicationTraceExposure(hook.trace_exposure ?? undefined, snapshot)
   const config: WorkflowPublicationConfig = {
     publication_id: hook.publication_id ?? publicationPackage.publication_id,
     session_id: sessionId,
@@ -158,6 +163,10 @@ export function publicationConfigFromPackage(
     route: hook.route ?? "/*",
     parser: hook.parser ?? { kind: "json" },
     mode: hook.mode === "async" ? "async" : "sync",
+  }
+  if (traceExposure) {
+    config.trace_exposure = traceExposure
+    config.trace_context = publicationTraceContextFromSnapshot(snapshot)
   }
   const methods = normalizeHttpMethods(hook.methods)
   if (methods) config.methods = methods
@@ -181,6 +190,14 @@ export async function loadPublicationConfigFromKernel(
       throw new Error(`unexpected workflow publication response: ${JSON.stringify(response)}`)
     }
     const config = publicationConfigFromKernelRecord(publication, kernelEndpoint)
+    if (config.trace_exposure) {
+      const sessionResponse = await ownedClient.send(getSessionStateRequest(publication.session_id))
+      const session = (sessionResponse.SessionState as { session?: RuntimeSession } | undefined)?.session
+      if (session) {
+        config.trace_context = publicationTraceContextFromSession(session, publication.workflow_id)
+        validatePublicationTraceExposureForNodeIds(config.trace_exposure, Object.keys(config.trace_context.nodes))
+      }
+    }
     await ensurePublicationRuntimeAttached(ownedClient, config)
     return config
   } finally {
@@ -194,6 +211,7 @@ export function publicationConfigFromKernelRecord(
   publication: WorkflowPublicationDefinition,
   kernelEndpoint = defaultKernelEndpoint(),
 ): WorkflowPublicationConfig {
+  const traceExposure = asTraceExposure(publication.trace_exposure)
   const config: WorkflowPublicationConfig = {
     publication_id: publication.id,
     session_id: publication.session_id,
@@ -205,6 +223,7 @@ export function publicationConfigFromKernelRecord(
     parser: asParserConfig(publication.parser) ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
+  if (traceExposure) config.trace_exposure = traceExposure
   const transport = publication.transport as { kind?: unknown } | null | undefined
   if (typeof transport?.kind === "string") config.transport = transport.kind
   const methods = normalizeHttpMethods(publication.methods)
@@ -304,12 +323,70 @@ function selectPublicationHook(hooks: PublicationHookConfig[], hookId?: string) 
   return hook
 }
 
+function publicationTraceContextFromSnapshot(snapshot: WorkflowPublicationSnapshot): PublicationTraceContext {
+  const agents = new Map((snapshot.agents ?? []).map((agent) => [agent.id, agent]))
+  const nodes = Object.fromEntries((snapshot.workflow.nodes ?? []).map((node) => {
+    const agent = agents.get(node.agent_id)
+    return [node.id, {
+      node_id: node.id,
+      node_label: node.public_label ?? node.id,
+      agent_id: node.agent_id,
+      agent_alias: agent?.alias ?? agent?.agent_ref ?? node.agent_id,
+    }]
+  }))
+  return { nodes }
+}
+
+function publicationTraceContextFromSession(session: RuntimeSession, workflowId: string): PublicationTraceContext {
+  const workflow = (session.workflows ?? []).find((candidate) => candidate.id === workflowId)
+  const agents = new Map((session.agents ?? []).map((agent) => [agent.id, agent]))
+  const nodes = Object.fromEntries((workflow?.nodes ?? []).map((node) => {
+    const agent = agents.get(node.agent_id)
+    return [node.id, {
+      node_id: node.id,
+      node_label: node.public_label ?? node.id,
+      agent_id: node.agent_id,
+      agent_alias: agent?.alias ?? agent?.agent_ref ?? node.agent_id,
+    }]
+  }))
+  return { nodes }
+}
+
+function validatePublicationTraceExposure(
+  traceExposure: PublicationTraceExposurePolicy | undefined,
+  snapshot: WorkflowPublicationSnapshot,
+) {
+  const policy = traceExposure ? asTraceExposure(traceExposure) : undefined
+  validatePublicationTraceExposureForNodeIds(policy, (snapshot.workflow.nodes ?? []).map((node) => node.id))
+  return policy
+}
+
+function validatePublicationTraceExposureForNodeIds(
+  traceExposure: PublicationTraceExposurePolicy | undefined,
+  nodeIds: string[],
+) {
+  if (!traceExposure) return
+  const allowedLevels = new Set(["output_summary", "assistant_messages", "thinking", "tool_use"])
+  const knownNodeIds = new Set(nodeIds)
+  for (const [nodeId, levels] of Object.entries(traceExposure.nodes ?? {})) {
+    if (!knownNodeIds.has(nodeId)) throw new Error(`publication trace_exposure references unknown workflow node ${nodeId}`)
+    if (!Array.isArray(levels)) throw new Error(`publication trace_exposure levels for node ${nodeId} must be an array`)
+    for (const level of levels) {
+      if (!allowedLevels.has(level)) throw new Error(`publication trace_exposure level ${level} for node ${nodeId} is unsupported`)
+    }
+  }
+}
+
 function asParserConfig(value: unknown): ParserConfig | undefined {
   return isPlainObject(value) && typeof value.kind === "string" ? value as ParserConfig : undefined
 }
 
 function asInputSchema(value: unknown): InputSchema | undefined {
   return isPlainObject(value) ? value as InputSchema : undefined
+}
+
+function asTraceExposure(value: unknown): PublicationTraceExposurePolicy | undefined {
+  return isPlainObject(value) ? value as PublicationTraceExposurePolicy : undefined
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

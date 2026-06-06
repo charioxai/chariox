@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 116
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 117
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1752,6 +1752,7 @@ export type WorkflowPublicationDefinition = {
   transport?: unknown | null
   parser?: unknown | null
   input_schema?: unknown | null
+  trace_exposure?: PublicationTraceExposurePolicy | null
   mode?: string | null
   status?: string | null
   open_url?: string | null
@@ -1759,6 +1760,16 @@ export type WorkflowPublicationDefinition = {
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type PublicationTraceLevel =
+  | "output_summary"
+  | "assistant_messages"
+  | "thinking"
+  | "tool_use"
+
+export type PublicationTraceExposurePolicy = {
+  nodes?: Record<string, PublicationTraceLevel[]>
 }
 
 export type WorkflowPublicationSnapshot = {
@@ -1938,6 +1949,7 @@ export type WorkflowRun = {
   }[]
   final_output?: {
     message: string
+    artifacts?: unknown[]
   } | null
   final_output_valid?: boolean | null
   final_output_warning?: string | null

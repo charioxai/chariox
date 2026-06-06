@@ -47,6 +47,8 @@ pub struct CreateWorkflowPublicationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_exposure: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 }
 

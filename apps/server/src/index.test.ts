@@ -15,6 +15,10 @@ import {
 } from "./index.js"
 import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+} from "./publication-trace-events.js"
 import { WebSocket } from "ws"
 
 const baseConfig: WorkflowPublicationConfig = {
@@ -26,6 +30,84 @@ const baseConfig: WorkflowPublicationConfig = {
   parser: { kind: "json" },
   mode: "sync",
 }
+
+test("publication trace events honor per-node level policy", () => {
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    trace_exposure: {
+      nodes: {
+        "node-a": ["assistant_messages", "tool_use"],
+        "node-b": ["output_summary"],
+      },
+    },
+    trace_context: {
+      nodes: {
+        "node-a": { node_id: "node-a", node_label: "Research", agent_id: "agent-a", agent_alias: "researcher" },
+        "node-b": { node_id: "node-b", node_label: "Writer", agent_id: "agent-b", agent_alias: "writer" },
+        "node-c": { node_id: "node-c", node_label: "Hidden", agent_id: "agent-c", agent_alias: "hidden" },
+      },
+    },
+  }
+  const workflowRun = {
+    id: "run-1",
+    status: "Completed",
+    node_runs: [{
+      id: "run-node-a",
+      node_id: "node-a",
+      agent_id: "agent-a-runtime",
+      status: "Completed",
+      completion: { summary: "A summary", output: { message: "A assistant output" } },
+      turn_envelope: {
+        runtime_tool_calls: [{
+          tool_name: "lookup",
+          arguments_json: "{\"q\":\"a\"}",
+          result_json: "{\"ok\":true}",
+          ok: true,
+          timestamp_ms: 10,
+        }],
+      },
+      completed_at_ms: 20,
+    }, {
+      id: "run-node-b",
+      node_id: "node-b",
+      agent_id: "agent-b-runtime",
+      status: "Completed",
+      summary: "B summary",
+      completion: { summary: "B completion" },
+      completed_at_ms: 30,
+    }, {
+      id: "run-node-c",
+      node_id: "node-c",
+      agent_id: "agent-c-runtime",
+      status: "Completed",
+      completion: { summary: "C summary", output: { message: "C assistant output" } },
+      completed_at_ms: 40,
+    }],
+    messages: [{
+      id: "message-a",
+      source_node_run_id: "run-node-a",
+      target_node_id: "node-b",
+      message_type: "handoff",
+      summary: "A handoff",
+      handoff_payload: "{\"summary\":\"A handoff\"}",
+      created_at_ms: 15,
+    }],
+  }
+
+  const state = createPublicationTraceStreamState()
+  const firstPass = collectPublicationTraceEvents(publication, workflowRun, state)
+  const secondPass = collectPublicationTraceEvents(publication, workflowRun, state)
+
+  assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
+    ["node-a", "researcher", "assistant_messages", "A handoff"],
+    ["node-a", "researcher", "assistant_messages", "A assistant output"],
+    ["node-a", "researcher", "tool_use", "lookup ok"],
+    ["node-b", "writer", "output_summary", "B completion"],
+  ])
+  assert.equal(firstPass.some((event) => event.node_id === "node-c"), false)
+  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4])
+  assert.deepEqual(secondPass, [])
+})
 
 test("GET /health returns an ok status payload", async () => {
   const { app } = buildServer(baseConfig, {

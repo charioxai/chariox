@@ -367,6 +367,7 @@ test("executeShellCommand manages workflow publications", async () => {
         transport: null,
         parser: null,
         input_schema: null,
+        trace_exposure: null,
         mode: null,
       },
     },

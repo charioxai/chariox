@@ -13,6 +13,11 @@ import {
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+  type PublicationTraceStreamState,
+} from "./publication-trace-events.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -47,6 +52,7 @@ type WebSocketConnectionState = {
   pendingArtifacts: Map<string, WebSocketArtifactUpload>
   readyArtifacts: Map<string, WebSocketReadyArtifact>
   partialIds: Set<string>
+  traces: PublicationTraceStreamState
   started: boolean
 }
 
@@ -79,6 +85,7 @@ async function handlePublicationWebSocket(
     pendingArtifacts: new Map(),
     readyArtifacts: new Map(),
     partialIds: new Set(),
+    traces: createPublicationTraceStreamState(),
     started: false,
   }
   webSocket.on("message", (data) => {
@@ -128,6 +135,7 @@ async function handlePublicationWebSocketMessage(
     } else if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
       sendStarted(webSocket, result.workflow_run, state)
       sendPartialOutputs(webSocket, result.workflow_run, state)
+      sendTraceOutputs(webSocket, publication, result.workflow_run, state)
       sendWebSocketJson(webSocket, { type: "final", workflow_run: result.workflow_run })
     }
   } catch (error) {
@@ -153,6 +161,7 @@ async function streamQueuedWorkflowRun(
     sendStarted(webSocket, workflowRun, state)
     sendWebSocketJson(webSocket, { type: "status", workflow_run: workflowRun })
     sendPartialOutputs(webSocket, workflowRun, state)
+    sendTraceOutputs(webSocket, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
       return
@@ -190,6 +199,7 @@ async function streamWorkflowRun(
       }
       if (workflowRun) {
         sendPartialOutputs(webSocket, workflowRun, state)
+        sendTraceOutputs(webSocket, publication, workflowRun, state)
       }
       if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
         sendWebSocketJson(webSocket, { type: "final", workflow_run: workflowRun })
@@ -200,6 +210,17 @@ async function streamWorkflowRun(
     sendWebSocketJson(webSocket, { type: "timeout", workflow_run_id: workflowRunId })
   } finally {
     await client.close().catch(() => {})
+  }
+}
+
+function sendTraceOutputs(
+  webSocket: WsSocket,
+  publication: WorkflowPublicationConfig,
+  workflowRun: WorkflowRun,
+  state: WebSocketConnectionState,
+) {
+  for (const trace of collectPublicationTraceEvents(publication, workflowRun, state.traces)) {
+    sendWebSocketJson(webSocket, { type: "trace", ...trace })
   }
 }
 

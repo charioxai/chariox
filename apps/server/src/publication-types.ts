@@ -42,6 +42,8 @@ export type WorkflowPublicationConfig = {
   methods?: Array<"GET" | "POST">
   parser?: ParserConfig
   input_schema?: InputSchema
+  trace_exposure?: PublicationTraceExposurePolicy
+  trace_context?: PublicationTraceContext
   tls?: TlsConfig
   mode?: "sync" | "async"
   sync_timeout_ms?: number
@@ -58,6 +60,7 @@ export type PublicationHookConfig = {
   methods?: string[]
   parser?: ParserConfig
   input_schema?: InputSchema | null
+  trace_exposure?: PublicationTraceExposurePolicy | null
   mode?: "sync" | "async"
   response_mode?: string
 }
@@ -71,6 +74,41 @@ export type WorkflowPublicationPackage = {
   workflow_id: string
   default_bindings_path?: string
   hooks: PublicationHookConfig[]
+}
+
+export type PublicationTraceLevel =
+  | "output_summary"
+  | "assistant_messages"
+  | "thinking"
+  | "tool_use"
+
+export type PublicationTraceExposurePolicy = {
+  nodes?: Record<string, PublicationTraceLevel[]>
+}
+
+export type PublicationTraceNodeContext = {
+  node_id: string
+  node_label?: string | null
+  agent_id?: string | null
+  agent_alias?: string | null
+}
+
+export type PublicationTraceContext = {
+  nodes: Record<string, PublicationTraceNodeContext>
+}
+
+export type PublicationTraceEvent = {
+  workflow_run_id: string
+  workflow_node_run_id: string
+  node_id: string
+  node_label: string | null
+  agent_id: string
+  agent_alias: string | null
+  level: PublicationTraceLevel
+  sequence: number
+  timestamp_ms: number
+  message: string
+  data?: unknown
 }
 
 export type WorkflowPublicationSnapshot = KernelWorkflowPublicationSnapshot
@@ -139,6 +177,36 @@ export type WorkflowRun = {
   endpoint_id?: string
   invocation_prompt?: string | null
   publication_invocation?: WorkflowPublicationInvocationEnvelope | null
+  node_runs?: Array<{
+    id: string
+    node_id: string
+    agent_id: string
+    status: string
+    summary?: string | null
+    completion?: {
+      summary?: string | null
+      output?: { message: string; artifacts?: unknown[] } | null
+    } | null
+    turn_envelope?: {
+      runtime_tool_calls?: {
+        tool_name: string
+        arguments_json: string
+        result_json?: string | null
+        ok: boolean
+        timestamp_ms: number
+      }[]
+    } | null
+    completed_at_ms?: number | null
+  }>
+  messages?: Array<{
+    id: string
+    source_node_run_id?: string | null
+    target_node_id: string
+    message_type: string
+    summary: string
+    handoff_payload: string
+    created_at_ms: number
+  }>
   intermediate_outputs?: Array<{
     id: string
     source_node_run_id?: string

@@ -4,6 +4,11 @@ import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+  type PublicationTraceStreamState,
+} from "./publication-trace-events.js"
 import type {
   GatewayRequest,
   WorkflowInvocationResult,
@@ -30,6 +35,7 @@ type HumanHttpReply = {
 
 type HumanHttpStreamState = {
   partialIds: Set<string>
+  traces: PublicationTraceStreamState
 }
 
 export const HUMAN_HTTP_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
@@ -227,8 +233,9 @@ async function streamInvocationEvents(
       return
     }
     writeSse(reply, "status", { workflow_run: workflowRun })
-    const state: HumanHttpStreamState = { partialIds: new Set() }
+    const state: HumanHttpStreamState = { partialIds: new Set(), traces: createPublicationTraceStreamState() }
     emitPartialOutputs(reply, workflowRun, state)
+    emitTraceOutputs(reply, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
@@ -255,7 +262,10 @@ async function streamWorkflowRunEvents(
   })
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
-    await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client, { partialIds: new Set() })
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRunId, client, {
+      partialIds: new Set(),
+      traces: createPublicationTraceStreamState(),
+    })
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -287,6 +297,7 @@ async function streamWorkflowRunEventsWithClient(
     }
     if (workflowRun) {
       emitPartialOutputs(reply, workflowRun, state)
+      emitTraceOutputs(reply, publication, workflowRun, state)
     }
     if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
       writeSse(reply, "final", { workflow_run: workflowRun })
@@ -295,6 +306,17 @@ async function streamWorkflowRunEventsWithClient(
     await sleep(pollMs)
   }
   writeSse(reply, "timeout", { workflow_run_id: workflowRunId })
+}
+
+function emitTraceOutputs(
+  reply: HumanHttpReply,
+  publication: WorkflowPublicationConfig,
+  workflowRun: WorkflowRun,
+  state: HumanHttpStreamState,
+) {
+  for (const trace of collectPublicationTraceEvents(publication, workflowRun, state.traces)) {
+    writeSse(reply, "trace", trace)
+  }
 }
 
 function emitPartialOutputs(

@@ -650,12 +650,14 @@ impl SessionService {
         transport: Option<Value>,
         parser: Option<Value>,
         input_schema: Option<Value>,
+        trace_exposure: Option<Value>,
         mode: Option<String>,
         created_by_user_id: String,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
+        validate_workflow_publication_trace_exposure(&trace_exposure, &workflow)?;
         let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         let alias = normalize_workflow_publication_alias(alias)?;
@@ -674,6 +676,7 @@ impl SessionService {
             transport,
             parser,
             input_schema,
+            trace_exposure,
             mode,
             created_by_user_id,
         );
@@ -910,6 +913,61 @@ impl SessionService {
             message: "queued workflow prompt was not found",
         })
     }
+}
+
+fn validate_workflow_publication_trace_exposure(
+    trace_exposure: &Option<Value>,
+    workflow: &WorkflowDefinition,
+) -> Result<(), DaemonError> {
+    let Some(value) = trace_exposure else {
+        return Ok(());
+    };
+    let Some(object) = value.as_object() else {
+        return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+            message: "`trace_exposure` must be an object".to_string(),
+        });
+    };
+    let Some(nodes_value) = object.get("nodes") else {
+        return Ok(());
+    };
+    let Some(nodes_object) = nodes_value.as_object() else {
+        return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+            message: "`trace_exposure.nodes` must be an object keyed by workflow node id".to_string(),
+        });
+    };
+    let known_node_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| node.id())
+        .collect::<std::collections::BTreeSet<_>>();
+    for (node_id, levels_value) in nodes_object {
+        if !known_node_ids.contains(node_id.as_str()) {
+            return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+                message: format!("unknown workflow node id `{node_id}`"),
+            });
+        }
+        let Some(levels) = levels_value.as_array() else {
+            return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+                message: format!("trace levels for node `{node_id}` must be an array"),
+            });
+        };
+        for level in levels {
+            let Some(level) = level.as_str() else {
+                return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+                    message: format!("trace level for node `{node_id}` must be a string"),
+                });
+            };
+            if !matches!(
+                level,
+                "output_summary" | "assistant_messages" | "thinking" | "tool_use"
+            ) {
+                return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
+                    message: format!("unknown trace exposure level `{level}` for node `{node_id}`"),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl SessionService {

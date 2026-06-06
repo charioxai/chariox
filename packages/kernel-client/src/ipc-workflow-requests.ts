@@ -60,6 +60,7 @@ export type CreateWorkflowPublicationOptions = {
   transport?: unknown | null
   parser?: unknown | null
   inputSchema?: unknown | null
+  traceExposure?: unknown | null
   mode?: string | null
 }
 
@@ -81,6 +82,7 @@ export function createWorkflowPublicationRequest(
       transport: options.transport ?? null,
       parser: options.parser ?? null,
       input_schema: options.inputSchema ?? null,
+      trace_exposure: options.traceExposure ?? null,
       mode: options.mode ?? null,
     },
   }

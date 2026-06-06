@@ -29,6 +29,7 @@ impl KernelRuntimeOwnedState {
             request.transport,
             request.parser,
             request.input_schema,
+            request.trace_exposure,
             request.mode,
             caller_user_id.to_string(),
         )?;

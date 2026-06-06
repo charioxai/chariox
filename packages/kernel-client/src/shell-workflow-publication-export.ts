@@ -63,6 +63,7 @@ function workflowPublicationPackage(publication: WorkflowPublicationDefinition) 
       methods: publication.methods?.length ? publication.methods : ["GET"],
       parser: publication.parser ?? { kind: "json" },
       input_schema: publication.input_schema ?? null,
+      trace_exposure: publication.trace_exposure ?? null,
       mode: publication.mode ?? "sync",
       response_mode: "accepted",
     }],
@@ -176,6 +177,7 @@ function workflowPublicationGatewayConfig(
   if (publication.methods?.length) config.methods = publication.methods
   if (publication.transport != null) config.transport = publication.transport
   if (publication.input_schema != null) config.input_schema = publication.input_schema
+  if (publication.trace_exposure != null) config.trace_exposure = publication.trace_exposure
   return config
 }
 

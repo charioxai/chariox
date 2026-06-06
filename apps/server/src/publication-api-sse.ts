@@ -8,6 +8,11 @@ import {
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+  type PublicationTraceStreamState,
+} from "./publication-trace-events.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -37,6 +42,7 @@ type ApiSseReply = {
 type StreamState = {
   started: boolean
   partialIds: Set<string>
+  traces: PublicationTraceStreamState
 }
 
 export const API_SSE_INVOKE_PATH = "/invoke"
@@ -94,7 +100,7 @@ async function streamApiSseInvocation(
     connection: "keep-alive",
     ...apiSseCorsHeaders(),
   })
-  const state: StreamState = { started: false, partialIds: new Set() }
+  const state: StreamState = { started: false, partialIds: new Set(), traces: createPublicationTraceStreamState() }
   try {
     writeSse(reply, "queued", { invocation_id: invocation.request_id })
     const result = deps.invokeWorkflow
@@ -137,7 +143,7 @@ async function streamApiSseResult(
     })
     return
   }
-  emitWorkflowRunEvents(reply, initialRun, state)
+  emitWorkflowRunEvents(reply, publication, initialRun, state)
   if (isTerminalWorkflowRunStatus(initialRun.status) || options.injectedWorkflowInvoker) return
   await streamWorkflowRunUntilFinal(reply, publication, initialRun.id, state)
 }
@@ -157,7 +163,7 @@ async function streamQueuedInvocationByRequestId(
       writeSse(reply, "timeout", { invocation_id: requestId })
       return
     }
-    emitWorkflowRunEvents(reply, workflowRun, state)
+    emitWorkflowRunEvents(reply, publication, workflowRun, state)
     if (!isTerminalWorkflowRunStatus(workflowRun.status)) {
       await streamWorkflowRunUntilFinal(reply, publication, workflowRun.id, state)
     }
@@ -184,7 +190,7 @@ async function streamWorkflowRunUntilFinal(
       )
       const workflowRun = (response.WorkflowRun as { workflow_run?: WorkflowRun } | undefined)?.workflow_run ?? null
       if (workflowRun) {
-        emitWorkflowRunEvents(reply, workflowRun, state)
+        emitWorkflowRunEvents(reply, publication, workflowRun, state)
         if (isTerminalWorkflowRunStatus(workflowRun.status)) return
       }
       await sleep(pollMs)
@@ -195,7 +201,12 @@ async function streamWorkflowRunUntilFinal(
   }
 }
 
-function emitWorkflowRunEvents(reply: ApiSseReply, workflowRun: WorkflowRun, state: StreamState) {
+function emitWorkflowRunEvents(
+  reply: ApiSseReply,
+  publication: WorkflowPublicationConfig,
+  workflowRun: WorkflowRun,
+  state: StreamState,
+) {
   if (!state.started) {
     state.started = true
     writeSse(reply, "started", { workflow_run_id: workflowRun.id, workflow_run: workflowRun })
@@ -210,6 +221,9 @@ function emitWorkflowRunEvents(reply: ApiSseReply, workflowRun: WorkflowRun, sta
       valid: output.valid,
       warning: output.warning ?? null,
     })
+  }
+  for (const trace of collectPublicationTraceEvents(publication, workflowRun, state.traces)) {
+    writeSse(reply, "trace", trace)
   }
   if (isTerminalWorkflowRunStatus(workflowRun.status)) {
     writeSse(reply, "final", {
