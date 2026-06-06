@@ -31,6 +31,8 @@ impl KernelRuntimeOwnedState {
             request.input_schema,
             request.trace_exposure,
             request.mode,
+            request.sync_timeout_ms,
+            request.poll_ms,
             caller_user_id.to_string(),
         )?;
         let session = self.workflow_session(&request.session_id)?;

@@ -28,6 +28,10 @@ pub struct WorkflowPublicationDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sync_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    poll_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     open_url: Option<String>,
@@ -54,6 +58,8 @@ impl WorkflowPublicationDefinition {
         input_schema: Option<Value>,
         trace_exposure: Option<Value>,
         mode: Option<String>,
+        sync_timeout_ms: Option<u64>,
+        poll_ms: Option<u64>,
         created_by_user_id: impl Into<String>,
     ) -> Self {
         let now = unix_epoch_ms();
@@ -72,6 +78,8 @@ impl WorkflowPublicationDefinition {
             input_schema,
             trace_exposure,
             mode,
+            sync_timeout_ms,
+            poll_ms,
             status: None,
             open_url: None,
             deployment: None,

@@ -17,6 +17,7 @@ pub const VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL: &str =
     "validate_and_submit_workflow_run_output";
 pub const VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL: &str =
     "validate_and_submit_intermediate_workflow_run_output";
+pub const READ_WORKFLOW_TURN_CONTEXT_TOOL: &str = "read_workflow_turn_context";
 pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
 pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
@@ -84,6 +85,12 @@ pub struct AckWorkflowTurnArgs {
 pub struct ValidateWorkflowHandoffArgs {
     pub handoff_schema_ref: String,
     pub handoff_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReadWorkflowTurnContextArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_token: Option<String>,
 }
@@ -666,6 +673,17 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["workflow_output_json"],
                 "properties": {
                     "workflow_output_json": {"type": "string"},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: READ_WORKFLOW_TURN_CONTEXT_TOOL.to_string(),
+            description: "Read the current workflow turn context, including invocation prompt and upstream handoff messages for this node run.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
                     "delivery_token": {"type": "string"}
                 },
                 "additionalProperties": false

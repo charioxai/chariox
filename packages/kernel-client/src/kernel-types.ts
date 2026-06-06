@@ -1754,6 +1754,8 @@ export type WorkflowPublicationDefinition = {
   input_schema?: unknown | null
   trace_exposure?: PublicationTraceExposurePolicy | null
   mode?: string | null
+  sync_timeout_ms?: number | null
+  poll_ms?: number | null
   status?: string | null
   open_url?: string | null
   deployment?: unknown | null

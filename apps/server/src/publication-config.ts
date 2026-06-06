@@ -164,6 +164,8 @@ export function publicationConfigFromPackage(
     parser: hook.parser ?? { kind: "json" },
     mode: hook.mode === "async" ? "async" : "sync",
   }
+  if (hook.sync_timeout_ms != null) config.sync_timeout_ms = hook.sync_timeout_ms
+  if (hook.poll_ms != null) config.poll_ms = hook.poll_ms
   if (traceExposure) {
     config.trace_exposure = traceExposure
     config.trace_context = publicationTraceContextFromSnapshot(snapshot)
@@ -223,6 +225,8 @@ export function publicationConfigFromKernelRecord(
     parser: asParserConfig(publication.parser) ?? { kind: "json" },
     mode: publication.mode === "async" ? "async" : "sync",
   }
+  if (publication.sync_timeout_ms != null) config.sync_timeout_ms = publication.sync_timeout_ms
+  if (publication.poll_ms != null) config.poll_ms = publication.poll_ms
   if (traceExposure) config.trace_exposure = traceExposure
   const transport = publication.transport as { kind?: unknown } | null | undefined
   if (typeof transport?.kind === "string") config.transport = transport.kind

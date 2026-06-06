@@ -46,6 +46,7 @@
     "remote-git-observation:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-remote-git-observation-drill.mjs",
     "postgres-archive:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-postgres-archive-adapter-drill.mjs",
     "publication:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-publication-drill.mjs",
+    "publication:real-dashboard-drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && env ARROBA_PUBLICATION_REAL_DASHBOARD=1 ARROBA_PUBLICATION_REAL_DASHBOARD_ONLY=1 ARROBA_PUBLICATION_REAL_DASHBOARD_EFFORT=high ARROBA_PUBLICATION_VISUAL_ARTIFACTS_DIR=../../.artifacts/publication-real-dashboard node scripts/live-workflow-publication-drill.mjs",
     "publication:container-drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && env ARROBA_PUBLICATION_CONTAINER_DRILL=1 node scripts/live-workflow-publication-drill.mjs",
     "semantic-url-renderer:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-semantic-url-renderer-drill.mjs",
     "workflow-to-workflow-publication:drill": "pnpm --filter @arroba/server run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-workflow-to-workflow-publication-drill.mjs",

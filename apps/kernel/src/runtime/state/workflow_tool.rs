@@ -59,6 +59,9 @@ impl KernelRuntimeOwnedState {
             crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL => {
                 self.workflow_validate_handoff_tool_result(&arguments, &context)
             }
+            crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL => {
+                self.workflow_turn_context_tool_result(&context)
+            }
             crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
             | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL =>
             {
@@ -107,6 +110,65 @@ impl KernelRuntimeOwnedState {
             );
         let _ = self.session_snapshot(&context.session_id);
         result.map(|result| (result, dispatches))
+    }
+
+    fn workflow_turn_context_tool_result(
+        &self,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+        let node_run = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == context.workflow_node_run_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_read_workflow_turn_context",
+                message: format!(
+                    "workflow node run `{}` not found in workflow run `{}`",
+                    context.workflow_node_run_id,
+                    workflow_run.id()
+                ),
+            })?;
+        let node_id = node_run.node_id().to_string();
+        let messages = workflow_run
+            .messages()
+            .iter()
+            .filter(|message| {
+                message.consumed_by_node_run_id() == Some(context.workflow_node_run_id.as_str())
+                    || message.target_node_id() == node_id
+            })
+            .map(|message| {
+                let parsed_handoff_payload =
+                    serde_json::from_str::<serde_json::Value>(message.handoff_payload()).ok();
+                serde_json::json!({
+                    "id": message.id(),
+                    "source_node_run_id": message.source_node_run_id(),
+                    "target_node_id": message.target_node_id(),
+                    "message_type": message.message_type(),
+                    "summary": message.summary(),
+                    "handoff_payload": message.handoff_payload(),
+                    "parsed_handoff_payload": parsed_handoff_payload,
+                    "consumed_by_node_run_id": message.consumed_by_node_run_id(),
+                    "created_at_ms": message.created_at_ms(),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "session_id": context.session_id,
+                "workflow_run_id": workflow_run.id(),
+                "workflow_node_run_id": context.workflow_node_run_id,
+                "node_id": node_id,
+                "agent_id": node_run.agent_id(),
+                "invocation_prompt": workflow_run.invocation_prompt(),
+                "delivery_token": context.delivery_token,
+                "messages": messages,
+            }),
+        })
     }
 
     pub(super) fn workflow_tool_context(

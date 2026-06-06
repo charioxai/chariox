@@ -62,6 +62,8 @@ export type PublicationHookConfig = {
   input_schema?: InputSchema | null
   trace_exposure?: PublicationTraceExposurePolicy | null
   mode?: "sync" | "async"
+  sync_timeout_ms?: number | null
+  poll_ms?: number | null
   response_mode?: string
 }
 

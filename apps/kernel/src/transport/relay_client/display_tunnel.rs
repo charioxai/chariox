@@ -44,9 +44,9 @@ pub(super) async fn handle_display_tunnel_open(
             tokio::task::spawn_blocking(move || {
                 proxy_display_request(&outgoing_tx, &target, &request)
             })
-                .await
-                .map_err(|error| relay_error("display_proxy_join_failed", &error.to_string(), true))
-                .and_then(|result| result)
+            .await
+            .map_err(|error| relay_error("display_proxy_join_failed", &error.to_string(), true))
+            .and_then(|result| result)
         }
         None => Err(relay_error(
             "display_tunnel_not_found",
@@ -138,9 +138,9 @@ fn proxy_display_request(
         .body_base64
         .as_ref()
         .map(|body| {
-            BASE64_STANDARD
-                .decode(body.as_bytes())
-                .map_err(|error| relay_error("display_proxy_body_invalid", &error.to_string(), false))
+            BASE64_STANDARD.decode(body.as_bytes()).map_err(|error| {
+                relay_error("display_proxy_body_invalid", &error.to_string(), false)
+            })
         })
         .transpose()?;
     let response = match body {
@@ -162,7 +162,10 @@ fn proxy_display_request(
 }
 
 fn method_uses_empty_body(method: &str) -> bool {
-    matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH")
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "POST" | "PUT" | "PATCH"
+    )
 }
 
 async fn proxy_display_websocket(
@@ -595,8 +598,8 @@ mod tests {
 
     #[tokio::test]
     async fn display_http_proxy_forwards_post_body_and_streams_response_chunks() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("local http listener should bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("local http listener should bind");
         let addr = listener
             .local_addr()
             .expect("local http listener should have addr");

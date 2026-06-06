@@ -126,6 +126,8 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
             1841,
             1842,
         )),
+        "workflow-dashboard-producer-node" => Some(dev_stub_workflow_dashboard_producer_script()),
+        "workflow-final-passthrough-node" => Some(dev_stub_workflow_final_passthrough_script()),
         "workflow-html-final-node" => Some(dev_stub_workflow_html_final_script()),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
@@ -143,6 +145,8 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
             | "workflow-drill-node-2"
             | "workflow-single-turn-node"
             | "workflow-intermediate-node"
+            | "workflow-dashboard-producer-node"
+            | "workflow-final-passthrough-node"
             | "workflow-html-final-node"
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
@@ -169,7 +173,12 @@ fn dev_stub_workflow_html_final_script() -> String {
 
 fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    if request.model == "workflow-intermediate-node" {
+    if matches!(
+        request.model.as_str(),
+        "workflow-intermediate-node"
+            | "workflow-dashboard-producer-node"
+            | "workflow-final-passthrough-node"
+    ) {
         if let Some(binding) = request.runtime_mcp_binding.as_ref() {
             env.insert(
                 "ARROBA_DEV_STUB_RUNTIME_MCP_URL".to_string(),
@@ -203,9 +212,54 @@ fn dev_stub_workflow_intermediate_script(
     intermediate: i64,
     final_value: i64,
 ) -> String {
-    let payload =
-        format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{final_value}}}}}}}"#);
-    let intermediate_output = serde_json::json!({ "value": intermediate }).to_string();
+    let final_payload = serde_json::json!({
+        "summary": summary,
+        "output": {
+            "message": {
+                "value": final_value,
+            },
+        },
+    });
+    let intermediate_output = serde_json::json!({ "value": intermediate });
+    dev_stub_workflow_intermediate_payload_script(final_payload, Some(intermediate_output))
+}
+
+fn dev_stub_workflow_dashboard_producer_script() -> String {
+    let final_node_instructions = [
+        "You are the final workflow node.",
+        "Generate the HTML yourself using the upstream dashboard_task message.",
+        "Write the generated HTML artifact to dashboard.html.",
+        "Emit a final fenced workflow JSON block with output.message shaped as {\"kind\":\"html_file\",\"path\":\"dashboard.html\"}.",
+    ]
+    .join("\n");
+    let final_payload = serde_json::json!({
+        "summary": "dashboard task handoff",
+        "output": {
+            "message": {
+                "kind": "dashboard_task",
+                "prompt": "Generate a vibrant dashboard as a compact self-contained HTML document.",
+                "requirements": [
+                    "Visible title text `Real Provider Workflow Dashboard`.",
+                    "Main dashboard element has data-arroba-real-provider-dashboard=\"true\".",
+                    "Inline CSS only.",
+                    "No scripts, external assets, network calls, or unrelated workspace inspection.",
+                    "The final workflow output must be shaped exactly as {\"kind\":\"html\",\"html\":\"<full html document>\"}.",
+                ],
+                "final_node_instructions": final_node_instructions,
+            },
+        },
+    });
+    dev_stub_workflow_intermediate_payload_script(final_payload, None)
+}
+
+fn dev_stub_workflow_intermediate_payload_script(
+    final_payload: serde_json::Value,
+    intermediate_output: Option<serde_json::Value>,
+) -> String {
+    let payload = final_payload.to_string();
+    let intermediate_output = intermediate_output
+        .map(|output| output.to_string())
+        .unwrap_or_else(|| "null".to_string());
     let js = format!(
         r#"const http = require("node:http");
 const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
@@ -263,10 +317,12 @@ async function emitForDeliveryToken(deliveryToken) {{
       delivery_token: deliveryToken,
     }});
   }}
-  await callRuntimeTool("validate_and_submit_intermediate_workflow_run_output", {{
-    workflow_output_json: JSON.stringify(intermediateOutput),
-    ...(deliveryToken ? {{ delivery_token: deliveryToken }} : {{}}),
-  }});
+  if (intermediateOutput !== null) {{
+    await callRuntimeTool("validate_and_submit_intermediate_workflow_run_output", {{
+      workflow_output_json: JSON.stringify(intermediateOutput),
+      ...(deliveryToken ? {{ delivery_token: deliveryToken }} : {{}}),
+    }});
+  }}
   process.stdout.write("```json\n" + JSON.stringify(finalPayload) + "\n```\n");
 }}
 
@@ -316,6 +372,202 @@ process.stdin.resume();
     format!(
         "stty -echo 2>/dev/null || true; node -e {}",
         shell_single_quote(&js)
+    )
+}
+
+fn dev_stub_workflow_final_passthrough_script() -> String {
+    let js = r#"const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const emittedDeliveryTokens = new Set();
+let emittedWithoutToken = false;
+let promptBuffer = "";
+let pendingTimer = null;
+
+function callRuntimeTool(name, args) {
+  return new Promise((resolve, reject) => {
+    if (!runtimeUrl || !runtimeToken) return reject(new Error("runtime MCP binding missing"));
+    const parsed = new URL(runtimeUrl);
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: `dev-stub-${Date.now()}`,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname || "/mcp",
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${runtimeToken}`,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode !== 200) return reject(new Error(`runtime MCP HTTP ${res.statusCode}: ${text}`));
+        const response = JSON.parse(text);
+        if (response.error) return reject(new Error(JSON.stringify(response.error)));
+        if (response.result && response.result.isError) return reject(new Error(JSON.stringify(response.result)));
+        resolve(response.result);
+      });
+    });
+    req.setTimeout(3000, () => {
+      req.destroy(new Error(`runtime MCP ${name} timeout`));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+function htmlOutputFromMessage(message) {
+  if (!message) return null;
+  if (message.kind === "html" && typeof message.html === "string") {
+    return message;
+  }
+  if (message.kind === "html_file" && typeof message.path === "string") {
+    const workspaceRoot = process.cwd();
+    const absolutePath = path.resolve(workspaceRoot, message.path);
+    const relativePath = path.relative(workspaceRoot, absolutePath);
+    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+      throw new Error(`upstream html_file path escapes workspace: ${message.path}`);
+    }
+    const html = fs.readFileSync(absolutePath, "utf8");
+    return { kind: "html", html };
+  }
+  return null;
+}
+
+function parseMaybeJson(value) {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function extractHtmlOutputFromPrompt() {
+  const matches = [...promptBuffer.matchAll(/```json\s*([\s\S]*?)```/g)];
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(matches[index][1]);
+      const message = parsed && parsed.output && parsed.output.message ? parsed.output.message : parsed;
+      const output = htmlOutputFromMessage(parseMaybeJson(message));
+      if (output) return { output };
+    } catch {
+      // Keep scanning older fenced JSON blocks.
+    }
+  }
+  const rawPathMatch = promptBuffer.match(/"kind"\s*:\s*"html_file"[\s\S]*?"path"\s*:\s*"([^"]+)"/);
+  if (rawPathMatch) {
+    const output = htmlOutputFromMessage({ kind: "html_file", path: rawPathMatch[1] });
+    if (output) return { output };
+  }
+  return null;
+}
+
+async function readHtmlOutput(deliveryToken) {
+  const promptOutput = extractHtmlOutputFromPrompt();
+  if (promptOutput) return promptOutput;
+  const result = await callRuntimeTool("read_workflow_turn_context", {
+    ...(deliveryToken ? { delivery_token: deliveryToken } : {}),
+  });
+  const context = result && (result.structuredContent || result.payload || result);
+  const contextDeliveryToken = context && typeof context.delivery_token === "string" ? context.delivery_token : undefined;
+  const messages = Array.isArray(context && context.messages) ? context.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    const payload = item.parsed_handoff_payload || parseMaybeJson(item.handoff_payload);
+    const completionMessage = payload && payload.completion && payload.completion.output
+      ? payload.completion.output.message
+      : undefined;
+    const outputMessage = payload && payload.output ? payload.output.message : undefined;
+    const output = htmlOutputFromMessage(parseMaybeJson(completionMessage ?? outputMessage ?? payload));
+    if (output) return { output, deliveryToken: deliveryToken || contextDeliveryToken };
+  }
+  return null;
+}
+
+async function emitForDeliveryToken(deliveryToken) {
+  const resolved = await readHtmlOutput(deliveryToken);
+  if (!resolved || !resolved.output) throw new Error("no upstream html workflow output found");
+  const output = resolved.output;
+  const turnDeliveryToken = resolved.deliveryToken || deliveryToken;
+  if (turnDeliveryToken) {
+    await callRuntimeTool("ack_workflow_turn", {
+      delivery_token: turnDeliveryToken,
+    });
+  }
+  await callRuntimeTool("validate_and_submit_workflow_run_output", {
+    workflow_output_json: JSON.stringify(output),
+    ...(turnDeliveryToken ? { delivery_token: turnDeliveryToken } : {}),
+  });
+  const finalPayload = {
+    summary: "passthrough html final output",
+    output: { message: output },
+  };
+  process.stdout.write("```json\n" + JSON.stringify(finalPayload) + "\n```\n");
+}
+
+function scheduleEmit() {
+  if (pendingTimer) return;
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    emitOnce().catch((error) => {
+      if (String(error && error.message || error).includes("no active workflow turn for authenticated provider run")) {
+        return;
+      }
+      process.stdout.write("dev-stub final passthrough error: " + error.message + "\n");
+    });
+  }, 100);
+}
+
+async function emitOnce() {
+  const tokenMatches = [...promptBuffer.matchAll(/workflow-ack:[A-Za-z0-9_-]+/g)];
+  const deliveryToken = tokenMatches.length ? tokenMatches[tokenMatches.length - 1][0] : undefined;
+  if (!deliveryToken) {
+    if (emittedWithoutToken) return;
+    emittedWithoutToken = true;
+    try {
+      await emitForDeliveryToken(undefined);
+    } catch (error) {
+      emittedWithoutToken = false;
+      throw error;
+    }
+    return;
+  }
+  if (emittedDeliveryTokens.has(deliveryToken)) return;
+  emittedDeliveryTokens.add(deliveryToken);
+  try {
+    await emitForDeliveryToken(deliveryToken);
+  } catch (error) {
+    emittedDeliveryTokens.delete(deliveryToken);
+    throw error;
+  }
+}
+
+process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+  process.stdin.setRawMode(true);
+}
+process.stdin.on("data", (chunk) => {
+  promptBuffer += chunk;
+  scheduleEmit();
+});
+setInterval(scheduleEmit, 500);
+scheduleEmit();
+process.stdin.resume();
+"#;
+    format!(
+        "stty -echo 2>/dev/null || true; node -e {}",
+        shell_single_quote(js)
     )
 }
 

@@ -32,6 +32,7 @@ const {
   launchProviderRunRequest,
   listSessionsRequest,
   listWorkflowRunsRequest,
+  setWorkflowRunOutputSchemaRequest,
   setWorkflowNodeCanCompleteRunRequest,
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   spawnAgentRequest,
@@ -41,6 +42,48 @@ const {
 function logStep(name, details = null) {
   if (details == null) console.log(`[publication-drill] ${name}`)
   else console.log(`[publication-drill] ${name}`, JSON.stringify(details))
+}
+
+function envFlag(name, defaultValue = false) {
+  const value = process.env[name]
+  if (value == null || value === '') return defaultValue
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase())
+}
+
+function realDashboardOptionsFromEnv() {
+  if (!envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD')) return null
+  const provider = process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_PROVIDER || 'codex'
+  return {
+    provider,
+    accountProfile: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_ACCOUNT || 'default',
+    model: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_MODEL || (provider === 'opencode' ? 'opencode/gpt-5.4' : 'gpt-5.5'),
+    effort: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_EFFORT || 'high',
+    expectThinking: envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_EXPECT_THINKING', true),
+    useHostProviderHome: envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_USE_HOST_PROVIDER_HOME', true),
+  }
+}
+
+const REAL_DASHBOARD_PROMPT = [
+  'Generate a vibrant dashboard as a compact self-contained HTML document.',
+  'The dashboard must visibly include the title text `Real Provider Workflow Dashboard`.',
+  'The main dashboard element must include `data-arroba-real-provider-dashboard="true"`.',
+  'Before writing the file, reason through a compact layout plan that balances mobile responsiveness, contrast, KPI cards, one chart-like visual, and a status section.',
+  'Use inline CSS only; no scripts, external assets, network calls, or unrelated file inspection.',
+  'This is the final workflow node: submit final workflow output as {"kind":"html","html":"<full html document>"} by calling validate_and_submit_workflow_run_output, then emit the final fenced workflow JSON block with the same output.message object.',
+].join(' ')
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function variant(response, key) {
@@ -398,7 +441,7 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
-    await cdp.send('Page.navigate', { url })
+    await withTimeout(cdp.send('Page.navigate', { url }), 10_000, `browser navigate ${url}`)
     const finalState = await waitForBrowserFinalOutput(cdp, timeoutMs)
     const statuses = finalState.statuses ?? []
     const outputs = finalState.outputs ?? []
@@ -425,7 +468,17 @@ async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }) {
   }
 }
 
-async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000 }) {
+async function runHumanHttpHtmlFinalBrowserDrill({
+  url,
+  root,
+  timeoutMs = 30_000,
+  expectedHtmlText = 'Vibrant Workflow Dashboard',
+  requiredHtmlSnippets = [],
+  requiredTraceLevels = [],
+  requiredTraceAlias = null,
+  visualArtifactPrefix = 'local-human-http-dashboard',
+  requirePartial = true,
+}) {
   const chromePath = await findChromeExecutable()
   if (!chromePath) {
     logStep('browser_html_final_screenshot_skipped', { reason: 'chrome-not-found' })
@@ -463,31 +516,90 @@ async function runHumanHttpHtmlFinalBrowserDrill({ url, root, timeoutMs = 30_000
     await cdp.send('Runtime.enable')
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: browserStatusRecorderScript() })
     await cdp.send('Page.navigate', { url })
-    const partialState = await waitForBrowserHtmlPartialOutput(cdp, timeoutMs)
-    const partialScreenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
-    if (typeof partialScreenshot.data !== 'string' || partialScreenshot.data.length < 1000) {
-      throw new Error('browser HTML partial screenshot was empty')
+    let partialState = null
+    if (requirePartial) {
+      partialState = await waitForBrowserHtmlPartialOutput(cdp, timeoutMs)
+      const partialScreenshot = await captureBrowserScreenshot(cdp, 'browser HTML partial screenshot')
+      if (typeof partialScreenshot.data !== 'string' || partialScreenshot.data.length < 1000) {
+        throw new Error('browser HTML partial screenshot was empty')
+      }
+      await writeFile(partialScreenshotPath, Buffer.from(partialScreenshot.data, 'base64'))
+      await preserveVisualArtifact(partialScreenshotPath, `${visualArtifactPrefix}-partial.png`)
     }
-    await writeFile(partialScreenshotPath, Buffer.from(partialScreenshot.data, 'base64'))
-    await preserveVisualArtifact(partialScreenshotPath, 'local-human-http-dashboard-partial.png')
-    const finalState = await waitForBrowserHtmlFinalOutput(cdp, timeoutMs)
-    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    let finalState = null
+    try {
+      finalState = await waitForBrowserHtmlFinalOutput(cdp, {
+      timeoutMs,
+      expectedHtmlText,
+      requiredHtmlSnippets,
+      requiredTraceLevels,
+      requiredTraceAlias,
+    })
+    } catch (error) {
+      const failedScreenshot = await captureBrowserScreenshot(cdp, 'browser HTML failed screenshot').catch(() => null)
+      if (typeof failedScreenshot?.data === 'string' && failedScreenshot.data.length > 1000) {
+        const failedScreenshotPath = path.join(root, `${visualArtifactPrefix}-failed.png`)
+        await writeFile(failedScreenshotPath, Buffer.from(failedScreenshot.data, 'base64'))
+        await preserveVisualArtifact(failedScreenshotPath, `${visualArtifactPrefix}-failed.png`)
+      }
+      throw error
+    }
+    const screenshot = await captureBrowserScreenshot(cdp, 'browser HTML final screenshot')
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error('browser HTML final screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
-    await preserveVisualArtifact(screenshotPath, 'local-human-http-dashboard-final.png')
+    await preserveVisualArtifact(screenshotPath, `${visualArtifactPrefix}-final.png`)
+    const traceLevelScreenshotPaths = []
+    for (const level of requiredTraceLevels) {
+      const traceLevelScreenshotPath = await captureTraceLevelScreenshot(cdp, root, visualArtifactPrefix, level)
+      if (traceLevelScreenshotPath) traceLevelScreenshotPaths.push(traceLevelScreenshotPath)
+    }
     logStep('browser_html_final_screenshot_ok', {
       partialScreenshotPath,
       screenshotPath,
-      partialOutput: partialState.output,
+      traceLevelScreenshotPaths,
+      partialOutput: partialState?.output ?? null,
       status: finalState.status,
       traceCount: finalState.traceCount,
+      traceLevels: finalState.traceLevels,
+      traceAliases: finalState.traceAliases,
     })
   } finally {
     await cdp?.close?.().catch(() => {})
     await stopProcess(chrome)
   }
+}
+
+async function captureTraceLevelScreenshot(cdp, root, visualArtifactPrefix, level) {
+  const evaluated = await cdp.send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => {
+      const items = Array.from(document.querySelectorAll('#trace-feed .trace-item'));
+      const item = items.find((candidate) => Array.from(candidate.querySelectorAll('.trace-meta span')).some((span) => (span.textContent || '').trim() === ${JSON.stringify(level)}));
+      if (!item) return false;
+      item.scrollIntoView({ block: 'center', inline: 'nearest' });
+      item.style.outline = '3px solid #1d4ed8';
+      item.style.outlineOffset = '2px';
+      return true;
+    })()`,
+  })
+  if (!evaluated.result?.value) return null
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const screenshot = await captureBrowserScreenshot(cdp, `browser HTML ${level} trace screenshot`)
+  if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) return null
+  const screenshotPath = path.join(root, `${visualArtifactPrefix}-${level}.png`)
+  await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+  await preserveVisualArtifact(screenshotPath, `${visualArtifactPrefix}-${level}.png`)
+  return screenshotPath
+}
+
+async function captureBrowserScreenshot(cdp, label) {
+  return await withTimeout(
+    cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
+    10_000,
+    label,
+  )
 }
 
 async function preserveVisualArtifact(sourcePath, fileName) {
@@ -501,7 +613,7 @@ async function waitForBrowserHtmlPartialOutput(cdp, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   let lastState = null
   while (Date.now() < deadline) {
-    const evaluated = await cdp.send('Runtime.evaluate', {
+    const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
       returnByValue: true,
       expression: `(() => {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
@@ -516,7 +628,7 @@ async function waitForBrowserHtmlPartialOutput(cdp, timeoutMs = 30_000) {
           ok: output.includes('"value":1841') && !iframe && traceCount > 0,
         };
       })()`,
-    })
+    }), 3_000, 'browser HTML partial Runtime.evaluate')
     lastState = evaluated.result?.value ?? null
     if (lastState?.ok) return lastState
     await new Promise((resolve) => setTimeout(resolve, 250))
@@ -524,27 +636,68 @@ async function waitForBrowserHtmlPartialOutput(cdp, timeoutMs = 30_000) {
   throw new Error(`browser did not render HTML workflow partial output before final dashboard: ${JSON.stringify(lastState)}`)
 }
 
-async function waitForBrowserHtmlFinalOutput(cdp, timeoutMs = 30_000) {
+async function waitForBrowserHtmlFinalOutput(
+  cdp,
+  {
+    timeoutMs = 30_000,
+    expectedHtmlText = 'Vibrant Workflow Dashboard',
+    requiredHtmlSnippets = [],
+    requiredTraceLevels = [],
+    requiredTraceAlias = null,
+  } = {},
+) {
   const deadline = Date.now() + timeoutMs
   let lastState = null
   while (Date.now() < deadline) {
-    const evaluated = await cdp.send('Runtime.evaluate', {
+    const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
       returnByValue: true,
       expression: `(() => {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const iframe = document.querySelector('#html-output iframe');
         const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
-        const traceCount = document.querySelectorAll('#trace-feed .trace-item').length;
+        const traces = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => ({
+          text: item.textContent || '',
+          meta: Array.from(item.querySelectorAll('.trace-meta span')).map((span) => span.textContent || ''),
+        }));
+        const traceCount = traces.length;
+        const requiredLevels = ${JSON.stringify(requiredTraceLevels)};
+        const requiredAlias = ${JSON.stringify(requiredTraceAlias)};
+        const requiredHtmlSnippets = ${JSON.stringify(requiredHtmlSnippets)};
+        const traceLevelSet = new Set(traces.map((trace) => trace.meta[2]).filter(Boolean));
+        const traceAliasSet = new Set(traces.map((trace) => trace.meta[0]).filter(Boolean));
+        const missingTraceLevels = requiredLevels.filter((level) => !traceLevelSet.has(level));
+        const levelsOk = missingTraceLevels.length === 0;
+        const aliasOk = !requiredAlias || traceAliasSet.has(requiredAlias);
+        const htmlOk = iframeSrcdoc.includes(${JSON.stringify(expectedHtmlText)})
+          && requiredHtmlSnippets.every((snippet) => iframeSrcdoc.includes(snippet));
         return {
           status,
           iframeSrcdoc,
           traceCount,
-          ok: status === 'Completed' && iframeSrcdoc.includes('Vibrant Workflow Dashboard') && traceCount > 0,
+          traceLevels: Array.from(traceLevelSet).sort(),
+          traceAliases: Array.from(traceAliasSet).sort(),
+          missingTraceLevels,
+          htmlOk,
+          aliasOk,
+          ok: status === 'Completed'
+            && htmlOk
+            && traceCount > 0
+            && levelsOk
+            && aliasOk,
         };
       })()`,
-    })
+    }), 3_000, 'browser HTML final Runtime.evaluate')
     lastState = evaluated.result?.value ?? null
     if (lastState?.ok) return lastState
+    if (
+      lastState?.status === 'Completed'
+      && lastState?.htmlOk
+      && lastState?.aliasOk
+      && Array.isArray(lastState?.missingTraceLevels)
+      && lastState.missingTraceLevels.length > 0
+    ) {
+      throw new Error(`browser completed without required trace levels: ${JSON.stringify(lastState)}`)
+    }
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
   throw new Error(`browser did not render HTML final workflow output: ${JSON.stringify(lastState)}`)
@@ -1248,6 +1401,172 @@ async function createDashboardPublicationSession(client, sessionIds, options) {
   }
 }
 
+async function createRealProviderDashboardPublicationSession(client, sessionIds, options) {
+  const session = variant(
+    await client.send(createSessionRequest(options.workspace, options.workspace, options.sessionAlias)),
+    'SessionCreated',
+  ).session
+  sessionIds.push(session.id)
+  await client.send(attachToSessionRequest(session.id, `${options.attachAlias}-${process.pid}`))
+
+  const producerAgent = variant(
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', `${options.agentAlias}-producer`, 'workflow-dashboard-producer-node', options.workspace, 'low')),
+    'AgentSpawned',
+  ).agent
+  const producerRun = variant(
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-dashboard-producer-node', 'low', producerAgent.id)),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, producerRun.id)
+
+  const dashboardAgent = variant(
+    await client.send(spawnAgentRequest(
+      session.id,
+      options.provider,
+      options.agentAlias,
+      options.model,
+      options.workspace,
+      options.effort,
+    )),
+    'AgentSpawned',
+  ).agent
+  const dashboardRun = variant(
+    await client.send(launchProviderRunRequest(
+      session.id,
+      options.provider,
+      options.accountProfile,
+      options.model,
+      options.effort,
+      dashboardAgent.id,
+    )),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, dashboardRun.id)
+
+  const finalizerAgent = variant(
+    await client.send(spawnAgentRequest(session.id, 'dev-stub', `${options.agentAlias}-finalizer`, 'workflow-final-passthrough-node', options.workspace, 'low')),
+    'AgentSpawned',
+  ).agent
+  const finalizerRun = variant(
+    await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'workflow-final-passthrough-node', 'low', finalizerAgent.id)),
+    'ProviderRunLaunchAccepted',
+  ).provider_run
+  await waitForProviderRunReady(client, finalizerRun.id)
+
+  const workflow = variant(await client.send(createWorkflowRequest(session.id, options.workflowAlias)), 'WorkflowCreated').workflow
+  const producerNode = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, producerAgent.id)), 'WorkflowNodeAdded').node
+  const dashboardNode = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, dashboardAgent.id)), 'WorkflowNodeAdded').node
+  const finalizerNode = variant(await client.send(addWorkflowNodeRequest(session.id, workflow.id, finalizerAgent.id)), 'WorkflowNodeAdded').node
+  const schemaPath = path.join(options.workspace, 'dashboard-output.schema.json')
+  await writeFile(schemaPath, JSON.stringify({
+    type: 'object',
+    required: ['kind', 'html'],
+    properties: {
+      kind: { const: 'html' },
+      html: {
+        type: 'string',
+        minLength: 200,
+      },
+    },
+    additionalProperties: false,
+  }, null, 2), 'utf8')
+  await client.send(setWorkflowRunOutputSchemaRequest(session.id, workflow.id, schemaPath))
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    producerNode.id,
+    [
+      'Acknowledge the workflow turn, submit the deterministic intermediate output, and hand off the dashboard_task contract to the renderer.',
+      'Do not generate the final HTML in this node. The downstream real provider node must generate the final HTML itself.',
+    ].join('\n'),
+  ))
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    dashboardNode.id,
+    [
+      'You are the real-provider dashboard renderer for the publication validation drill.',
+      'After the required ack_workflow_turn call succeeds, continue this same workflow turn immediately.',
+      'Use the upstream dashboard_task handoff message as the authoritative task contract.',
+      'Think through a compact implementation plan before writing the file: layout, colors, responsive behavior, KPI data, chart-like visual, and final handoff shape.',
+      'Generate a compact, complete, self-contained HTML document for a vibrant dashboard and write it to `dashboard.html` in the current workspace.',
+      'Keep `dashboard.html` compact enough for a drill, preferably under 4000 bytes. Use short inline CSS and a few metric blocks.',
+      'The HTML must visibly include the title text `Real Provider Workflow Dashboard`.',
+      'The HTML must include `data-arroba-real-provider-dashboard="true"` on the main dashboard element.',
+      'Include at least four KPI cards, one chart-like visual using HTML/CSS only, and one operational status section.',
+      'Make the design responsive for both desktop and narrow mobile widths without scripts.',
+      'Use inline CSS only; do not use scripts, external assets, network, or unrelated workspace inspection.',
+      'Prefer a shell here-doc to write the file. If you use another file-writing tool, keep the file small.',
+      'Use the endpoint prompt only as theme guidance. Do not explain your design.',
+      'Do not call validate_and_submit_workflow_run_output. The downstream finalizer node will submit the final workflow output.',
+      'After writing `dashboard.html`, emit a small workflow handoff; do not include the full HTML in the chat output.',
+      'Emit exactly one fenced json block and then stop.',
+      'The fenced json block must be shaped as {"summary":"Real provider dashboard completed.","output":{"message":{"kind":"html_file","path":"dashboard.html"}}}.',
+      'Do not put the HTML outside the file.',
+    ].join('\n'),
+  ))
+  await client.send(updateWorkflowNodeInstructionsRequest(
+    session.id,
+    workflow.id,
+    finalizerNode.id,
+    [
+      'Acknowledge the workflow turn, parse the upstream renderer output.message, and submit that exact HTML object as the final workflow output.',
+      'If the upstream renderer provides an html_file path, read the file and submit its contents as {"kind":"html","html":"<file contents>"}.',
+      'Do not generate or modify HTML in this node.',
+    ].join('\n'),
+  ))
+  await client.send(addWorkflowEdgeRequest(session.id, workflow.id, producerNode.id, dashboardNode.id))
+  await client.send(addWorkflowEdgeRequest(session.id, workflow.id, dashboardNode.id, finalizerNode.id))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, producerNode.id, false))
+  await client.send(setWorkflowNodeCanEmitIntermediateOutputRequest(session.id, workflow.id, producerNode.id, true))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, dashboardNode.id, false))
+  await client.send(setWorkflowNodeCanCompleteRunRequest(session.id, workflow.id, finalizerNode.id, true))
+
+  const endpoint = variant(
+    await client.send(createWorkflowEndpointRequest(session.id, workflow.id, producerNode.id, options.endpointAlias)),
+    'WorkflowEndpointCreated',
+  ).endpoint
+  const traceLevels = ['output_summary', 'assistant_messages', 'thinking', 'tool_use']
+  const publication = variant(
+    await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
+      alias: options.publicationAlias,
+      route: options.route,
+      methods: options.methods,
+      transport: { kind: options.transportKind },
+      parser: { kind: 'json' },
+      traceExposure: {
+        nodes: {
+          [producerNode.id]: traceLevels,
+          [dashboardNode.id]: traceLevels,
+          [finalizerNode.id]: traceLevels,
+        },
+      },
+      mode: 'async',
+      syncTimeoutMs: 360_000,
+      pollMs: 500,
+    })),
+    'WorkflowPublicationCreated',
+  ).publication
+  return {
+    session,
+    workflow,
+    producerNode,
+    dashboardNode,
+    finalizerNode,
+    producerAgent,
+    dashboardAgent,
+    finalizerAgent,
+    producerRun,
+    dashboardRun,
+    finalizerRun,
+    endpoint,
+    publication,
+    requiredTraceLevels: options.expectThinking
+      ? ['output_summary', 'assistant_messages', 'thinking', 'tool_use']
+      : ['output_summary', 'assistant_messages', 'tool_use'],
+  }
+}
+
 async function waitForWatchdogWorkflowRun(client, sessionId, workflowId, options = {}) {
   const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
   let lastRuns = []
@@ -1379,6 +1698,11 @@ async function runLivePublicationManifestMode({
         local_url: localUrl,
         open_url: registered.open_url,
         session_id: item.sessionId,
+        expected_html_text: item.expectedHtmlText ?? null,
+        required_html_snippets: item.requiredHtmlSnippets ?? null,
+        prompt_text: item.promptText ?? null,
+        required_trace_levels: item.requiredTraceLevels ?? null,
+        required_trace_alias: item.requiredTraceAlias ?? null,
       }
     }
     await mkdir(path.dirname(manifestPath), { recursive: true })
@@ -1449,8 +1773,11 @@ async function main() {
   const browserWorkspace = path.join(root, 'browser-workspace')
   const browserRootWorkspace = path.join(root, 'browser-root-workspace')
   const browserHtmlWorkspace = path.join(root, 'browser-html-workspace')
+  const browserRealHtmlWorkspace = path.join(root, 'browser-real-html-workspace')
   const mcpWorkspace = path.join(root, 'mcp-workspace')
   const watchdogWorkspace = path.join(root, 'watchdog-workspace')
+  const realDashboard = realDashboardOptionsFromEnv()
+  const hostHome = process.env.HOME
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
@@ -1483,6 +1810,10 @@ async function main() {
     ARROBA_RELAY_URL: relayUrl,
     ARROBA_RELAY_TOKEN: relayToken,
   }
+  if (realDashboard?.useHostProviderHome && hostHome) {
+    if (!env.CODEX_HOME) env.CODEX_HOME = path.join(hostHome, '.codex')
+    if (!env.ARROBA_CLAUDE_CONFIG) env.ARROBA_CLAUDE_CONFIG = path.join(hostHome, '.claude.json')
+  }
 
   let relay = null
   let kernel = null
@@ -1501,6 +1832,7 @@ async function main() {
     await mkdir(browserWorkspace, { recursive: true })
     await mkdir(browserRootWorkspace, { recursive: true })
     await mkdir(browserHtmlWorkspace, { recursive: true })
+    await mkdir(browserRealHtmlWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(watchdogWorkspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -1524,6 +1856,76 @@ async function main() {
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
+
+    if (realDashboard && envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_ONLY')) {
+      const maxAttempts = Number(process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_ATTEMPTS || '3')
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        logStep('create_browser_real_html_final_session', { ...realDashboard, attempt, maxAttempts })
+        const attemptWorkspace = path.join(browserRealHtmlWorkspace, `attempt-${attempt}`)
+        await mkdir(attemptWorkspace, { recursive: true })
+        const browserRealHtml = await createRealProviderDashboardPublicationSession(client, sessionIds, {
+          workspace: attemptWorkspace,
+          sessionAlias: `publication-drill-human-http-real-html-final-${realDashboard.provider}-${attempt}`,
+          attachAlias: `publication-drill-human-http-real-html-final-${realDashboard.provider}-${attempt}`,
+          agentAlias: `${realDashboard.provider}-real-dashboard-renderer`,
+          workflowAlias: `published-human-http-real-html-final-${realDashboard.provider}-${attempt}`,
+          endpointAlias: 'browser-real-html',
+          publicationAlias: `public_human_http_real_html_final_${attempt}`,
+          route: `/real-dashboard-${attempt}/*`,
+          methods: ['GET'],
+          transportKind: 'human_http',
+          provider: realDashboard.provider,
+          accountProfile: realDashboard.accountProfile,
+          model: realDashboard.model,
+          effort: realDashboard.effort,
+          expectThinking: realDashboard.expectThinking,
+        })
+
+        logStep('invoke_human_http_real_html_final_browser', { attempt, maxAttempts })
+        gateway = startProcess(
+          process.execPath,
+          [path.join(repoRoot, 'apps/server/dist/index.js')],
+          {
+            ...env,
+            HOST: '127.0.0.1',
+            PORT: String(gatewayPort),
+            ARROBA_KERNEL_URL: kernelUrl,
+            ARROBA_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
+            ARROBA_PUBLICATION_ID: browserRealHtml.publication.id,
+          },
+          'gateway-human-http-real-html-final',
+        )
+        await waitForGateway(gatewayUrl)
+        try {
+          await runHumanHttpHtmlFinalBrowserDrill({
+            url: `${gatewayUrl}/real-dashboard-${attempt}/${encodeURIComponent(REAL_DASHBOARD_PROMPT)}`,
+            root,
+            timeoutMs: 360_000,
+            expectedHtmlText: 'Real Provider Workflow Dashboard',
+            requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+            requiredTraceLevels: browserRealHtml.requiredTraceLevels,
+            requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
+            visualArtifactPrefix: 'local-human-http-real-dashboard',
+            requirePartial: false,
+          })
+          await stopProcess(gateway)
+          gateway = null
+          succeeded = true
+          logStep('real_dashboard_only_ok', { attempt })
+          return
+        } catch (error) {
+          await stopProcess(gateway).catch(() => {})
+          gateway = null
+          if (attempt < maxAttempts && String(error?.message || error).includes('completed without required trace levels')) {
+            logStep('real_dashboard_retry_missing_required_trace_levels', { attempt, error: error.message })
+            continue
+          }
+          throw error
+        }
+      }
+      succeeded = true
+      return
+    }
 
     logStep('create_session')
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'publication-drill')), 'SessionCreated').session
@@ -1762,6 +2164,27 @@ async function main() {
       methods: ['GET'],
       transportKind: 'human_http',
     })
+    let browserRealHtml = null
+    if (realDashboard) {
+      logStep('create_browser_real_html_final_session', realDashboard)
+      browserRealHtml = await createRealProviderDashboardPublicationSession(client, sessionIds, {
+        workspace: browserRealHtmlWorkspace,
+        sessionAlias: `publication-drill-human-http-real-html-final-${realDashboard.provider}`,
+        attachAlias: `publication-drill-human-http-real-html-final-${realDashboard.provider}`,
+        agentAlias: `${realDashboard.provider}-real-dashboard-renderer`,
+        workflowAlias: `published-human-http-real-html-final-${realDashboard.provider}`,
+        endpointAlias: 'browser-real-html',
+        publicationAlias: 'public_human_http_real_html_final',
+        route: '/real-dashboard/*',
+        methods: ['GET'],
+        transportKind: 'human_http',
+        provider: realDashboard.provider,
+        accountProfile: realDashboard.accountProfile,
+        model: realDashboard.model,
+        effort: realDashboard.effort,
+        expectThinking: realDashboard.expectThinking,
+      })
+    }
     logStep('create_mcp_session')
     const mcpSession = variant(
       await client.send(createSessionRequest(mcpWorkspace, mcpWorkspace, 'publication-drill-mcp')),
@@ -1863,7 +2286,17 @@ async function main() {
           transport: 'human_http',
           sessionId: browserHtml.session.id,
           publication: browserHtml.publication,
-        }, {
+        }, ...(browserRealHtml ? [{
+          key: 'human_http_dashboard_real',
+          transport: 'human_http',
+          sessionId: browserRealHtml.session.id,
+          publication: browserRealHtml.publication,
+          expectedHtmlText: 'Real Provider Workflow Dashboard',
+          requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+          promptText: REAL_DASHBOARD_PROMPT,
+          requiredTraceLevels: browserRealHtml.requiredTraceLevels,
+          requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
+        }] : []), {
           key: 'api_sse_json',
           transport: 'api_sse_json',
           sessionId: apiSseSession.id,
@@ -2324,6 +2757,37 @@ async function main() {
     })
     await stopProcess(gateway)
     gateway = null
+
+    if (browserRealHtml) {
+      logStep('invoke_human_http_real_html_final_browser')
+      gateway = startProcess(
+        process.execPath,
+        [path.join(repoRoot, 'apps/server/dist/index.js')],
+        {
+          ...env,
+          HOST: '127.0.0.1',
+          PORT: String(gatewayPort),
+          ARROBA_KERNEL_URL: kernelUrl,
+          ARROBA_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
+          ARROBA_PUBLICATION_ID: browserRealHtml.publication.id,
+        },
+        'gateway-human-http-real-html-final',
+      )
+      await waitForGateway(gatewayUrl)
+      await runHumanHttpHtmlFinalBrowserDrill({
+        url: `${gatewayUrl}/real-dashboard/${encodeURIComponent(REAL_DASHBOARD_PROMPT)}`,
+        root,
+        timeoutMs: 240_000,
+        expectedHtmlText: 'Real Provider Workflow Dashboard',
+        requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+        requiredTraceLevels: browserRealHtml.requiredTraceLevels,
+        requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
+        visualArtifactPrefix: 'local-human-http-real-dashboard',
+        requirePartial: false,
+      })
+      await stopProcess(gateway)
+      gateway = null
+    }
 
     logStep('invoke_mcp')
     gateway = startProcess(

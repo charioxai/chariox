@@ -62,6 +62,8 @@ export type CreateWorkflowPublicationOptions = {
   inputSchema?: unknown | null
   traceExposure?: unknown | null
   mode?: string | null
+  syncTimeoutMs?: number | null
+  pollMs?: number | null
 }
 
 export function createWorkflowPublicationRequest(
@@ -84,6 +86,8 @@ export function createWorkflowPublicationRequest(
       input_schema: options.inputSchema ?? null,
       trace_exposure: options.traceExposure ?? null,
       mode: options.mode ?? null,
+      sync_timeout_ms: options.syncTimeoutMs ?? null,
+      poll_ms: options.pollMs ?? null,
     },
   }
 }

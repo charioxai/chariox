@@ -652,6 +652,8 @@ impl SessionService {
         input_schema: Option<Value>,
         trace_exposure: Option<Value>,
         mode: Option<String>,
+        sync_timeout_ms: Option<u64>,
+        poll_ms: Option<u64>,
         created_by_user_id: String,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
@@ -678,6 +680,8 @@ impl SessionService {
             input_schema,
             trace_exposure,
             mode,
+            sync_timeout_ms,
+            poll_ms,
             created_by_user_id,
         );
         let session =
@@ -932,7 +936,8 @@ fn validate_workflow_publication_trace_exposure(
     };
     let Some(nodes_object) = nodes_value.as_object() else {
         return Err(DaemonError::InvalidWorkflowPublicationTraceExposure {
-            message: "`trace_exposure.nodes` must be an object keyed by workflow node id".to_string(),
+            message: "`trace_exposure.nodes` must be an object keyed by workflow node id"
+                .to_string(),
         });
     };
     let known_node_ids = workflow

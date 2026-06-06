@@ -133,12 +133,13 @@ impl KernelRuntimeOwnedState {
         };
         let mut dispatches = WorkflowPromptDispatches::default();
         if is_final && warning.is_none() && workflow_run.publication_invocation().is_some() {
+            let max_turns = self.workflow_max_turns(&context.session_id);
             let update = self.session_store.write().complete_workflow_node_run(
                 &context.session_id,
                 &workflow_run_id,
                 &context.workflow_node_run_id,
                 None,
-                self.workflow_max_turns(&context.session_id),
+                max_turns,
             )?;
             dispatches.extend(self.workflow_prepare_dispatches(
                 &context.session_id,
