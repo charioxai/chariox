@@ -66,6 +66,17 @@ impl KernelRuntimeOwnedState {
             bytes,
         );
         if kind != crate::terminal::TerminalOutputKind::PromptEcho {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    self.record_workflow_thinking_trace(
+                        session_id,
+                        provider_run_id,
+                        agent_id,
+                        text.clone(),
+                    );
+                }
+            }
             self.append_history_entry(
                 session_id,
                 SessionHistoryEntry::provider_output(
@@ -74,11 +85,52 @@ impl KernelRuntimeOwnedState {
                     agent_id.as_deref(),
                     kind,
                     merge_key,
-                    String::from_utf8_lossy(bytes).into_owned(),
+                    text,
                 ),
             );
         }
         record
+    }
+
+    fn record_workflow_thinking_trace(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        message: String,
+    ) {
+        let workflow_node_run_id = self
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string));
+        let Some(workflow_node_run_id) = workflow_node_run_id else {
+            return;
+        };
+        if let Err(error) = self
+            .session_store
+            .record_workflow_node_thinking_trace_for_node_run(
+                session_id,
+                &workflow_node_run_id,
+                message,
+            )
+        {
+            crate::logging::warn_with_fields(
+                "daemon.workflow",
+                "failed to record workflow thinking trace",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "workflow_node_run_id": workflow_node_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {

@@ -7,6 +7,7 @@ use crate::history::{
 };
 use crate::provider::ProviderProcessServiceStore;
 use crate::runtime::projection::SessionHistoryProjectionStore;
+use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 use crate::terminal::{
     RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
@@ -14,6 +15,7 @@ use crate::terminal::{
 
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
+    prompt_state_owner: PromptStateOwner,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     session_store: SessionStateStore,
@@ -28,6 +30,7 @@ impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
             provider_store: app.providers.clone(),
+            prompt_state_owner: app.prompt_state_owner(),
             agent_store: app.agents.clone(),
             attachment_store: app.attachments.clone(),
             session_store: app.sessions.clone(),
@@ -67,22 +70,12 @@ impl ProviderOutputFanout {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
-                    if let Err(error) = self.session_store.record_workflow_node_thinking_trace(
+                    self.record_workflow_thinking_trace(
                         session_id,
+                        provider_run_id,
                         agent_id,
                         text.clone(),
-                    ) {
-                        crate::logging::warn_with_fields(
-                            "daemon.workflow",
-                            "failed to record workflow thinking trace",
-                            serde_json::json!({
-                                "session_id": session_id,
-                                "provider_run_id": provider_run_id,
-                                "agent_id": agent_id,
-                                "error": error.to_string(),
-                            }),
-                        );
-                    }
+                    );
                 }
             }
             self.append_history_entry(
@@ -98,6 +91,47 @@ impl ProviderOutputFanout {
             );
         }
         record
+    }
+
+    fn record_workflow_thinking_trace(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        message: String,
+    ) {
+        let workflow_node_run_id = self
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string));
+        let Some(workflow_node_run_id) = workflow_node_run_id else {
+            return;
+        };
+        if let Err(error) = self
+            .session_store
+            .record_workflow_node_thinking_trace_for_node_run(
+                session_id,
+                &workflow_node_run_id,
+                message,
+            )
+        {
+            crate::logging::warn_with_fields(
+                "daemon.workflow",
+                "failed to record workflow thinking trace",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "workflow_node_run_id": workflow_node_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(crate) fn record_notice(
