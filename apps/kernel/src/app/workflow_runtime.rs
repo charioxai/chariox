@@ -324,9 +324,16 @@ pub(crate) fn pump_workflow_watchdogs(app: &mut DaemonApp) {
         }
     };
     for plan in plans {
+        let session_id = plan.session_id.clone();
+        let watchdog_id = plan.watchdog_id.clone();
         match invoke_watchdog_workflow_launch(app, plan) {
             Ok(()) => {}
             Err(error) => {
+                let _ = app.sessions_mut().mark_workflow_watchdog_failed(
+                    &session_id,
+                    &watchdog_id,
+                    error.to_string(),
+                );
                 crate::logging::warn_with_fields(
                     "daemon.app",
                     "workflow watchdog invoke failed",
