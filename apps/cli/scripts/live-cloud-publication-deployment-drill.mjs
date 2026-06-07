@@ -61,6 +61,7 @@ function usage() {
     '  --credential-profile NAME',
     '  --real-dashboard',
     '  --artifacts-dir DIR',
+    '  --browser-screenshot',
     '  --keep-tmp',
     '  --debug-hold-ms MS',
   ].join('\n')
@@ -76,6 +77,7 @@ function parseArgs(argv) {
     credentialProfile: null,
     realDashboard: false,
     artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
+    browserScreenshot: false,
     keepTmp: false,
     debugHoldMs: 0,
   }
@@ -89,6 +91,7 @@ function parseArgs(argv) {
     else if (arg === '--credential-profile') options.credentialProfile = argv[++index]
     else if (arg === '--real-dashboard') options.realDashboard = true
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
+    else if (arg === '--browser-screenshot') options.browserScreenshot = true
     else if (arg === '--keep-tmp') options.keepTmp = true
     else if (arg === '--debug-hold-ms') options.debugHoldMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--help' || arg === '-h') {
@@ -254,7 +257,9 @@ async function main() {
         throw new Error(`${errorMessage(error)}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
       })
     }
-    readyDeployment = await waitForDeploymentReady(profile, deployment.id)
+    readyDeployment = await waitForDeploymentReady(profile, deployment.id).catch((error) => {
+      throw new Error(`${errorMessage(error)}\nkernel stdout:\n${kernel?.logs?.stdout ?? ''}\nkernel stderr:\n${kernel?.logs?.stderr ?? ''}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
+    })
     logStep('deployment_ready', {
       id: readyDeployment.id,
       status: readyDeployment.status,
@@ -267,6 +272,7 @@ async function main() {
       artifactsDir: options.artifactsDir,
       slug: options.slug,
       expectHtmlDashboard: options.realDashboard,
+      browserScreenshot: options.browserScreenshot,
     }).catch((error) => {
       if (options.debugHoldMs > 0) {
         logStep('debug_hold', {
@@ -401,6 +407,13 @@ async function validateTransport(input) {
   const base = input.publicBaseUrl.replace(/\/+$/, '')
   if (input.transport === 'human_http') {
     const promptUrl = `${base}/final/${encodeURIComponent(input.prompt)}`
+    if (input.browserScreenshot) {
+      return await runHumanHttpDashboardBrowserScreenshot({
+        url: promptUrl,
+        artifactsDir: input.artifactsDir,
+        slug: input.slug,
+      })
+    }
     const response = await fetch(promptUrl, { headers: { accept: 'text/html' } })
     const body = await response.text()
     if (!response.ok || !body.includes('EventSource')) throw new Error(`human HTTP viewer failed: ${response.status} ${body.slice(0, 200)}`)
@@ -624,13 +637,206 @@ async function invokeWebSocket(url, payload) {
   })
 }
 
+async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir, slug }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) throw new Error('Chrome executable was not found for browser screenshot validation')
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(artifactsDir, `${slug}-chrome-profile`)
+  const screenshotPath = path.join(artifactsDir, `${slug}-browser-final-dashboard.png`)
+  await rm(userDataDir, { recursive: true, force: true })
+  await mkdir(userDataDir, { recursive: true })
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--window-size=1440,1000',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    process.env,
+    'chrome-cloud-publication-dashboard',
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await withTimeout(cdp.send('Page.navigate', { url }), 10_000, `browser navigate ${url}`)
+    const finalState = await waitForBrowserDashboardFinal(cdp, 180_000)
+    const screenshot = await withTimeout(
+      cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
+      10_000,
+      'browser dashboard screenshot',
+    )
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error('browser dashboard screenshot was empty')
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    return { promptUrl: url, screenshotPath, finalState }
+  } catch (error) {
+    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome.logs.stdout}\nchrome stderr:\n${chrome.logs.stderr}`)
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function findChromeExecutable() {
+  const candidates = [
+    process.env.ARROBA_CHROME_PATH,
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    'google-chrome',
+    'chromium',
+    'chromium-browser',
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    const result = await run(candidate, ['--version'])
+    if (result.code === 0) return candidate
+  }
+  return null
+}
+
+async function waitForChromeTarget(debuggingPort, chrome) {
+  const endpoint = `http://127.0.0.1:${debuggingPort}/json/list`
+  const deadline = Date.now() + 20_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(endpoint)
+      const targets = await response.json()
+      const target = targets.find((candidate) => candidate.type === 'page' && candidate.webSocketDebuggerUrl)
+      if (target?.webSocketDebuggerUrl) return target
+    } catch (error) {
+      lastError = error
+    }
+    await delay(250)
+  }
+  throw new Error(`Chrome DevTools target did not become ready: ${lastError?.message ?? 'no page target'}\n${chrome.logs.stderr.slice(-2_000)}`)
+}
+
+async function connectChromeTarget(webSocketUrl) {
+  const socket = new WebSocket(webSocketUrl)
+  let nextId = 1
+  const pending = new Map()
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out opening Chrome DevTools socket')), 10_000)
+    socket.once('open', () => {
+      clearTimeout(timeout)
+      resolve()
+    })
+    socket.once('error', reject)
+  })
+  socket.on('message', (data) => {
+    const message = JSON.parse(data.toString())
+    if (typeof message.id !== 'number') return
+    const waiter = pending.get(message.id)
+    if (!waiter) return
+    pending.delete(message.id)
+    if (message.error) waiter.reject(new Error(`${message.error.message}: ${message.error.data ?? ''}`))
+    else waiter.resolve(message.result ?? {})
+  })
+  socket.on('error', (error) => {
+    for (const waiter of pending.values()) waiter.reject(error)
+    pending.clear()
+  })
+  return {
+    send(method, params = {}) {
+      const id = nextId++
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        socket.send(JSON.stringify({ id, method, params }))
+      })
+    },
+    close() {
+      return new Promise((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) return resolve()
+        socket.once('close', resolve)
+        socket.close()
+      })
+    },
+  }
+}
+
+async function waitForBrowserDashboardFinal(cdp, timeoutMs) {
+  const requiredTraceLevels = ['output_summary', 'assistant_messages', 'thinking', 'tool_use']
+  const requiredHtmlSnippets = ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const status = document.querySelector('#status')?.textContent?.trim() || '';
+        const iframe = document.querySelector('#html-output iframe');
+        const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
+        const traces = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => ({
+          text: item.textContent || '',
+          meta: Array.from(item.querySelectorAll('.trace-meta span')).map((span) => (span.textContent || '').trim()),
+        }));
+        const requiredTraceLevels = ${JSON.stringify(requiredTraceLevels)};
+        const traceLevels = Array.from(new Set(traces.flatMap((trace) => trace.meta).filter((value) => requiredTraceLevels.includes(value)))).sort();
+        const traceAliases = Array.from(new Set(traces.map((trace) => trace.meta[0]).filter(Boolean))).sort();
+        const missingTraceLevels = requiredTraceLevels.filter((level) => !traceLevels.includes(level));
+        const htmlOk = ${JSON.stringify(requiredHtmlSnippets)}.every((snippet) => iframeSrcdoc.includes(snippet));
+        return {
+          status,
+          htmlOk,
+          traceCount: traces.length,
+          traceLevels,
+          traceAliases,
+          missingTraceLevels,
+          ok: status === 'Completed' && htmlOk && traces.length > 0 && missingTraceLevels.length === 0,
+        };
+      })()`,
+    }), 3_000, 'browser dashboard Runtime.evaluate')
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.ok) return lastState
+    if (
+      lastState?.status === 'Completed'
+      && lastState?.htmlOk
+      && Array.isArray(lastState?.missingTraceLevels)
+      && lastState.missingTraceLevels.length > 0
+    ) {
+      throw new Error(`browser completed without required trace levels: ${JSON.stringify(lastState)}`)
+    }
+    await delay(500)
+  }
+  throw new Error(`browser did not render final dashboard: ${JSON.stringify(lastState)}`)
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function waitForDeploymentReady(profile, deploymentId) {
   const deadline = Date.now() + 180_000
   let last = null
   while (Date.now() < deadline) {
     last = await getPublicationDeployment(profile, deploymentId)
     if (last.status === 'ready') return last
-    if (last.status === 'failed') throw new Error(`deployment failed: ${last.lastError ?? 'unknown error'}`)
+    if (last.status === 'failed' || last.status === 'unavailable') {
+      throw new Error(`deployment ${last.status}: ${last.lastError ?? 'unknown error'}`)
+    }
     await delay(2_000)
   }
   throw new Error(`deployment did not become ready: ${JSON.stringify(last)}`)

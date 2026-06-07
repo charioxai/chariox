@@ -171,6 +171,23 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        let endpoint_id = request
+            .snapshot
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.id().to_string())
+            .or_else(|| {
+                request
+                    .snapshot
+                    .workflow
+                    .endpoints()
+                    .first()
+                    .map(|endpoint| endpoint.id().to_string())
+            })
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "materialize workflow publication",
+                message: "workflow snapshot is missing a publication endpoint".to_string(),
+            })?;
         if let Some(queue) = request
             .snapshot
             .queues
@@ -307,6 +324,27 @@ impl KernelRuntimeOwnedState {
             request.snapshot.queues,
             request.snapshot.watchdogs,
         )?;
+        let publication = crate::session::WorkflowPublicationDefinition::new(
+            request.publication_id.clone(),
+            session_id.clone(),
+            workflow_id.clone(),
+            endpoint_id,
+            Some("default".to_string()),
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            caller_user_id.to_string(),
+        );
+        self.session_store
+            .write()
+            .restore_workflow_publication(&session_id, publication)?;
         let session = self.workflow_session(&session_id)?;
         Ok(LocalDaemonResponse::WorkflowPublicationMaterialized {
             publication_id: request.publication_id,

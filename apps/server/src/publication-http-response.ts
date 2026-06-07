@@ -1,6 +1,7 @@
 import type {
   WorkflowInvocationResult,
 } from "./publication-types.js"
+import { normalizeFinalOutput } from "./publication-final-output.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type GatewayReply = {
@@ -10,7 +11,7 @@ type GatewayReply = {
 
 export function forwardWorkflowResult(reply: GatewayReply, result: WorkflowInvocationResult) {
   const workflowRun = result.workflow_run
-  const finalMessage = workflowRun?.final_output?.message
+  const finalMessage = workflowRun?.final_output ? normalizeFinalOutput(workflowRun.final_output).text : ""
   const transportResponse = parseTransportResponse(finalMessage)
   if (transportResponse) {
     reply.code(transportResponse.status)

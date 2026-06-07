@@ -7,6 +7,7 @@ import {
 import type { WorkflowWatchdogDefinition } from "@arroba/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import { normalizeFinalOutput } from "./publication-final-output.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import type {
   GatewayDeps,
@@ -156,10 +157,11 @@ function summarizeWorkflowRun(run: WorkflowRun) {
 function latestWorkflowRunOutput(run: WorkflowRun | null) {
   if (!run) return null
   if (run.final_output) {
+    const finalOutput = normalizeFinalOutput(run.final_output)
     return {
       kind: "final",
-      message: run.final_output.message,
-      artifacts: run.final_output.artifacts ?? [],
+      message: finalOutput.message,
+      artifacts: finalOutput.artifacts,
     }
   }
   const partial = [...(run.intermediate_outputs ?? [])].sort((left, right) => (right.timestamp_ms ?? 0) - (left.timestamp_ms ?? 0))[0]

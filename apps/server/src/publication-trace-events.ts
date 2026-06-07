@@ -50,7 +50,8 @@ export function collectPublicationTraceEvents(
           },
         })
       }
-      const outputMessage = nodeRun.completion?.output?.message
+      const outputMessage = completionOutputMessage(nodeRun.completion?.output)
+        ?? workflowFinalOutputMessage(workflowRun, nodeRun)
       if (outputMessage) {
         pushTraceEvent(events, state, publication, workflowRun, nodeRun, "assistant_messages", {
           key: `completion-output:${nodeRun.id}:${outputMessage}`,
@@ -123,4 +124,29 @@ function completedTimestamp(
   workflowRun: WorkflowRun,
 ) {
   return nodeRun.completed_at_ms ?? workflowRun.completed_at_ms ?? Date.now()
+}
+
+function completionOutputMessage(output: unknown): string | null {
+  if (typeof output === "string") return output
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null
+  const message = (output as Record<string, unknown>).message
+  if (typeof message === "string") return message
+  try {
+    return JSON.stringify(output)
+  } catch {
+    return String(output)
+  }
+}
+
+function workflowFinalOutputMessage(
+  workflowRun: WorkflowRun,
+  nodeRun: NonNullable<WorkflowRun["node_runs"]>[number],
+): string | null {
+  if (workflowRun.completed_by_node_run_id && workflowRun.completed_by_node_run_id !== nodeRun.id) {
+    return null
+  }
+  if (!workflowRun.completed_by_node_run_id && nodeRun.status !== "Completed") {
+    return null
+  }
+  return completionOutputMessage(workflowRun.final_output)
 }

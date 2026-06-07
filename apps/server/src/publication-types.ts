@@ -179,6 +179,7 @@ export type WorkflowRun = {
   endpoint_id?: string
   invocation_prompt?: string | null
   publication_invocation?: WorkflowPublicationInvocationEnvelope | null
+  completed_by_node_run_id?: string | null
   node_runs?: Array<{
     id: string
     node_id: string
@@ -187,7 +188,7 @@ export type WorkflowRun = {
     summary?: string | null
     completion?: {
       summary?: string | null
-      output?: { message: string; artifacts?: unknown[] } | null
+      output?: unknown
     } | null
     turn_envelope?: {
       runtime_tool_calls?: {
@@ -222,7 +223,7 @@ export type WorkflowRun = {
     warning?: string | null
     timestamp_ms?: number
   }>
-  final_output?: { message: string; artifacts?: unknown[] } | null
+  final_output?: unknown
   created_at_ms?: number
   completed_at_ms?: number | null
 }

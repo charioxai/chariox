@@ -287,7 +287,23 @@ async function registerServedPublicationEndpoint(
       access: registered?.access ?? "local",
       expires_at_ms: registered?.expires_at_ms ?? null,
     })
-    await registerCloudDeploymentBackendIfConfigured(publication, registered?.open_url ?? localUrl, logger)
+    const access = registered?.access ?? "local"
+    const openUrl = registered?.open_url ?? localUrl
+    if (process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim() && access !== "tunnel") {
+      const message = `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${access}`
+      logger.warn("Cloud publication deployment backend is unavailable", {
+        publication_id: publication.publication_id,
+        local_url: localUrl,
+        open_url: openUrl,
+        access,
+      })
+      await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger, {
+        status: "unavailable",
+        lastError: message,
+      })
+      return
+    }
+    await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger)
   } catch (error) {
     logger.warn("failed to register workflow publication endpoint", {
       publication_id: publication.publication_id,
@@ -303,6 +319,7 @@ async function registerCloudDeploymentBackendIfConfigured(
   publication: WorkflowPublicationConfig,
   localUrl: string,
   logger: ArrobaLogger,
+  options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null } = {},
 ) {
   const deploymentId = process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
   if (!deploymentId) return
@@ -311,12 +328,14 @@ async function registerCloudDeploymentBackendIfConfigured(
       deploymentId,
       publication,
       localUrl,
+      ...options,
     })
     if (registered) {
       logger.info("registered Cloud publication deployment backend", {
         publication_id: publication.publication_id,
         deployment_id: deploymentId,
         local_url: localUrl,
+        status: options.status ?? "ready",
       })
     } else {
       logger.warn("Cloud publication deployment backend registration skipped; Cloud profile is missing", {

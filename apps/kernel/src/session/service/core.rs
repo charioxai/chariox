@@ -90,6 +90,30 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub(crate) fn restore_workflow_publication(
+        &mut self,
+        session_id: &str,
+        publication: WorkflowPublicationDefinition,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        if publication.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "restore workflow publication",
+                message: format!(
+                    "publication `{}` belongs to session `{}` instead of `{session_id}`",
+                    publication.id(),
+                    publication.session_id()
+                ),
+            });
+        }
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.create_workflow_publication(publication))
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store
             .get(session_id)

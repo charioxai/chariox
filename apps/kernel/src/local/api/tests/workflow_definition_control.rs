@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::RegisterWorkflowPublicationEndpointRequest;
 
 #[test]
 fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
@@ -462,6 +463,12 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     assert!(materialized.has_member(runtime_owner_user_id));
     assert_ne!(materialized.id(), source_session.id());
     assert_eq!(materialized.workflows().len(), 1);
+    assert_eq!(materialized.workflow_publications().len(), 1);
+    assert_eq!(materialized.workflow_publications()[0].id(), "publication-1");
+    assert_eq!(
+        materialized.workflow_publications()[0].endpoint_id(),
+        endpoint.id()
+    );
     assert_eq!(materialized.workflow_watchdogs().len(), 1);
     assert_eq!(
         materialized.workflow_watchdogs()[0].invocation_prompt(),
@@ -514,4 +521,30 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(hidden_state.is_hidden());
+
+    match harness
+        .dispatch_as_user(
+            runtime_owner_user_id,
+            LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(
+                RegisterWorkflowPublicationEndpointRequest {
+                    session_id: materialized.id().to_string(),
+                    publication_ref: "publication-1".to_string(),
+                    local_url: "http://127.0.0.1:3000/".to_string(),
+                    runtime_session_id: Some(materialized.id().to_string()),
+                    ttl_ms: None,
+                },
+            ),
+        )
+        .expect("materialized publication endpoint should register")
+    {
+        LocalDaemonResponse::WorkflowPublicationEndpointRegistered {
+            publication,
+            open_url,
+            ..
+        } => {
+            assert_eq!(publication.id(), "publication-1");
+            assert_eq!(publication.open_url(), Some(open_url.as_str()));
+        }
+        _ => panic!("unexpected local response"),
+    }
 }

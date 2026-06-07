@@ -5,6 +5,7 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import { normalizeFinalOutput } from "./publication-final-output.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
@@ -186,8 +187,8 @@ async function waitForWorkflowRunFinal(
 
 function workflowResultToMcpToolResult(result: WorkflowInvocationResult, publication: WorkflowPublicationConfig) {
   const workflowRun = result.workflow_run ?? null
-  const finalOutput = workflowRun?.final_output ?? null
-  const message = finalOutput?.message ?? (result.queued ? "workflow invocation queued" : "")
+  const finalOutput = normalizeFinalOutput(workflowRun?.final_output)
+  const message = finalOutput.text || (result.queued ? "workflow invocation queued" : "")
   const traces = workflowRun
     ? collectPublicationTraceEvents(publication, workflowRun, createPublicationTraceStreamState())
     : []
@@ -198,8 +199,8 @@ function workflowResultToMcpToolResult(result: WorkflowInvocationResult, publica
       queued: result.queued === true,
       workflow_run_id: workflowRun?.id ?? null,
       status: workflowRun?.status ?? null,
-      message,
-      artifacts: finalOutput?.artifacts ?? [],
+      message: finalOutput.message,
+      artifacts: finalOutput.artifacts,
       traces,
     },
     isError: workflowRun ? !isTerminalWorkflowRunStatus(workflowRun.status) || workflowRun.status !== "Completed" : result.queued === true,

@@ -65,6 +65,34 @@ test("publication gateway registers local runtime backend with Cloud deployment"
   })
 })
 
+test("publication gateway can mark Cloud local runtime backend unavailable", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  const registered = await registerCloudPublicationDeploymentBackend({
+    deploymentId: "deployment-unavailable",
+    publication: baseConfig,
+    status: "unavailable",
+    lastError: "relay display tunnel unavailable",
+    now: () => 1_700_000_000_000,
+    profile: {
+      apiUrl: "https://cloud.example.test/",
+      accountId: "account-1",
+      cloudSessionToken: "session-token",
+    },
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return new Response(JSON.stringify({ deployment: { id: "deployment-unavailable" } }), { status: 200 })
+    },
+  })
+
+  assert.equal(registered, true)
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
+    accountId: "account-1",
+    status: "unavailable",
+    runtimeSessionId: "session-1",
+    lastError: "relay display tunnel unavailable",
+  })
+})
+
 test("publication gateway can register Cloud backend from env profile", async () => {
   const previous = {
     apiUrl: process.env.ARROBA_PUBLICATION_CLOUD_API_URL,
@@ -144,7 +172,7 @@ test("publication trace events honor per-node level policy", () => {
       node_id: "node-c",
       agent_id: "agent-c-runtime",
       status: "Completed",
-      completion: { summary: "C summary", output: { message: "C assistant output" } },
+      completion: { summary: "C summary" },
       thinking_traces: [{ id: "thinking-c", message: "C thinking", timestamp_ms: 31 }],
       completed_at_ms: 40,
     }, {
@@ -202,6 +230,8 @@ test("publication trace events honor per-node level policy", () => {
         created_at_ms: 45,
       },
     ],
+    final_output: { message: { kind: "html", html: "<main>C assistant output</main>" } },
+    completed_by_node_run_id: "run-node-c",
   }
 
   const state = createPublicationTraceStreamState()
@@ -215,7 +245,7 @@ test("publication trace events honor per-node level policy", () => {
     ["node-b", "researcher", "assistant_messages", "B assistant output"],
     ["node-c", "planner", "output_summary", "C summary"],
     ["node-c", "planner", "assistant_messages", "C handoff"],
-    ["node-c", "planner", "assistant_messages", "C assistant output"],
+    ["node-c", "planner", "assistant_messages", "{\"message\":{\"kind\":\"html\",\"html\":\"<main>C assistant output</main>\"}}"],
     ["node-c", "planner", "thinking", "C thinking"],
     ["node-d", "builder", "output_summary", "D summary"],
     ["node-d", "builder", "assistant_messages", "D handoff"],

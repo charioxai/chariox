@@ -5,6 +5,7 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import { normalizeFinalOutput } from "./publication-final-output.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
@@ -227,10 +228,11 @@ function emitWorkflowRunEvents(
     writeSse(reply, "trace", trace)
   }
   if (isTerminalWorkflowRunStatus(workflowRun.status)) {
+    const finalOutput = normalizeFinalOutput(workflowRun.final_output)
     writeSse(reply, "final", {
       workflow_run_id: workflowRun.id,
-      message: workflowRun.final_output?.message ?? "",
-      artifacts: workflowRun.final_output?.artifacts ?? [],
+      message: finalOutput.message,
+      artifacts: finalOutput.artifacts,
       workflow_run: workflowRun,
     })
   }

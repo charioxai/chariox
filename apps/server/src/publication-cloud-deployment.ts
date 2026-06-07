@@ -13,7 +13,9 @@ export interface PublicationCloudProfile {
 export interface RegisterCloudPublicationBackendInput {
   readonly deploymentId: string
   readonly publication: WorkflowPublicationConfig
-  readonly localUrl: string
+  readonly localUrl?: string
+  readonly status?: "ready" | "unavailable" | "failed"
+  readonly lastError?: string | null
   readonly profile?: PublicationCloudProfile | null
   readonly fetch?: typeof fetch
   readonly now?: () => number
@@ -25,6 +27,10 @@ export async function registerCloudPublicationDeploymentBackend(
   const profile = input.profile === undefined ? await loadCloudPublicationProfile() : input.profile
   if (!profile) return false
   const fetchImpl = input.fetch ?? fetch
+  const status = input.status ?? "ready"
+  if (status === "ready" && !input.localUrl) {
+    throw new Error("Cloud publication backend registration requires localUrl when status is ready")
+  }
   const response = await fetchImpl(
     `${normalizeApiUrl(profile.apiUrl)}/publication-deployments/${encodeURIComponent(input.deploymentId)}/local-backend`,
     {
@@ -36,13 +42,16 @@ export async function registerCloudPublicationDeploymentBackend(
       },
       body: JSON.stringify({
         accountId: profile.accountId,
-        status: "ready",
+        status,
         runtimeSessionId: input.publication.session_id,
-        backendTarget: {
-          kind: "local_runtime",
-          url: input.localUrl,
-          updated_at_ms: input.now?.() ?? Date.now(),
-        },
+        ...(input.lastError ? { lastError: input.lastError } : {}),
+        ...(status === "ready" ? {
+          backendTarget: {
+            kind: "local_runtime",
+            url: input.localUrl,
+            updated_at_ms: input.now?.() ?? Date.now(),
+          },
+        } : {}),
       }),
     },
   )
