@@ -21,7 +21,7 @@ use crate::registry::{DisplayStreamEvent, DisplayTunnelLookup, RelayRegistry, Re
 
 const DISPLAY_PEEK_TIMEOUT: Duration = Duration::from_millis(250);
 const DISPLAY_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const DISPLAY_RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(10);
+const DISPLAY_RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(300);
 const DISPLAY_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DISPLAY_MAX_HEADER_BYTES: usize = 16 * 1024;
 const DISPLAY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -591,5 +591,10 @@ mod tests {
         .expect("request should parse");
 
         assert_eq!(request.websocket_key.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn display_response_start_timeout_allows_synchronous_workflow_calls() {
+        assert!(DISPLAY_RESPONSE_START_TIMEOUT >= Duration::from_secs(300));
     }
 }
