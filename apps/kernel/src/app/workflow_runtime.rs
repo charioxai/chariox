@@ -1,9 +1,8 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{
-    unix_epoch_ms, PromptQueueItem, WorkflowDefinition, WorkflowEndpointDefinition,
-    WorkflowFailureEvent, WorkflowFailureKind, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowRun, WorkflowWatchdogTickPlan,
+    PromptQueueItem, WorkflowDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowQueuedPrompt, WorkflowQueuedPromptSource, WorkflowRun,
 };
 use std::collections::BTreeSet;
 
@@ -306,76 +305,6 @@ impl DaemonApp {
 
 pub(crate) fn is_workflow_prompt_source(attachment_id: &str) -> bool {
     WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
-}
-
-pub(crate) fn pump_workflow_watchdogs(app: &mut DaemonApp) {
-    let plans = match app
-        .sessions_mut()
-        .collect_due_workflow_watchdog_invocations(unix_epoch_ms())
-    {
-        Ok(plans) => plans,
-        Err(error) => {
-            crate::logging::warn_with_fields(
-                "daemon.app",
-                "workflow watchdog collection failed",
-                serde_json::json!({ "error": error.to_string() }),
-            );
-            return;
-        }
-    };
-    for plan in plans {
-        let session_id = plan.session_id.clone();
-        let watchdog_id = plan.watchdog_id.clone();
-        match invoke_watchdog_workflow_launch(app, plan) {
-            Ok(()) => {}
-            Err(error) => {
-                let _ = app.sessions_mut().mark_workflow_watchdog_failed(
-                    &session_id,
-                    &watchdog_id,
-                    error.to_string(),
-                );
-                crate::logging::warn_with_fields(
-                    "daemon.app",
-                    "workflow watchdog invoke failed",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-            }
-        }
-    }
-}
-
-fn invoke_watchdog_workflow_launch(
-    app: &mut DaemonApp,
-    plan: WorkflowWatchdogTickPlan,
-) -> Result<(), DaemonError> {
-    let queued_prompt = app.sessions_mut().enqueue_workflow_prompt(
-        &plan.session_id,
-        &plan.workflow_id,
-        &plan.endpoint_id,
-        Some(plan.invocation_prompt.clone()),
-        None,
-        WorkflowQueuedPromptSource::Watchdog,
-        Some(plan.watchdog_id.clone()),
-    )?;
-    if app
-        .sessions()
-        .get_session(&plan.session_id)?
-        .has_active_workflow_run()
-    {
-        return Ok(());
-    }
-    match app.invoke_queued_workflow_prompt(&plan.session_id, queued_prompt) {
-        Ok(WorkflowLaunchOutcome::Started { .. }) => Ok(()),
-        Ok(WorkflowLaunchOutcome::Enqueued { .. }) => Ok(()),
-        Err(error) => {
-            let _ = app.sessions_mut().mark_workflow_watchdog_failed(
-                &plan.session_id,
-                &plan.watchdog_id,
-                error.to_string(),
-            );
-            Err(error)
-        }
-    }
 }
 
 pub(crate) fn start_workflow_prompt_from_runtime(

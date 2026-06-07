@@ -3,6 +3,97 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_collect_due_watchdog_dispatches(
+        &self,
+        now_ms: u64,
+    ) -> WorkflowPromptDispatches {
+        let plans = match self
+            .session_store
+            .write()
+            .collect_due_workflow_watchdog_invocations(now_ms)
+        {
+            Ok(plans) => plans,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow watchdog collection failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                return WorkflowPromptDispatches::default();
+            }
+        };
+
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for plan in plans {
+            let session_id = plan.session_id.clone();
+            let watchdog_id = plan.watchdog_id.clone();
+            match self.workflow_start_watchdog_tick_plan(plan) {
+                Ok(next_dispatches) => dispatches.extend(next_dispatches),
+                Err(error) => {
+                    let _ = self.session_store.write().mark_workflow_watchdog_failed(
+                        &session_id,
+                        &watchdog_id,
+                        error.to_string(),
+                    );
+                    self.record_notice(
+                        &session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(&session_id),
+                        format!("Workflow watchdog `{watchdog_id}` failed to launch: {error}"),
+                    );
+                }
+            }
+        }
+        dispatches
+    }
+
+    fn workflow_start_watchdog_tick_plan(
+        &self,
+        plan: crate::session::WorkflowWatchdogTickPlan,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let queued_prompt = self.session_store.write().enqueue_workflow_prompt(
+            &plan.session_id,
+            &plan.workflow_id,
+            &plan.endpoint_id,
+            Some(plan.invocation_prompt.clone()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Watchdog,
+            Some(plan.watchdog_id.clone()),
+        )?;
+        if self
+            .session_store
+            .get_session(&plan.session_id)?
+            .has_active_workflow_run()
+        {
+            let _ = self
+                .session_store
+                .write()
+                .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        match self.workflow_invoke_queued_prompt(&plan.session_id, queued_prompt.clone()) {
+            Ok((_, dispatches)) => Ok(dispatches),
+            Err(error) => {
+                let _ = self.session_store.write().mark_workflow_watchdog_failed(
+                    &plan.session_id,
+                    &plan.watchdog_id,
+                    error.to_string(),
+                );
+                self.record_notice(
+                    &plan.session_id,
+                    None,
+                    self.attachment_store
+                        .list_session_attachment_ids(&plan.session_id),
+                    format!(
+                        "Queued workflow watchdog prompt `{}` failed: {error}",
+                        queued_prompt.id()
+                    ),
+                );
+                Err(error)
+            }
+        }
+    }
+
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
         &self,
         session_id: &str,
