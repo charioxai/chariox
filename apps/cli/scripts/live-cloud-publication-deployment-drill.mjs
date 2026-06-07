@@ -671,7 +671,7 @@ async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir, slug 
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
     await withTimeout(cdp.send('Page.navigate', { url }), 10_000, `browser navigate ${url}`)
-    const finalState = await waitForBrowserDashboardFinal(cdp, 180_000)
+    const finalState = await waitForBrowserDashboardFinal(cdp, 420_000)
     const screenshot = await withTimeout(
       cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
       10_000,
