@@ -128,15 +128,15 @@ async function handlePublicationWebSocketMessage(
       invocation_id: invocation.request_id,
       result: result.queued ? result.response ?? null : null,
     })
-    if (!deps.invokeWorkflow && result.workflow_run?.id) {
-      await streamWorkflowRun(webSocket, publication, result.workflow_run.id, state)
-    } else if (!deps.invokeWorkflow && result.queued) {
-      await streamQueuedWorkflowRun(webSocket, publication, invocation.request_id, state)
-    } else if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
+    if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
       sendStarted(webSocket, result.workflow_run, state)
       sendPartialOutputs(webSocket, result.workflow_run, state)
       sendTraceOutputs(webSocket, publication, result.workflow_run, state)
       sendWebSocketJson(webSocket, { type: "final", workflow_run: result.workflow_run })
+    } else if (!deps.invokeWorkflow && result.workflow_run?.id) {
+      await streamWorkflowRun(webSocket, publication, result.workflow_run.id, state)
+    } else if (!deps.invokeWorkflow && result.queued) {
+      await streamQueuedWorkflowRun(webSocket, publication, invocation.request_id, state)
     }
   } catch (error) {
     sendWebSocketJson(webSocket, { type: "error", error: error instanceof Error ? error.message : String(error) })

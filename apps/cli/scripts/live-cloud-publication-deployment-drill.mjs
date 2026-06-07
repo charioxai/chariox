@@ -383,8 +383,11 @@ async function validateTransport(input) {
     const events = await invokeWebSocket(`${base}/.well-known/arroba/publication/ws`, { prompt: input.prompt })
     const transcriptPath = path.join(input.artifactsDir, `${input.slug}-websocket.json`)
     await writeFile(transcriptPath, `${JSON.stringify(events, null, 2)}\n`)
-    for (const type of ['ready', 'accepted', 'queued', 'started', 'trace', 'final']) {
+    for (const type of ['ready', 'accepted', 'trace', 'final']) {
       if (!events.some((event) => event.type === type)) throw new Error(`WebSocket transcript missing ${type}: ${JSON.stringify(events)}`)
+    }
+    if (!events.some((event) => event.type === 'queued' || event.type === 'started' || event.type === 'status')) {
+      throw new Error(`WebSocket transcript missing queued/started/status progress event: ${JSON.stringify(events)}`)
     }
     return { transcriptPath }
   }
@@ -419,9 +422,11 @@ async function invokeWebSocket(url, payload) {
   const events = []
   try {
     while (true) {
-      const event = await readWebSocketEvent(socket)
+      const event = await readWebSocketEvent(socket).catch((error) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; events=${JSON.stringify(events)}`)
+      })
       events.push(event)
-      if (event.type === 'ready') socket.send(JSON.stringify(payload))
+      if (event.type === 'ready') socket.send(JSON.stringify({ type: 'invoke', input: payload }))
       if (event.type === 'final' || event.type === 'error') break
     }
     return events
