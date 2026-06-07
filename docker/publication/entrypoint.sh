@@ -5,14 +5,14 @@ mkdir -p "$ARROBA_CONFIG_DIR" "$ARROBA_DATA_DIR" "$ARROBA_RUNTIME_DIR" "$ARROBA_
 
 run_as_arroba() {
   if [[ "$(id -u)" -eq 0 ]]; then
-    exec /usr/sbin/runuser -u arroba -- "$@"
+    exec /usr/sbin/runuser -u arroba -- env HOME="$HOME" USER=arroba "$@"
   fi
   exec "$@"
 }
 
 spawn_as_arroba() {
   if [[ "$(id -u)" -eq 0 ]]; then
-    /usr/sbin/runuser -u arroba -- "$@" &
+    /usr/sbin/runuser -u arroba -- env HOME="$HOME" USER=arroba "$@" &
   else
     "$@" &
   fi
@@ -25,7 +25,12 @@ import_provider_credentials() {
   fi
 
   if [[ -d "$profile_dir/home" ]]; then
-    cp -a "$profile_dir/home/." "$HOME/"
+    shopt -s dotglob nullglob
+    local source
+    for source in "$profile_dir/home"/*; do
+      cp -a "$source" "$HOME/"
+    done
+    shopt -u dotglob nullglob
   else
     local entry
     for entry in .codex .claude .claude.json .config .local; do
@@ -39,6 +44,8 @@ import_provider_credentials() {
 }
 
 import_provider_credentials
+chown arroba:arroba "$HOME" 2>/dev/null || true
+chmod 755 "$HOME" 2>/dev/null || true
 chown -R arroba:arroba \
   "$ARROBA_CONFIG_DIR" \
   "$ARROBA_DATA_DIR" \
