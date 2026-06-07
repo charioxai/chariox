@@ -379,13 +379,25 @@ async function readArtifact(file) {
 function publicationUrl(path) {
   if (!path || !path.startsWith('/')) return path;
   const match = window.location.pathname.match(/^(\/display\/[^/]+)/);
-  return match ? match[1] + path : path;
+  if (match) return match[1] + path;
+  const prefix = publicationIngressPrefix();
+  return prefix ? prefix + path : path;
 }
 
 function publicationWebSocketUrl(path) {
   const url = new URL(publicationUrl(path), window.location.href);
   url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
+}
+
+function publicationIngressPrefix() {
+  const parts = window.location.pathname.split('/').filter(Boolean);
+  if (!parts.length) return '';
+  const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
+  if (routeFirst && parts[0] === routeFirst) return '';
+  if (!routeFirst && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
+  if (viewerConfig.transport !== 'human_http' && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
+  return '/' + parts[0];
 }
 
 function escapeText(value) {
