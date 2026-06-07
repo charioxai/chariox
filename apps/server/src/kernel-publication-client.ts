@@ -12,6 +12,7 @@ import type {
   WorkflowRun,
 } from "./publication-types.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 export function defaultKernelEndpoint() {
@@ -90,7 +91,7 @@ async function waitForWorkflowRun(
   publication: WorkflowPublicationConfig,
   workflowRunId: string,
 ) {
-  const timeoutMs = publication.sync_timeout_ms ?? 30_000
+  const timeoutMs = publicationWaitTimeoutMs(publication)
   const pollMs = publication.poll_ms ?? 500
   const deadline = Date.now() + timeoutMs
   let latest: WorkflowRun | null = null

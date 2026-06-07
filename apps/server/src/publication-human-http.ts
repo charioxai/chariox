@@ -19,6 +19,7 @@ import {
   PUBLICATION_VIEWER_FORM_INVOKE_PATH,
   publicationViewerResultPage,
 } from "./publication-viewer.js"
+import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type HumanHttpApp = {
@@ -161,7 +162,7 @@ async function streamWorkflowRunEventsWithClient(
   client: LocalIpcClient,
   state: HumanHttpStreamState,
 ) {
-  const timeoutMs = publication.sync_timeout_ms ?? 30_000
+  const timeoutMs = publicationWaitTimeoutMs(publication)
   const pollMs = publication.poll_ms ?? 500
   const deadline = Date.now() + timeoutMs
   let lastStatus: string | null = null

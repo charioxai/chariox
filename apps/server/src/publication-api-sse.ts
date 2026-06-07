@@ -13,6 +13,7 @@ import {
   createPublicationTraceStreamState,
   type PublicationTraceStreamState,
 } from "./publication-trace-events.js"
+import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 import type {
   GatewayDeps,
   NormalizedInvocation,
@@ -180,7 +181,7 @@ async function streamWorkflowRunUntilFinal(
 ) {
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
-    const timeoutMs = publication.sync_timeout_ms ?? 30_000
+    const timeoutMs = publicationWaitTimeoutMs(publication)
     const pollMs = publication.poll_ms ?? 500
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline && !reply.raw.destroyed) {

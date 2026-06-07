@@ -5,6 +5,7 @@ import type {
   WorkflowPublicationConfig,
   WorkflowRun,
 } from "./publication-types.js"
+import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 
 export async function findWorkflowRunByInvocationRequestId(
   client: KernelLookupClient,
@@ -24,7 +25,7 @@ export async function waitForWorkflowRunByInvocationRequestId(
   requestId: string,
   options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean } = {},
 ): Promise<WorkflowRun | null> {
-  const timeoutMs = options.timeoutMs ?? publication.sync_timeout_ms ?? 30_000
+  const timeoutMs = options.timeoutMs ?? publicationWaitTimeoutMs(publication)
   const pollMs = options.pollMs ?? publication.poll_ms ?? 500
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline && (options.shouldContinue?.() ?? true)) {
