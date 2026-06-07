@@ -1,0 +1,122 @@
+import assert from "node:assert/strict"
+import { mkdtemp, writeFile, rm } from "node:fs/promises"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+import test from "node:test"
+
+import {
+  createPublicationDeploymentFromPackage,
+  readPublicationPackageMetadata,
+} from "./publication-deployment-api.js"
+import type { RelayCloudProfile } from "./preferences.js"
+
+test("publication deployment API reads package metadata", async () => {
+  const root = await publicationPackageFixture()
+  try {
+    const metadata = await readPublicationPackageMetadata(root)
+    assert.equal(metadata.publicationId, "pub-1")
+    assert.equal(metadata.publicationAlias, "Public Demo")
+    assert.equal(metadata.workflowId, "workflow-1")
+    assert.equal(metadata.endpointId, "endpoint-1")
+    assert.equal(metadata.hookId, "hook-1")
+    assert.equal(metadata.transport, "human_http")
+    assert.equal(metadata.packageUri, `file://${root}`)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication deployment API creates, uploads, and starts hosted deployments", async () => {
+  const root = await publicationPackageFixture()
+  const previousFetch = globalThis.fetch
+  const calls: Array<{ readonly url: string; readonly method: string; readonly body: unknown }> = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input)
+    const method = init?.method ?? "GET"
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : null
+    calls.push({ url, method, body })
+    if (url.endsWith("/publication-deployments")) {
+      return jsonResponse({ deployment: deploymentPayload({ id: "deployment-1", status: "pending" }) })
+    }
+    if (url.endsWith("/publication-deployments/deployment-1/package")) {
+      return jsonResponse({ deployment: deploymentPayload({ id: "deployment-1", status: "package_uploaded", packageUri: body.packageUri }) })
+    }
+    if (url.endsWith("/publication-deployments/deployment-1/start")) {
+      return jsonResponse({ jobs: [{ id: "job-1" }] }, 202)
+    }
+    return jsonResponse({ error: { message: `unexpected ${url}` } }, 404)
+  }) as typeof fetch
+
+  try {
+    const deployment = await createPublicationDeploymentFromPackage({
+      profile: profile(),
+      packagePath: root,
+      mode: "hosted_container",
+      credentialProfile: "miguel_staging",
+    })
+
+    assert.equal(deployment.id, "deployment-1")
+    assert.deepEqual(calls.map((call) => [call.method, new URL(call.url).pathname]), [
+      ["POST", "/publication-deployments"],
+      ["POST", "/publication-deployments/deployment-1/package"],
+      ["POST", "/publication-deployments/deployment-1/start"],
+    ])
+    assert.equal((calls[0]?.body as Record<string, unknown>).credentialProfile, "miguel_staging")
+    assert.equal((calls[1]?.body as Record<string, unknown>).packageUri, `file://${root}`)
+    assert.match(String((calls[1]?.body as Record<string, unknown>).packageDigest), /^sha256:/)
+  } finally {
+    globalThis.fetch = previousFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+async function publicationPackageFixture(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
+  await writeFile(join(root, "publication.json"), JSON.stringify({
+    schema_version: 1,
+    package_version: 1,
+    publication_id: "pub-1",
+    alias: "Public Demo",
+    workflow_id: "workflow-1",
+    hooks: [{
+      id: "hook-1",
+      endpoint_id: "endpoint-1",
+      transport: "human_http",
+    }],
+  }, null, 2))
+  return root
+}
+
+function profile(): RelayCloudProfile {
+  return {
+    apiUrl: "https://cloud.example.test",
+    email: "user@example.test",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "account",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example.test",
+    issuerId: "issuer-1",
+    cloudSessionToken: "session-token",
+  }
+}
+
+function deploymentPayload(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: "deployment-1",
+    mode: "hosted_container",
+    slug: "pub-1",
+    publicBaseUrl: "https://publication.example.test/pub-1/",
+    status: "ready",
+    publicationId: "pub-1",
+    transport: "human_http",
+    ...overrides,
+  }
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  })
+}

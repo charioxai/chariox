@@ -15,6 +15,7 @@ import { runLogViewer } from "./logs.js"
 import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
+import { runPublicationDeploymentCommand } from "./publication-deployment-command.js"
 
 async function main() {
   const argv = process.argv.slice(2)
@@ -32,6 +33,9 @@ async function main() {
   }
   if (argv[0] === "codex") {
     await runCodexNativeTui(argv.slice(1))
+    return
+  }
+  if (await runPublicationDeploymentCommand(argv)) {
     return
   }
 

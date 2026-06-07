@@ -70,10 +70,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         return Ok(ExitCode::SUCCESS);
     }
     let package_arg = args.first().ok_or_else(|| {
-        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>]".to_string()
+        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
     })?;
     let port = args.get(1).ok_or_else(|| {
-        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>]".to_string()
+        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
     })?;
     let package_path = resolve_user_path(package_arg)?;
     if !package_path.exists() {
@@ -88,6 +88,7 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
     let mut kernel_url: Option<String> = None;
     let mut tls_key_file: Option<String> = None;
     let mut tls_cert_file: Option<String> = None;
+    let mut cloud_deployment_id: Option<String> = None;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -105,6 +106,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
             }
             "--tls-cert-file" => {
                 tls_cert_file = Some(require_serve_value(args, &mut index, "--tls-cert-file")?);
+            }
+            "--cloud-deployment" => {
+                cloud_deployment_id =
+                    Some(require_serve_value(args, &mut index, "--cloud-deployment")?);
             }
             "--help" | "-h" => {
                 print_serve_help();
@@ -147,6 +152,9 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
             "ARROBA_PUBLICATION_TLS_CERT_FILE",
             resolve_user_path(&value)?,
         );
+    }
+    if let Some(value) = cloud_deployment_id {
+        command.env("ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID", value);
     }
     run_workflow_publication_server(command, &node)
 }
@@ -196,6 +204,7 @@ fn print_serve_help() {
             "  --kernel-url <url>         Kernel WebSocket URL",
             "  --tls-key-file <path>      Enable HTTPS with this private key",
             "  --tls-cert-file <path>     Enable HTTPS with this certificate",
+            "  --cloud-deployment <id>    Associate this local serve process with a Cloud deployment",
             "",
         ]
         .join("\n")
