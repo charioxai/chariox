@@ -53,6 +53,8 @@ export async function registerCloudPublicationDeploymentBackend(
 }
 
 async function loadCloudPublicationProfile(): Promise<PublicationCloudProfile | null> {
+  const envProfile = loadCloudPublicationProfileFromEnv()
+  if (envProfile) return envProfile
   const preferences = JSON.parse(await readFile(preferencesPath(), "utf8").catch(() => "{}")) as {
     relay?: {
       cloud?: {
@@ -68,6 +70,18 @@ async function loadCloudPublicationProfile(): Promise<PublicationCloudProfile | 
     apiUrl: cloud.apiUrl,
     accountId: cloud.accountId,
     ...(cloud.cloudSessionToken ? { cloudSessionToken: cloud.cloudSessionToken } : {}),
+  }
+}
+
+function loadCloudPublicationProfileFromEnv(): PublicationCloudProfile | null {
+  const apiUrl = process.env.ARROBA_PUBLICATION_CLOUD_API_URL?.trim()
+  const accountId = process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID?.trim()
+  const cloudSessionToken = process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN?.trim()
+  if (!apiUrl || !accountId) return null
+  return {
+    apiUrl,
+    accountId,
+    ...(cloudSessionToken ? { cloudSessionToken } : {}),
   }
 }
 

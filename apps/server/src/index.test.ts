@@ -65,6 +65,38 @@ test("publication gateway registers local runtime backend with Cloud deployment"
   })
 })
 
+test("publication gateway can register Cloud backend from env profile", async () => {
+  const previous = {
+    apiUrl: process.env.ARROBA_PUBLICATION_CLOUD_API_URL,
+    accountId: process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID,
+    token: process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN,
+  }
+  process.env.ARROBA_PUBLICATION_CLOUD_API_URL = "https://cloud-env.example.test/"
+  process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID = "account-env"
+  process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN = "token-env"
+  try {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const registered = await registerCloudPublicationDeploymentBackend({
+      deploymentId: "deployment-env",
+      publication: baseConfig,
+      localUrl: "http://127.0.0.1:4568/",
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} })
+        return new Response(JSON.stringify({ deployment: { id: "deployment-env" } }), { status: 200 })
+      },
+    })
+
+    assert.equal(registered, true)
+    assert.equal(calls[0]?.url, "https://cloud-env.example.test/publication-deployments/deployment-env/local-backend")
+    assert.equal((calls[0]?.init.headers as Record<string, string>).authorization, "Bearer token-env")
+    assert.equal(JSON.parse(String(calls[0]?.init.body)).accountId, "account-env")
+  } finally {
+    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_API_URL", previous.apiUrl)
+    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID", previous.accountId)
+    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN", previous.token)
+  }
+})
+
 test("publication trace events honor per-node level policy", () => {
   const publication: WorkflowPublicationConfig = {
     ...baseConfig,
@@ -195,6 +227,11 @@ test("publication trace events honor per-node level policy", () => {
   assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
   assert.deepEqual(secondPass, [])
 })
+
+function setOptionalEnv(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
 
 test("GET /health returns an ok status payload", async () => {
   const { app } = buildServer(baseConfig, {

@@ -15,6 +15,7 @@ const requests = await import('../../../packages/kernel-client/dist/ipc-requests
 const { createDefaultShellContext, parseShellCommand } = await import('../../../packages/kernel-client/dist/shell-core.js')
 const { executeShellCommand } = await import('../../../packages/kernel-client/dist/shell-executor.js')
 const { loadPreferences, relayCloudProfile } = await import('../dist/preferences.js')
+const { connectKernelCloudRelay } = await import('../dist/relay-api.js')
 const {
   changePublicationDeployment,
   createPublicationDeploymentFromPackage,
@@ -61,6 +62,7 @@ function usage() {
     '  --real-dashboard',
     '  --artifacts-dir DIR',
     '  --keep-tmp',
+    '  --debug-hold-ms MS',
   ].join('\n')
 }
 
@@ -75,6 +77,7 @@ function parseArgs(argv) {
     realDashboard: false,
     artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
     keepTmp: false,
+    debugHoldMs: 0,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -87,6 +90,7 @@ function parseArgs(argv) {
     else if (arg === '--real-dashboard') options.realDashboard = true
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
     else if (arg === '--keep-tmp') options.keepTmp = true
+    else if (arg === '--debug-hold-ms') options.debugHoldMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--help' || arg === '-h') {
       console.log(usage())
       process.exit(0)
@@ -97,6 +101,7 @@ function parseArgs(argv) {
   if (!options.mode) throw new Error(`--mode is required\n${usage()}`)
   if (!options.model) options.model = defaultModel(options.provider, options.transport, options.realDashboard)
   if (!options.slug) options.slug = `cloud-${options.mode.replace('_', '-')}-${options.transport.replace(/_/g, '-')}-${Date.now()}`
+  if (!Number.isFinite(options.debugHoldMs) || options.debugHoldMs < 0) throw new Error('--debug-hold-ms must be a non-negative integer')
   return options
 }
 
@@ -135,6 +140,7 @@ async function main() {
   const exportDir = path.join(root, 'exported')
   const packageDir = path.join(root, 'package')
   const configHome = path.join(root, 'config')
+  const serverConfigHome = path.join(root, 'server-config')
   const stateHome = path.join(root, 'state')
   const home = path.join(root, 'home')
   const kernelPort = await freePort()
@@ -145,6 +151,7 @@ async function main() {
   const servePort = await freePort()
   const daemonAlias = `cloud-publication-drill-${process.pid}-${Date.now()}`
   const relayToken = `cloud-publication-drill-${process.pid}-${Date.now()}`
+  const useLocalRelay = options.mode !== 'local_runtime'
   const env = {
     ...process.env,
     HOME: options.provider === 'dev-stub' ? home : process.env.HOME,
@@ -158,8 +165,10 @@ async function main() {
     ARROBA_DAEMON_ALIAS: daemonAlias,
     ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
     ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
+    ...(useLocalRelay ? {
+      ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+      ARROBA_RELAY_TOKEN: relayToken,
+    } : {}),
   }
   if (process.env.HOME) {
     if (!env.CODEX_HOME) env.CODEX_HOME = path.join(process.env.HOME, '.codex')
@@ -175,22 +184,31 @@ async function main() {
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
+    await mkdir(path.join(serverConfigHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await writeFile(path.join(serverConfigHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     await copyCloudProfile(configHome).catch(() => {})
 
     const kernelBinary = await buildRustBinary('arroba-kernel')
     const relayBinary = await buildRustBinary('arroba-relay')
-    relay = startProcess(relayBinary, [], {
-      ...env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(relayPort),
-      ARROBA_RELAY_TOKEN: relayToken,
-    }, 'relay')
-    await waitForTcpPort('127.0.0.1', relayPort)
+    if (useLocalRelay) {
+      relay = startProcess(relayBinary, [], {
+        ...env,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(relayPort),
+        ARROBA_RELAY_TOKEN: relayToken,
+      }, 'relay')
+      await waitForTcpPort('127.0.0.1', relayPort)
+    }
     kernel = startProcess(kernelBinary, [], env, 'kernel')
     const kernelUrl = `ws://127.0.0.1:${kernelPort}`
     await waitForKernel(kernelUrl)
     client = new LocalIpcClient(kernelUrl, { kernelPingIntervalMs: 60_000, kernelMaxMissedPongs: 10 })
+    if (options.mode === 'local_runtime') {
+      const connected = await connectKernelCloudRelay(client)
+      logStep('cloud_relay_connected', { relayUrl: connected.relayUrl, tokenExpiresAtMs: connected.tokenExpiresAtMs })
+      await delay(1_000)
+    }
 
     const publicationContext = await createPublicationPackage({
       client,
@@ -220,13 +238,19 @@ async function main() {
     if (options.mode === 'local_runtime') {
       serve = startProcess(process.execPath, [path.join(repoRoot, 'apps/server/dist/index.js')], {
         ...env,
+        XDG_CONFIG_HOME: serverConfigHome,
         HOST: '127.0.0.1',
         PORT: String(servePort),
         ARROBA_KERNEL_URL: kernelUrl,
         ARROBA_PUBLICATION_PACKAGE: packageDir,
         ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID: deployment.id,
+        ARROBA_PUBLICATION_CLOUD_API_URL: profile.apiUrl,
+        ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID: profile.accountId,
+        ...(profile.cloudSessionToken ? { ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN: profile.cloudSessionToken } : {}),
       }, 'arroba-serve-local-runtime')
-      await waitForGateway(`http://127.0.0.1:${servePort}`)
+      await waitForGateway(`http://127.0.0.1:${servePort}`).catch((error) => {
+        throw new Error(`${errorMessage(error)}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
+      })
     }
     readyDeployment = await waitForDeploymentReady(profile, deployment.id)
     logStep('deployment_ready', {
@@ -241,6 +265,18 @@ async function main() {
       artifactsDir: options.artifactsDir,
       slug: options.slug,
       expectHtmlDashboard: options.realDashboard,
+    }).catch((error) => {
+      if (options.debugHoldMs > 0) {
+        logStep('debug_hold', {
+          ms: options.debugHoldMs,
+          publicBaseUrl: readyDeployment.publicBaseUrl,
+          deploymentId: readyDeployment.id,
+        })
+        return delay(options.debugHoldMs).then(() => {
+          throw error
+        })
+      }
+      throw new Error(`${errorMessage(error)}\nkernel stdout:\n${kernel?.logs?.stdout ?? ''}\nkernel stderr:\n${kernel?.logs?.stderr ?? ''}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
     })
     const logs = await listPublicationDeploymentLogs(profile, deployment.id).catch((error) => [{ level: 'error', occurredAt: new Date().toISOString(), message: String(error) }])
     const statePath = path.join(options.artifactsDir, `${options.slug}-deployment.json`)
@@ -252,11 +288,11 @@ async function main() {
       const profile = relayCloudProfile(await loadPreferences().catch(() => ({})))
       if (profile) await changePublicationDeployment(profile, deploymentId, 'stop').catch(() => {})
     }
-    await stopProcess(serve)
+    await stopProcess(serve).catch((error) => logStep('cleanup_warning', { process: 'serve', error: errorMessage(error) }))
     for (const id of sessionIds.reverse()) await client?.send(endSessionRequest(id)).catch(() => {})
     await client?.close?.().catch(() => {})
-    await stopProcess(kernel)
-    await stopProcess(relay)
+    await stopProcess(kernel).catch((error) => logStep('cleanup_warning', { process: 'kernel', error: errorMessage(error) }))
+    await stopProcess(relay).catch((error) => logStep('cleanup_warning', { process: 'relay', error: errorMessage(error) }))
     if (!options.keepTmp) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
     else logStep('kept_tmp', { root })
   }
@@ -503,6 +539,7 @@ function startProcess(command, args, env, name) {
 
 async function stopProcess(child) {
   if (!child || child.killed) return
+  if (child.exitCode !== null || child.signalCode !== null) return
   child.kill('SIGTERM')
   const result = await waitForProcessExit(child, 5_000).catch(async () => {
     child.kill('SIGKILL')
@@ -605,6 +642,10 @@ async function copyCloudProfile(configHome) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 main().catch((error) => {

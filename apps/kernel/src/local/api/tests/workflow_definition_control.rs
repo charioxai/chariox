@@ -414,8 +414,11 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
 
+    let runtime_owner_user_id = "published-runtime-user";
     let materialized = match harness
-        .dispatch(LocalDaemonRequest::MaterializeWorkflowPublication(
+        .dispatch_as_user(
+            runtime_owner_user_id,
+            LocalDaemonRequest::MaterializeWorkflowPublication(
             MaterializeWorkflowPublicationRequest {
                 publication_id: "publication-1".to_string(),
                 snapshot: WorkflowPublicationSnapshot {
@@ -455,6 +458,8 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(materialized.is_hidden());
+    assert_eq!(materialized.owner_user_id(), runtime_owner_user_id);
+    assert!(materialized.has_member(runtime_owner_user_id));
     assert_ne!(materialized.id(), source_session.id());
     assert_eq!(materialized.workflows().len(), 1);
     assert_eq!(materialized.workflow_watchdogs().len(), 1);
@@ -468,6 +473,23 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     );
     assert_eq!(materialized.agents().len(), 1);
     assert_ne!(materialized.agents()[0].id(), source_agent.id());
+    assert_eq!(materialized.agents()[0].owner_user_id(), runtime_owner_user_id);
+    let materialized_workflow = materialized
+        .workflows()
+        .first()
+        .expect("materialized workflow should exist");
+    assert_eq!(
+        materialized_workflow.nodes()[0].owner_user_id(),
+        runtime_owner_user_id
+    );
+    assert_eq!(
+        materialized_workflow.nodes()[0].created_by_user_id(),
+        runtime_owner_user_id
+    );
+    assert_eq!(
+        materialized_workflow.endpoints()[0].owner_user_id(),
+        runtime_owner_user_id
+    );
 
     let listed = match harness
         .dispatch(LocalDaemonRequest::ListSessions(ListSessionsRequest))
@@ -479,7 +501,9 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     assert!(listed.is_empty());
 
     let hidden_state = match harness
-        .dispatch(LocalDaemonRequest::GetSessionState(
+        .dispatch_as_user(
+            runtime_owner_user_id,
+            LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: materialized.id().to_string(),
             },

@@ -136,6 +136,7 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_materialize_publication(
         &self,
         request: crate::local::MaterializeWorkflowPublicationRequest,
+        caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if request.snapshot.schema_version != 1 {
             return Err(DaemonError::LocalTransport {
@@ -251,6 +252,7 @@ impl KernelRuntimeOwnedState {
                 source_session.workspace_id.clone(),
                 source_session.worktree_id.clone(),
             )
+            .with_owner_user_id(caller_user_id)
             .with_hidden(true),
         )?;
         let session_id = session.id().to_string();
@@ -258,7 +260,7 @@ impl KernelRuntimeOwnedState {
         for (captured_agent_id, agent) in captured_agents {
             let materialized = self
                 .agent_store
-                .materialize_publication_agent(agent, &session_id);
+                .materialize_publication_agent(agent, &session_id, Some(caller_user_id));
             agent_id_map.insert(captured_agent_id, materialized.id().to_string());
         }
 
@@ -276,6 +278,28 @@ impl KernelRuntimeOwnedState {
                 continue;
             };
             node.set_agent_id(materialized_agent_id.clone());
+            node.set_owner_user_id(caller_user_id);
+            node.set_created_by_user_id(caller_user_id);
+        }
+        let edge_ids = workflow
+            .edges()
+            .iter()
+            .map(|edge| edge.id().to_string())
+            .collect::<Vec<_>>();
+        for edge_id in edge_ids {
+            if let Some(edge) = workflow.edge_mut(&edge_id) {
+                edge.set_created_by_user_id(caller_user_id);
+            }
+        }
+        let endpoint_ids = workflow
+            .endpoints()
+            .iter()
+            .map(|endpoint| endpoint.id().to_string())
+            .collect::<Vec<_>>();
+        for endpoint_id in endpoint_ids {
+            if let Some(endpoint) = workflow.endpoint_mut(&endpoint_id) {
+                endpoint.set_owner_user_id(caller_user_id);
+            }
         }
         self.session_store.replace_publication_runtime_workflows(
             &session_id,

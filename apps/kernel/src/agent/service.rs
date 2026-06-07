@@ -128,12 +128,16 @@ impl AgentService {
         &mut self,
         agent: AgentInstance,
         session_id: &str,
+        owner_user_id: Option<&str>,
     ) -> AgentInstance {
-        let agent = agent.materialized_for_publication_runtime(
+        let mut agent = agent.materialized_for_publication_runtime(
             self.store.next_agent_id(),
             generate_agent_ref(),
             session_id,
         );
+        if let Some(owner_user_id) = owner_user_id {
+            agent.set_owner_user_id(owner_user_id);
+        }
         self.store.insert(agent)
     }
 
@@ -790,9 +794,10 @@ impl AgentServiceStore {
         &self,
         agent: AgentInstance,
         session_id: &str,
+        owner_user_id: Option<&str>,
     ) -> AgentInstance {
         self.write()
-            .materialize_publication_agent(agent, session_id)
+            .materialize_publication_agent(agent, session_id, owner_user_id)
     }
 
     pub fn create_default_agent(
