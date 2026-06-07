@@ -22,28 +22,18 @@ impl KernelRuntimeState {
             "invoke workflow endpoint",
         ) {
             Ok(()) => {
-                let invoke_session_id = request.session_id.clone();
-                let workflow_ref = request.workflow_ref.clone();
-                let endpoint_ref = request.endpoint_ref.clone();
-                let prompt = request.prompt.clone();
-                let queue_ref = request.queue_ref.clone();
-                let publication_invocation = request.publication_invocation.clone();
-                let outcome = self
-                    .with_app_side_effect(move |app| {
-                        app.enqueue_workflow_prompt_and_maybe_start(
-                            &invoke_session_id,
-                            &workflow_ref,
-                            &endpoint_ref,
-                            prompt,
-                            queue_ref.as_deref(),
-                            publication_invocation,
-                        )
-                    })
-                    .await;
-                let outcome = match outcome {
+                let (outcome, dispatches) = match owned.workflow_enqueue_prompt_and_maybe_start(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    request.prompt.clone(),
+                    request.queue_ref.as_deref(),
+                    request.publication_invocation.clone(),
+                ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), owned.session_snapshot(&session_id).ok()),
                 };
+                self.spawn_workflow_prompt_dispatches(dispatches);
                 let session = match owned.session_snapshot(&request.session_id) {
                     Ok(session) => session,
                     Err(error) => return (Err(error), None),
