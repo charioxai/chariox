@@ -388,6 +388,40 @@ impl SessionService {
         Ok(watchdog.clone())
     }
 
+    pub fn prepare_workflow_watchdog_queued_start(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            }
+        })?;
+        if !watchdog.enabled()
+            || watchdog
+                .max_wakeups()
+                .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+        {
+            watchdog.set_enabled(false);
+            watchdog.set_pending_run(false);
+            watchdog.set_last_status(Some("completed_budget".to_string()));
+            return Ok(false);
+        }
+        watchdog.set_pending_run(false);
+        watchdog.set_last_status(Some("invoking_pending".to_string()));
+        Ok(true)
+    }
+
     pub fn mark_workflow_watchdog_failed(
         &mut self,
         session_id: &str,
