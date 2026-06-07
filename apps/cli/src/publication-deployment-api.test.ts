@@ -20,6 +20,7 @@ test("publication deployment API reads package metadata", async () => {
     assert.equal(metadata.endpointId, "endpoint-1")
     assert.equal(metadata.hookId, "hook-1")
     assert.equal(metadata.transport, "human_http")
+    assert.equal(metadata.route, "/final/*")
     assert.equal(metadata.packageUri, `file://${root}`)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -62,6 +63,7 @@ test("publication deployment API creates, uploads, and starts hosted deployments
       ["POST", "/publication-deployments/deployment-1/start"],
     ])
     assert.equal((calls[0]?.body as Record<string, unknown>).credentialProfile, "miguel_staging")
+    assert.equal((calls[0]?.body as Record<string, unknown>).route, "/final/*")
     assert.equal((calls[1]?.body as Record<string, unknown>).packageUri, `file://${root}`)
     assert.match(String((calls[1]?.body as Record<string, unknown>).packageDigest), /^sha256:/)
   } finally {
@@ -82,6 +84,7 @@ async function publicationPackageFixture(): Promise<string> {
       id: "hook-1",
       endpoint_id: "endpoint-1",
       transport: "human_http",
+      route: "/final/*",
     }],
   }, null, 2))
   return root

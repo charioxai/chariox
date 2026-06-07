@@ -19,6 +19,7 @@ export interface PublicationDeploymentSummary {
   readonly endpointId?: string | null
   readonly hookId?: string | null
   readonly transport: string
+  readonly route?: string | null
   readonly packageUri?: string | null
   readonly packageVersion?: number | null
   readonly credentialProfile?: string | null
@@ -35,6 +36,7 @@ export interface PublicationPackageMetadata {
   readonly endpointId?: string | null
   readonly hookId?: string | null
   readonly transport: string
+  readonly route?: string | null
 }
 
 export async function createPublicationDeploymentFromPackage(input: {
@@ -57,6 +59,7 @@ export async function createPublicationDeploymentFromPackage(input: {
     endpointId: metadata.endpointId,
     hookId: metadata.hookId,
     transport: metadata.transport,
+    route: metadata.route,
     credentialProfile: input.credentialProfile,
   })
   const digest = await publicationPackageDigest(metadata.packageRoot)
@@ -123,6 +126,7 @@ export async function readPublicationPackageMetadata(packagePath: string): Promi
       id?: string
       endpoint_id?: string
       transport?: string
+      route?: string
     }>
   }
   const hook = publicationPackage.hooks?.[0]
@@ -137,6 +141,7 @@ export async function readPublicationPackageMetadata(packagePath: string): Promi
     workflowId: publicationPackage.workflow_id,
     endpointId: hook.endpoint_id,
     transport: hook.transport ?? "human_http",
+    ...(hook.route !== undefined ? { route: hook.route } : {}),
     ...(publicationPackage.alias !== undefined ? { publicationAlias: publicationPackage.alias } : {}),
     ...(hook.id !== undefined ? { hookId: hook.id } : {}),
   }
