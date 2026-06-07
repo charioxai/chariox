@@ -402,9 +402,23 @@ async function validateTransport(input) {
     const response = await fetch(promptUrl, { headers: { accept: 'text/html' } })
     const body = await response.text()
     if (!response.ok || !body.includes('EventSource')) throw new Error(`human HTTP viewer failed: ${response.status} ${body.slice(0, 200)}`)
+    const viewerConfig = parseHumanHttpViewerConfig(body)
+    if (!viewerConfig.eventsUrl) throw new Error(`human HTTP viewer did not expose an events URL:\n${body.slice(0, 1000)}`)
+    const eventTranscript = await readSse(`${base}${viewerConfig.eventsUrl}`, null, { method: 'GET' })
+    if (!eventTranscript.includes('event: final')) throw new Error(`human HTTP event transcript missing final:\n${eventTranscript}`)
+    if (!eventTranscript.includes('event: trace')) throw new Error(`human HTTP event transcript missing trace:\n${eventTranscript}`)
+    if (input.expectHtmlDashboard) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+        if (!eventTranscript.includes(snippet)) {
+          throw new Error(`human HTTP final transcript missing dashboard snippet ${snippet}:\n${eventTranscript}`)
+        }
+      }
+    }
     const htmlPath = path.join(input.artifactsDir, `${input.slug}-human-http-viewer.html`)
+    const transcriptPath = path.join(input.artifactsDir, `${input.slug}-human-http-events.txt`)
     await writeFile(htmlPath, body)
-    return { promptUrl, htmlPath }
+    await writeFile(transcriptPath, eventTranscript)
+    return { promptUrl, htmlPath, transcriptPath }
   }
   if (input.transport === 'api_sse_json') {
     const body = await readSse(`${base}/invoke`, { prompt: input.prompt })
@@ -442,12 +456,23 @@ async function validateTransport(input) {
   throw new Error(`unsupported transport ${input.transport}`)
 }
 
-async function readSse(url, payload) {
+function parseHumanHttpViewerConfig(body) {
+  const match = body.match(/window\.__arrobaPublicationViewerConfig\s*=\s*(\{.*?\});/s)
+  if (!match) return {}
+  return JSON.parse(match[1])
+}
+
+async function readSse(url, payload, options = {}) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 300_000)
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+    method: options.method ?? 'POST',
+    headers: payload == null
+      ? { accept: 'text/event-stream' }
+      : { accept: 'text/event-stream', 'content-type': 'application/json' },
+    ...(payload == null ? {} : { body: JSON.stringify(payload) }),
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout))
   const body = await response.text()
   if (!response.ok) throw new Error(`SSE failed: ${response.status} ${body}`)
   return body
