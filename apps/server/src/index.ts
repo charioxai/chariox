@@ -287,7 +287,7 @@ async function registerServedPublicationEndpoint(
       access: registered?.access ?? "local",
       expires_at_ms: registered?.expires_at_ms ?? null,
     })
-    await registerCloudDeploymentBackendIfConfigured(publication, localUrl, logger)
+    await registerCloudDeploymentBackendIfConfigured(publication, registered?.open_url ?? localUrl, logger)
   } catch (error) {
     logger.warn("failed to register workflow publication endpoint", {
       publication_id: publication.publication_id,
