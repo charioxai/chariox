@@ -265,7 +265,7 @@ async function registerServedPublicationEndpoint(
   logger: ArrobaLogger,
 ) {
   if (!publication) return
-  const sessionId = publication.source_session_id ?? publication.session_id
+  const sessionId = publication.session_id
   if (!sessionId || !publication.publication_id) return
   const localUrl = servedLocalUrl(publication, host, port)
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
