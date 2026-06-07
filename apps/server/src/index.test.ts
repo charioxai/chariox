@@ -807,6 +807,98 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
   }
 })
 
+test("gateway accepts provider-prefixed captured models when the provider matches", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-prefixed-binding-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      default_bindings_path: "bindings.local.json",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      queues: [{ id: "workflow-1:default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }],
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "codex",
+        model: "codex/gpt-5.5",
+        effort: "high",
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5.5"] })
+          return {
+            WorkflowPublicationMaterialized: {
+              publication_id: "pub-1",
+              session: { id: "runtime-session-1" },
+              agent_id_map: { "agent-1": "agent-2" },
+            },
+          }
+        },
+      },
+    })
+
+    const materializeRequest = requests.at(-1) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+        }
+      }
+    }
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
+      "MaterializeWorkflowPublication",
+    ])
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "codex")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5.5")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "high")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("gateway fails before materialization when provider/model bindings cannot be resolved", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-fail-"))
   const requests: Record<string, unknown>[] = []

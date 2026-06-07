@@ -31,8 +31,9 @@ export async function resolvePublicationProviderModelBindings(
   for (const agent of snapshot.agents ?? []) {
     const binding = bindingForAgent(bindings, snapshot, agent)
     const selected = binding.replacement ?? binding.captured
-    if (providerModelAvailable(catalog, selected)) {
-      applyAgentProfile(agent, selected)
+    const selectedProfile = availableProviderProfile(catalog, selected)
+    if (selectedProfile) {
+      applyAgentProfile(agent, selectedProfile)
       continue
     }
     const promptReplacement = options.promptReplacement ?? promptProviderModelReplacement
@@ -44,11 +45,12 @@ export async function resolvePublicationProviderModelBindings(
       captured: binding.captured,
       available: catalog,
     })
-    if (!providerModelAvailable(catalog, replacement)) {
+    const replacementProfile = availableProviderProfile(catalog, replacement)
+    if (!replacementProfile) {
       throw new Error(`publication provider/model replacement is unavailable for agent ${agent.id}: ${profileLabel(replacement)}`)
     }
-    binding.replacement = replacement
-    applyAgentProfile(agent, replacement)
+    binding.replacement = replacementProfile
+    applyAgentProfile(agent, replacementProfile)
     changed = true
   }
   if (changed) {
@@ -135,11 +137,18 @@ function bindingForAgent(
   return binding
 }
 
-function providerModelAvailable(catalog: ProviderCatalogIndex, profile: PublicationProviderModelProfile) {
+function availableProviderProfile(catalog: ProviderCatalogIndex, profile: PublicationProviderModelProfile): PublicationProviderModelProfile | null {
   const models = catalog.providers.get(profile.provider)
-  if (!models) return false
-  if (!profile.model) return true
-  return models.size === 0 || models.has(profile.model)
+  if (!models) return null
+  if (!profile.model || models.size === 0 || models.has(profile.model)) return profile
+  const providerPrefixedModel = `${profile.provider}/`
+  if (profile.model.startsWith(providerPrefixedModel)) {
+    const unprefixedModel = profile.model.slice(providerPrefixedModel.length)
+    if (models.has(unprefixedModel)) {
+      return { ...profile, model: unprefixedModel }
+    }
+  }
+  return null
 }
 
 function applyAgentProfile(agent: NonNullable<WorkflowPublicationSnapshot["agents"]>[number], profile: PublicationProviderModelProfile) {
