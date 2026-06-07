@@ -407,6 +407,7 @@ async function validateTransport(input) {
     const eventTranscript = await readSse(`${base}${viewerConfig.eventsUrl}`, null, { method: 'GET' })
     if (!eventTranscript.includes('event: final')) throw new Error(`human HTTP event transcript missing final:\n${eventTranscript}`)
     if (!eventTranscript.includes('event: trace')) throw new Error(`human HTTP event transcript missing trace:\n${eventTranscript}`)
+    assertSuccessfulSseTranscript(eventTranscript, 'human HTTP')
     if (input.expectHtmlDashboard) {
       for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
         if (!eventTranscript.includes(snippet)) {
@@ -427,6 +428,7 @@ async function validateTransport(input) {
     for (const event of ['queued', 'started', 'trace', 'final']) {
       if (!body.includes(`event: ${event}`)) throw new Error(`API SSE transcript missing ${event}:\n${body}`)
     }
+    assertSuccessfulSseTranscript(body, 'API SSE')
     if (input.expectHtmlDashboard) {
       for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
         if (!body.includes(snippet)) throw new Error(`API SSE final transcript missing dashboard snippet ${snippet}:\n${body}`)
@@ -441,6 +443,7 @@ async function validateTransport(input) {
     for (const type of ['ready', 'accepted', 'trace', 'final']) {
       if (!events.some((event) => event.type === type)) throw new Error(`WebSocket transcript missing ${type}: ${JSON.stringify(events)}`)
     }
+    assertSuccessfulWebSocketEvents(events)
     if (!events.some((event) => event.type === 'queued' || event.type === 'started' || event.type === 'status')) {
       throw new Error(`WebSocket transcript missing queued/started/status progress event: ${JSON.stringify(events)}`)
     }
@@ -478,6 +481,7 @@ async function validateTransport(input) {
     const callTranscriptPath = path.join(input.artifactsDir, `${input.slug}-mcp-tools-call.json`)
     await writeFile(callTranscriptPath, callBody)
     if (!callResponse.ok || !callBody.includes('content')) throw new Error(`MCP tools/call failed: ${callResponse.status} ${callBody}`)
+    assertSuccessfulMcpToolCall(callBody)
     if (input.expectHtmlDashboard) {
       for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
         if (!callBody.includes(snippet)) throw new Error(`MCP tools/call final missing dashboard snippet ${snippet}:\n${callBody}`)
@@ -486,6 +490,68 @@ async function validateTransport(input) {
     return { transcriptPath, callTranscriptPath }
   }
   throw new Error(`unsupported transport ${input.transport}`)
+}
+
+function assertSuccessfulSseTranscript(transcript, label) {
+  const frames = parseSseTranscript(transcript)
+  const finalFrame = [...frames].reverse().find((frame) => frame.event === 'final')
+  const workflowRun = finalFrame?.data?.workflow_run ?? null
+  if (!workflowRun) throw new Error(`${label} transcript final event did not include workflow_run:\n${transcript}`)
+  assertWorkflowRunCompleted(workflowRun, `${label} transcript`)
+}
+
+function parseSseTranscript(transcript) {
+  const frames = []
+  for (const frame of transcript.split(/\r?\n\r?\n/)) {
+    if (!frame.trim()) continue
+    let event = 'message'
+    const data = []
+    for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
+    }
+    if (!data.length) continue
+    try {
+      frames.push({ event, data: JSON.parse(data.join('\n')) })
+    } catch (error) {
+      throw new Error(`could not parse ${event} SSE frame as JSON: ${errorMessage(error)}\n${frame}`)
+    }
+  }
+  return frames
+}
+
+function assertSuccessfulWebSocketEvents(events) {
+  const finalEvent = [...events].reverse().find((event) => event.type === 'final')
+  if (!finalEvent?.workflow_run) throw new Error(`WebSocket final event did not include workflow_run: ${JSON.stringify(events)}`)
+  assertWorkflowRunCompleted(finalEvent.workflow_run, 'WebSocket transcript')
+}
+
+function assertSuccessfulMcpToolCall(callBody) {
+  let payload
+  try {
+    payload = JSON.parse(callBody)
+  } catch (error) {
+    throw new Error(`MCP tools/call response was not JSON: ${errorMessage(error)}\n${callBody}`)
+  }
+  const result = payload?.result
+  const structured = result?.structuredContent
+  if (!structured) throw new Error(`MCP tools/call response missing structuredContent:\n${callBody}`)
+  if (structured.status !== 'Completed' || result.isError) {
+    throw new Error(`MCP tools/call workflow did not complete successfully:\n${callBody}`)
+  }
+  if (JSON.stringify(structured).includes('provider_failure')) {
+    throw new Error(`MCP tools/call exposed provider failure:\n${callBody}`)
+  }
+}
+
+function assertWorkflowRunCompleted(workflowRun, label) {
+  if (workflowRun.status !== 'Completed') {
+    throw new Error(`${label} workflow status was ${workflowRun.status}, expected Completed:\n${JSON.stringify(workflowRun, null, 2)}`)
+  }
+  const failures = workflowRun.failure_events ?? []
+  if (failures.length > 0) {
+    throw new Error(`${label} workflow had failure events:\n${JSON.stringify(failures, null, 2)}`)
+  }
 }
 
 function parseHumanHttpViewerConfig(body) {
