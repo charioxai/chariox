@@ -761,8 +761,18 @@ fn publication_runtime_watchdogs_are_collected_from_hidden_materialized_session(
     assert!(materialized.is_hidden());
     assert_eq!(materialized.workflow_watchdogs(), &[watchdog.clone()]);
 
-    let plans = service
+    let warmup_plans = service
         .collect_due_workflow_watchdog_invocations(0)
+        .expect("publication watchdog should defer during warm-up");
+    assert!(warmup_plans.is_empty());
+    let warming = service
+        .resolve_workflow_watchdog_ref(runtime_session.id(), watchdog.id())
+        .expect("materialized watchdog should resolve after warm-up deferral");
+    assert_eq!(warming.last_status(), Some("warming_up"));
+    assert!(warming.next_run_at_ms() >= materialized.created_at_ms());
+
+    let plans = service
+        .collect_due_workflow_watchdog_invocations(warming.next_run_at_ms())
         .expect("publication watchdog should collect");
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].watchdog_id, watchdog.id());
@@ -775,7 +785,7 @@ fn publication_runtime_watchdogs_are_collected_from_hidden_materialized_session(
         .resolve_workflow_watchdog_ref(runtime_session.id(), watchdog.id())
         .expect("materialized watchdog should resolve");
     assert_eq!(updated.last_status(), Some("invoking"));
-    assert_eq!(updated.next_run_at_ms(), 60_000);
+    assert_eq!(updated.next_run_at_ms(), warming.next_run_at_ms() + 60_000);
 }
 
 #[test]

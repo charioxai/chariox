@@ -1,5 +1,7 @@
 use super::*;
 
+const PUBLICATION_WATCHDOG_STARTUP_GRACE_MS: u64 = 300_000;
+
 impl SessionService {
     pub fn create_workflow_watchdog(
         &mut self,
@@ -178,6 +180,8 @@ impl SessionService {
                             | WorkflowRunStatus::Stopped
                     )
                 });
+                let session_hidden = session.is_hidden();
+                let session_created_at_ms = session.created_at_ms();
                 let completed_statuses = session
                     .workflow_runs()
                     .iter()
@@ -232,6 +236,19 @@ impl SessionService {
                         continue;
                     }
                     if !due_now {
+                        continue;
+                    }
+                    if session_hidden
+                        && watchdog.wakeups_executed() == 0
+                        && now_ms
+                            < session_created_at_ms
+                                .saturating_add(PUBLICATION_WATCHDOG_STARTUP_GRACE_MS)
+                    {
+                        watchdog.set_last_status(Some("warming_up".to_string()));
+                        watchdog.set_next_run_at_ms(
+                            session_created_at_ms
+                                .saturating_add(PUBLICATION_WATCHDOG_STARTUP_GRACE_MS),
+                        );
                         continue;
                     }
                     let next_run = now_ms.saturating_add(watchdog.interval_seconds() * 1000);
