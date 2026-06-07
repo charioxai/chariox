@@ -573,6 +573,56 @@ Published workflow direction:
   requirements, and credential requirements before it accepts traffic
 - if the captured provider/model is unavailable, a local binding may substitute
   another available provider/model without mutating the exported package
+- Cloud publication deployment is a control-plane record plus a runtime backend.
+  It is not a new workflow authority and does not replace the kernel-owned
+  publication runtime session.
+- v1 Cloud deployment supports two backend modes:
+  - `local_runtime`: a public publication ingress routes to a user's local
+    `arroba serve` process over an outbound connector
+  - `hosted_container`: a public publication ingress routes to one Docker
+    container per deployment on the publication runner
+- Scalingo-hosted Arroba Cloud APIs own deployment records and control commands
+  only. Runtime publication traffic should terminate at the dedicated
+  publication ingress and route from there to the active backend.
+
+Publication deployment record:
+
+- `deployment_id`
+- `account_id`
+- `mode` (`local_runtime` | `hosted_container`)
+- `slug`
+- `public_base_url`
+- `status`
+- `publication_id`
+- `publication_alias`
+- `workflow_id`
+- `endpoint_id`
+- `hook_id`
+- `transport`
+- `package_digest`
+- `runner_id`
+- `backend_target`
+- `runtime_session_id`
+- `credential_profile` or credential state
+- `last_health_at`
+- `last_error`
+
+Deployment records are operational metadata. They must not contain provider
+auth secrets, Arroba Cloud user session credentials, workflow prompt payloads,
+artifacts, outputs, or traces.
+
+Public deployment URL contract:
+
+- all transports are rooted at `public_base_url`
+- `GET /` opens the human/browser-compatible viewer or form
+- `GET /<prompt>` invokes `human_http` with an address-bar prompt path
+- `POST /invoke` invokes `api_sse_json`
+- `/.well-known/arroba/publication/ws` invokes `websocket_json`
+- `POST /mcp` invokes the MCP publication endpoint
+- `GET /.well-known/arroba/publication/status` returns publication status
+
+The external contract is the same for `local_runtime` and `hosted_container`.
+The caller should not infer execution location from the URL.
 
 Publication invocation envelope:
 
@@ -660,6 +710,21 @@ Remote terminal and Cloud invocation:
   local publication server
 - the relay remains transport-only and must not inspect workflow prompts,
   artifacts, outputs, or published transport payloads
+- Cloud publication ingress is the public runtime ingress for deployed
+  publications. It forwards HTTP, SSE, WebSocket, and MCP traffic to the active
+  backend target and must preserve streaming semantics.
+- Scalingo Cloud should not proxy runtime publication streams. It may create,
+  list, start, stop, and observe deployment metadata, and the web terminal may
+  embed `public_base_url` in the central panel.
+- If the active backend is unavailable, transports return transport-appropriate
+  unavailable responses: human HTTP unavailable page, API SSE structured
+  unavailable event/error, WebSocket close reason, and MCP structured error.
+- Hosted containers receive scoped deployment/runtime identity only. They must
+  not receive a general Arroba Cloud user account token.
+- Publication images and packages must not include provider credentials. Real
+  provider hosted-container validation may use a staging credential profile
+  mounted by the runner; arbitrary-user provider login and credential onboarding
+  are a separate product phase.
 
 Workflow output direction:
 

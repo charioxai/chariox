@@ -432,15 +432,37 @@ V1 transports:
 Deployment modes:
 
 - localhost: local publication server bound to `127.0.0.1` by default
-- remote ingress with local runtime: public ingress forwards requests over an
-  outbound publication tunnel to the user's local runtime
-- hosted container: kernel, publication runtime, gateway, snapshot,
-  requirements, scripts, and assets run together on Arroba Cloud or any
-  self-hosted container platform
+- Cloud ingress with local runtime: a public publication ingress forwards
+  requests over an outbound publication connector to the user's local
+  `arroba serve` runtime. Workflow execution, provider credentials, provider
+  processes, artifacts, queues, traces, and outputs remain local.
+- hosted container: one Docker container per deployment runs the kernel,
+  publication runtime, gateway, snapshot, requirements, scripts, and assets on a
+  publication runner host.
 
-Arroba Cloud may host ingress or containers, but hosted published workflows
-should behave as independent web apps. Callers do not need Arroba accounts
-unless the owner configures Arroba-managed access.
+For v1 Cloud deployment, Scalingo-hosted Arroba Cloud remains the control plane
+only. It owns account auth, deployment records, runner registration, deployment
+commands, status/log metadata, and the web UI. Runtime publication traffic MUST
+NOT be proxied through the Scalingo Cloud API/web process. A dedicated Hetzner
+publication ingress exposes public workflow URLs and routes to either a
+local-runtime connector or a hosted publication container on the Hetzner
+publication runner.
+
+The public URL is represented as `public_base_url`. In staging this may be a
+path under the Hetzner publication ingress host; later product DNS may map the
+same contract to `https://<slug>.arroba.run/`. Callers should not need to know
+whether the backend is local-runtime ingress or a hosted container.
+
+Cloud-hosted published workflows should behave as independent web apps. Callers
+do not need Arroba accounts unless the owner configures Arroba-managed access.
+Publication deployment records and runner/container tokens are scoped runtime
+identities and MUST NOT carry a general Arroba user account session.
+
+Images and publication packages MUST NOT include provider credentials or Arroba
+Cloud account credentials. Hosted-container validation may use an explicit
+staging credential profile mounted by the runner, but product credential
+onboarding for arbitrary users is a later phase after the deployment pipeline is
+validated end to end with real providers.
 
 The web CLI should expose a dedicated `Published Workflows` side-panel tab
 rather than nesting publication runtime management under the workflow authoring
@@ -450,7 +472,11 @@ For `human_http`, the preferred web CLI action is central-panel embedding:
 selecting/opening a publication embeds the publication display URL in the main
 terminal stage. Cloud does not independently render output or traces; the
 embedded publication HTML owns the split viewer so the same surface works
-locally, over relay display, and in future hosted ingress/container modes.
+locally, over relay display, over Cloud local-runtime ingress, and in hosted
+container mode.
+
+Detailed Cloud deployment implementation and validation are tracked in
+`docs/M9_WORKFLOW_PUBLICATION_CLOUD_DEPLOYMENT_PLAN.md`.
 
 ### 3.3.6 Workflow/Agent Binding and Missing Agents
 
