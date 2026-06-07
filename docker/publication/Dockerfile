@@ -8,7 +8,8 @@ COPY packages packages
 COPY apps/server/package.json apps/server/package.json
 RUN pnpm install --frozen-lockfile
 COPY apps/server apps/server
-RUN pnpm --filter @arroba/server run build
+RUN pnpm --filter @arroba/tool-display run build \
+  && pnpm --filter @arroba/server run build
 
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /opt/arroba
