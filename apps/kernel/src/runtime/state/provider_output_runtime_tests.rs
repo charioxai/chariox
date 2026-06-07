@@ -522,7 +522,7 @@ async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
 }
 
 #[tokio::test]
-async fn workflow_prompt_waits_for_provider_completion_after_structured_message_completion() {
+async fn workflow_prompt_settles_after_structured_message_completion_drain() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -651,7 +651,7 @@ async fn workflow_prompt_waits_for_provider_completion_after_structured_message_
             crate::provider::ProviderPromptSignalBatch::default(),
         )
         .await
-        .expect("quiet poll should not settle a workflow prompt without completion");
+        .expect("quiet poll should settle a drained completed workflow prompt");
 
     let session_state = runtime
         .owned
@@ -660,16 +660,20 @@ async fn workflow_prompt_waits_for_provider_completion_after_structured_message_
     assert!(
         session_state
             .active_prompt_for_agent(first_agent.id())
-            .is_some(),
-        "workflow prompt must stay active until provider completion"
+            .is_none(),
+        "workflow prompt must settle after assistant completion drains"
     );
     let resolved_run = session_state
         .workflow_run(workflow_run.id())
         .expect("workflow run should exist");
-    assert_eq!(resolved_run.node_runs().len(), 1);
+    assert_eq!(resolved_run.node_runs().len(), 2);
     assert_eq!(
         resolved_run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Running
+        crate::session::WorkflowNodeRunStatus::Completed
+    );
+    assert_eq!(
+        resolved_run.node_runs()[1].status(),
+        crate::session::WorkflowNodeRunStatus::Ready
     );
 }
 
