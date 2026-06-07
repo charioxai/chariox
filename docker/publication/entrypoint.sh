@@ -3,6 +3,21 @@ set -euo pipefail
 
 mkdir -p "$ARROBA_CONFIG_DIR" "$ARROBA_DATA_DIR" "$ARROBA_RUNTIME_DIR" "$ARROBA_SESSION_HISTORY_DIR" /workspace
 
+run_as_arroba() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    exec /usr/sbin/runuser -u arroba -- "$@"
+  fi
+  exec "$@"
+}
+
+spawn_as_arroba() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    /usr/sbin/runuser -u arroba -- "$@" &
+  else
+    "$@" &
+  fi
+}
+
 import_provider_credentials() {
   local profile_dir="${ARROBA_PROVIDER_CREDENTIALS_DIR:-/home/arroba/.provider-credentials}"
   if [[ ! -d "$profile_dir" ]]; then
@@ -21,25 +36,36 @@ import_provider_credentials() {
   fi
 
   mkdir -p "$ARROBA_CONFIG_DIR" "$ARROBA_DATA_DIR" "$ARROBA_RUNTIME_DIR" "$ARROBA_SESSION_HISTORY_DIR"
-  chmod -R go-rwx "$HOME/.codex" "$HOME/.claude" "$HOME/.claude.json" "$HOME/.config" "$HOME/.local" 2>/dev/null || true
 }
 
 import_provider_credentials
+chown -R arroba:arroba \
+  "$ARROBA_CONFIG_DIR" \
+  "$ARROBA_DATA_DIR" \
+  "$ARROBA_RUNTIME_DIR" \
+  "$ARROBA_SESSION_HISTORY_DIR" \
+  /workspace \
+  "$HOME/.codex" \
+  "$HOME/.claude" \
+  "$HOME/.claude.json" \
+  "$HOME/.config" \
+  "$HOME/.local" 2>/dev/null || true
+chmod -R go-rwx "$HOME/.codex" "$HOME/.claude" "$HOME/.claude.json" "$HOME/.config" "$HOME/.local" 2>/dev/null || true
 
 if [[ -z "${ARROBA_PUBLICATION_PACKAGE:-}" && -f /publication/publication.json ]]; then
   export ARROBA_PUBLICATION_PACKAGE=/publication
 fi
 
 gateway() {
-  exec node /opt/arroba/apps/server/dist/index.js "$@"
+  run_as_arroba node /opt/arroba/apps/server/dist/index.js "$@"
 }
 
 kernel() {
-  exec arroba-kernel "$@"
+  run_as_arroba arroba-kernel "$@"
 }
 
 standalone() {
-  arroba-kernel &
+  spawn_as_arroba arroba-kernel
   local kernel_pid=$!
   trap 'kill "$kernel_pid" 2>/dev/null || true' EXIT INT TERM
 
@@ -61,9 +87,9 @@ case "${1:-standalone}" in
     kernel "$@"
     ;;
   bash|sh)
-    exec "$@"
+    run_as_arroba "$@"
     ;;
   *)
-    exec "$@"
+    run_as_arroba "$@"
     ;;
 esac

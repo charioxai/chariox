@@ -50,8 +50,8 @@ COPY docker/publication/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
 RUN chmod +x /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-wait-for-tcp.mjs \
   && chown -R arroba:arroba /opt/arroba /home/arroba
 
-USER arroba
 WORKDIR /workspace
+ENV HOME=/home/arroba
 ENV ARROBA_CONFIG_DIR=/home/arroba/.config/arroba
 ENV ARROBA_DATA_DIR=/home/arroba/.local/share/arroba
 ENV ARROBA_RUNTIME_DIR=/home/arroba/.cache/arroba/runtime
