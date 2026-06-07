@@ -35,6 +35,8 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
+RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
+
 RUN useradd --create-home --shell /bin/bash arroba
 
 WORKDIR /opt/arroba
