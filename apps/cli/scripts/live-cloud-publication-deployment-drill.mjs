@@ -45,8 +45,10 @@ const REAL_DASHBOARD_PROMPT = [
   'The dashboard must visibly include the title text `Real Provider Workflow Dashboard`.',
   'The main dashboard element must include `data-arroba-real-provider-dashboard="true"`.',
   'Before writing the file, reason through a compact layout plan that balances mobile responsiveness, contrast, KPI cards, one chart-like visual, and a status section.',
-  'Use inline CSS only; no scripts, external assets, network calls, or unrelated file inspection.',
-  'This is the final workflow node: submit final workflow output as {"kind":"html","html":"<full html document>"} by calling validate_and_submit_workflow_run_output, then emit the final fenced workflow JSON block with the same output.message object.',
+  'Use inline CSS only; no scripts, external assets, shell commands, file inspection, or network calls.',
+  'Keep the HTML under 1800 characters so it fits comfortably in one runtime tool call.',
+  'This is the final workflow node: call the Arroba runtime MCP tool validate_and_submit_workflow_run_output directly with workflow_output_json set to {"kind":"html","html":"<full html document>"}.',
+  'Do not use bash, python, node, or other provider tools to construct or submit this payload. After the runtime tool succeeds, emit the final fenced workflow JSON block with the same output.message object.',
 ].join(' ')
 
 function usage() {
