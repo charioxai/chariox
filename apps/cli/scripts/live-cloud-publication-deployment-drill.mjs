@@ -544,7 +544,7 @@ async function validateTransport(input) {
 
 async function waitForWatchdogPublicationStatus(base, options = {}) {
   const statusUrl = `${base}/.well-known/arroba/publication/status`
-  const deadline = Date.now() + 420_000
+  const deadline = Date.now() + 900_000
   let last = null
   while (Date.now() < deadline) {
     const response = await fetch(statusUrl, { headers: { accept: 'application/json' } })
