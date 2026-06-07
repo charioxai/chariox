@@ -1,5 +1,7 @@
-import { readFile, stat } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { execFile } from "node:child_process"
+import { readFile, mkdtemp, rm, stat } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
+import { tmpdir } from "node:os"
 import { pathToFileURL } from "node:url"
 import type { RelayCloudProfile } from "./preferences.js"
 
@@ -58,6 +60,7 @@ export async function createPublicationDeploymentFromPackage(input: {
     credentialProfile: input.credentialProfile,
   })
   const digest = await publicationPackageDigest(metadata.packageRoot)
+  const packageArchiveBase64 = await publicationPackageArchiveBase64(metadata.packageRoot)
   const uploaded = await postJson<{ readonly deployment: PublicationDeploymentSummary }>(
     input.profile,
     `/publication-deployments/${encodeURIComponent(created.deployment.id)}/package`,
@@ -66,6 +69,7 @@ export async function createPublicationDeploymentFromPackage(input: {
       packageDigest: digest,
       packageVersion: metadata.packageVersion,
       packageUri: metadata.packageUri,
+      packageArchiveBase64,
     },
   )
   if (input.start || input.mode === "hosted_container") {
@@ -149,6 +153,29 @@ async function publicationPackageDigest(packageRoot: string): Promise<string> {
     hash.update(await readFile(path))
   }
   return `sha256:${hash.digest("hex")}`
+}
+
+async function publicationPackageArchiveBase64(packageRoot: string): Promise<string> {
+  const tempRoot = await mkdtemp(join(tmpdir(), "arroba-publication-upload-"))
+  const archivePath = join(tempRoot, "publication-package.tgz")
+  try {
+    await execFilePromise("tar", ["-czf", archivePath, "-C", packageRoot, "."])
+    return (await readFile(archivePath)).toString("base64")
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true })
+  }
+}
+
+function execFilePromise(file: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(file, [...args], (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`${file} ${args.join(" ")} failed: ${stderr || stdout || error.message}`))
+      } else {
+        resolvePromise()
+      }
+    })
+  })
 }
 
 async function postJson<TResponse = unknown>(
