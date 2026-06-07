@@ -26,6 +26,9 @@ import {
   loadGatewayPublicationConfig,
   resolveHttpsOptions,
 } from "./publication-config.js"
+import {
+  registerCloudPublicationDeploymentBackend,
+} from "./publication-cloud-deployment.js"
 import { forwardWorkflowResult } from "./publication-http-response.js"
 import {
   isParseErrorPayload,
@@ -284,6 +287,7 @@ async function registerServedPublicationEndpoint(
       access: registered?.access ?? "local",
       expires_at_ms: registered?.expires_at_ms ?? null,
     })
+    await registerCloudDeploymentBackendIfConfigured(publication, localUrl, logger)
   } catch (error) {
     logger.warn("failed to register workflow publication endpoint", {
       publication_id: publication.publication_id,
@@ -292,6 +296,41 @@ async function registerServedPublicationEndpoint(
     })
   } finally {
     await client.close().catch(() => {})
+  }
+}
+
+async function registerCloudDeploymentBackendIfConfigured(
+  publication: WorkflowPublicationConfig,
+  localUrl: string,
+  logger: ArrobaLogger,
+) {
+  const deploymentId = process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
+  if (!deploymentId) return
+  try {
+    const registered = await registerCloudPublicationDeploymentBackend({
+      deploymentId,
+      publication,
+      localUrl,
+    })
+    if (registered) {
+      logger.info("registered Cloud publication deployment backend", {
+        publication_id: publication.publication_id,
+        deployment_id: deploymentId,
+        local_url: localUrl,
+      })
+    } else {
+      logger.warn("Cloud publication deployment backend registration skipped; Cloud profile is missing", {
+        publication_id: publication.publication_id,
+        deployment_id: deploymentId,
+      })
+    }
+  } catch (error) {
+    logger.warn("failed to register Cloud publication deployment backend", {
+      publication_id: publication.publication_id,
+      deployment_id: deploymentId,
+      local_url: localUrl,
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 

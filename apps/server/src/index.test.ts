@@ -14,6 +14,7 @@ import {
   type WorkflowPublicationConfig,
 } from "./index.js"
 import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
+import { registerCloudPublicationDeploymentBackend } from "./publication-cloud-deployment.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import {
   collectPublicationTraceEvents,
@@ -30,6 +31,39 @@ const baseConfig: WorkflowPublicationConfig = {
   parser: { kind: "json" },
   mode: "sync",
 }
+
+test("publication gateway registers local runtime backend with Cloud deployment", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  const registered = await registerCloudPublicationDeploymentBackend({
+    deploymentId: "deployment-1",
+    publication: baseConfig,
+    localUrl: "http://127.0.0.1:4567/",
+    now: () => 1_700_000_000_000,
+    profile: {
+      apiUrl: "https://cloud.example.test/",
+      accountId: "account-1",
+      cloudSessionToken: "session-token",
+    },
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return new Response(JSON.stringify({ deployment: { id: "deployment-1" } }), { status: 200 })
+    },
+  })
+
+  assert.equal(registered, true)
+  assert.equal(calls[0]?.url, "https://cloud.example.test/publication-deployments/deployment-1/local-backend")
+  assert.equal((calls[0]?.init.headers as Record<string, string>).authorization, "Bearer session-token")
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
+    accountId: "account-1",
+    status: "ready",
+    runtimeSessionId: "session-1",
+    backendTarget: {
+      kind: "local_runtime",
+      url: "http://127.0.0.1:4567/",
+      updated_at_ms: 1_700_000_000_000,
+    },
+  })
+})
 
 test("publication trace events honor per-node level policy", () => {
   const publication: WorkflowPublicationConfig = {
