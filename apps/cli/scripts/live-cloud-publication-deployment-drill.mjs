@@ -427,6 +427,11 @@ async function validateTransport(input) {
     for (const event of ['queued', 'started', 'trace', 'final']) {
       if (!body.includes(`event: ${event}`)) throw new Error(`API SSE transcript missing ${event}:\n${body}`)
     }
+    if (input.expectHtmlDashboard) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+        if (!body.includes(snippet)) throw new Error(`API SSE final transcript missing dashboard snippet ${snippet}:\n${body}`)
+      }
+    }
     return { transcriptPath }
   }
   if (input.transport === 'websocket_json') {
@@ -439,19 +444,46 @@ async function validateTransport(input) {
     if (!events.some((event) => event.type === 'queued' || event.type === 'started' || event.type === 'status')) {
       throw new Error(`WebSocket transcript missing queued/started/status progress event: ${JSON.stringify(events)}`)
     }
+    if (input.expectHtmlDashboard) {
+      const body = JSON.stringify(events)
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+        if (!body.includes(snippet)) throw new Error(`WebSocket final transcript missing dashboard snippet ${snippet}: ${body}`)
+      }
+    }
     return { transcriptPath }
   }
   if (input.transport === 'mcp') {
-    const response = await fetch(`${base}/mcp`, {
+    const listResponse = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     })
-    const body = await response.text()
     const transcriptPath = path.join(input.artifactsDir, `${input.slug}-mcp-tools-list.json`)
-    await writeFile(transcriptPath, body)
-    if (!response.ok || !body.includes('tools')) throw new Error(`MCP tools/list failed: ${response.status} ${body}`)
-    return { transcriptPath }
+    const listBody = await listResponse.text()
+    await writeFile(transcriptPath, listBody)
+    if (!listResponse.ok || !listBody.includes('tools')) throw new Error(`MCP tools/list failed: ${listResponse.status} ${listBody}`)
+    const toolName = JSON.parse(listBody)?.result?.tools?.[0]?.name
+    if (!toolName) throw new Error(`MCP tools/list did not return a tool name: ${listBody}`)
+    const callResponse = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: toolName, arguments: { prompt: input.prompt } },
+      }),
+    })
+    const callBody = await callResponse.text()
+    const callTranscriptPath = path.join(input.artifactsDir, `${input.slug}-mcp-tools-call.json`)
+    await writeFile(callTranscriptPath, callBody)
+    if (!callResponse.ok || !callBody.includes('content')) throw new Error(`MCP tools/call failed: ${callResponse.status} ${callBody}`)
+    if (input.expectHtmlDashboard) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+        if (!callBody.includes(snippet)) throw new Error(`MCP tools/call final missing dashboard snippet ${snippet}:\n${callBody}`)
+      }
+    }
+    return { transcriptPath, callTranscriptPath }
   }
   throw new Error(`unsupported transport ${input.transport}`)
 }
