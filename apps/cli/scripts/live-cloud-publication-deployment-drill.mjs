@@ -122,6 +122,7 @@ function defaultModel(provider, transport, realDashboard) {
     if (transport === 'mcp') return 'workflow-single-turn-node'
     return 'workflow-intermediate-node'
   }
+  if (provider === 'codex') return 'gpt-5.4'
   if (provider === 'opencode') return 'opencode/gpt-5.4'
   if (provider === 'claude') return 'claude-sonnet-4-6'
   return 'gpt-5.5'
