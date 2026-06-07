@@ -123,6 +123,7 @@ function defaultModel(provider, transport, realDashboard) {
     return 'workflow-intermediate-node'
   }
   if (provider === 'opencode') return 'opencode/gpt-5.4'
+  if (provider === 'claude') return 'claude-sonnet-4-6'
   return 'gpt-5.5'
 }
 
