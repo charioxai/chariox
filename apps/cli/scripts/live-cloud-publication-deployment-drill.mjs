@@ -581,35 +581,45 @@ async function readSse(url, payload, options = {}) {
 async function invokeWebSocket(url, payload) {
   const socket = new WebSocket(url)
   const events = []
-  try {
-    while (true) {
-      const event = await readWebSocketEvent(socket).catch((error) => {
-        throw new Error(`${error instanceof Error ? error.message : String(error)}; events=${JSON.stringify(events)}`)
-      })
-      events.push(event)
-      if (event.type === 'ready') socket.send(JSON.stringify({ type: 'invoke', input: payload }))
-      if (event.type === 'final' || event.type === 'error') break
-    }
-    return events
-  } finally {
-    socket.close()
-  }
-}
-
-function readWebSocketEvent(socket) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('timed out waiting for websocket event')), 120_000)
-    socket.once('message', (data) => {
-      clearTimeout(timeout)
+  return await new Promise((resolve, reject) => {
+    let invoked = false
+    const timeout = setTimeout(() => {
+      socket.close()
+      reject(new Error(`timed out waiting for websocket event; events=${JSON.stringify(events)}`))
+    }, 300_000)
+    socket.on('message', (data) => {
       try {
-        resolve(JSON.parse(data.toString()))
+        const event = JSON.parse(data.toString())
+        events.push(event)
+        if (event.type === 'ready' && !invoked) {
+          invoked = true
+          socket.send(JSON.stringify({ type: 'invoke', input: payload }))
+        }
+        if (event.type === 'final') {
+          clearTimeout(timeout)
+          socket.close()
+          resolve(events)
+        }
+        if (event.type === 'error') {
+          clearTimeout(timeout)
+          socket.close()
+          reject(new Error(`websocket error: ${event.error ?? 'unknown'}; events=${JSON.stringify(events)}`))
+        }
       } catch (error) {
+        clearTimeout(timeout)
+        socket.close()
         reject(error)
       }
     })
-    socket.once('error', (error) => {
+    socket.on('error', (error) => {
       clearTimeout(timeout)
       reject(error)
+    })
+    socket.on('close', () => {
+      if (!events.some((event) => event.type === 'final')) {
+        clearTimeout(timeout)
+        reject(new Error(`websocket closed before final; events=${JSON.stringify(events)}`))
+      }
     })
   })
 }
