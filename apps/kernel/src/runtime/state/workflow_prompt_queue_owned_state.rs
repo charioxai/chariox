@@ -51,6 +51,25 @@ impl KernelRuntimeOwnedState {
         &self,
         plan: crate::session::WorkflowWatchdogTickPlan,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let should_start = {
+            let session = self.session_store.get_session(&plan.session_id)?;
+            let watchdog =
+                session
+                    .workflow_watchdog(&plan.watchdog_id)
+                    .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                        session_id: plan.session_id.clone(),
+                        workflow_id: plan.workflow_id.clone(),
+                        reference: plan.watchdog_id.clone(),
+                        message: "workflow watchdog was not found",
+                    })?;
+            watchdog.enabled()
+                && !watchdog
+                    .max_wakeups()
+                    .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+        };
+        if !should_start {
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let queued_prompt = self.session_store.write().enqueue_workflow_prompt(
             &plan.session_id,
             &plan.workflow_id,
