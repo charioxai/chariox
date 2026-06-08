@@ -2,6 +2,10 @@ import type {
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
+import {
+  collectPublicationTraceEvents,
+  createPublicationTraceStreamState,
+} from "./publication-trace-events.js"
 
 type ViewerApp = {
   get: (path: string, handler: (_request: unknown, reply: ViewerReply) => unknown) => unknown
@@ -55,6 +59,9 @@ export function publicationViewerPage(
     title: "Workflow Run",
     showForm: !hasInitialRun,
     initialResult: options.result ?? null,
+    initialTraces: options.result?.workflow_run
+      ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
+      : [],
     eventsUrl: options.eventsUrl ?? null,
     apiSseInvokePath: API_SSE_INVOKE_PATH,
     websocketInvokePath: WEBSOCKET_INVOKE_PATH,
@@ -117,6 +124,7 @@ const partialOutputs = [];
 
 if (!viewerConfig.showForm && formEl) formEl.hidden = true;
 renderRun(viewerConfig.initialResult?.workflow_run);
+for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
 if (!viewerConfig.eventsUrl && viewerConfig.initialResult?.queued) statusEl.textContent = 'Queued';
 

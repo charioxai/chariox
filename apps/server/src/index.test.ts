@@ -1707,6 +1707,17 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
     ...baseConfig,
     transport: "human_http",
     package_root: root,
+    trace_exposure: { nodes: { "node-1": ["output_summary", "assistant_messages", "thinking", "tool_use"] } },
+    trace_context: {
+      nodes: {
+        "node-1": {
+          node_id: "node-1",
+          node_label: "Checkout Agent",
+          agent_id: "agent-1",
+          agent_alias: "shopper",
+        },
+      },
+    },
     agent_app: {
       enabled: true,
       assets: { public_dir: "app", index: "index.html" },
@@ -1758,6 +1769,17 @@ test("agent app final response effects overlay generated files for serve mode", 
     ...baseConfig,
     transport: "human_http",
     package_root: root,
+    trace_exposure: { nodes: { "node-1": ["output_summary", "assistant_messages", "thinking", "tool_use"] } },
+    trace_context: {
+      nodes: {
+        "node-1": {
+          node_id: "node-1",
+          node_label: "Checkout Agent",
+          agent_id: "agent-1",
+          agent_alias: "shopper",
+        },
+      },
+    },
     agent_app: {
       enabled: true,
       assets: { public_dir: "app", index: "index.html" },
@@ -1782,6 +1804,36 @@ test("agent app final response effects overlay generated files for serve mode", 
       workflow_run: {
         id: "run-shopping",
         status: "Completed",
+        workflow_id: "workflow-1",
+        completed_by_node_run_id: "node-run-1",
+        completed_at_ms: 1_700_000_000_000,
+        node_runs: [{
+          id: "node-run-1",
+          node_id: "node-1",
+          agent_id: "agent-1",
+          status: "Completed",
+          summary: "Prepared checkout from the shopping list.",
+          completion: { summary: "Checkout ready with three products." },
+          thinking_traces: [{ id: "thinking-1", message: "Map quantities to catalog SKUs before checkout.", timestamp_ms: 1_700_000_000_001 }],
+          turn_envelope: {
+            runtime_tool_calls: [{
+              tool_name: "cart.checkout",
+              arguments_json: "{\"items\":3}",
+              result_json: "{\"ok\":true}",
+              ok: true,
+              timestamp_ms: 1_700_000_000_002,
+            }],
+          },
+        }],
+        messages: [{
+          id: "message-1",
+          source_node_run_id: "node-run-1",
+          target_node_id: "node-1",
+          message_type: "assistant",
+          summary: "Added bananas, Coca-Cola, and chips to the basket.",
+          handoff_payload: "",
+          created_at_ms: 1_700_000_000_003,
+        }],
         final_output: {
           message: JSON.stringify({
             kind: "response",
@@ -1807,6 +1859,9 @@ test("agent app final response effects overlay generated files for serve mode", 
     })
     assert.equal(invoke.statusCode, 200)
     assert.match(invoke.body, /run-shopping/)
+    assert.match(invoke.body, /initialTraces/)
+    assert.match(invoke.body, /Checkout ready with three products/)
+    assert.match(invoke.body, /cart.checkout ok/)
 
     const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html" })
     assert.equal(checkout.statusCode, 200)
