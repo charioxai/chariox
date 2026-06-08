@@ -38,7 +38,7 @@ pub(super) fn runtime_mcp_env(
                 "url": binding.server_url,
                 "enabled": true,
                 "oauth": false,
-                "timeout": 45_000,
+                "timeout": 300_000,
                 "headers": {
                     "Authorization": format!("Bearer {}", binding.auth_token),
                 }

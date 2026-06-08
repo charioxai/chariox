@@ -75,7 +75,7 @@ pub(super) fn runtime_mcp_config(
             "-c".to_string(),
             "mcp_servers.arroba.startup_timeout_sec=90".to_string(),
             "-c".to_string(),
-            "mcp_servers.arroba.tool_timeout_sec=15".to_string(),
+            "mcp_servers.arroba.tool_timeout_sec=300".to_string(),
         ]);
         env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
     }

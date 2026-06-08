@@ -478,7 +478,7 @@ mod tests {
         );
         assert_eq!(
             overrides.get("mcp_servers.arroba.tool_timeout_sec"),
-            Some(&json!(15))
+            Some(&json!(300))
         );
         assert_eq!(overrides.get("features.shell_tool"), None);
     }
