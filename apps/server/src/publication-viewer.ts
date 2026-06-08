@@ -6,6 +6,9 @@ import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
 } from "./publication-trace-events.js"
+import {
+  isTerminalWorkflowRunStatus,
+} from "./workflow-run-status.js"
 
 type ViewerApp = {
   get: (path: string, handler: (_request: unknown, reply: ViewerReply) => unknown) => unknown
@@ -37,7 +40,7 @@ export function publicationViewerResultPage(
   invocationRequestId?: string,
 ) {
   const workflowRunId = result.workflow_run?.id ?? null
-  const eventsUrl = workflowRunId
+  const eventsUrl = workflowRunId && !isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
     ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
     : result.queued && invocationRequestId
       ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
