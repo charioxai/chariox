@@ -369,6 +369,8 @@ test("executeShellCommand manages workflow publications", async () => {
         input_schema: null,
         trace_exposure: null,
         mode: null,
+        sync_timeout_ms: null,
+        poll_ms: null,
       },
     },
     { ListWorkflowPublications: { session_id: "session-1" } },

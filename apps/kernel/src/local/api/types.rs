@@ -42,7 +42,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 119;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -247,6 +247,7 @@ pub enum LocalDaemonRequest {
     CreateWorkflowPublication(CreateWorkflowPublicationRequest),
     ListWorkflowPublications(ListWorkflowPublicationsRequest),
     GetWorkflowPublication(GetWorkflowPublicationRequest),
+    ExportWorkflowPublicationPackage(ExportWorkflowPublicationPackageRequest),
     DisableWorkflowPublication(DisableWorkflowPublicationRequest),
     RegisterWorkflowPublicationEndpoint(RegisterWorkflowPublicationEndpointRequest),
     MaterializeWorkflowPublication(MaterializeWorkflowPublicationRequest),
@@ -901,6 +902,13 @@ pub enum LocalDaemonResponse {
     },
     WorkflowPublication {
         publication: WorkflowPublicationDefinition,
+    },
+    WorkflowPublicationPackageExported {
+        publication: WorkflowPublicationDefinition,
+        package_version: u32,
+        package_digest: String,
+        package_archive_base64: String,
+        package_files: Vec<WorkflowPublicationPackageFile>,
     },
     WorkflowPublicationDisabled {
         publication: WorkflowPublicationDefinition,

@@ -322,6 +322,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::CreateWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowPublications(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowPublication(request) => request.session_id.clone(),
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => request.session_id.clone(),
         LocalDaemonRequest::DisableWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
             format!("publication-materialize:{}", request.publication_id)

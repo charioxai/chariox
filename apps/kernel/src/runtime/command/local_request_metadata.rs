@@ -421,6 +421,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkflowPublication(_) => "workflow_publication.create",
         LocalDaemonRequest::ListWorkflowPublications(_) => "workflow_publication.list",
         LocalDaemonRequest::GetWorkflowPublication(_) => "workflow_publication.get",
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(_) => "workflow_publication.package.export",
         LocalDaemonRequest::DisableWorkflowPublication(_) => "workflow_publication.disable",
         LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(_) => {
             "workflow_publication.endpoint.register"

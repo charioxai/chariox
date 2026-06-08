@@ -109,6 +109,22 @@ export function getWorkflowPublicationRequest(sessionId: string, publicationRef:
   }
 }
 
+export function exportWorkflowPublicationPackageRequest(
+  sessionId: string,
+  publicationRef: string,
+  options: {
+    kernelUrl?: string | null
+  } = {},
+) {
+  return {
+    ExportWorkflowPublicationPackage: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+      kernel_url: options.kernelUrl ?? null,
+    },
+  }
+}
+
 export function disableWorkflowPublicationRequest(sessionId: string, publicationRef: string) {
   return {
     DisableWorkflowPublication: {

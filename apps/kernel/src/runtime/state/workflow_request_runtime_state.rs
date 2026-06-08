@@ -54,6 +54,9 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GetWorkflowPublication(request) => {
                 (owned.workflow_get_publication(request), None)
             }
+            LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => {
+                (owned.workflow_export_publication_package(request), None)
+            }
             LocalDaemonRequest::DisableWorkflowPublication(request) => {
                 let result = owned.workflow_disable_publication(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);

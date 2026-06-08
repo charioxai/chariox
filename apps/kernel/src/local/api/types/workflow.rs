@@ -68,6 +68,22 @@ pub struct GetWorkflowPublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportWorkflowPublicationPackageRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationPackageFile {
+    pub path: String,
+    pub content_base64: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisableWorkflowPublicationRequest {
     pub session_id: String,
     pub publication_ref: String,

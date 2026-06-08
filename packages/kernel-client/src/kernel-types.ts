@@ -1299,7 +1299,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 118
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 120
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1762,6 +1762,22 @@ export type WorkflowPublicationDefinition = {
   created_by_user_id: string
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type WorkflowPublicationPackageFile = {
+  path: string
+  content_base64: string
+  executable?: boolean
+}
+
+export type WorkflowPublicationPackageExportedResponse = {
+  WorkflowPublicationPackageExported: {
+    publication: WorkflowPublicationDefinition
+    package_version: number
+    package_digest: string
+    package_archive_base64: string
+    package_files: WorkflowPublicationPackageFile[]
+  }
 }
 
 export type PublicationTraceLevel =

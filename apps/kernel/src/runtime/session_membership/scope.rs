@@ -204,6 +204,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetWorkflowPublication(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
