@@ -3,12 +3,22 @@
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function getPage() {
   const response = await fetch("http://127.0.0.1:9222/json/list");
   const targets = await response.json();
   const pages = targets.filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
   const page =
     pages.find((target) => target.url?.includes("arroba-slice-screen-test")) ??
+    pages.find((target) => target.url?.startsWith("file:///workspace/")) ??
+    pages.find((target) => target.url && target.url !== "about:blank") ??
     pages.at(-1);
   if (!page) {
     throw new Error("No Chromium page target found");
@@ -55,6 +65,35 @@ async function withSocket(callback) {
   }
 }
 
+async function typeIntoBrowser(text) {
+  await withSocket(async (send) => {
+    await send("Runtime.evaluate", {
+      expression: `
+        (() => {
+          const text = ${JSON.stringify(text)};
+          const active = document.activeElement?.matches?.("input, textarea, [contenteditable=true]")
+            ? document.activeElement
+            : document.querySelector("input[type=password], input:not([type]), input[type=text], textarea, [contenteditable=true]");
+          if (!active) {
+            return false;
+          }
+          active.focus();
+          if ("value" in active) {
+            active.value += text;
+            active.dispatchEvent(new Event("input", { bubbles: true }));
+            active.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+          active.textContent = (active.textContent || "") + text;
+          active.dispatchEvent(new Event("input", { bubbles: true }));
+          return true;
+        })()
+      `,
+      awaitPromise: false,
+    });
+  });
+}
+
 if (command === "click") {
   const x = Number(args[0]);
   const y = Number(args[1]);
@@ -65,25 +104,9 @@ if (command === "click") {
   });
 } else if (command === "type") {
   const text = args.join(" ");
-  await withSocket(async (send) => {
-    await send("Runtime.evaluate", {
-      expression: `
-        (() => {
-          const text = ${JSON.stringify(text)};
-          const active = document.activeElement?.matches?.("input, textarea, [contenteditable=true]")
-            ? document.activeElement
-            : document.querySelector("input, textarea, [contenteditable=true]");
-          if (active && "value" in active) {
-            active.value += text;
-            active.dispatchEvent(new Event("input", { bubbles: true }));
-            return true;
-          }
-          return false;
-        })()
-      `,
-      awaitPromise: false,
-    });
-  });
+  await typeIntoBrowser(text);
+} else if (command === "type-stdin") {
+  await typeIntoBrowser(await readStdin());
 } else if (command === "key") {
   const key = args[0];
   await withSocket(async (send) => {
@@ -99,6 +122,6 @@ if (command === "click") {
   });
   process.stdout.write(result.result.value ?? "");
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | key <key> | text");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | key <key> | text");
   process.exit(2);
 }

@@ -127,7 +127,7 @@ impl ArrobaConnectorRegistry {
         credential_id: Option<&str>,
         max_safety: ConnectorSafety,
         arguments: Value,
-        vault_service: impl Into<String>,
+        vault_config: crate::config::UserCredentialVaultConfig,
     ) -> Result<PreparedConnectorCall, DaemonError> {
         let definition = self.get(connector_name)?.ok_or_else(|| {
             connector_error(
@@ -180,7 +180,7 @@ impl ArrobaConnectorRegistry {
         let credential = resolve_connector_credential(
             credential_metadata.as_ref(),
             &prepared.credential_targets,
-            vault_service,
+            &vault_config,
         )?;
         let request = ConnectorAdapterRequest {
             id: "call-1".to_string(),
@@ -211,7 +211,7 @@ impl ArrobaConnectorRegistry {
         credential_id: Option<&str>,
         max_safety: ConnectorSafety,
         arguments: Value,
-        vault_service: impl Into<String>,
+        vault_config: crate::config::UserCredentialVaultConfig,
     ) -> Result<ConnectorExecution, DaemonError> {
         let prepared = self.prepare_call(
             adapters,
@@ -220,7 +220,7 @@ impl ArrobaConnectorRegistry {
             credential_id,
             max_safety,
             arguments,
-            vault_service,
+            vault_config,
         )?;
         let response = run_adapter_request_once(&prepared.adapter, &prepared.request)?;
         adapter_response_to_execution(prepared, response)

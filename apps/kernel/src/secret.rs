@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::{
-    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
-    UserCredentialUse,
+    CredentialVaultBackend, UserCredentialConfig, UserCredentialInjectionConfig,
+    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
 };
 use crate::credential::ArrobaCredentialRegistry;
 use crate::error::DaemonError;
@@ -90,6 +90,17 @@ impl RuntimeSecretService {
             vault_service,
             Arc::new(PlatformKeychainCredentialVaultStore),
         )
+    }
+
+    pub fn with_vault_config(
+        credentials: Vec<UserCredentialConfig>,
+        vault_config: &UserCredentialVaultConfig,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self::with_vault_store(
+            credentials,
+            vault_config.service.clone(),
+            vault_store_for_backend(vault_config.backend)?,
+        ))
     }
 
     pub fn with_vault_store(
@@ -480,6 +491,79 @@ impl CredentialVaultStore for PlatformKeychainCredentialVaultStore {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct LinuxKeyutilsCredentialVaultStore;
+
+impl CredentialVaultStore for LinuxKeyutilsCredentialVaultStore {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        keyutils_entry(service, key)?
+            .get_password()
+            .map_err(|error| vault_error("get", key, error))
+    }
+
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        keyutils_entry(service, key)?
+            .set_password(value)
+            .map_err(|error| vault_error("set", key, error))
+    }
+
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        keyutils_entry(service, key)?
+            .delete_credential()
+            .map_err(|error| vault_error("delete", key, error))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessMemoryCredentialVaultStore;
+
+impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
+    fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+        process_memory_vault()
+            .lock()
+            .map_err(|error| {
+                secret_error(
+                    "credential_vault",
+                    format!("process memory vault lock poisoned: {error}"),
+                )
+            })?
+            .get(&(service.to_string(), key.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                secret_error(
+                    "credential_vault",
+                    format!("credential `{key}` not found in process memory vault"),
+                )
+            })
+    }
+
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+        process_memory_vault()
+            .lock()
+            .map_err(|error| {
+                secret_error(
+                    "credential_vault",
+                    format!("process memory vault lock poisoned: {error}"),
+                )
+            })?
+            .insert((service.to_string(), key.to_string()), value.to_string());
+        Ok(())
+    }
+
+    fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+        process_memory_vault()
+            .lock()
+            .map_err(|error| {
+                secret_error(
+                    "credential_vault",
+                    format!("process memory vault lock poisoned: {error}"),
+                )
+            })?
+            .remove(&(service.to_string(), key.to_string()));
+        Ok(())
+    }
+}
+
 pub fn secret_like_env_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.ends_with("_TOKEN")
@@ -617,6 +701,50 @@ fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
 
 fn keyring_entry(service: &str, key: &str) -> Result<keyring::Entry, DaemonError> {
     keyring::Entry::new(service, key).map_err(|error| vault_error("open", key, error))
+}
+
+fn vault_store_for_backend(
+    backend: CredentialVaultBackend,
+) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
+    match backend {
+        CredentialVaultBackend::OsKeychain => Ok(Arc::new(PlatformKeychainCredentialVaultStore)),
+        CredentialVaultBackend::ProcessMemory => Ok(Arc::new(ProcessMemoryCredentialVaultStore)),
+        CredentialVaultBackend::LinuxKeyutils => {
+            #[cfg(target_os = "linux")]
+            {
+                Ok(Arc::new(LinuxKeyutilsCredentialVaultStore))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(secret_error(
+                    "credential_vault",
+                    "credential_vault.backend=linux_keyutils is only supported on Linux"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+}
+
+fn process_memory_vault() -> &'static std::sync::Mutex<BTreeMap<(String, String), String>> {
+    static VAULT: std::sync::OnceLock<std::sync::Mutex<BTreeMap<(String, String), String>>> =
+        std::sync::OnceLock::new();
+    VAULT.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+#[cfg(target_os = "linux")]
+fn keyutils_entry(service: &str, key: &str) -> Result<keyring::Entry, DaemonError> {
+    let credential = keyring::keyutils::KeyutilsCredential::new_with_target(None, service, key)
+        .map_err(|error| vault_error("open", key, error))?;
+    Ok(keyring::Entry::new_with_credential(Box::new(credential)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn keyutils_entry(_service: &str, key: &str) -> Result<keyring::Entry, DaemonError> {
+    Err(secret_error(
+        "credential_vault",
+        format!("credential `{key}` cannot use linux_keyutils on this platform"),
+    ))
 }
 
 fn vault_error(operation: &'static str, key: &str, error: keyring::Error) -> DaemonError {
@@ -985,5 +1113,44 @@ mod tests {
         let serialized = serde_json::to_string(&service.list_handles()).unwrap();
         assert!(!serialized.contains("vault-secret"));
         assert!(!serialized.contains("github-token"));
+    }
+
+    #[test]
+    fn process_memory_backend_round_trips_across_services() {
+        let config = UserCredentialVaultConfig {
+            backend: CredentialVaultBackend::ProcessMemory,
+            service: format!(
+                "arroba-process-memory-test-{}",
+                crate::session::unix_epoch_ms()
+            ),
+            ..UserCredentialVaultConfig::default()
+        };
+        let writer = RuntimeSecretService::with_vault_config(Vec::new(), &config)
+            .expect("process memory backend should build");
+        writer
+            .set_vault_secret("slice-browser-password", "super-secret")
+            .expect("process memory secret should store");
+
+        let reader = RuntimeSecretService::with_vault_config(
+            vec![UserCredentialConfig {
+                id: "slice-browser-password".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "slice-browser-password".to_string(),
+                },
+                allowed_hosts: vec!["workspace".to_string()],
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+            }],
+            &config,
+        )
+        .expect("process memory backend should build");
+
+        assert_eq!(
+            reader
+                .browser_secret_input("slice-browser-password")
+                .expect("process memory secret should resolve"),
+            "super-secret"
+        );
     }
 }

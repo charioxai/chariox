@@ -41,6 +41,9 @@ if [[ ! -f "$HOME/.arroba/config.toml" ]]; then
   cat >"$HOME/.arroba/config.toml" <<'EOF'
 [state]
 path = "/tmp/arroba-slice-state/kernel.db"
+
+[credential_vault]
+backend = "process_memory"
 EOF
 fi
 

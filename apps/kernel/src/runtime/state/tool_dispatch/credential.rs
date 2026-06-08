@@ -14,10 +14,10 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let credentials = crate::credential::load_user_credentials()?;
-        let service = crate::secret::RuntimeSecretService::with_vault_service(
+        let service = crate::secret::RuntimeSecretService::with_vault_config(
             credentials,
-            user_config.credential_vault.service,
-        );
+            &user_config.credential_vault,
+        )?;
         match tool_name {
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -186,14 +186,15 @@ impl KernelRuntimeState {
                                 .await;
                         });
                     }
-                    let resolution = resolution_rx.await.map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_credential_secret",
-                            message: format!(
+                    let resolution =
+                        resolution_rx
+                            .await
+                            .map_err(|error| DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_credential_secret",
+                                message: format!(
                                 "credential secret interaction dropped before resolution: {error}"
                             ),
-                        }
-                    })?;
+                            })?;
                     crate::provider::ProviderNativeInteractionResolution {
                         status: resolution.status.to_string(),
                         choice_id: resolution.choice_id,

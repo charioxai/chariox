@@ -20,6 +20,10 @@ log() {
   printf '[slice-screen] %s\n' "$*" >&2
 }
 
+run_xdotool() {
+  timeout 10s xdotool "$@"
+}
+
 start_process() {
   local name="$1"
   shift
@@ -165,10 +169,10 @@ screenshot() {
 
 focus_chromium() {
   local window
-  window="$(xdotool search --onlyvisible --class chromium 2>/dev/null | tail -n 1 || true)"
+  window="$(run_xdotool search --onlyvisible --class chromium 2>/dev/null | tail -n 1 || true)"
   if [[ -n "$window" ]]; then
-    xdotool windowactivate --sync "$window" >/dev/null 2>&1 || true
-    xdotool windowfocus --sync "$window" >/dev/null 2>&1 || true
+    run_xdotool windowactivate --sync "$window" >/dev/null 2>&1 || true
+    run_xdotool windowfocus --sync "$window" >/dev/null 2>&1 || true
     sleep 0.1
   fi
 }
@@ -176,24 +180,24 @@ focus_chromium() {
 click() {
   require_screen_available
   focus_chromium
-  xdotool mousemove "$1" "$2" click 1
+  run_xdotool mousemove "$1" "$2" click 1
 }
 
 double_click() {
   require_screen_available
   focus_chromium
-  xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
+  run_xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
 }
 
 drag() {
   require_screen_available
   focus_chromium
-  xdotool mousemove "$1" "$2" mousedown 1 mousemove --sync "$3" "$4" mouseup 1
+  run_xdotool mousemove "$1" "$2" mousedown 1 mousemove --sync "$3" "$4" mouseup 1
 }
 
 move_mouse() {
   require_screen_available
-  xdotool mousemove "$1" "$2"
+  run_xdotool mousemove "$1" "$2"
 }
 
 scroll() {
@@ -206,20 +210,20 @@ scroll() {
   fi
   local i
   for i in $(seq 1 "$amount"); do
-    xdotool click "$button"
+    run_xdotool click "$button"
   done
 }
 
 type_text() {
   require_screen_available
   focus_chromium
-  xdotool type --clearmodifiers --delay 5 "$*"
+  run_xdotool type --clearmodifiers --delay 5 "$*"
 }
 
 key() {
   require_screen_available
   focus_chromium
-  xdotool key --clearmodifiers "$1"
+  run_xdotool key --clearmodifiers "$1"
 }
 
 clipboard_get() {
@@ -227,25 +231,33 @@ clipboard_get() {
   xclip -selection clipboard -out 2>/dev/null || true
 }
 
+CLIPBOARD_OWNER_PID=""
+
+put_clipboard_once() {
+  local value="$1"
+  printf '%s' "$value" | xclip -selection clipboard -in -loops 1 >/dev/null 2>&1 &
+  CLIPBOARD_OWNER_PID="$!"
+}
+
 clipboard_set() {
   require_screen_available
-  printf '%s' "$*" | xclip -selection clipboard -in
+  put_clipboard_once "$*"
 }
 
 clipboard_clear() {
   require_screen_available
-  printf '' | xclip -selection clipboard -in
+  put_clipboard_once ''
 }
 
 paste_stdin() {
   require_screen_available
+  local input
+  input="$(cat)"
+  if printf '%s' "$input" | node "$ROOT/browser-cdp.mjs" type-stdin >/dev/null 2>&1; then
+    return 0
+  fi
   focus_chromium
-  local previous
-  previous="$(clipboard_get || true)"
-  xclip -selection clipboard -in >/dev/null
-  xdotool key --clearmodifiers ctrl+v
-  sleep 0.1
-  printf '%s' "$previous" | xclip -selection clipboard -in
+  printf '%s' "$input" | run_xdotool type --clearmodifiers --delay 5 --file -
 }
 
 ocr() {

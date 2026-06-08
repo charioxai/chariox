@@ -100,6 +100,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
         entry("kernel.runtime_mcp_port", "port", &[], true, true, "restart_required", "boot", "Runtime MCP bind port."),
         entry("workflow.max_queues_per_workflow", "u32", &[], true, true, "restart_required", "boot", "Maximum number of prompt queues allowed for one workflow."),
+        entry("credential_vault.backend", "enum", &["os_keychain", "linux_keyutils", "process_memory"], true, false, "restart_required", "boot", "Vault storage backend for vault-backed credentials."),
         entry("credential_vault.service", "string", &[], true, false, "none", "live", "OS keychain service namespace for vault-backed credentials."),
         entry("credential_vault.agent_management", "enum", &["allow", "deny"], true, true, "none", "live", "Whether runtime agents may create or update user vault-backed credential handles."),
         entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),

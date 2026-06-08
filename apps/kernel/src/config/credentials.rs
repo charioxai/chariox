@@ -55,6 +55,8 @@ impl UserCredentialVaultConfig {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultBackend {
     OsKeychain,
+    LinuxKeyutils,
+    ProcessMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,16 +73,27 @@ impl Default for CredentialVaultAgentManagementPolicy {
 }
 
 impl CredentialVaultAgentManagementPolicy {
-    pub(crate) fn parse(
-        field: &'static str,
-        value: &str,
-    ) -> Result<Self, DaemonError> {
+    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
         match value.trim() {
             "allow" => Ok(Self::Allow),
             "deny" => Ok(Self::Deny),
             _ => Err(DaemonError::InvalidConfig {
                 field,
                 message: "unsupported credential vault agent management policy",
+            }),
+        }
+    }
+}
+
+impl CredentialVaultBackend {
+    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim() {
+            "os_keychain" => Ok(Self::OsKeychain),
+            "linux_keyutils" => Ok(Self::LinuxKeyutils),
+            "process_memory" => Ok(Self::ProcessMemory),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "unsupported credential vault backend",
             }),
         }
     }

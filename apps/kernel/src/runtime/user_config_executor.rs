@@ -136,10 +136,10 @@ pub(crate) async fn execute_set_credential_secret_request(
     request: SetCredentialSecretRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_config = config_projection.snapshot().user_config;
-    let service = crate::secret::RuntimeSecretService::with_vault_service(
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
         Vec::new(),
-        user_config.credential_vault.service,
-    );
+        &user_config.credential_vault,
+    )?;
     service.set_vault_secret(&request.key, &request.value)?;
     Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
 }
@@ -149,10 +149,10 @@ pub(crate) async fn execute_delete_credential_secret_request(
     request: DeleteCredentialSecretRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_config = config_projection.snapshot().user_config;
-    let service = crate::secret::RuntimeSecretService::with_vault_service(
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
         Vec::new(),
-        user_config.credential_vault.service,
-    );
+        &user_config.credential_vault,
+    )?;
     service.delete_vault_secret(&request.key)?;
     Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
 }

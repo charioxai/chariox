@@ -23,10 +23,10 @@ pub(crate) fn resolve_mcp_credentials_for_launch(
         return Ok(servers);
     }
     let credentials = crate::credential::load_user_credentials()?;
-    let service = crate::secret::RuntimeSecretService::with_vault_service(
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
         credentials,
-        config.user_config.credential_vault.service.clone(),
-    );
+        &config.user_config.credential_vault,
+    )?;
     servers
         .into_iter()
         .map(|server| server.resolve_credential_bindings(&service))

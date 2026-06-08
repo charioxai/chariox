@@ -420,16 +420,16 @@ fn connector_credential_metadata(
 fn resolve_connector_credential(
     credential: Option<&UserCredentialConfig>,
     targets: &[ConnectorAdapterCredentialTarget],
-    vault_service: impl Into<String>,
+    vault_config: &crate::config::UserCredentialVaultConfig,
 ) -> Result<Option<ConnectorAdapterCredential>, DaemonError> {
     let Some(credential) = credential else {
         return Ok(None);
     };
     enforce_connector_credential_targets(credential, targets)?;
-    let service = crate::secret::RuntimeSecretService::with_vault_service(
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
         vec![credential.clone()],
-        vault_service.into(),
-    );
+        vault_config,
+    )?;
     let (credential, secret) = service.resolve_connector_secret(&credential.id)?;
     Ok(Some(ConnectorAdapterCredential {
         id: credential.id,

@@ -23,8 +23,7 @@ mod validation;
 pub use credentials::{
     validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
-    UserCredentialUse,
-    UserCredentialVaultConfig,
+    UserCredentialUse, UserCredentialVaultConfig,
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
@@ -975,6 +974,24 @@ service = "arroba-test"
             toml::from_str::<ArrobaUserConfig>(payload).expect("credential vault should parse");
         config.validate().expect("credential vault should validate");
         assert_eq!(config.credential_vault.service, "arroba-test");
+    }
+
+    #[test]
+    fn user_config_parses_credential_vault_backend() {
+        let payload = r#"
+version = 1
+
+[credential_vault]
+backend = "process_memory"
+"#;
+
+        let config =
+            toml::from_str::<ArrobaUserConfig>(payload).expect("credential vault should parse");
+        config.validate().expect("credential vault should validate");
+        assert_eq!(
+            config.credential_vault.backend,
+            CredentialVaultBackend::ProcessMemory
+        );
     }
 
     #[test]

@@ -78,13 +78,12 @@ impl KernelRuntimeState {
                 }
                 let max_safety =
                     crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
-                let vault_service = self
+                let vault_config = self
                     .owned
                     .config_projection
                     .snapshot()
                     .user_config
-                    .credential_vault
-                    .service;
+                    .credential_vault;
                 let connector_name = connector.name.clone();
                 let operation_name = operation.name.clone();
                 let credential = grant.credential.clone();
@@ -97,7 +96,7 @@ impl KernelRuntimeState {
                         credential.as_deref(),
                         max_safety,
                         arguments,
-                        vault_service,
+                        vault_config,
                     )
                 })
                 .await

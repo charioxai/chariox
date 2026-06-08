@@ -265,6 +265,12 @@ impl ArrobaUserConfig {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
             }
+            "credential_vault.backend" => {
+                self.credential_vault.backend = crate::config::CredentialVaultBackend::parse(
+                    "credential_vault.backend",
+                    &value,
+                )?
+            }
             "credential_vault.agent_management" => {
                 self.credential_vault.agent_management =
                     crate::config::CredentialVaultAgentManagementPolicy::parse(

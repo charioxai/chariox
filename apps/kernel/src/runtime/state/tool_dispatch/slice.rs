@@ -139,10 +139,10 @@ impl KernelRuntimeState {
                 })?;
                 let user_config = self.owned.config_projection.snapshot().user_config;
                 let credentials = crate::credential::load_user_credentials()?;
-                let service = crate::secret::RuntimeSecretService::with_vault_service(
+                let service = crate::secret::RuntimeSecretService::with_vault_config(
                     credentials,
-                    user_config.credential_vault.service,
-                );
+                    &user_config.credential_vault,
+                )?;
                 let secret = service.browser_secret_input(&args.credential_id)?;
                 let mut output =
                     run_slice_screen_command_with_stdin(vec!["paste-stdin".to_string()], secret)

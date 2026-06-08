@@ -227,6 +227,10 @@ pub(crate) fn execute_test_connector_request(
     let registry = crate::connector::ArrobaConnectorRegistry::user()?;
     let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
     let max_safety = crate::connector::ConnectorSafety::parse(request.allow.as_deref())?;
+    let vault_config = crate::config::UserCredentialVaultConfig {
+        service: vault_service.unwrap_or("arroba").to_string(),
+        ..crate::config::UserCredentialVaultConfig::default()
+    };
     let execution = registry.execute_once(
         &adapters,
         &request.name,
@@ -234,7 +238,7 @@ pub(crate) fn execute_test_connector_request(
         request.credential.as_deref(),
         max_safety,
         request.input,
-        vault_service.unwrap_or("arroba"),
+        vault_config,
     )?;
     Ok(LocalDaemonResponse::ConnectorTested { execution })
 }
