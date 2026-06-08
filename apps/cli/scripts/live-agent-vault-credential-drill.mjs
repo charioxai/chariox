@@ -326,7 +326,7 @@ async function waitForVerifiedEchoCall({ calls, route, sinceIndex, timeoutMs, po
     if (call) return call
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for verified credential request to ${route}`)
+  throw new Error(`timed out waiting for verified credential request to ${route}; observed=${JSON.stringify(calls.slice(sinceIndex))}`)
 }
 
 async function renderTerminalScreenshot(fileName, title, lines) {
