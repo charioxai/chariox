@@ -346,12 +346,10 @@ fn required_remote_mcps_for_native_provider_launch(
     if mcp_grants.is_empty() {
         return Ok(Vec::new());
     }
-    let session = app.sessions().get_session(session_id)?;
-    let workspace = std::path::PathBuf::from(session.workspace_id());
-    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
-    if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-        roots.push(user_root);
-    }
+    let _ = app.sessions().get_session(session_id)?;
+    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
+        .map(|root| vec![root])
+        .unwrap_or_default();
     let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
     mcp_grants
         .iter()

@@ -71,11 +71,9 @@ pub(crate) fn granted_mcp_servers_for_agent_launch(
     if mcp_grants.is_empty() {
         return Ok(Vec::new());
     }
-    let workspace = std::path::PathBuf::from(session.workspace_id());
-    let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(&workspace)];
-    if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-        roots.push(user_root);
-    }
+    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
+        .map(|root| vec![root])
+        .unwrap_or_default();
     let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
     let mut servers = Vec::new();
     for grant in mcp_grants {

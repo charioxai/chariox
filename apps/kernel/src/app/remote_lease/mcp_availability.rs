@@ -143,7 +143,7 @@ fn format_remote_mcp_unavailable_message(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "remote agent `{}` requires MCPs that are not available in worker Arroba. Install the matching MCP definition in the worker project or user registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{}",
+        "remote agent `{}` requires MCPs that are not available in worker Arroba. Install the matching MCP definition in the worker global registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{}",
         leased_agent.id, details
     )
 }
@@ -178,9 +178,9 @@ mod tests {
         }];
         let message = format_remote_mcp_unavailable_message(&leased_agent, &unavailable);
         assert!(message.contains("remote agent `leased-agent-1` requires MCPs"));
-        assert!(message.contains(
-            "Install the matching MCP definition in the worker project or user registry"
-        ));
+        assert!(
+            message.contains("Install the matching MCP definition in the worker global registry")
+        );
         assert!(message.contains("expose the home MCP as a home-proxy extension"));
         assert!(message.contains(
             "- filesystem expected hash hash-1: missing environment variable(s) on worker: FS_ROOT"
@@ -239,14 +239,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Ok(());
         }
-        let session = self
+        let _ = self
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
-        let registry =
-            crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
-                session.worktree_id(),
-            )]);
+        let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() else {
+            return Ok(());
+        };
+        let registry = crate::mcp::ArrobaMcpRegistry::new(vec![root]);
         for required in required_mcps {
             registry.install(&required.config)?;
         }
@@ -283,7 +283,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
     ) -> Vec<RemoteMcpAvailability> {
-        let session = match self
+        let _session = match self
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)
@@ -302,12 +302,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .collect();
             }
         };
-        let mut roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
-            session.worktree_id(),
-        )];
-        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-            roots.push(user_root);
-        }
+        let roots = crate::mcp::ArrobaMcpRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
         required_mcps
             .iter()

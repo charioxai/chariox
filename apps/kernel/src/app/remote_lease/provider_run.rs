@@ -19,7 +19,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(());
         }
 
-        let session = self
+        let _session = self
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
@@ -35,12 +35,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_tool_names.insert(spec.name, "worker runtime tool".to_string());
         }
 
-        let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
-            session.worktree_id(),
-        )];
-        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-            mcp_roots.push(user_root);
-        }
+        let mcp_roots = crate::mcp::ArrobaMcpRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if required_mcps
@@ -57,12 +54,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
 
-        let mut script_roots = vec![crate::script::ArrobaScriptRegistry::project_root(
-            session.worktree_id(),
-        )];
-        if let Some(user_root) = crate::script::ArrobaScriptRegistry::user_root() {
-            script_roots.push(user_root);
-        }
+        let script_roots = crate::script::ArrobaScriptRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
         for grant in backing_agent.script_grants() {
             if let Some(script) = script_registry.get(&grant.name)? {

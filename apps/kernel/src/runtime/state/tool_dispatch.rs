@@ -9,6 +9,7 @@ mod capability_registry;
 mod connector;
 mod credential;
 mod extension_list_tool;
+mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
@@ -125,6 +126,12 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
+                    | crate::transport::runtime_tools::REGISTER_MCP_TOOL
+                    | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL
+                    | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_capability_runtime_tool_call(

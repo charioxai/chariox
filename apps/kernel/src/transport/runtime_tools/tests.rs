@@ -39,6 +39,22 @@ mod workspace_live_sync_tests {
         let specs = extension_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == REGISTER_MCP_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REGISTER_SKILL_PATH_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REGISTER_ENVIRONMENT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REGISTER_SCRIPT_PATH_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REGISTER_CONNECTOR_PATH_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REGISTER_CONNECTOR_ADAPTER_PATH_TOOL));
         assert!(!specs.iter().any(|spec| spec.name == "list_extensions"));
         assert!(!specs.iter().any(|spec| spec.name == "request_extension"));
     }
@@ -92,6 +108,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_extension_tool_name("mcp__arroba__arroba_request_extension"),
             Some(REQUEST_EXTENSION_TOOL)
+        );
+        assert_eq!(
+            canonical_extension_tool_name("mcp__arroba__register_mcp"),
+            Some(REGISTER_MCP_TOOL)
+        );
+        assert_eq!(
+            canonical_extension_tool_name("mcp__arroba__arroba_register_connector_adapter_path"),
+            Some(REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
         );
         assert_eq!(canonical_extension_tool_name("unknown"), None);
     }

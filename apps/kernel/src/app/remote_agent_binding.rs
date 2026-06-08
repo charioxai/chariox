@@ -26,15 +26,12 @@ impl DaemonApp {
         if agent.remote_execution().is_none() {
             return Ok(crate::extension::RemoteExtensionManifest::default());
         }
-        let session = self.sessions.get_session(agent.session_id())?;
+        let _ = self.sessions.get_session(agent.session_id())?;
         let mut tools = Vec::new();
 
-        let mut mcp_roots = vec![crate::mcp::ArrobaMcpRegistry::project_root(
-            session.workspace_id(),
-        )];
-        if let Some(user_root) = crate::mcp::ArrobaMcpRegistry::user_root() {
-            mcp_roots.push(user_root);
-        }
+        let mcp_roots = crate::mcp::ArrobaMcpRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
         for name in agent.mcp_grants() {
             let Some(config) = mcp_registry.get(&name)? else {
@@ -58,12 +55,9 @@ impl DaemonApp {
             });
         }
 
-        let mut script_roots = vec![crate::script::ArrobaScriptRegistry::project_root(
-            session.workspace_id(),
-        )];
-        if let Some(user_root) = crate::script::ArrobaScriptRegistry::user_root() {
-            script_roots.push(user_root);
-        }
+        let script_roots = crate::script::ArrobaScriptRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
         for grant in agent.script_grants() {
             let Some(script) = script_registry.get(&grant.name)? else {
@@ -365,13 +359,10 @@ impl DaemonApp {
         if skill_grants.is_empty() {
             return Ok(());
         }
-        let session = self.sessions.get_session(agent.session_id())?;
-        let mut roots = vec![crate::skill::ArrobaSkillRegistry::project_root(
-            session.workspace_id(),
-        )];
-        if let Some(user_root) = crate::skill::ArrobaSkillRegistry::user_root() {
-            roots.push(user_root);
-        }
+        let _ = self.sessions.get_session(agent.session_id())?;
+        let roots = crate::skill::ArrobaSkillRegistry::user_root()
+            .map(|root| vec![root])
+            .unwrap_or_default();
         let registry = crate::skill::ArrobaSkillRegistry::new(roots);
         let packages = skill_grants
             .iter()

@@ -168,6 +168,7 @@ mod tests {
     }
 
     mod interactive_command_admission;
+    mod m16_runtime_extension_registration;
     mod provider_projection;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;

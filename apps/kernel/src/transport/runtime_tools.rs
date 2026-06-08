@@ -23,6 +23,12 @@ pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 pub const LIST_EXTENSIONS_TOOL: &str = "arroba.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "arroba.request_extension";
+pub const REGISTER_MCP_TOOL: &str = "arroba.register_mcp";
+pub const REGISTER_SKILL_PATH_TOOL: &str = "arroba.register_skill_path";
+pub const REGISTER_ENVIRONMENT_TOOL: &str = "arroba.register_environment";
+pub const REGISTER_SCRIPT_PATH_TOOL: &str = "arroba.register_script_path";
+pub const REGISTER_CONNECTOR_PATH_TOOL: &str = "arroba.register_connector_path";
+pub const REGISTER_CONNECTOR_ADAPTER_PATH_TOOL: &str = "arroba.register_connector_adapter_path";
 pub const SEARCH_RECALL_TOOL: &str = "arroba.search_recall";
 pub const QUERY_RECALL_TOOL: &str = "arroba.query_recall";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "arroba.list_credential_handles";
@@ -120,6 +126,39 @@ pub struct RequestExtensionArgs {
     pub allow: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterMcpArgs {
+    pub config: crate::mcp::ArrobaMcpServerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterSkillPathArgs {
+    pub path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterEnvironmentArgs {
+    pub config: crate::script::ArrobaEnvironmentConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterScriptPathArgs {
+    pub path: std::path::PathBuf,
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterConnectorPathArgs {
+    pub path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterConnectorAdapterPathArgs {
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +385,80 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "enum": ["read", "write", "admin"]
                     },
                     "credential": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_MCP_TOOL.to_string(),
+            description: "Register or update a global Arroba-managed MCP definition. Registration does not grant the MCP to the current agent.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["config"],
+                "properties": {
+                    "config": {"type": "object"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_SKILL_PATH_TOOL.to_string(),
+            description: "Register or update a global Arroba skill from a directory containing SKILL.md. Registration does not grant the skill to the current agent.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_ENVIRONMENT_TOOL.to_string(),
+            description: "Register or update a global Arroba script execution environment.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["config"],
+                "properties": {
+                    "config": {"type": "object"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_SCRIPT_PATH_TOOL.to_string(),
+            description: "Register a global Arroba script extension from a Python or TypeScript file. Registration does not grant the script to the current agent.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path", "environment"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "environment": {"type": "string"},
+                    "name": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_CONNECTOR_PATH_TOOL.to_string(),
+            description: "Register or update a global Arroba connector from connector YAML. Registration does not grant the connector to the current agent.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REGISTER_CONNECTOR_ADAPTER_PATH_TOOL.to_string(),
+            description: "Register or update a global Arroba connector adapter from an adapter YAML/package.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
@@ -613,6 +726,32 @@ pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_request_extension"
         | "mcp__arroba__request_extension"
         | "mcp__arroba__arroba_request_extension" => Some(REQUEST_EXTENSION_TOOL),
+        REGISTER_MCP_TOOL
+        | "arroba_register_mcp"
+        | "mcp__arroba__register_mcp"
+        | "mcp__arroba__arroba_register_mcp" => Some(REGISTER_MCP_TOOL),
+        REGISTER_SKILL_PATH_TOOL
+        | "arroba_register_skill_path"
+        | "mcp__arroba__register_skill_path"
+        | "mcp__arroba__arroba_register_skill_path" => Some(REGISTER_SKILL_PATH_TOOL),
+        REGISTER_ENVIRONMENT_TOOL
+        | "arroba_register_environment"
+        | "mcp__arroba__register_environment"
+        | "mcp__arroba__arroba_register_environment" => Some(REGISTER_ENVIRONMENT_TOOL),
+        REGISTER_SCRIPT_PATH_TOOL
+        | "arroba_register_script_path"
+        | "mcp__arroba__register_script_path"
+        | "mcp__arroba__arroba_register_script_path" => Some(REGISTER_SCRIPT_PATH_TOOL),
+        REGISTER_CONNECTOR_PATH_TOOL
+        | "arroba_register_connector_path"
+        | "mcp__arroba__register_connector_path"
+        | "mcp__arroba__arroba_register_connector_path" => Some(REGISTER_CONNECTOR_PATH_TOOL),
+        REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
+        | "arroba_register_connector_adapter_path"
+        | "mcp__arroba__register_connector_adapter_path"
+        | "mcp__arroba__arroba_register_connector_adapter_path" => {
+            Some(REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
+        }
         _ => None,
     }
 }

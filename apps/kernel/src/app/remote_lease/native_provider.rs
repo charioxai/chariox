@@ -234,7 +234,8 @@ mod tests {
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
         assert!(!run.client_interface().is_arroba());
-        assert!(crate::mcp::ArrobaMcpRegistry::project_root(&worktree)
+        assert!(crate::mcp::ArrobaMcpRegistry::user_root()
+            .expect("isolated user MCP root should resolve")
             .join("browser.json")
             .exists());
         std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");

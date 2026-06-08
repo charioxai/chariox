@@ -179,6 +179,59 @@ impl ArrobaSkillRegistry {
         Ok((installed, destination))
     }
 
+    pub fn upsert_from_path(
+        &self,
+        source: &Path,
+    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+        if !source.is_dir() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.upsert.path",
+                message: format!("skill source `{}` must be a directory", source.display()),
+            });
+        }
+        let source_skill_md = source.join("SKILL.md");
+        if !source_skill_md.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "skill.upsert.path",
+                message: format!("skill source `{}` must contain SKILL.md", source.display()),
+            });
+        }
+        let metadata = parse_skill_metadata(&source_skill_md)?;
+        let root = self.primary_root()?;
+        fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
+            operation: "skill.upsert.path",
+            message: format!(
+                "failed to create skill registry `{}`: {error}",
+                root.display()
+            ),
+        })?;
+        let destination = root.join(&metadata.name);
+        if let (Ok(source_canonical), Ok(destination_canonical)) =
+            (fs::canonicalize(source), fs::canonicalize(&destination))
+        {
+            if source_canonical == destination_canonical {
+                return Err(DaemonError::LocalTransport {
+                    operation: "skill.upsert.path",
+                    message: "skill upsert source must not be the installed destination"
+                        .to_string(),
+                });
+            }
+        }
+        if destination.exists() {
+            fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
+                operation: "skill.upsert.path",
+                message: format!(
+                    "failed to replace skill `{}` at `{}`: {error}",
+                    metadata.name,
+                    destination.display()
+                ),
+            })?;
+        }
+        copy_directory(source, &destination)?;
+        let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        Ok((installed, destination))
+    }
+
     pub fn upsert_from_content(
         &self,
         skill_md: &str,
@@ -461,11 +514,10 @@ pub(crate) fn format_granted_skill_prompt_context(
     if skill_grants.is_empty() {
         return Ok(String::new());
     }
-    let workspace = workspace.as_ref();
-    let mut roots = vec![ArrobaSkillRegistry::project_root(workspace)];
-    if let Some(user_root) = ArrobaSkillRegistry::user_root() {
-        roots.push(user_root);
-    }
+    let _ = workspace.as_ref();
+    let roots = ArrobaSkillRegistry::user_root()
+        .map(|root| vec![root])
+        .unwrap_or_default();
     let registry = ArrobaSkillRegistry::new(roots);
     let mut lines = vec![
         "Available Arroba skills for this agent:".to_string(),

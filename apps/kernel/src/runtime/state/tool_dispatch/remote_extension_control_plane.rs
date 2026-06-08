@@ -167,6 +167,38 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+            crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
+                self.handle_register_mcp_runtime_tool(&session, &agent, arguments)
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
+                self.handle_register_skill_path_runtime_tool(&session, &agent, arguments)
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
+                self.handle_register_environment_runtime_tool(&session, &agent, arguments)
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
+                self.handle_register_script_path_runtime_tool(&session, &agent, arguments)
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
+                self.handle_register_connector_path_runtime_tool(&session, &agent, arguments)
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
+                self.handle_register_connector_adapter_path_runtime_tool(
+                    &session, &agent, arguments,
+                )
+                .await?,
+                None,
+            )),
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_capability_runtime_tool_call",
                 message: format!("unknown capability runtime tool `{tool_name}`"),

@@ -43,9 +43,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let install_into_isolated_registry = std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
             .is_some_and(|value| !value.is_empty());
         let registry = install_into_isolated_registry.then(|| {
-            crate::skill::ArrobaSkillRegistry::new(vec![
-                crate::skill::ArrobaSkillRegistry::project_root(session.worktree_id()),
-            ])
+            crate::skill::ArrobaSkillRegistry::new(
+                crate::skill::ArrobaSkillRegistry::user_root()
+                    .map(|root| vec![root])
+                    .unwrap_or_default(),
+            )
         });
         packages
             .iter()
