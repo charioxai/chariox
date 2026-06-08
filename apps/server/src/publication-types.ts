@@ -50,6 +50,7 @@ export type WorkflowPublicationConfig = {
   poll_ms?: number
   package_root?: string
   agent_app?: AgentAppConfig
+  replica_session_ids?: string[]
 }
 
 export type PublicationHookConfig = {

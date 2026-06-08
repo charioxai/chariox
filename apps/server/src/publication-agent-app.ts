@@ -7,6 +7,10 @@ import {
   registerAgentAppWorkflowRunEffects,
 } from "./publication-agent-app-effects.js"
 import {
+  agentAppCallerKey,
+  selectAgentAppReplica,
+} from "./publication-agent-app-replicas.js"
+import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
 import {
@@ -79,14 +83,16 @@ async function invokeAgentAppRoute(
   deps: GatewayDeps,
 ) {
   const prompt = promptFromRoute(request.url, route)
+  const selectedPublication = selectAgentAppReplica(publication, agentAppCallerKey(request.headers))
   const invocation: NormalizedInvocation = {
-    publication_id: publication.publication_id,
+    publication_id: selectedPublication.publication_id,
     request_id: `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     caller: {
       type: "anonymous",
       proof: {
         transport: "agent_app_human_http",
         route: route.path,
+        replica_session_id: selectedPublication.session_id,
       },
     },
     input: { prompt },
@@ -95,9 +101,9 @@ async function invokeAgentAppRoute(
   rememberAgentAppInvocationRoute(publication, invocation.request_id, route)
   const result = deps.invokeWorkflow
     ? await deps.invokeWorkflow(invocation)
-    : await invokeKernelWorkflow({ ...publication, mode: "async" }, invocation)
-  registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocation.request_id)
-  return forwardHumanHttpResult(reply as never, publication, result, invocation.request_id)
+    : await invokeKernelWorkflow({ ...selectedPublication, mode: "async" }, invocation)
+  registerAgentAppWorkflowRunEffects(selectedPublication, result.workflow_run, invocation.request_id)
+  return forwardHumanHttpResult(reply as never, selectedPublication, result, invocation.request_id)
 }
 
 async function invokeAgentAppAction(

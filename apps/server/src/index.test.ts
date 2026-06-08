@@ -736,6 +736,106 @@ test("gateway materializes exported publication packages through the kernel", as
   }
 })
 
+test("gateway materializes Agent App replica sessions from package config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-materialize-"))
+  const requests: Record<string, unknown>[] = []
+  let materializeCount = 0
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 2,
+      publication_id: "pub-agent-app",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "app", index: "index.html" },
+        routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+        replicas: { count: 2, per_caller_ordering: true },
+      },
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      queues: [{ id: "workflow-1:default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }],
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "codex",
+        model: null,
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    const config = await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      validateProviderBindings: false,
+      validateRequirements: false,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("MaterializeWorkflowPublication" in request) {
+            materializeCount += 1
+            return {
+              WorkflowPublicationMaterialized: {
+                publication_id: "pub-agent-app",
+                session: { id: `runtime-session-${materializeCount}` },
+                agent_id_map: { "agent-1": `agent-${materializeCount + 1}` },
+              },
+            }
+          }
+          if ("AttachToSession" in request) {
+            return { SessionAttached: { attachment: { id: `attachment-${requests.length}` } } }
+          }
+          throw new Error(`unexpected request ${JSON.stringify(request)}`)
+        },
+      },
+    })
+
+    assert.equal(config.session_id, "runtime-session-1")
+    assert.deepEqual(config.replica_session_ids, ["runtime-session-1", "runtime-session-2"])
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "MaterializeWorkflowPublication",
+      "MaterializeWorkflowPublication",
+      "AttachToSession",
+      "AttachToSession",
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("gateway prompts for unavailable provider/model bindings and persists the replacement", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-"))
   const requests: Record<string, unknown>[] = []
@@ -1712,6 +1812,49 @@ test("agent app final response effects overlay generated files for serve mode", 
     assert.equal(checkout.statusCode, 200)
     assert.match(checkout.headers["content-type"] as string, /text\/html/)
     assert.equal(checkout.body, "<!doctype html><main>custom banana checkout</main>")
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app replica selection preserves caller affinity across hidden sessions", async () => {
+  const selectedReplicas: unknown[] = []
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replicas-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    package_root: root,
+    replica_session_ids: ["replica-session-1", "replica-session-2"],
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      replicas: { count: 2, per_caller_ordering: true },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+      }],
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      selectedReplicas.push((invocation.caller.proof as Record<string, unknown>).replica_session_id)
+      return {
+        accepted: true,
+        workflow_run: { id: `run-${selectedReplicas.length}`, status: "Running" },
+      }
+    },
+  })
+
+  try {
+    await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
+    await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2", "replica-session-1"])
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })

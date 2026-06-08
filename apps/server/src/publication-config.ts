@@ -106,14 +106,32 @@ export async function loadPublicationPackageConfig(
     if (options.validateRequirements !== false) {
       await validatePublicationRequirements(requirements, ownedClient, snapshot.source_session?.workspace_id)
     }
-    const materializedConfig = await materializePublicationConfig(config, materializationSnapshot, ownedClient)
-    await ensurePublicationRuntimeAttached(ownedClient, materializedConfig)
+    const replicaCount = publicationPackage.agent_app?.enabled
+      ? normalizedReplicaCount(publicationPackage.agent_app.replicas?.count)
+      : 1
+    const materializedConfigs: WorkflowPublicationConfig[] = []
+    for (let index = 0; index < replicaCount; index += 1) {
+      materializedConfigs.push(await materializePublicationConfig(config, materializationSnapshot, ownedClient))
+    }
+    const materializedConfig = {
+      ...materializedConfigs[0],
+      replica_session_ids: materializedConfigs.map((candidate) => candidate.session_id),
+    } as WorkflowPublicationConfig
+    for (const candidate of materializedConfigs) {
+      await ensurePublicationRuntimeAttached(ownedClient, candidate)
+    }
     return materializedConfig
   } finally {
     if (!options.client) {
       await ownedClient.close?.().catch(() => {})
     }
   }
+}
+
+function normalizedReplicaCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(1, Math.min(32, Math.floor(value)))
+    : 1
 }
 
 function clonePublicationSnapshot(snapshot: WorkflowPublicationSnapshot): WorkflowPublicationSnapshot {
