@@ -16,6 +16,10 @@ import {
 } from "./index.js"
 import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
 import { registerCloudPublicationDeploymentBackend } from "./publication-cloud-deployment.js"
+import {
+  publicationForAgentAppInvocation,
+  rememberAgentAppInvocationRoute,
+} from "./publication-agent-app-effects.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import {
   collectPublicationTraceEvents,
@@ -2016,6 +2020,33 @@ test("agent app replica selection preserves caller affinity across hidden sessio
     await app.close()
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("agent app invocation event streams resolve the selected replica session", () => {
+  const route = {
+    path: "/add/*",
+    hook_id: "pub-test-hook",
+    prompt_source: "path_tail" as const,
+    response: "streaming_shell" as const,
+  }
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-replica-stream",
+    session_id: "base-session",
+    agent_app: {
+      enabled: true,
+      routes: [route],
+    },
+  }
+  rememberAgentAppInvocationRoute(
+    publication,
+    "request-1",
+    route,
+    { runtimeSessionId: "replica-session-2" },
+  )
+
+  assert.equal(publicationForAgentAppInvocation(publication, "request-1").session_id, "replica-session-2")
+  assert.equal(publicationForAgentAppInvocation(publication, "missing-request").session_id, "base-session")
 })
 
 test("agent app overlay effects cannot write protected paths", async () => {

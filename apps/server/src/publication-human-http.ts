@@ -3,6 +3,7 @@ import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
+  publicationForAgentAppInvocation,
   registerAgentAppWorkflowRunEffects,
 } from "./publication-agent-app-effects.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
@@ -101,6 +102,7 @@ async function streamInvocationEvents(
   publication: WorkflowPublicationConfig,
   requestId: string,
 ) {
+  const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
   reply.hijack()
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -110,7 +112,7 @@ async function streamInvocationEvents(
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     writeSse(reply, "queued", { invocation_id: requestId })
-    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, publication, requestId, {
+    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, runtimePublication, requestId, {
       shouldContinue: () => !reply.raw.destroyed,
     })
     if (!workflowRun) {
@@ -122,11 +124,11 @@ async function streamInvocationEvents(
     emitPartialOutputs(reply, workflowRun, state)
     emitTraceOutputs(reply, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
-      registerAgentAppWorkflowRunEffects(publication, workflowRun, requestId)
+      registerAgentAppWorkflowRunEffects(runtimePublication, workflowRun, requestId)
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
-    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client, state, requestId)
+    await streamWorkflowRunEventsWithClient(reply, runtimePublication, workflowRun.id, client, state, requestId)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {

@@ -106,7 +106,10 @@ async function invokeAgentAppRoute(
     input: { prompt },
     mode: "async",
   }
-  rememberAgentAppInvocationRoute(publication, invocation.request_id, route, { sessionKey: callerSession.callerKey })
+  rememberAgentAppInvocationRoute(publication, invocation.request_id, route, {
+    sessionKey: callerSession.callerKey,
+    runtimeSessionId: selectedPublication.session_id,
+  })
   const result = deps.invokeWorkflow
     ? await deps.invokeWorkflow(invocation)
     : await invokeKernelWorkflow({ ...selectedPublication, mode: "async" }, invocation)

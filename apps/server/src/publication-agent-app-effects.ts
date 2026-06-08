@@ -23,6 +23,7 @@ type AgentAppEffectStore = {
 type AgentAppInvocationContext = {
   readonly route: AgentAppRouteConfig
   readonly sessionKey?: string | null
+  readonly runtimeSessionId?: string | null
 }
 
 type AgentAppResolveContext = {
@@ -36,13 +37,23 @@ export function rememberAgentAppInvocationRoute(
   publication: WorkflowPublicationConfig,
   requestId: string,
   route: AgentAppRouteConfig,
-  context: { sessionKey?: string | null } = {},
+  context: { sessionKey?: string | null; runtimeSessionId?: string | null } = {},
 ): void {
   if (publication.agent_app?.enabled !== true) return
   storeForPublication(publication).invocationRoutes.set(requestId, {
     route,
     sessionKey: context.sessionKey ?? null,
+    runtimeSessionId: context.runtimeSessionId ?? null,
   })
+}
+
+export function publicationForAgentAppInvocation(
+  publication: WorkflowPublicationConfig,
+  requestId: string,
+): WorkflowPublicationConfig {
+  if (publication.agent_app?.enabled !== true) return publication
+  const runtimeSessionId = storeForPublication(publication).invocationRoutes.get(requestId)?.runtimeSessionId
+  return runtimeSessionId?.trim() ? { ...publication, session_id: runtimeSessionId.trim() } : publication
 }
 
 export function registerAgentAppWorkflowRunEffects(
