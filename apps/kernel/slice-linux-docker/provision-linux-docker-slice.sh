@@ -362,7 +362,7 @@ copy_provider_auth_file() {
   local target_dir
   target_dir="$(dirname "$target_path")"
   local backup_path="${target_path}.before-slice-auth-$(date +%Y%m%d%H%M%S)"
-  run_with_timeout 90 docker exec -i -u slice "$SLICE_NAME" bash -lc "
+  docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
     mkdir -p '$target_dir'
     if [[ -f '$target_path' ]]; then
