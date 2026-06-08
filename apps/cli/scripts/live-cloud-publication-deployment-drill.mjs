@@ -865,7 +865,7 @@ async function waitForBrowserDashboardFinal(cdp, timeoutMs) {
           ok: status === 'Completed' && htmlOk && traces.length > 0 && missingTraceLevels.length === 0,
         };
       })()`,
-    }), 3_000, 'browser dashboard Runtime.evaluate')
+    }), 15_000, 'browser dashboard Runtime.evaluate')
     lastState = evaluated.result?.value ?? null
     if (lastState?.ok) return lastState
     if (
