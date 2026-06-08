@@ -73,6 +73,10 @@ pub struct ExportWorkflowPublicationPackageRequest {
     pub publication_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_app: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_app_assets_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

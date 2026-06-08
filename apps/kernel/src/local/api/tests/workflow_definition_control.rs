@@ -1,5 +1,203 @@
 use super::*;
-use crate::local::RegisterWorkflowPublicationEndpointRequest;
+use base64::Engine;
+use crate::local::{
+    CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest,
+    RegisterWorkflowPublicationEndpointRequest,
+};
+
+#[test]
+fn local_request_api_exports_agent_app_publication_package() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-agent-app", "worktree-agent-app"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("shopper".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("default".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+        }))
+        .expect("workflow agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("shopping".to_string()),
+        }))
+        .expect("workflow create should succeed")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: agent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow node should be added")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        _ => panic!("unexpected local response"),
+    };
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("add".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("shopping-app".to_string()),
+                route: Some("/add/*".to_string()),
+                methods: vec!["GET".to_string()],
+                transport: Some(serde_json::json!({ "kind": "human_http" })),
+                parser: Some(serde_json::json!({
+                    "kind": "regex",
+                    "source": "path",
+                    "pattern": "^/add/(?<prompt>.+)$"
+                })),
+                input_schema: None,
+                trace_exposure: None,
+                mode: Some("async".to_string()),
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("workflow publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    let assets_root = std::env::temp_dir().join(format!(
+        "arroba-agent-app-assets-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(assets_root.join("assets"))
+        .expect("asset directory should be created");
+    std::fs::write(assets_root.join("index.html"), "<!doctype html><main>shop</main>")
+        .expect("index asset should write");
+    std::fs::write(assets_root.join("assets/catalog.json"), "{\"items\":[]}")
+        .expect("nested asset should write");
+
+    let exported = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: session.id().to_string(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: Some("ws://127.0.0.1:43118".to_string()),
+                agent_app: Some(serde_json::json!({
+                    "enabled": true,
+                    "assets": {
+                        "public_dir": "app",
+                        "index": "index.html"
+                    },
+                    "routes": [{
+                        "path": "/add/*",
+                        "hook_id": format!("{}-hook", publication.id()),
+                        "prompt_source": "path_tail",
+                        "response": "streaming_shell",
+                        "required_role": "public",
+                        "manipulation": {
+                            "level": "state_and_overlay",
+                            "scope": "session",
+                            "allowed_actions": ["cart.search", "cart.add"]
+                        }
+                    }],
+                    "replicas": {
+                        "count": 1,
+                        "per_caller_ordering": true
+                    },
+                    "persistent_patch": {
+                        "enabled": false
+                    }
+                })),
+                agent_app_assets_dir: Some(assets_root.to_string_lossy().to_string()),
+            },
+        ))
+        .expect("agent app publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_version,
+            package_files,
+            ..
+        } => {
+            assert_eq!(package_version, 2);
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let publication_json = package_json_file(&exported, "publication.json");
+    assert_eq!(publication_json["package_version"], serde_json::json!(2));
+    assert_eq!(
+        publication_json["agent_app"]["routes"][0]["path"],
+        serde_json::json!("/add/*")
+    );
+    assert_eq!(
+        package_text_file(&exported, "app/index.html"),
+        "<!doctype html><main>shop</main>"
+    );
+    assert_eq!(
+        package_text_file(&exported, "app/assets/catalog.json"),
+        "{\"items\":[]}"
+    );
+    std::fs::remove_dir_all(assets_root).expect("asset directory should clean up");
+}
+
+fn package_text_file(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+    path: &str,
+) -> String {
+    let file = files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("package file `{path}` should exist"));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&file.content_base64)
+        .expect("package file should decode");
+    String::from_utf8(bytes).expect("package file should be UTF-8")
+}
+
+fn package_json_file(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+    path: &str,
+) -> serde_json::Value {
+    serde_json::from_str(&package_text_file(files, path)).expect("package JSON should parse")
+}
 
 #[test]
 fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
@@ -420,25 +618,26 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         .dispatch_as_user(
             runtime_owner_user_id,
             LocalDaemonRequest::MaterializeWorkflowPublication(
-            MaterializeWorkflowPublicationRequest {
-                publication_id: "publication-1".to_string(),
-                snapshot: WorkflowPublicationSnapshot {
-                    schema_version: 1,
-                    captured_at_ms: Some(42),
-                    source_session: Some(WorkflowPublicationSourceSessionSnapshot {
-                        id: Some(source_session.id().to_string()),
-                        alias: source_session.alias().map(str::to_string),
-                        workspace_id: source_session.workspace_id().to_string(),
-                        worktree_id: source_session.worktree_id().to_string(),
-                    }),
-                    workflow: workflow.clone(),
-                    endpoint: Some(endpoint.clone()),
-                    queues: vec![source_queue],
-                    watchdogs: vec![source_watchdog.clone()],
-                    agents: vec![source_agent.clone()],
+                MaterializeWorkflowPublicationRequest {
+                    publication_id: "publication-1".to_string(),
+                    snapshot: WorkflowPublicationSnapshot {
+                        schema_version: 1,
+                        captured_at_ms: Some(42),
+                        source_session: Some(WorkflowPublicationSourceSessionSnapshot {
+                            id: Some(source_session.id().to_string()),
+                            alias: source_session.alias().map(str::to_string),
+                            workspace_id: source_session.workspace_id().to_string(),
+                            worktree_id: source_session.worktree_id().to_string(),
+                        }),
+                        workflow: workflow.clone(),
+                        endpoint: Some(endpoint.clone()),
+                        queues: vec![source_queue],
+                        watchdogs: vec![source_watchdog.clone()],
+                        agents: vec![source_agent.clone()],
+                    },
                 },
-            },
-        ))
+            ),
+        )
         .expect("publication should materialize")
     {
         LocalDaemonResponse::WorkflowPublicationMaterialized {
@@ -464,7 +663,10 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     assert_ne!(materialized.id(), source_session.id());
     assert_eq!(materialized.workflows().len(), 1);
     assert_eq!(materialized.workflow_publications().len(), 1);
-    assert_eq!(materialized.workflow_publications()[0].id(), "publication-1");
+    assert_eq!(
+        materialized.workflow_publications()[0].id(),
+        "publication-1"
+    );
     assert_eq!(
         materialized.workflow_publications()[0].endpoint_id(),
         endpoint.id()
@@ -480,7 +682,10 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     );
     assert_eq!(materialized.agents().len(), 1);
     assert_ne!(materialized.agents()[0].id(), source_agent.id());
-    assert_eq!(materialized.agents()[0].owner_user_id(), runtime_owner_user_id);
+    assert_eq!(
+        materialized.agents()[0].owner_user_id(),
+        runtime_owner_user_id
+    );
     let materialized_workflow = materialized
         .workflows()
         .first()
@@ -510,11 +715,10 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     let hidden_state = match harness
         .dispatch_as_user(
             runtime_owner_user_id,
-            LocalDaemonRequest::GetSessionState(
-            GetSessionStateRequest {
+            LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
                 session_id: materialized.id().to_string(),
-            },
-        ))
+            }),
+        )
         .expect("hidden runtime session should still load by id")
     {
         LocalDaemonResponse::SessionState { session, .. } => session,

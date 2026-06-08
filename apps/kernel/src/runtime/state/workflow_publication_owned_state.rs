@@ -83,12 +83,15 @@ impl KernelRuntimeOwnedState {
             &publication,
             &session,
             request.kernel_url.as_deref(),
+            request.agent_app.as_ref(),
+            request.agent_app_assets_dir.as_deref(),
         )?;
+        let package_version = workflow_publication_package_version(request.agent_app.as_ref());
         let package_digest = workflow_publication_package_digest(&package_files);
         let package_archive_base64 = workflow_publication_package_archive_base64(&package_files)?;
         Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
             publication,
-            package_version: 1,
+            package_version,
             package_digest,
             package_archive_base64,
             package_files,
@@ -304,9 +307,11 @@ impl KernelRuntimeOwnedState {
         let session_id = session.id().to_string();
         let mut agent_id_map = BTreeMap::new();
         for (captured_agent_id, agent) in captured_agents {
-            let materialized = self
-                .agent_store
-                .materialize_publication_agent(agent, &session_id, Some(caller_user_id));
+            let materialized = self.agent_store.materialize_publication_agent(
+                agent,
+                &session_id,
+                Some(caller_user_id),
+            );
             agent_id_map.insert(captured_agent_id, materialized.id().to_string());
         }
 
@@ -387,13 +392,14 @@ fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     session: &crate::session::RuntimeSession,
     kernel_url: Option<&str>,
+    agent_app: Option<&serde_json::Value>,
+    agent_app_assets_dir: Option<&str>,
 ) -> Result<Vec<crate::local::WorkflowPublicationPackageFile>, DaemonError> {
-    let publication_value = serde_json::to_value(publication).map_err(|error| {
-        DaemonError::LocalTransport {
+    let publication_value =
+        serde_json::to_value(publication).map_err(|error| DaemonError::LocalTransport {
             operation: "export workflow publication package",
             message: format!("failed to encode publication: {error}"),
-        }
-    })?;
+        })?;
     let workflow = session
         .workflows()
         .iter()
@@ -470,23 +476,51 @@ fn workflow_publication_package_files(
             .collect(),
         agents,
     };
-    let publication_package = workflow_publication_package_json(publication, &publication_value);
+    let publication_package =
+        workflow_publication_package_json(publication, &publication_value, agent_app);
     let requirements = workflow_publication_requirements_json(&snapshot.agents);
     let bindings = workflow_publication_bindings_json(&snapshot);
-    let config = workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
-    Ok(vec![
-        package_file("publication.json", pretty_json(&publication_package)?, false),
+    let config =
+        workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
+    let mut files = vec![
+        package_file(
+            "publication.json",
+            pretty_json(&publication_package)?,
+            false,
+        ),
         package_file("workflow.snapshot.json", pretty_json(&snapshot)?, false),
         package_file("requirements.json", pretty_json(&requirements)?, false),
         package_file("bindings.example.json", pretty_json(&bindings)?, false),
         package_file("publication.config.json", pretty_json(&config)?, false),
-        package_file(".env.example", workflow_publication_env_template(publication, kernel_url), false),
+        package_file(
+            ".env.example",
+            workflow_publication_env_template(publication, kernel_url),
+            false,
+        ),
         package_file("run.sh", workflow_publication_launcher_script(), true),
-        package_file("README.md", workflow_publication_readme(publication, &publication_package, &config), false),
-        package_file("public/index.html", workflow_publication_index_html(publication), false),
+        package_file(
+            "README.md",
+            workflow_publication_readme(publication, &publication_package, &config),
+            false,
+        ),
+        package_file(
+            "public/index.html",
+            workflow_publication_index_html(publication),
+            false,
+        ),
         package_file("public/app.js", workflow_publication_app_js(), false),
-        package_file("public/styles.css", workflow_publication_styles_css(), false),
-    ])
+        package_file(
+            "public/styles.css",
+            workflow_publication_styles_css(),
+            false,
+        ),
+    ];
+    if workflow_publication_package_version(agent_app) == 2 {
+        if let Some(assets_dir) = agent_app_assets_dir {
+            files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
+        }
+    }
+    Ok(files)
 }
 
 fn package_file(
@@ -494,9 +528,17 @@ fn package_file(
     content: String,
     executable: bool,
 ) -> crate::local::WorkflowPublicationPackageFile {
+    package_file_bytes(path, content.as_bytes(), executable)
+}
+
+fn package_file_bytes(
+    path: impl Into<String>,
+    content: &[u8],
+    executable: bool,
+) -> crate::local::WorkflowPublicationPackageFile {
     crate::local::WorkflowPublicationPackageFile {
         path: path.into(),
-        content_base64: base64::engine::general_purpose::STANDARD.encode(content.as_bytes()),
+        content_base64: base64::engine::general_purpose::STANDARD.encode(content),
         executable,
     }
 }
@@ -513,10 +555,11 @@ fn pretty_json<T: serde::Serialize>(value: &T) -> Result<String, DaemonError> {
 fn workflow_publication_package_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
+    agent_app: Option<&serde_json::Value>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut package = serde_json::json!({
         "schema_version": 1,
-        "package_version": 1,
+        "package_version": workflow_publication_package_version(agent_app),
         "publication_id": publication.id(),
         "alias": publication.alias(),
         "source_session_id": publication.session_id(),
@@ -540,7 +583,100 @@ fn workflow_publication_package_json(
             "public_dir": "public",
             "scripts_dir": "scripts",
         },
-    })
+    });
+    if workflow_publication_package_version(agent_app) == 2 {
+        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
+    }
+    package
+}
+
+fn workflow_publication_package_version(agent_app: Option<&serde_json::Value>) -> u32 {
+    if agent_app
+        .and_then(|value| value.get("enabled"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        2
+    } else {
+        1
+    }
+}
+
+fn workflow_publication_agent_app_json(agent_app: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut value = agent_app
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+    value["enabled"] = serde_json::Value::Bool(true);
+    if !value.get("assets").is_some_and(|assets| assets.is_object()) {
+        value["assets"] = serde_json::json!({
+            "public_dir": "app",
+            "index": "index.html",
+        });
+    }
+    value
+}
+
+fn workflow_publication_agent_app_asset_files(
+    assets_dir: &str,
+) -> Result<Vec<crate::local::WorkflowPublicationPackageFile>, DaemonError> {
+    let root = std::path::PathBuf::from(assets_dir);
+    if !root.is_dir() {
+        return Err(DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("agent_app_assets_dir `{assets_dir}` is not a directory"),
+        });
+    }
+    let mut files = Vec::new();
+    collect_agent_app_asset_files(&root, &root, &mut files)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn collect_agent_app_asset_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<crate::local::WorkflowPublicationPackageFile>,
+) -> Result<(), DaemonError> {
+    let entries = std::fs::read_dir(dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "export workflow publication package",
+        message: format!("failed to read agent app assets: {error}"),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to read agent app asset entry: {error}"),
+        })?;
+        let path = entry.path();
+        let metadata = entry.metadata().map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to stat agent app asset `{}`: {error}", path.display()),
+        })?;
+        if metadata.is_dir() {
+            collect_agent_app_asset_files(root, &path, files)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let relative = path.strip_prefix(root).map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to relativize agent app asset `{}`: {error}", path.display()),
+        })?;
+        let relative = relative.to_str().ok_or_else(|| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("agent app asset path is not UTF-8: {}", path.display()),
+        })?;
+        let content = std::fs::read(&path).map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to read agent app asset `{}`: {error}", path.display()),
+        })?;
+        files.push(package_file_bytes(
+            format!("app/{}", relative.replace(std::path::MAIN_SEPARATOR, "/")),
+            &content,
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn workflow_publication_requirements_json(
@@ -638,13 +774,22 @@ fn workflow_publication_gateway_config_json(
     if let Some(kernel_url) = kernel_url {
         config["kernel_endpoint"] = serde_json::Value::String(kernel_url.to_string());
     }
-    if let Some(methods) = publication_value.get("methods").filter(|value| value.as_array().is_some_and(|values| !values.is_empty())) {
+    if let Some(methods) = publication_value
+        .get("methods")
+        .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
+    {
         config["methods"] = methods.clone();
     }
-    if let Some(transport) = publication_value.get("transport").filter(|value| !value.is_null()) {
+    if let Some(transport) = publication_value
+        .get("transport")
+        .filter(|value| !value.is_null())
+    {
         config["transport"] = transport.clone();
     }
-    if let Some(input_schema) = publication_value.get("input_schema").filter(|value| !value.is_null()) {
+    if let Some(input_schema) = publication_value
+        .get("input_schema")
+        .filter(|value| !value.is_null())
+    {
         config["input_schema"] = input_schema.clone();
     }
     if let Some(trace_exposure) = publication.trace_exposure() {
@@ -661,7 +806,10 @@ fn workflow_publication_env_template(
         "# Copy this file to .env or export these variables before running run.sh.",
         "HOST=0.0.0.0",
         "PORT=3000",
-        &format!("ARROBA_KERNEL_URL={}", kernel_url.unwrap_or("ws://127.0.0.1:43118")),
+        &format!(
+            "ARROBA_KERNEL_URL={}",
+            kernel_url.unwrap_or("ws://127.0.0.1:43118")
+        ),
         "ARROBA_PUBLICATION_PACKAGE=./publication.json",
         &format!("ARROBA_PUBLICATION_SESSION_ID={}", publication.session_id()),
         &format!("ARROBA_PUBLICATION_ID={}", publication.id()),
@@ -831,13 +979,18 @@ fn workflow_publication_package_archive_base64(
                 .append_data(&mut header, file.path.as_str(), content.as_slice())
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "export workflow publication package",
-                    message: format!("failed to add package file `{}` to archive: {error}", file.path),
+                    message: format!(
+                        "failed to add package file `{}` to archive: {error}",
+                        file.path
+                    ),
                 })?;
         }
-        builder.finish().map_err(|error| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!("failed to finish publication package archive: {error}"),
-        })?;
+        builder
+            .finish()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!("failed to finish publication package archive: {error}"),
+            })?;
         builder
             .into_inner()
             .map_err(|error| DaemonError::LocalTransport {
@@ -847,7 +1000,9 @@ fn workflow_publication_package_archive_base64(
             .finish()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "export workflow publication package",
-                message: format!("failed to finish compressed publication package archive: {error}"),
+                message: format!(
+                    "failed to finish compressed publication package archive: {error}"
+                ),
             })?;
     }
     Ok(base64::engine::general_purpose::STANDARD.encode(archive_bytes))
@@ -870,11 +1025,7 @@ fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str
     value.get(field).and_then(|field| field.as_str())
 }
 
-fn string_array_field(
-    value: &serde_json::Value,
-    field: &str,
-    fallback: &[&str],
-) -> Vec<String> {
+fn string_array_field(value: &serde_json::Value, field: &str, fallback: &[&str]) -> Vec<String> {
     let values = value
         .get(field)
         .and_then(|value| value.as_array())

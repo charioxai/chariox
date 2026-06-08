@@ -1300,7 +1300,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 121
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 122
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
