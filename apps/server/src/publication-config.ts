@@ -87,6 +87,7 @@ export async function loadPublicationPackageConfig(
     snapshot,
     options.kernelEndpoint ?? defaultKernelEndpoint(),
     options.hookId,
+    root,
   )
   if (!options.materialize) return config
   const requirements = await loadPublicationRequirements(root)
@@ -135,6 +136,7 @@ export function publicationConfigFromPackage(
   snapshot: WorkflowPublicationSnapshot,
   kernelEndpoint = defaultKernelEndpoint(),
   hookId?: string,
+  packageRoot?: string,
 ): WorkflowPublicationConfig {
   if (publicationPackage.schema_version !== 1) {
     throw new Error(`unsupported publication package schema_version ${publicationPackage.schema_version}`)
@@ -164,6 +166,8 @@ export function publicationConfigFromPackage(
     parser: hook.parser ?? { kind: "json" },
     mode: hook.mode === "async" ? "async" : "sync",
   }
+  if (packageRoot) config.package_root = packageRoot
+  if (publicationPackage.agent_app?.enabled) config.agent_app = publicationPackage.agent_app
   if (hook.sync_timeout_ms != null) config.sync_timeout_ms = hook.sync_timeout_ms
   if (hook.poll_ms != null) config.poll_ms = hook.poll_ms
   if (traceExposure) {

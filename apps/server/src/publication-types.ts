@@ -48,6 +48,8 @@ export type WorkflowPublicationConfig = {
   mode?: "sync" | "async"
   sync_timeout_ms?: number
   poll_ms?: number
+  package_root?: string
+  agent_app?: AgentAppConfig
 }
 
 export type PublicationHookConfig = {
@@ -76,6 +78,52 @@ export type WorkflowPublicationPackage = {
   workflow_id: string
   default_bindings_path?: string
   hooks: PublicationHookConfig[]
+  agent_app?: AgentAppConfig
+}
+
+export type AgentAppConfig = {
+  enabled?: boolean
+  assets?: AgentAppAssetsConfig
+  routes?: AgentAppRouteConfig[]
+  actions?: Record<string, AgentAppActionConfig>
+  replicas?: AgentAppReplicaConfig
+  persistent_patch?: { enabled?: boolean }
+}
+
+export type AgentAppAssetsConfig = {
+  public_dir?: string
+  index?: string
+}
+
+export type AgentAppRouteConfig = {
+  path: string
+  hook_id?: string
+  prompt_source?: "path_tail"
+  response?: "streaming_shell"
+  required_role?: string
+  manipulation?: {
+    level?: "none" | "state" | "overlay" | "state_and_overlay" | "full_ephemeral" | "persistent_patch"
+    scope?: "invocation" | "session" | "persistent"
+    allowed_paths?: string[]
+    protected_paths?: string[]
+    allowed_actions?: string[]
+  }
+}
+
+export type AgentAppActionConfig = {
+  input_schema?: InputSchema
+  transport?: {
+    kind?: "http"
+    method?: "GET" | "POST"
+    url?: string
+  }
+}
+
+export type AgentAppReplicaConfig = {
+  count?: number
+  per_caller_ordering?: boolean
+  max_queue_depth?: number
+  timeout_ms?: number
 }
 
 export type PublicationTraceLevel =

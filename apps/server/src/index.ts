@@ -12,6 +12,10 @@ import {
 } from "./kernel-publication-client.js"
 import { ArrobaLogger, createProcessLogger } from "./logging.js"
 import {
+  installAgentAppRoutes,
+  isAgentAppPublication,
+} from "./publication-agent-app.js"
+import {
   installApiSseJsonRoutes,
   isApiSseJsonPublication,
 } from "./publication-api-sse.js"
@@ -75,7 +79,9 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
   const webSocketServer = installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
-  installPublicationViewerRoutes(app, publication)
+  if (!isAgentAppPublication(publication)) {
+    installPublicationViewerRoutes(app, publication)
+  }
   installHumanHttpRoutes(app, publication)
   installApiSseJsonRoutes(app, publication, deps)
   installPublicationMcpRoutes(app, publication, deps)
@@ -110,7 +116,9 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
   })
 
-  if (!isApiSseJsonPublication(publication) && !isMcpPublication(publication)) {
+  if (isAgentAppPublication(publication)) {
+    installAgentAppRoutes(app, publication, deps)
+  } else if (!isApiSseJsonPublication(publication) && !isMcpPublication(publication)) {
     const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
     for (const method of methods) {
       app.route({

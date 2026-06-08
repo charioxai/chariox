@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
@@ -1555,9 +1555,97 @@ test("human HTTP status page renders split trace viewer and sandboxed HTML outpu
     assert.match(response.body, /id="trace-feed"/)
     assert.match(response.body, /events\.addEventListener\('trace'/)
     assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals'\)/)
-    assert.match(response.body, /frame\.srcdoc = html/)
+    assert.match(response.body, /frame\.srcdoc = renderable\.html/)
+    assert.match(response.body, /frame\.src = renderable\.src/)
+    assert.match(response.body, /parsed\.kind === 'response'/)
   } finally {
     await app.close()
+  }
+})
+
+test("agent app gateway serves packaged app assets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-assets-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
+  await writeFile(join(root, "app", "styles.css"), "main { color: red; }")
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [],
+    },
+  })
+
+  try {
+    const index = await app.inject({ method: "GET", url: "/" })
+    assert.equal(index.statusCode, 200)
+    assert.match(index.headers["content-type"] as string, /text\/html/)
+    assert.equal(index.body, "<!doctype html><main>shop</main>")
+
+    const styles = await app.inject({ method: "GET", url: "/styles.css" })
+    assert.equal(styles.statusCode, 200)
+    assert.match(styles.headers["content-type"] as string, /text\/css/)
+    assert.equal(styles.body, "main { color: red; }")
+
+    const traversal = await app.inject({ method: "GET", url: "/../publication.json" })
+    assert.notEqual(traversal.statusCode, 200)
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app wrapped route invokes workflow with path-tail prompt and streams viewer shell", async () => {
+  let seenInput: unknown = null
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-route-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          scope: "session",
+          allowed_actions: ["cart.search", "cart.add", "cart.checkout"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      seenInput = invocation.input
+      return {
+        accepted: true,
+        workflow_run: { id: "run-shopping", status: "Running" },
+      }
+    },
+  })
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/add/1%20kg%20bananas",
+      headers: { accept: "text/html" },
+    })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.headers["content-type"] as string, /text\/html/)
+    assert.match(response.body, /class="split-viewer"/)
+    assert.match(response.body, /run-shopping/)
+    assert.deepEqual(seenInput, { prompt: "1 kg bananas" })
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
   }
 })
 

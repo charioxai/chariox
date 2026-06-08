@@ -320,14 +320,15 @@ function renderFinalOutput(message) {
     outputEl.textContent = JSON.stringify(message, null, 2);
     return;
   }
-  const html = renderableHtml(message);
-  if (html !== null) {
+  const renderable = renderableOutput(message);
+  if (renderable !== null) {
     outputEl.hidden = true;
     htmlOutputEl.hidden = false;
     htmlOutputEl.innerHTML = '';
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
-    frame.srcdoc = html;
+    if (renderable.html !== null) frame.srcdoc = renderable.html;
+    if (renderable.src !== null) frame.src = renderable.src;
     htmlOutputEl.append(frame);
     return;
   }
@@ -337,10 +338,28 @@ function renderFinalOutput(message) {
   outputEl.textContent = message;
 }
 
-function renderableHtml(message) {
+function renderableOutput(message) {
   try {
     const parsed = JSON.parse(message);
-    if (parsed && parsed.kind === 'html' && typeof parsed.html === 'string') return parsed.html;
+    if (parsed && parsed.kind === 'html' && typeof parsed.html === 'string') {
+      return { html: parsed.html, src: null };
+    }
+    if (parsed && parsed.kind === 'response' && parsed.response) {
+      const mode = parsed.response.mode;
+      if (mode === 'html') {
+        const html = typeof parsed.response.html === 'string'
+          ? parsed.response.html
+          : typeof parsed.response.body === 'string'
+            ? parsed.response.body
+            : typeof parsed.html === 'string'
+              ? parsed.html
+              : null;
+        if (html !== null) return { html, src: null };
+      }
+      if (mode === 'serve' && typeof parsed.response.entry === 'string') {
+        return { html: null, src: parsed.response.entry };
+      }
+    }
   } catch {
   }
   return null;
