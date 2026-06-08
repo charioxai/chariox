@@ -88,6 +88,38 @@ run_with_timeout() {
   return "$status"
 }
 
+run_with_file_stdin_timeout() {
+  local seconds="$1"
+  local input_file="$2"
+  shift 2
+  local command_display="$* < $input_file"
+  local timeout_marker="${TMPDIR:-/tmp}/arroba-slice-timeout.$$.$RANDOM"
+  rm -f "$timeout_marker"
+  "$@" <"$input_file" &
+  local child=$!
+  (
+    sleep "$seconds"
+    if kill -0 "$child" >/dev/null 2>&1; then
+      : >"$timeout_marker"
+      kill "$child" >/dev/null 2>&1 || true
+      sleep 2
+      kill -9 "$child" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local watchdog=$!
+  local status=0
+  wait "$child" || status=$?
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+  if [[ -f "$timeout_marker" ]]; then
+    rm -f "$timeout_marker"
+    log "timed out after ${seconds}s: ${command_display}"
+    return 124
+  fi
+  rm -f "$timeout_marker"
+  return "$status"
+}
+
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [provision|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
@@ -362,7 +394,7 @@ copy_provider_auth_file() {
   local target_dir
   target_dir="$(dirname "$target_path")"
   local backup_path="${target_path}.before-slice-auth-$(date +%Y%m%d%H%M%S)"
-  docker exec -i -u slice "$SLICE_NAME" bash -lc "
+  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
     mkdir -p '$target_dir'
     if [[ -f '$target_path' ]]; then
@@ -371,7 +403,7 @@ copy_provider_auth_file() {
     umask 077
     cat > '$target_path'
     chmod 600 '$target_path'
-  " <"$source_path"
+  "
   log "imported $label auth into $target_path"
 }
 
