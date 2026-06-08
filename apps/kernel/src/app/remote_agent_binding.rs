@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use arroba_relay::protocol::{ClientTarget, RelayKernelPresence};
 
@@ -26,12 +26,10 @@ impl DaemonApp {
         if agent.remote_execution().is_none() {
             return Ok(crate::extension::RemoteExtensionManifest::default());
         }
-        let _ = self.sessions.get_session(agent.session_id())?;
+        let session = self.sessions.get_session(agent.session_id())?;
         let mut tools = Vec::new();
 
-        let mcp_roots = crate::mcp::ArrobaMcpRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
+        let mcp_roots = app_mcp_registry_roots(session.workspace_id());
         let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
         for name in agent.mcp_grants() {
             let Some(config) = mcp_registry.get(&name)? else {
@@ -55,9 +53,7 @@ impl DaemonApp {
             });
         }
 
-        let script_roots = crate::script::ArrobaScriptRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
+        let script_roots = app_script_registry_roots(session.workspace_id());
         let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
         for grant in agent.script_grants() {
             let Some(script) = script_registry.get(&grant.name)? else {
@@ -516,6 +512,36 @@ impl DaemonApp {
         }
         config
     }
+}
+
+fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace_id;
+    #[cfg(test)]
+    if !workspace_id.trim().is_empty() {
+        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(workspace_id));
+    }
+    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(root);
+    }
+    roots
+}
+
+fn app_script_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace_id;
+    #[cfg(test)]
+    if !workspace_id.trim().is_empty() {
+        roots.push(crate::script::ArrobaScriptRegistry::project_root(
+            workspace_id,
+        ));
+    }
+    if let Some(root) = crate::script::ArrobaScriptRegistry::user_root() {
+        roots.push(root);
+    }
+    roots
 }
 
 #[cfg(test)]

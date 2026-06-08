@@ -616,34 +616,62 @@ pub(crate) fn ensure_environment_exists(
 }
 
 fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
-    let _ = registry_workspace_root(workspace_id)?;
-    user_only_root(
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace;
+    #[cfg(test)]
+    if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
+        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(&workspace));
+    }
+    roots.extend(user_only_root(
         crate::mcp::ArrobaMcpRegistry::user_root(),
         "MCP registry root",
         "HOME must be set to resolve ~/.arroba/mcps",
-    )
+    )?);
+    Ok(roots)
 }
 
 pub(crate) fn script_registry_roots(
     workspace_id: Option<&str>,
 ) -> Result<Vec<PathBuf>, DaemonError> {
-    let _ = registry_workspace_root(workspace_id)?;
-    user_only_root(
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace;
+    #[cfg(test)]
+    if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
+        roots.push(crate::script::ArrobaScriptRegistry::project_root(
+            &workspace,
+        ));
+    }
+    roots.extend(user_only_root(
         crate::script::ArrobaScriptRegistry::user_root(),
         "script registry root",
         "HOME must be set to resolve ~/.arroba/scripts",
-    )
+    )?);
+    Ok(roots)
 }
 
 pub(crate) fn environment_registry_roots(
     workspace_id: Option<&str>,
 ) -> Result<Vec<PathBuf>, DaemonError> {
-    let _ = registry_workspace_root(workspace_id)?;
-    user_only_root(
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace;
+    #[cfg(test)]
+    if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
+        roots.push(crate::script::ArrobaEnvironmentRegistry::project_root(
+            &workspace,
+        ));
+    }
+    roots.extend(user_only_root(
         crate::script::ArrobaEnvironmentRegistry::user_root(),
         "environment registry root",
         "HOME must be set to resolve ~/.arroba/envs",
-    )
+    )?);
+    Ok(roots)
 }
 
 fn script_validation_context(
@@ -678,12 +706,20 @@ fn script_validation_context(
 }
 
 fn skill_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
-    let _ = registry_workspace_root(workspace_id)?;
-    user_only_root(
+    let workspace = registry_workspace_root(workspace_id)?;
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace;
+    #[cfg(test)]
+    if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
+        roots.push(crate::skill::ArrobaSkillRegistry::project_root(&workspace));
+    }
+    roots.extend(user_only_root(
         crate::skill::ArrobaSkillRegistry::user_root(),
         "skill registry root",
         "HOME must be set to resolve ~/.arroba/skills",
-    )
+    )?);
+    Ok(roots)
 }
 
 fn registry_workspace_root(workspace_id: Option<&str>) -> Result<PathBuf, DaemonError> {
@@ -719,10 +755,18 @@ mod tests {
 
         assert_eq!(
             mcp_roots.first(),
+            Some(&crate::mcp::ArrobaMcpRegistry::project_root(&workspace))
+        );
+        assert_eq!(
+            mcp_roots.get(1),
             crate::mcp::ArrobaMcpRegistry::user_root().as_ref()
         );
         assert_eq!(
             skill_roots.first(),
+            Some(&crate::skill::ArrobaSkillRegistry::project_root(&workspace))
+        );
+        assert_eq!(
+            skill_roots.get(1),
             crate::skill::ArrobaSkillRegistry::user_root().as_ref()
         );
     }

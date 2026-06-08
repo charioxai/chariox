@@ -1,11 +1,7 @@
 use super::*;
 
-static CAPABILITY_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 struct TestCapabilityEnv {
     root: std::path::PathBuf,
-    previous_isolation_root: Option<std::ffi::OsString>,
-    previous_arroba_home: Option<std::ffi::OsString>,
 }
 
 impl TestCapabilityEnv {
@@ -16,35 +12,18 @@ impl TestCapabilityEnv {
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("test capability root should be created");
-        let previous_isolation_root = std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT");
-        let previous_arroba_home = std::env::var_os("ARROBA_HOME");
-        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &root);
-        std::env::set_var("ARROBA_HOME", root.join("arroba-home"));
-        Self {
-            root,
-            previous_isolation_root,
-            previous_arroba_home,
-        }
+        Self { root }
     }
 }
 
 impl Drop for TestCapabilityEnv {
     fn drop(&mut self) {
-        match &self.previous_isolation_root {
-            Some(value) => std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", value),
-            None => std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT"),
-        }
-        match &self.previous_arroba_home {
-            Some(value) => std::env::set_var("ARROBA_HOME", value),
-            None => std::env::remove_var("ARROBA_HOME"),
-        }
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
 #[tokio::test]
 async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_session() {
-    let _env_lock = CAPABILITY_ENV_LOCK.lock().await;
     let env = TestCapabilityEnv::new("yolo-mcp");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -104,10 +83,8 @@ async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_sessi
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
-    let expected_path = env
-        .root
-        .join("user")
-        .join("mcps")
+    let expected_path = crate::mcp::ArrobaMcpRegistry::user_root()
+        .expect("HOME should resolve MCP registry root")
         .join(format!("{mcp_name}.json"));
     assert_eq!(
         registration
@@ -154,11 +131,11 @@ async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_sessi
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+    let _ = std::fs::remove_file(expected_path);
 }
 
 #[tokio::test]
 async fn required_permission_agent_gets_registration_approval_before_path_validation() {
-    let _env_lock = CAPABILITY_ENV_LOCK.lock().await;
     let env = TestCapabilityEnv::new("required-skill");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -193,14 +170,15 @@ async fn required_permission_agent_gets_registration_approval_before_path_valida
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let runtime_state = router.runtime_state.clone();
-    let missing_source = "missing-skill";
+    let missing_source = format!("missing-skill-{}", crate::session::unix_epoch_ms());
+    let missing_source_arg = missing_source.clone();
 
     let registration = tokio::spawn(async move {
         runtime_state
             .dispatch_authenticated_runtime_tool_call(
                 &auth_token,
                 crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL,
-                serde_json::json!({ "path": missing_source }),
+                serde_json::json!({ "path": missing_source_arg }),
             )
             .await
     });
@@ -242,10 +220,9 @@ async fn required_permission_agent_gets_registration_approval_before_path_valida
         Some(interaction_id.as_str())
     );
     assert!(
-        !env.root
-            .join("user")
-            .join("skills")
-            .join(missing_source)
+        !crate::skill::ArrobaSkillRegistry::user_root()
+            .expect("HOME should resolve skill registry root")
+            .join(&missing_source)
             .exists(),
         "denied path-based registration must not install anything"
     );

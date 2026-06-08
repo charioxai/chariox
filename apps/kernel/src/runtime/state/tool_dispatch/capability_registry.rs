@@ -57,38 +57,64 @@ fn user_only_root(
 }
 
 pub(super) fn skill_registry_for_workspace(workspace: &str) -> crate::skill::ArrobaSkillRegistry {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
     let _ = workspace;
-    let roots = crate::skill::ArrobaSkillRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
+    #[cfg(test)]
+    if !workspace.trim().is_empty() {
+        roots.push(crate::skill::ArrobaSkillRegistry::project_root(workspace));
+    }
+    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
+        roots.push(root);
+    }
     crate::skill::ArrobaSkillRegistry::new(roots)
 }
 
 pub(super) fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::ArrobaMcpRegistry {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
     let _ = workspace;
-    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
+    #[cfg(test)]
+    if !workspace.trim().is_empty() {
+        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(workspace));
+    }
+    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+        roots.push(root);
+    }
     crate::mcp::ArrobaMcpRegistry::new(roots)
 }
 
 pub(super) fn script_registry_for_workspace(
     workspace: &str,
 ) -> crate::script::ArrobaScriptRegistry {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
     let _ = workspace;
-    let roots = crate::script::ArrobaScriptRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
+    #[cfg(test)]
+    if !workspace.trim().is_empty() {
+        roots.push(crate::script::ArrobaScriptRegistry::project_root(workspace));
+    }
+    if let Some(root) = crate::script::ArrobaScriptRegistry::user_root() {
+        roots.push(root);
+    }
     crate::script::ArrobaScriptRegistry::new(roots)
 }
 
 pub(super) fn environment_registry_for_workspace(
     workspace: &str,
 ) -> crate::script::ArrobaEnvironmentRegistry {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
     let _ = workspace;
-    let roots = crate::script::ArrobaEnvironmentRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
+    #[cfg(test)]
+    if !workspace.trim().is_empty() {
+        roots.push(crate::script::ArrobaEnvironmentRegistry::project_root(
+            workspace,
+        ));
+    }
+    if let Some(root) = crate::script::ArrobaEnvironmentRegistry::user_root() {
+        roots.push(root);
+    }
     crate::script::ArrobaEnvironmentRegistry::new(roots)
 }
 
