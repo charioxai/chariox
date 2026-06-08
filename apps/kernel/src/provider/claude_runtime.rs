@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
+use crate::terminal::TerminalOutputKind;
 
 use super::{
     claude::claude_launch_args_for_run, AgentExecutionMode, AgentPermissionLevel,
@@ -129,7 +130,7 @@ pub(crate) fn drain_claude_events(
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
         match state.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
-                reject_unsupported_claude_tool_uses(run.id(), state, &value, &mut batch)?;
+                handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
@@ -173,7 +174,7 @@ pub(crate) fn drain_claude_events(
     Ok(batch)
 }
 
-fn reject_unsupported_claude_tool_uses(
+fn handle_claude_tool_uses(
     provider_run_id: &str,
     state: &mut ClaudeRuntimeState,
     value: &serde_json::Value,
@@ -183,45 +184,68 @@ fn reject_unsupported_claude_tool_uses(
     let Some(content) = message.get("content").and_then(serde_json::Value::as_array) else {
         return Ok(());
     };
-    let tool_results: Vec<serde_json::Value> = content
-        .iter()
-        .filter(|block| {
-            block
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                == Some("tool_use")
-        })
-        .filter_map(|block| {
-            let id = block.get("id").and_then(serde_json::Value::as_str)?;
-            let name = block
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            Some(json!({
+    let mut tool_results = Vec::new();
+    for block in content.iter().filter(|block| {
+        block
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            == Some("tool_use")
+    }) {
+        let name = block
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        if is_unsupported_claude_stream_json_tool(name) {
+            let Some(id) = block.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            tool_results.push(json!({
                 "type": "tool_result",
                 "tool_use_id": id,
                 "is_error": true,
                 "content": format!(
                     "Arroba does not execute Claude stream-json tool `{name}` in this runtime path. If this is an Arroba workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
                 ),
-            }))
-        })
-        .collect();
-    if tool_results.is_empty() {
-        return Ok(());
-    }
-    let response = json!({
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": tool_results,
+            }));
+            continue;
         }
-    });
-    write_json_line(&mut state.stdin, &response)?;
-    batch.notices.push(format!(
-        "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
-    ));
+        let payload = json!({
+            "tool": name,
+            "status": "completed",
+            "input": block.get("input").cloned().unwrap_or(serde_json::Value::Null),
+            "id": block.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        });
+        let bytes = serde_json::to_vec(&payload).map_err(|error| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "claude_tool_use_serialize",
+                message: error.to_string(),
+            }
+        })?;
+        batch.chunks.push(super::ProviderPromptChunk {
+            kind: TerminalOutputKind::ProviderTool,
+            merge_key: None,
+            bytes,
+        });
+    }
+    if !tool_results.is_empty() {
+        let response = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": tool_results,
+            }
+        });
+        write_json_line(&mut state.stdin, &response)?;
+        batch.notices.push(format!(
+            "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
+        ));
+    }
     Ok(())
+}
+
+fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
+    name == "ToolSearch"
 }
 
 fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRuntimeState) -> bool {
@@ -298,8 +322,8 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        events::apply_claude_message, input::claude_user_content,
-        reject_unsupported_claude_tool_uses, ClaudeRuntimeState, ProviderPromptSignalBatch,
+        events::apply_claude_message, handle_claude_tool_uses, input::claude_user_content,
+        ClaudeRuntimeState, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -418,7 +442,7 @@ mod tests {
     fn rejects_unsupported_claude_tool_use_without_completing_turn() {
         let (mut state, mut batch) = parser_state();
 
-        reject_unsupported_claude_tool_uses(
+        handle_claude_tool_uses(
             "run-1",
             &mut state,
             &json!({
@@ -441,6 +465,38 @@ mod tests {
             .notices
             .iter()
             .any(|notice| notice.contains("Rejected unsupported Claude stream-json tool use")));
+    }
+
+    #[test]
+    fn records_provider_native_claude_tool_use_without_rejecting_it() {
+        let (mut state, mut batch) = parser_state();
+
+        handle_claude_tool_uses(
+            "run-1",
+            &mut state,
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_browser",
+                        "name": "browser_snapshot",
+                        "input": { "random": "value" }
+                    }]
+                }
+            }),
+            &mut batch,
+        )
+        .expect("provider-native tool use should be recorded");
+
+        assert!(batch.notices.is_empty());
+        assert_eq!(batch.chunks.len(), 1);
+        assert_eq!(batch.chunks[0].kind, TerminalOutputKind::ProviderTool);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&batch.chunks[0].bytes).expect("tool payload should be JSON");
+        assert_eq!(payload["tool"], "browser_snapshot");
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["input"]["random"], "value");
     }
 
     #[test]

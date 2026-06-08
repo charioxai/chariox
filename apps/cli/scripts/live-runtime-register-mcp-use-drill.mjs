@@ -446,7 +446,7 @@ async function main() {
         sessionId: session.id,
         agentId: agent.id,
         getSessionStateRequest,
-        timeoutMs: options.timeoutMs,
+        timeoutMs: Math.min(options.timeoutMs, 15_000),
         pollMs: options.pollMs,
       }).catch(() => {})
       const transcript = await providerTranscript({ historyDir, agentId: agent.id, sinceMs: startedAt })
