@@ -187,7 +187,13 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
                 Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
             ),
         ],
-        None,
+        Some(crate::session::RuntimeInteractionCustomChoice::secret(
+            "secret",
+            "Secret",
+            Some("Enter secret".to_string()),
+            Some(8),
+            Some(128),
+        )),
         None,
         None,
     );
@@ -218,6 +224,24 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
 
     let interaction_id =
         wait_for_active_interaction(Arc::clone(&app_home), &home_session_id, &home_agent_id).await;
+    {
+        let app = app_home.lock().await;
+        let session = app
+            .sessions()
+            .get_session(&home_session_id)
+            .expect("home session should still exist");
+        let interaction = session
+            .active_interaction_for_agent(&home_agent_id)
+            .expect("forwarded interaction should be active on home agent");
+        let custom_choice = interaction
+            .custom_choice()
+            .expect("forwarded interaction should preserve custom input");
+        assert_eq!(custom_choice.id(), "secret");
+        assert_eq!(
+            custom_choice.input_kind(),
+            crate::session::RuntimeInteractionInputKind::Secret
+        );
+    }
     let respond_request =
         crate::local::LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
             session_id: home_session_id.clone(),

@@ -88,8 +88,9 @@ impl KernelRuntimeState {
                     if max_length < args.prompt.min_length.unwrap_or(1) {
                         return Err(DaemonError::LocalTransport {
                             operation: "runtime_tool_request_credential_secret",
-                            message: "prompt max_length must be greater than or equal to min_length"
-                                .to_string(),
+                            message:
+                                "prompt max_length must be greater than or equal to min_length"
+                                    .to_string(),
                         });
                     }
                 }
@@ -128,32 +129,77 @@ impl KernelRuntimeState {
                 let interaction_id = interaction.id().to_string();
                 let session_id = provider_run.session_id().to_string();
                 let timeout_sec = interaction.timeout_sec();
-                let resolution_rx = self
-                    .create_runtime_interaction(&session_id, interaction)
-                    .await?;
-                if let Some(timeout_sec) = timeout_sec {
-                    let state = self.clone();
-                    let timeout_session_id = session_id.clone();
-                    let timeout_interaction_id = interaction_id.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
-                        let _ = state
-                            .timeout_runtime_interaction(
-                                &timeout_session_id,
-                                &timeout_interaction_id,
+                let remote_target = self
+                    .with_app_side_effect(|app| {
+                        let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
+                        runtime.native_interaction_context_for_backing_agent(
+                            provider_run.session_id(),
+                            provider_run.agent_instance_id().unwrap_or(""),
+                            provider_run.id(),
+                        )
+                    })
+                    .await;
+                let resolution = if let Some((target_daemon_id, context)) = remote_target {
+                    let response = self
+                        .with_app_side_effect(|app| {
+                            app.block_on_relay_future(
+                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                    app.config(),
+                                    ClientTarget {
+                                        daemon_id: Some(target_daemon_id.clone()),
+                                        daemon_alias: None,
+                                    },
+                                    RelayPeerRequest::ForwardNativeInteraction {
+                                        context: context.clone(),
+                                        interaction: interaction.clone(),
+                                    },
+                                ),
                             )
-                            .await;
-                    });
-                }
-                let resolution =
-                    resolution_rx
-                        .await
-                        .map_err(|error| DaemonError::LocalTransport {
+                        })
+                        .await?;
+                    match response {
+                        RelayPeerResponse::NativeInteractionResolved { resolution } => resolution,
+                        other => {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_credential_secret",
+                                message: format!(
+                                    "unexpected relay response for remote credential secret interaction: {other:?}"
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    let resolution_rx = self
+                        .create_runtime_interaction(&session_id, interaction)
+                        .await?;
+                    if let Some(timeout_sec) = timeout_sec {
+                        let state = self.clone();
+                        let timeout_session_id = session_id.clone();
+                        let timeout_interaction_id = interaction_id.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
+                            let _ = state
+                                .timeout_runtime_interaction(
+                                    &timeout_session_id,
+                                    &timeout_interaction_id,
+                                )
+                                .await;
+                        });
+                    }
+                    let resolution = resolution_rx.await.map_err(|error| {
+                        DaemonError::LocalTransport {
                             operation: "runtime_tool_request_credential_secret",
                             message: format!(
                                 "credential secret interaction dropped before resolution: {error}"
                             ),
-                        })?;
+                        }
+                    })?;
+                    crate::provider::ProviderNativeInteractionResolution {
+                        status: resolution.status.to_string(),
+                        choice_id: resolution.choice_id,
+                        reply: resolution.reply,
+                    }
+                };
                 if resolution.status == "timed_out" {
                     return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                         ok: true,
@@ -174,10 +220,13 @@ impl KernelRuntimeState {
                         }),
                     });
                 }
-                let secret = resolution.reply.ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "runtime_tool_request_credential_secret",
-                    message: "credential secret interaction resolved without a secret".to_string(),
-                })?;
+                let secret = resolution
+                    .reply
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_request_credential_secret",
+                        message: "credential secret interaction resolved without a secret"
+                            .to_string(),
+                    })?;
                 let registry = crate::credential::ArrobaCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
@@ -471,12 +520,15 @@ impl KernelRuntimeState {
 fn credential_from_runtime_input(
     input: crate::transport::runtime_tools::RuntimeCredentialConfigInput,
 ) -> Result<crate::config::UserCredentialConfig, DaemonError> {
-    let source = input.source.unwrap_or_else(|| {
-        crate::config::UserCredentialSourceConfig::Vault {
+    let source = input
+        .source
+        .unwrap_or_else(|| crate::config::UserCredentialSourceConfig::Vault {
             key: input.id.clone(),
-        }
-    });
-    if !matches!(source, crate::config::UserCredentialSourceConfig::Vault { .. }) {
+        });
+    if !matches!(
+        source,
+        crate::config::UserCredentialSourceConfig::Vault { .. }
+    ) {
         return Err(DaemonError::LocalTransport {
             operation: "runtime_tool_credential_input",
             message: "runtime-created credentials must use a vault source".to_string(),
