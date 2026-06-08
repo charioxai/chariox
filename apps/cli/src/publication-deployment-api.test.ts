@@ -22,6 +22,11 @@ test("publication deployment API reads package metadata", async () => {
     assert.equal(metadata.transport, "human_http")
     assert.equal(metadata.route, "/final/*")
     assert.equal(metadata.packageUri, `file://${root}`)
+    assert.deepEqual(metadata.agentApp, {
+      enabled: true,
+      routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+      replicas: { count: 2 },
+    })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -64,6 +69,11 @@ test("publication deployment API creates, uploads, and starts hosted deployments
     ])
     assert.equal((calls[0]?.body as Record<string, unknown>).credentialProfile, "miguel_staging")
     assert.equal((calls[0]?.body as Record<string, unknown>).route, "/final/*")
+    assert.deepEqual((calls[0]?.body as Record<string, unknown>).agentApp, {
+      enabled: true,
+      routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+      replicas: { count: 2 },
+    })
     assert.equal((calls[1]?.body as Record<string, unknown>).packageUri, `file://${root}`)
     assert.match(String((calls[1]?.body as Record<string, unknown>).packageDigest), /^sha256:/)
   } finally {
@@ -86,6 +96,11 @@ async function publicationPackageFixture(): Promise<string> {
       transport: "human_http",
       route: "/final/*",
     }],
+    agent_app: {
+      enabled: true,
+      routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+      replicas: { count: 2 },
+    },
   }, null, 2))
   return root
 }
