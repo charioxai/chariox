@@ -1759,12 +1759,14 @@ test("gateway supports custom command parsers", async () => {
 
 test("gateway accepts WebSocket publication invocations", async () => {
   const inputs: unknown[] = []
+  const modes: unknown[] = []
   const { app } = buildServer({
     ...baseConfig,
     input_schema: { type: "object", required: ["task"], properties: { task: { type: "string" } } },
   }, {
     invokeWorkflow: async (invocation) => {
       inputs.push(invocation.input)
+      modes.push(invocation.mode)
       return {
         accepted: true,
         workflow_run: {
@@ -1840,6 +1842,7 @@ test("gateway accepts WebSocket publication invocations", async () => {
           base64: "aGVsbG8=",
         }],
       }])
+      assert.deepEqual(modes, ["async"])
     } finally {
       socket.close()
     }

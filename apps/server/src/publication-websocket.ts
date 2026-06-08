@@ -117,12 +117,12 @@ async function handlePublicationWebSocketMessage(
       request_id: `ws_${Date.now()}_${Math.random().toString(16).slice(2)}`,
       caller,
       input,
-      mode: publication.mode ?? "sync",
+      mode: "async",
     }
     state.readyArtifacts.clear()
     const result = deps.invokeWorkflow
       ? await deps.invokeWorkflow(invocation)
-      : await invokeKernelWorkflow(publication, invocation)
+      : await invokeKernelWorkflow({ ...publication, mode: "async" }, invocation)
     sendWebSocketJson(webSocket, { type: "accepted", ...result })
     sendWebSocketJson(webSocket, {
       type: "queued",
