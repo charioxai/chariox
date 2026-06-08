@@ -137,16 +137,26 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_paste_secret_to_slice",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                let status_output =
+                    run_slice_screen_command(vec!["browser-status".to_string()]).await?;
+                let browser_status = slice_browser_json(&status_output)?;
+                let browser_url = browser_status_url(&browser_status)?;
+                ensure_browser_target_matches_expectations(&browser_status, &args)?;
+                let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
+                ensure_browser_fill_target(&browser_status, selector.as_deref())?;
                 let user_config = self.owned.config_projection.snapshot().user_config;
                 let credentials = crate::credential::load_user_credentials()?;
                 let service = crate::secret::RuntimeSecretService::with_vault_config(
                     credentials,
                     &user_config.credential_vault,
                 )?;
-                let secret = service.browser_secret_input(&args.credential_id)?;
-                let mut output =
-                    run_slice_screen_command_with_stdin(vec!["paste-stdin".to_string()], secret)
-                        .await?;
+                let secret = service
+                    .browser_secret_input_for_target_url(&args.credential_id, &browser_url)?;
+                let mut command_args = vec!["secret-paste-stdin".to_string()];
+                if let Some(selector) = selector.clone() {
+                    command_args.push(selector);
+                }
+                let mut output = run_slice_screen_command_with_stdin(command_args, secret).await?;
                 if output.success && args.submit {
                     output =
                         run_slice_screen_command(vec!["key".to_string(), "Return".to_string()])
@@ -169,6 +179,87 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
+                let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserFindArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_find",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let output = run_slice_screen_command(vec![
+                    "browser-find".to_string(),
+                    args.query,
+                    args.kind.unwrap_or_else(|| "any".to_string()),
+                ])
+                .await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserFillArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_fill",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let selector = required_browser_selector(
+                    args.selector.as_deref(),
+                    args.field_id.as_deref(),
+                    "runtime_tool_slice_browser_fill",
+                )?;
+                let output =
+                    run_slice_screen_command(vec!["browser-fill".to_string(), selector, args.text])
+                        .await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserClickArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_click",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let selector = required_browser_selector(
+                    args.selector.as_deref(),
+                    args.field_id.as_deref(),
+                    "runtime_tool_slice_browser_click",
+                )?;
+                let output =
+                    run_slice_screen_command(vec!["browser-click".to_string(), selector]).await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserSubmitArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_submit",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let mut command_args = vec!["browser-submit".to_string()];
+                if let Some(selector) =
+                    browser_selector(args.selector.as_deref(), args.field_id.as_deref())
+                {
+                    command_args.push(selector);
+                }
+                let output = run_slice_screen_command(command_args).await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
+                let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
+                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
+                payload["text"] = serde_json::Value::String(output.stdout.clone());
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: output.success,
+                    payload,
+                });
             }
             _ => {
                 return Err(DaemonError::LocalTransport {
@@ -308,6 +399,139 @@ fn slice_tool_payload(
         }
     }
     serde_json::Value::Object(payload)
+}
+
+fn slice_browser_tool_result(
+    slice_id: &str,
+    agent_id: &str,
+    output: SliceScreenCommandOutput,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let mut payload = slice_tool_payload(slice_id, agent_id, &output);
+    if let Ok(browser) = slice_browser_json(&output) {
+        payload["browser"] = browser;
+    }
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: output.success,
+        payload,
+    }
+}
+
+fn slice_browser_json(output: &SliceScreenCommandOutput) -> Result<serde_json::Value, DaemonError> {
+    serde_json::from_str::<serde_json::Value>(&output.stdout).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "slice_browser_json",
+            message: format!("slice browser command did not return JSON: {error}"),
+        }
+    })
+}
+
+fn browser_status_url(status: &serde_json::Value) -> Result<String, DaemonError> {
+    status
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_paste_secret_to_slice",
+            message: "slice browser status did not include a current URL".to_string(),
+        })
+}
+
+fn ensure_browser_target_matches_expectations(
+    status: &serde_json::Value,
+    args: &crate::transport::runtime_tools::PasteSecretToSliceArgs,
+) -> Result<(), DaemonError> {
+    let current_url = browser_status_url(status)?;
+    if let Some(expected_url) = args.expected_url.as_deref().map(str::trim) {
+        if !expected_url.is_empty() && !current_url.starts_with(expected_url) {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message: format!(
+                    "slice browser URL `{current_url}` does not match expected URL prefix `{expected_url}`"
+                ),
+            });
+        }
+    }
+    if let Some(expected_host) = args.expected_host.as_deref().map(str::trim) {
+        if !expected_host.is_empty() {
+            let url =
+                url::Url::parse(&current_url).map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_paste_secret_to_slice",
+                    message: format!("slice browser URL is invalid: {error}"),
+                })?;
+            let host = url.host_str().unwrap_or("");
+            let host_with_port = match url.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            };
+            if expected_host != host && expected_host != host_with_port {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_paste_secret_to_slice",
+                    message: format!(
+                        "slice browser host `{host_with_port}` does not match expected host `{expected_host}`"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_browser_fill_target(
+    status: &serde_json::Value,
+    selector: Option<&str>,
+) -> Result<(), DaemonError> {
+    if let Some(selector) = selector.map(str::trim).filter(|value| !value.is_empty()) {
+        let found = status
+            .get("fields")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|fields| {
+                fields.iter().any(|field| {
+                    field
+                        .get("selector")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|field_selector| field_selector == selector)
+                })
+            });
+        if found {
+            return Ok(());
+        }
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_paste_secret_to_slice",
+            message: format!("slice browser field `{selector}` was not found or is not fillable"),
+        });
+    }
+
+    let focused = status.get("focusedElement");
+    let focused_kind = focused
+        .and_then(|value| value.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    if focused_kind == Some("field") {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "runtime_tool_paste_secret_to_slice",
+        message: "paste_secret_to_slice requires a focused fillable browser field or a selector/field_id returned by slice_browser_find".to_string(),
+    })
+}
+
+fn browser_selector(selector: Option<&str>, field_id: Option<&str>) -> Option<String> {
+    selector
+        .or(field_id)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn required_browser_selector(
+    selector: Option<&str>,
+    field_id: Option<&str>,
+    operation: &'static str,
+) -> Result<String, DaemonError> {
+    browser_selector(selector, field_id).ok_or_else(|| DaemonError::LocalTransport {
+        operation,
+        message: "selector or field_id is required".to_string(),
+    })
 }
 
 fn slice_mouse_command_args(
@@ -455,5 +679,40 @@ mod tests {
             "slice screen is unavailable; missing xvfb,novnc"
         );
         assert_eq!(payload.get("viewer"), None);
+    }
+
+    #[test]
+    fn browser_target_expectation_rejects_wrong_host() {
+        let status = serde_json::json!({
+            "url": "https://example.com/signup",
+            "focusedElement": {"kind": "field"},
+            "fields": []
+        });
+        let args = crate::transport::runtime_tools::PasteSecretToSliceArgs {
+            credential_id: "demo".to_string(),
+            submit: false,
+            expected_host: Some("accounts.google.com".to_string()),
+            expected_url: None,
+            selector: None,
+            field_id: None,
+        };
+
+        let error = ensure_browser_target_matches_expectations(&status, &args)
+            .expect_err("wrong expected_host should fail");
+
+        assert!(error.to_string().contains("does not match expected host"));
+    }
+
+    #[test]
+    fn browser_fill_target_requires_focused_field_or_selector() {
+        let status = serde_json::json!({
+            "url": "https://example.com/signup",
+            "focusedElement": {"kind": "button"},
+            "fields": [{"selector": "#password"}]
+        });
+
+        ensure_browser_fill_target(&status, Some("#password"))
+            .expect("known fillable selector should pass");
+        assert!(ensure_browser_fill_target(&status, None).is_err());
     }
 }

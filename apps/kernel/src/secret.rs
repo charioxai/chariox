@@ -279,6 +279,29 @@ impl RuntimeSecretService {
         self.resolve_secret(credential)
     }
 
+    pub fn browser_secret_input_for_target_url(
+        &self,
+        credential_id: &str,
+        target_url: &str,
+    ) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
+        if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for browser input"),
+            ));
+        }
+        let target = url::Url::parse(target_url).map_err(|error| {
+            secret_error(
+                "browser_secret_input",
+                format!("invalid browser target url: {error}"),
+            )
+        })?;
+        self.ensure_host_allowed(credential, &target)?;
+        self.resolve_secret(credential)
+    }
+
     pub fn resolve_connector_secret(
         &self,
         credential_id: &str,
@@ -950,6 +973,31 @@ mod tests {
         assert!(!error
             .to_string()
             .contains("ARROBA_TEST_SECRET_MISSING_TOKEN"));
+    }
+
+    #[test]
+    fn browser_secret_input_rejects_wrong_host_before_secret_read() {
+        let _guard = crate::env_lock::lock();
+        std::env::remove_var("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN");
+        let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "browser-demo".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN".to_string(),
+            },
+            allowed_hosts: vec!["accounts.google.com".to_string()],
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+        }]);
+
+        let error = service
+            .browser_secret_input_for_target_url("browser-demo", "https://example.com/signup")
+            .expect_err("wrong browser host should be rejected before env secret read");
+
+        assert!(error.to_string().contains("not allowed for host"));
+        assert!(!error
+            .to_string()
+            .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN"));
     }
 
     #[test]

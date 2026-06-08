@@ -59,6 +59,18 @@ pub const SLICE_KEYBOARD_TOOL: &str = "arroba.slice_keyboard";
 pub const SLICE_KEYBOARD_TOOL_ALIAS: &str = "slice_keyboard";
 pub const SLICE_OPEN_URL_TOOL: &str = "arroba.slice_open_url";
 pub const SLICE_OPEN_URL_TOOL_ALIAS: &str = "slice_open_url";
+pub const SLICE_BROWSER_STATUS_TOOL: &str = "arroba.slice_browser_status";
+pub const SLICE_BROWSER_STATUS_TOOL_ALIAS: &str = "slice_browser_status";
+pub const SLICE_BROWSER_FIND_TOOL: &str = "arroba.slice_browser_find";
+pub const SLICE_BROWSER_FIND_TOOL_ALIAS: &str = "slice_browser_find";
+pub const SLICE_BROWSER_FILL_TOOL: &str = "arroba.slice_browser_fill";
+pub const SLICE_BROWSER_FILL_TOOL_ALIAS: &str = "slice_browser_fill";
+pub const SLICE_BROWSER_CLICK_TOOL: &str = "arroba.slice_browser_click";
+pub const SLICE_BROWSER_CLICK_TOOL_ALIAS: &str = "slice_browser_click";
+pub const SLICE_BROWSER_SUBMIT_TOOL: &str = "arroba.slice_browser_submit";
+pub const SLICE_BROWSER_SUBMIT_TOOL_ALIAS: &str = "slice_browser_submit";
+pub const SLICE_BROWSER_TEXT_TOOL: &str = "arroba.slice_browser_text";
+pub const SLICE_BROWSER_TEXT_TOOL_ALIAS: &str = "slice_browser_text";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -306,6 +318,14 @@ pub struct PasteSecretToSliceArgs {
     pub credential_id: String,
     #[serde(default)]
     pub submit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +413,38 @@ pub struct SliceKeyboardArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceOpenUrlArgs {
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserFindArgs {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserFillArgs {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserClickArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserSubmitArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_id: Option<String>,
 }
 
 fn default_append_newline() -> bool {
@@ -721,13 +773,17 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into the focused Arroba slice field. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
+            description: "Paste a browser credential into an Arroba slice browser field after validating the current browser target. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
                 "properties": {
                     "credential_id": {"type": "string"},
-                    "submit": {"type": "boolean", "description": "Press Enter after pasting. Defaults to false."}
+                    "submit": {"type": "boolean", "description": "Press Enter after pasting. Defaults to false."},
+                    "expected_host": {"type": "string", "description": "Optional expected current browser host. The paste fails before secret resolution if the browser is on a different host."},
+                    "expected_url": {"type": "string", "description": "Optional expected current browser URL prefix. The paste fails before secret resolution if the browser URL does not start with this value."},
+                    "selector": {"type": "string", "description": "Optional CSS selector for the intended fillable field."},
+                    "field_id": {"type": "string", "description": "Optional field id returned by slice_browser_find; equivalent to selector."}
                 },
                 "additionalProperties": false
             }),

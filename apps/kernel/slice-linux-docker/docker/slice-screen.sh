@@ -260,6 +260,50 @@ paste_stdin() {
   printf '%s' "$input" | run_xdotool type --clearmodifiers --delay 5 --file -
 }
 
+secret_paste_stdin() {
+  require_screen_available
+  local selector="${1:-}"
+  if [[ -n "$selector" ]]; then
+    node "$ROOT/browser-cdp.mjs" secret-paste-stdin "$selector"
+    return
+  fi
+  node "$ROOT/browser-cdp.mjs" secret-paste-stdin
+}
+
+browser_status() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" status
+}
+
+browser_find() {
+  require_screen_available
+  local query="$1"
+  local kind="${2:-any}"
+  node "$ROOT/browser-cdp.mjs" find "$query" "$kind"
+}
+
+browser_fill() {
+  require_screen_available
+  local selector="$1"
+  shift
+  node "$ROOT/browser-cdp.mjs" fill "$selector" "$*"
+}
+
+browser_click() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" click-selector "$1"
+}
+
+browser_submit() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" submit "${1:-}"
+}
+
+browser_text() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" text
+}
+
 ocr() {
   require_screen_available
   local image="${1:-/tmp/arroba-slice-screenshot.png}"
@@ -354,12 +398,19 @@ case "${1:-status}" in
   clipboard-set|clipboard_set) shift; clipboard_set "$@" ;;
   clipboard-clear|clipboard_clear) clipboard_clear ;;
   paste-stdin|paste_stdin) paste_stdin ;;
+  secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
+  browser-status|browser_status) browser_status ;;
+  browser-find|browser_find) shift; browser_find "$@" ;;
+  browser-fill|browser_fill) shift; browser_fill "$@" ;;
+  browser-click|browser_click) shift; browser_click "$@" ;;
+  browser-submit|browser_submit) shift; browser_submit "$@" ;;
+  browser-text|browser_text) browser_text ;;
   ocr) shift; ocr "$@" ;;
   find-text|find_text) shift; find_text "$@" ;;
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|ocr|find-text|open-url
 EOF
     exit 2
     ;;

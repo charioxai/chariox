@@ -86,6 +86,27 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_FIND_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_FILL_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_CLICK_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_SUBMIT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL));
     }
 
     #[test]
@@ -158,6 +179,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("slice_open_url"),
             Some(SLICE_OPEN_URL_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__slice_browser_fill"),
+            Some(SLICE_BROWSER_FILL_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_status"),
+            Some(SLICE_BROWSER_STATUS_TOOL)
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
     }

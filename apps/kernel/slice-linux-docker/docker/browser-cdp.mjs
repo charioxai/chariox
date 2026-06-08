@@ -65,32 +65,196 @@ async function withSocket(callback) {
   }
 }
 
-async function typeIntoBrowser(text) {
+function evaluateExpression(source, args = {}) {
+  return `
+    (() => {
+      const __arrobaArgs = ${JSON.stringify(args)};
+      ${source}
+    })()
+  `;
+}
+
+async function evaluate(send, source, args = {}) {
+  const result = await send("Runtime.evaluate", {
+    expression: evaluateExpression(source, args),
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  return result.result?.value;
+}
+
+async function typeIntoBrowser(text, options = {}) {
   await withSocket(async (send) => {
-    await send("Runtime.evaluate", {
-      expression: `
-        (() => {
-          const text = ${JSON.stringify(text)};
-          const active = document.activeElement?.matches?.("input, textarea, [contenteditable=true]")
-            ? document.activeElement
-            : document.querySelector("input[type=password], input:not([type]), input[type=text], textarea, [contenteditable=true]");
+    const result = await evaluate(send, `
+          const text = __arrobaArgs.text;
+          const selector = __arrobaArgs.selector;
+          const allowFallback = __arrobaArgs.allowFallback;
+          const active = selector
+            ? document.querySelector(selector)
+            : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
+              ? document.activeElement
+              : allowFallback
+                ? document.querySelector("input[type=password], input:not([type]), input[type=text], textarea, select, [contenteditable=true]")
+                : null;
           if (!active) {
-            return false;
+            return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+          }
+          if (active.disabled || active.readOnly) {
+            return { ok: false, error: "target_not_editable" };
           }
           active.focus();
-          if ("value" in active) {
-            active.value += text;
+          if (active.tagName === "SELECT") {
+            active.value = text;
             active.dispatchEvent(new Event("input", { bubbles: true }));
             active.dispatchEvent(new Event("change", { bubbles: true }));
-            return true;
+            return { ok: true };
           }
-          active.textContent = (active.textContent || "") + text;
+          if ("value" in active) {
+            active.value = __arrobaArgs.append ? active.value + text : text;
+            active.dispatchEvent(new Event("input", { bubbles: true }));
+            active.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true };
+          }
+          active.textContent = __arrobaArgs.append ? (active.textContent || "") + text : text;
           active.dispatchEvent(new Event("input", { bubbles: true }));
-          return true;
-        })()
-      `,
-      awaitPromise: false,
+          return { ok: true };
+    `, {
+      text,
+      selector: options.selector ?? null,
+      allowFallback: Boolean(options.allowFallback),
+      append: options.append !== false,
     });
+    if (!result?.ok) {
+      throw new Error(result?.error ?? "browser_type_failed");
+    }
+  });
+}
+
+function browserDomScript() {
+  return `
+    const visible = (element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+    };
+    const cssString = (value) => CSS.escape(String(value));
+    const selectorFor = (element) => {
+      if (element.id) return "#" + cssString(element.id);
+      if (element.name) {
+        const named = element.tagName.toLowerCase() + "[name='" + cssString(element.name) + "']";
+        if (document.querySelectorAll(named).length === 1) return named;
+      }
+      const parts = [];
+      let current = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+        const tag = current.tagName.toLowerCase();
+        const siblings = Array.from(current.parentElement?.children ?? []).filter((item) => item.tagName === current.tagName);
+        const index = siblings.indexOf(current) + 1;
+        parts.unshift(siblings.length > 1 ? tag + ":nth-of-type(" + index + ")" : tag);
+        current = current.parentElement;
+      }
+      return parts.length ? "body > " + parts.join(" > ") : element.tagName.toLowerCase();
+    };
+    const labelFor = (element) => {
+      if (element.id) {
+        const label = document.querySelector("label[for='" + cssString(element.id) + "']");
+        if (label?.innerText?.trim()) return label.innerText.trim();
+      }
+      const wrapper = element.closest("label");
+      if (wrapper?.innerText?.trim()) return wrapper.innerText.trim();
+      return "";
+    };
+    const roleFor = (element) => element.getAttribute("role") || "";
+    const summarize = (element, kind) => ({
+      kind,
+      selector: selectorFor(element),
+      field_id: selectorFor(element),
+      tag: element.tagName.toLowerCase(),
+      type: element.getAttribute("type") || "",
+      name: element.getAttribute("name") || "",
+      id: element.id || "",
+      role: roleFor(element),
+      label: labelFor(element),
+      placeholder: element.getAttribute("placeholder") || "",
+      text: (element.innerText || element.value || element.getAttribute("aria-label") || "").trim().slice(0, 200),
+      disabled: Boolean(element.disabled),
+      readOnly: Boolean(element.readOnly),
+    });
+    const fields = Array.from(document.querySelectorAll("input, textarea, select, [contenteditable=true]")).filter(visible).map((element) => summarize(element, "field"));
+    const buttons = Array.from(document.querySelectorAll("button, input[type=button], input[type=submit], [role=button]")).filter(visible).map((element) => summarize(element, "button"));
+    const links = Array.from(document.querySelectorAll("a[href], [role=link]")).filter(visible).map((element) => summarize(element, "link"));
+  `;
+}
+
+async function browserStatus() {
+  return await withSocket(async (send) => evaluate(send, `
+    ${browserDomScript()}
+    const active = document.activeElement && document.activeElement !== document.body
+      ? summarize(document.activeElement, document.activeElement.matches("input, textarea, select, [contenteditable=true]") ? "field" : "element")
+      : null;
+    return {
+      url: location.href,
+      host: location.host,
+      title: document.title,
+      readyState: document.readyState,
+      focusedElement: active,
+      fields,
+      buttons,
+      links,
+    };
+  `));
+}
+
+async function browserFind(query, kind = "any") {
+  return await withSocket(async (send) => evaluate(send, `
+    ${browserDomScript()}
+    const query = (__arrobaArgs.query || "").toLowerCase();
+    const kind = __arrobaArgs.kind || "any";
+    const pool = [
+      ...(kind === "field" || kind === "any" ? fields : []),
+      ...(kind === "button" || kind === "any" ? buttons : []),
+      ...(kind === "link" || kind === "any" ? links : []),
+    ];
+    const matches = pool.filter((entry) => [
+      entry.selector,
+      entry.id,
+      entry.name,
+      entry.role,
+      entry.label,
+      entry.placeholder,
+      entry.text,
+      entry.type,
+    ].some((value) => String(value || "").toLowerCase().includes(query)));
+    return { query: __arrobaArgs.query, kind, matches };
+  `, { query, kind }));
+}
+
+async function clickSelector(selector) {
+  await withSocket(async (send) => {
+    const result = await evaluate(send, `
+      const element = document.querySelector(__arrobaArgs.selector);
+      if (!element) return { ok: false, error: "target_not_found" };
+      element.scrollIntoView({ block: "center", inline: "center" });
+      element.focus?.();
+      element.click();
+      return { ok: true };
+    `, { selector });
+    if (!result?.ok) throw new Error(result?.error ?? "browser_click_failed");
+  });
+}
+
+async function submitSelector(selector) {
+  await withSocket(async (send) => {
+    const result = await evaluate(send, `
+      const target = __arrobaArgs.selector ? document.querySelector(__arrobaArgs.selector) : document.activeElement;
+      if (!target) return { ok: false, error: "target_not_found" };
+      const form = target.closest?.("form");
+      if (!form) return { ok: false, error: "form_not_found" };
+      if (form.requestSubmit) form.requestSubmit();
+      else form.submit();
+      return { ok: true };
+    `, { selector: selector ?? null });
+    if (!result?.ok) throw new Error(result?.error ?? "browser_submit_failed");
   });
 }
 
@@ -104,9 +268,11 @@ if (command === "click") {
   });
 } else if (command === "type") {
   const text = args.join(" ");
-  await typeIntoBrowser(text);
+  await typeIntoBrowser(text, { allowFallback: true });
 } else if (command === "type-stdin") {
-  await typeIntoBrowser(await readStdin());
+  await typeIntoBrowser(await readStdin(), { allowFallback: true });
+} else if (command === "secret-paste-stdin") {
+  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, append: true, allowFallback: false });
 } else if (command === "key") {
   const key = args[0];
   await withSocket(async (send) => {
@@ -121,7 +287,28 @@ if (command === "click") {
     });
   });
   process.stdout.write(result.result.value ?? "");
+} else if (command === "status") {
+  process.stdout.write(JSON.stringify(await browserStatus()));
+} else if (command === "find") {
+  process.stdout.write(JSON.stringify(await browserFind(args[0] || "", args[1] || "any")));
+} else if (command === "fill") {
+  const selector = args[0];
+  const text = args.slice(1).join(" ");
+  await typeIntoBrowser(text, { selector, append: false, allowFallback: false });
+  process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "fill-stdin") {
+  const selector = args[0];
+  await typeIntoBrowser(await readStdin(), { selector, append: false, allowFallback: false });
+  process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "click-selector") {
+  const selector = args[0];
+  await clickSelector(selector);
+  process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "submit") {
+  const selector = args[0] || null;
+  await submitSelector(selector);
+  process.stdout.write(JSON.stringify({ ok: true, selector }));
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | key <key> | text");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector]");
   process.exit(2);
 }

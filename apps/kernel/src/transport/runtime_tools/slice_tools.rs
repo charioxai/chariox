@@ -96,6 +96,75 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_STATUS_TOOL.to_string(),
+            description: "Return DOM-level browser status for the Arroba slice browser, including URL, title, focused element, and visible fields/buttons/links.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_FIND_TOOL.to_string(),
+            description: "Find visible browser fields, buttons, or links by label, placeholder, name, text, role, or selector.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["field", "button", "link", "any"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_FILL_TOOL.to_string(),
+            description: "Fill a slice browser input, textarea, select, or contenteditable element by selector or field_id returned by slice_browser_find.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"},
+                    "text": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_CLICK_TOOL.to_string(),
+            description: "Click a slice browser element by selector or field_id returned by slice_browser_find.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_SUBMIT_TOOL.to_string(),
+            description: "Submit the nearest form for a slice browser element by selector/field_id, or the currently focused form when omitted.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_TEXT_TOOL.to_string(),
+            description: "Return the current slice browser document body text.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
     ];
     let aliases = canonical
         .iter()
@@ -115,6 +184,12 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_MOUSE_TOOL => SLICE_MOUSE_TOOL_ALIAS,
         SLICE_KEYBOARD_TOOL => SLICE_KEYBOARD_TOOL_ALIAS,
         SLICE_OPEN_URL_TOOL => SLICE_OPEN_URL_TOOL_ALIAS,
+        SLICE_BROWSER_STATUS_TOOL => SLICE_BROWSER_STATUS_TOOL_ALIAS,
+        SLICE_BROWSER_FIND_TOOL => SLICE_BROWSER_FIND_TOOL_ALIAS,
+        SLICE_BROWSER_FILL_TOOL => SLICE_BROWSER_FILL_TOOL_ALIAS,
+        SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
+        SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
+        SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
         _ => return None,
     };
     let mut spec = spec.clone();
@@ -164,6 +239,36 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_slice_open_url"
         | "mcp__arroba__slice_open_url"
         | "mcp__arroba__arroba_slice_open_url" => Some(SLICE_OPEN_URL_TOOL),
+        SLICE_BROWSER_STATUS_TOOL
+        | SLICE_BROWSER_STATUS_TOOL_ALIAS
+        | "arroba_slice_browser_status"
+        | "mcp__arroba__slice_browser_status"
+        | "mcp__arroba__arroba_slice_browser_status" => Some(SLICE_BROWSER_STATUS_TOOL),
+        SLICE_BROWSER_FIND_TOOL
+        | SLICE_BROWSER_FIND_TOOL_ALIAS
+        | "arroba_slice_browser_find"
+        | "mcp__arroba__slice_browser_find"
+        | "mcp__arroba__arroba_slice_browser_find" => Some(SLICE_BROWSER_FIND_TOOL),
+        SLICE_BROWSER_FILL_TOOL
+        | SLICE_BROWSER_FILL_TOOL_ALIAS
+        | "arroba_slice_browser_fill"
+        | "mcp__arroba__slice_browser_fill"
+        | "mcp__arroba__arroba_slice_browser_fill" => Some(SLICE_BROWSER_FILL_TOOL),
+        SLICE_BROWSER_CLICK_TOOL
+        | SLICE_BROWSER_CLICK_TOOL_ALIAS
+        | "arroba_slice_browser_click"
+        | "mcp__arroba__slice_browser_click"
+        | "mcp__arroba__arroba_slice_browser_click" => Some(SLICE_BROWSER_CLICK_TOOL),
+        SLICE_BROWSER_SUBMIT_TOOL
+        | SLICE_BROWSER_SUBMIT_TOOL_ALIAS
+        | "arroba_slice_browser_submit"
+        | "mcp__arroba__slice_browser_submit"
+        | "mcp__arroba__arroba_slice_browser_submit" => Some(SLICE_BROWSER_SUBMIT_TOOL),
+        SLICE_BROWSER_TEXT_TOOL
+        | SLICE_BROWSER_TEXT_TOOL_ALIAS
+        | "arroba_slice_browser_text"
+        | "mcp__arroba__slice_browser_text"
+        | "mcp__arroba__arroba_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
         _ => None,
     }
 }
