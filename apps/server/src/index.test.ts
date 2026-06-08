@@ -1649,6 +1649,138 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
   }
 })
 
+test("agent app final response effects overlay generated files for serve mode", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-overlay-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          scope: "session",
+          allowed_paths: ["/generated/**"],
+          protected_paths: ["/payments/**"],
+          allowed_actions: ["cart.search", "cart.add", "cart.checkout"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-shopping",
+        status: "Completed",
+        final_output: {
+          message: JSON.stringify({
+            kind: "response",
+            response: { mode: "serve", entry: "/generated/checkout.html" },
+            effects: {
+              overlay: [{
+                path: "/generated/checkout.html",
+                mime_type: "text/html; charset=utf-8",
+                content: "<!doctype html><main>custom banana checkout</main>",
+              }],
+            },
+          }),
+        },
+      },
+    }),
+  })
+
+  try {
+    const invoke = await app.inject({
+      method: "GET",
+      url: "/add/1%20kg%20bananas",
+      headers: { accept: "text/html" },
+    })
+    assert.equal(invoke.statusCode, 200)
+    assert.match(invoke.body, /run-shopping/)
+
+    const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html" })
+    assert.equal(checkout.statusCode, 200)
+    assert.match(checkout.headers["content-type"] as string, /text\/html/)
+    assert.equal(checkout.body, "<!doctype html><main>custom banana checkout</main>")
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app overlay effects cannot write protected paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-protected-overlay-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          scope: "session",
+          allowed_paths: ["/payments/**"],
+          protected_paths: ["/payments/**"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-shopping",
+        status: "Completed",
+        final_output: {
+          message: JSON.stringify({
+            kind: "response",
+            response: { mode: "serve", entry: "/payments/checkout.html" },
+            effects: {
+              overlay: [{
+                path: "/payments/checkout.html",
+                mime_type: "text/html; charset=utf-8",
+                content: "<!doctype html><main>protected checkout</main>",
+              }],
+            },
+          }),
+        },
+      },
+    }),
+  })
+
+  try {
+    const invoke = await app.inject({
+      method: "GET",
+      url: "/add/1%20kg%20bananas",
+      headers: { accept: "text/html" },
+    })
+    assert.equal(invoke.statusCode, 200)
+
+    const checkout = await app.inject({ method: "GET", url: "/payments/checkout.html" })
+    assert.equal(checkout.statusCode, 404)
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("human HTTP queued browser GET opens an invocation SSE subscription", async () => {
   const { app } = buildServer({
     ...baseConfig,

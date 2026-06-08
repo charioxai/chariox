@@ -2,6 +2,11 @@ import { readFile, stat } from "node:fs/promises"
 import { extname, normalize, resolve, sep } from "node:path"
 
 import {
+  rememberAgentAppInvocationRoute,
+  resolveAgentAppEffectAsset,
+  registerAgentAppWorkflowRunEffects,
+} from "./publication-agent-app-effects.js"
+import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
 import {
@@ -76,9 +81,11 @@ async function invokeAgentAppRoute(
     input: { prompt },
     mode: "async",
   }
+  rememberAgentAppInvocationRoute(publication, invocation.request_id, route)
   const result = deps.invokeWorkflow
     ? await deps.invokeWorkflow(invocation)
     : await invokeKernelWorkflow({ ...publication, mode: "async" }, invocation)
+  registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocation.request_id)
   return forwardHumanHttpResult(reply as never, publication, result, invocation.request_id)
 }
 
@@ -108,6 +115,11 @@ async function serveAgentAppAsset(
   const publicDir = assets.public_dir ?? "app"
   const index = assets.index ?? "index.html"
   const pathname = new URL(request.url, "http://agent-app.local").pathname
+  const effectAsset = resolveAgentAppEffectAsset(publication, pathname)
+  if (effectAsset) {
+    reply.type(effectAsset.mimeType)
+    return effectAsset.content
+  }
   const relativePath = pathname === "/" ? index : decodeURIComponent(pathname.replace(/^\/+/, ""))
   const assetRoot = resolve(packageRoot, publicDir)
   const assetPath = resolve(assetRoot, normalize(relativePath))

@@ -2,6 +2,9 @@ import { LocalIpcClient } from "@arroba/kernel-client/ipc"
 import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
+import {
+  registerAgentAppWorkflowRunEffects,
+} from "./publication-agent-app-effects.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import {
@@ -84,6 +87,7 @@ export function forwardHumanHttpResult(
   result: WorkflowInvocationResult,
   invocationRequestId?: string,
 ) {
+  registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocationRequestId)
   reply.code(200).type("text/html; charset=utf-8")
   return publicationViewerResultPage(publication, result, invocationRequestId)
 }
@@ -118,10 +122,11 @@ async function streamInvocationEvents(
     emitPartialOutputs(reply, workflowRun, state)
     emitTraceOutputs(reply, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
+      registerAgentAppWorkflowRunEffects(publication, workflowRun, requestId)
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
-    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client, state)
+    await streamWorkflowRunEventsWithClient(reply, publication, workflowRun.id, client, state, requestId)
   } catch (error) {
     writeSse(reply, "error", { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -161,6 +166,7 @@ async function streamWorkflowRunEventsWithClient(
   workflowRunId: string,
   client: LocalIpcClient,
   state: HumanHttpStreamState,
+  invocationRequestId?: string | null,
 ) {
   const timeoutMs = publicationWaitTimeoutMs(publication)
   const pollMs = publication.poll_ms ?? 500
@@ -181,6 +187,7 @@ async function streamWorkflowRunEventsWithClient(
       emitTraceOutputs(reply, publication, workflowRun, state)
     }
     if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
+      registerAgentAppWorkflowRunEffects(publication, workflowRun, invocationRequestId)
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
