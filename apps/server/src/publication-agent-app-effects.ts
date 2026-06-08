@@ -14,9 +14,20 @@ type AgentAppStoredAsset = {
 }
 
 type AgentAppEffectStore = {
-  readonly overlays: Map<string, AgentAppStoredAsset>
+  readonly invocationOverlays: Map<string, Map<string, AgentAppStoredAsset>>
+  readonly sessionOverlays: Map<string, Map<string, AgentAppStoredAsset>>
   readonly persistentPatches: Map<string, AgentAppStoredAsset>
-  readonly invocationRoutes: Map<string, AgentAppRouteConfig>
+  readonly invocationRoutes: Map<string, AgentAppInvocationContext>
+}
+
+type AgentAppInvocationContext = {
+  readonly route: AgentAppRouteConfig
+  readonly sessionKey?: string | null
+}
+
+type AgentAppResolveContext = {
+  readonly sessionKey?: string | null
+  readonly invocationRequestId?: string | null
 }
 
 const effectStores = new Map<string, AgentAppEffectStore>()
@@ -25,9 +36,13 @@ export function rememberAgentAppInvocationRoute(
   publication: WorkflowPublicationConfig,
   requestId: string,
   route: AgentAppRouteConfig,
+  context: { sessionKey?: string | null } = {},
 ): void {
   if (publication.agent_app?.enabled !== true) return
-  storeForPublication(publication).invocationRoutes.set(requestId, route)
+  storeForPublication(publication).invocationRoutes.set(requestId, {
+    route,
+    sessionKey: context.sessionKey ?? null,
+  })
 }
 
 export function registerAgentAppWorkflowRunEffects(
@@ -37,13 +52,19 @@ export function registerAgentAppWorkflowRunEffects(
 ): void {
   if (publication.agent_app?.enabled !== true || !workflowRun?.final_output) return
   const store = storeForPublication(publication)
-  const route = requestId ? store.invocationRoutes.get(requestId) : undefined
+  const context = requestId ? store.invocationRoutes.get(requestId) : undefined
+  const route = context?.route
   const effects = parseResponseEffects(normalizeFinalOutput(workflowRun.final_output).text)
   if (!effects) return
   for (const asset of effects.overlay) {
     const stored = normalizeStoredAsset(asset)
     if (!stored || !publicationAllowsOverlay(publication, route, stored.path)) continue
-    store.overlays.set(stored.path, stored)
+    const scope = route?.manipulation?.scope ?? "session"
+    if (scope === "invocation" && requestId) {
+      mapForKey(store.invocationOverlays, requestId).set(stored.path, stored)
+    } else {
+      mapForKey(store.sessionOverlays, context?.sessionKey ?? "anonymous").set(stored.path, stored)
+    }
   }
   if (publication.agent_app.persistent_patch?.enabled === true && route?.manipulation?.level === "persistent_patch") {
     for (const asset of effects.persistentPatch) {
@@ -66,12 +87,19 @@ function publicationAllowsOverlay(
 export function resolveAgentAppEffectAsset(
   publication: WorkflowPublicationConfig,
   requestPath: string,
+  context: AgentAppResolveContext = {},
 ): AgentAppStoredAsset | null {
   if (publication.agent_app?.enabled !== true) return null
   const normalizedPath = normalizeAppPath(requestPath)
   if (!normalizedPath) return null
   const store = storeForPublication(publication)
-  return store.overlays.get(normalizedPath) ?? store.persistentPatches.get(normalizedPath) ?? null
+  const invocationOverlay = context.invocationRequestId
+    ? store.invocationOverlays.get(context.invocationRequestId)?.get(normalizedPath)
+    : null
+  const sessionOverlay = context.sessionKey
+    ? store.sessionOverlays.get(context.sessionKey)?.get(normalizedPath)
+    : null
+  return invocationOverlay ?? sessionOverlay ?? store.persistentPatches.get(normalizedPath) ?? null
 }
 
 type ResponseEffects = {
@@ -139,10 +167,19 @@ function storeForPublication(publication: WorkflowPublicationConfig): AgentAppEf
   const existing = effectStores.get(key)
   if (existing) return existing
   const created: AgentAppEffectStore = {
-    overlays: new Map(),
+    invocationOverlays: new Map(),
+    sessionOverlays: new Map(),
     persistentPatches: new Map(),
     invocationRoutes: new Map(),
   }
   effectStores.set(key, created)
+  return created
+}
+
+function mapForKey<K, V>(store: Map<string, Map<K, V>>, key: string): Map<K, V> {
+  const existing = store.get(key)
+  if (existing) return existing
+  const created = new Map<K, V>()
+  store.set(key, created)
   return created
 }

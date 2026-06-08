@@ -46,7 +46,7 @@ export function publicationViewerResultPage(
       : workflowRunId && !terminal
         ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
       : null
-  return publicationViewerPage(publication, { result, eventsUrl })
+  return publicationViewerPage(publication, { result, eventsUrl, invocationRequestId: invocationRequestId ?? null })
 }
 
 export function publicationViewerPage(
@@ -54,6 +54,7 @@ export function publicationViewerPage(
   options: {
     result?: WorkflowInvocationResult
     eventsUrl?: string | null
+    invocationRequestId?: string | null
   } = {},
 ) {
   const transport = viewerTransport(publication) ?? "human_http"
@@ -63,6 +64,7 @@ export function publicationViewerPage(
     title: "Workflow Run",
     showForm: !hasInitialRun,
     initialResult: options.result ?? null,
+    invocationRequestId: options.invocationRequestId ?? null,
     initialTraces: options.result?.workflow_run
       ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
       : [],
@@ -340,7 +342,7 @@ function renderFinalOutput(message) {
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
     if (renderable.html !== null) frame.srcdoc = renderable.html;
-    if (renderable.src !== null) frame.src = publicationUrl(renderable.src);
+    if (renderable.src !== null) frame.src = publicationAppAssetUrl(renderable.src);
     htmlOutputEl.append(frame);
     return;
   }
@@ -413,6 +415,16 @@ function publicationUrl(path) {
   if (match) return match[1] + path;
   const prefix = publicationIngressPrefix();
   return prefix ? prefix + path : path;
+}
+
+function publicationAppAssetUrl(path) {
+  const base = publicationUrl(path);
+  if (!viewerConfig.invocationRequestId || !base || !base.startsWith('/')) return base;
+  const [pathname, query = ''] = base.split('?');
+  const params = new URLSearchParams(query);
+  params.set('arroba_invocation', viewerConfig.invocationRequestId);
+  const serialized = params.toString();
+  return serialized ? pathname + '?' + serialized : pathname;
 }
 
 function publicationWebSocketUrl(path) {

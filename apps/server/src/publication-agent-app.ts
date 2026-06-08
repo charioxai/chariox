@@ -1,4 +1,5 @@
 import { readFile, stat } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
 
 import {
@@ -8,6 +9,7 @@ import {
 } from "./publication-agent-app-effects.js"
 import {
   agentAppCallerKey,
+  agentAppCallerSession,
   selectAgentAppReplica,
 } from "./publication-agent-app-replicas.js"
 import {
@@ -83,7 +85,9 @@ async function invokeAgentAppRoute(
   deps: GatewayDeps,
 ) {
   const prompt = promptFromRoute(request.url, route)
-  const selectedPublication = selectAgentAppReplica(publication, agentAppCallerKey(request.headers))
+  const callerSession = agentAppCallerSession(request.headers, randomUUID)
+  if (callerSession.setCookie) reply.header("set-cookie", callerSession.setCookie)
+  const selectedPublication = selectAgentAppReplica(publication, callerSession.callerKey)
   const invocation: NormalizedInvocation = {
     publication_id: selectedPublication.publication_id,
     request_id: `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -99,7 +103,7 @@ async function invokeAgentAppRoute(
     input: { prompt },
     mode: "async",
   }
-  rememberAgentAppInvocationRoute(publication, invocation.request_id, route)
+  rememberAgentAppInvocationRoute(publication, invocation.request_id, route, { sessionKey: callerSession.callerKey })
   const result = deps.invokeWorkflow
     ? await deps.invokeWorkflow(invocation)
     : await invokeKernelWorkflow({ ...selectedPublication, mode: "async" }, invocation)
@@ -210,8 +214,12 @@ async function serveAgentAppAsset(
   const assets = publication.agent_app?.assets ?? {}
   const publicDir = assets.public_dir ?? "app"
   const index = assets.index ?? "index.html"
-  const pathname = new URL(request.url, "http://agent-app.local").pathname
-  const effectAsset = resolveAgentAppEffectAsset(publication, pathname)
+  const parsedUrl = new URL(request.url, "http://agent-app.local")
+  const pathname = parsedUrl.pathname
+  const effectAsset = resolveAgentAppEffectAsset(publication, pathname, {
+    sessionKey: agentAppCallerKey(request.headers),
+    invocationRequestId: parsedUrl.searchParams.get("arroba_invocation"),
+  })
   if (effectAsset) {
     reply.type(effectAsset.mimeType)
     return effectAsset.content

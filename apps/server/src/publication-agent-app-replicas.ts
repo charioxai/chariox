@@ -8,10 +8,35 @@ type ReplicaPoolState = {
 }
 
 const replicaPools = new Map<string, ReplicaPoolState>()
+const AGENT_APP_SESSION_COOKIE = "arroba_agent_app_session"
+
+export type AgentAppCallerSession = {
+  readonly callerKey: string
+  readonly setCookie?: string
+}
+
+export function agentAppCallerSession(
+  headers: Record<string, string | string[] | undefined>,
+  createSessionId: () => string,
+): AgentAppCallerSession {
+  const explicit = firstHeader(headers["x-arroba-agent-app-caller"])
+  if (explicit) return { callerKey: explicit }
+
+  const cookie = agentAppSessionCookie(headers)
+  if (cookie) return { callerKey: cookie }
+
+  const sessionId = createSessionId()
+  return {
+    callerKey: sessionId,
+    setCookie: `${AGENT_APP_SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax`,
+  }
+}
 
 export function agentAppCallerKey(headers: Record<string, string | string[] | undefined>): string {
   const explicit = firstHeader(headers["x-arroba-agent-app-caller"])
   if (explicit) return explicit
+  const cookie = agentAppSessionCookie(headers)
+  if (cookie) return cookie
   const forwarded = firstHeader(headers["x-forwarded-for"])
   if (forwarded) return forwarded.split(",")[0]?.trim() || "anonymous"
   return "anonymous"
@@ -58,4 +83,21 @@ function replicaPool(publicationId: string): ReplicaPoolState {
 function firstHeader(value: string | string[] | undefined): string | null {
   const raw = Array.isArray(value) ? value[0] : value
   return typeof raw === "string" && raw.trim() ? raw.trim() : null
+}
+
+function agentAppSessionCookie(headers: Record<string, string | string[] | undefined>): string | null {
+  const cookieHeader = firstHeader(headers.cookie)
+  if (!cookieHeader) return null
+  for (const part of cookieHeader.split(";")) {
+    const [rawName, ...rawValue] = part.trim().split("=")
+    if (rawName !== AGENT_APP_SESSION_COOKIE) continue
+    const value = rawValue.join("=")
+    if (!value) return null
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+  return null
 }

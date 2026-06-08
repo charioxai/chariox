@@ -33,6 +33,12 @@ const baseConfig: WorkflowPublicationConfig = {
   mode: "sync",
 }
 
+function firstSetCookieValue(value: string | string[] | number | undefined): string {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== "string") assert.fail("expected set-cookie header")
+  return raw.split(";")[0] ?? raw
+}
+
 test("publication gateway registers local runtime backend with Cloud deployment", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const registered = await registerCloudPublicationDeploymentBackend({
@@ -1657,7 +1663,7 @@ test("human HTTP status page renders split trace viewer and sandboxed HTML outpu
     assert.match(response.body, /events\.addEventListener\('trace'/)
     assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals'\)/)
     assert.match(response.body, /frame\.srcdoc = renderable\.html/)
-    assert.match(response.body, /frame\.src = publicationUrl\(renderable\.src\)/)
+    assert.match(response.body, /frame\.src = publicationAppAssetUrl\(renderable\.src\)/)
     assert.match(response.body, /parsed\.kind === 'response'/)
   } finally {
     await app.close()
@@ -1879,12 +1885,90 @@ test("agent app final response effects overlay generated files for serve mode", 
     assert.match(invoke.body, /initialTraces/)
     assert.match(invoke.body, /Checkout ready with three products/)
     assert.match(invoke.body, /cart.checkout ok/)
-    assert.match(invoke.body, /frame\.src = publicationUrl\(renderable\.src\)/)
+    assert.match(invoke.body, /frame\.src = publicationAppAssetUrl\(renderable\.src\)/)
+    const cookie = firstSetCookieValue(invoke.headers["set-cookie"])
+    assert.match(cookie, /arroba_agent_app_session=/)
 
-    const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html" })
+    const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html", headers: { cookie } })
     assert.equal(checkout.statusCode, 200)
     assert.match(checkout.headers["content-type"] as string, /text\/html/)
     assert.equal(checkout.body, "<!doctype html><main>custom banana checkout</main>")
+
+    const unrelatedSession = await app.inject({ method: "GET", url: "/generated/checkout.html" })
+    assert.equal(unrelatedSession.statusCode, 404)
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app session overlays are isolated by browser session", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-session-overlay-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          scope: "session",
+          allowed_paths: ["/generated/**"],
+        },
+      }],
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      const prompt = (invocation.input as { prompt?: string }).prompt ?? "unknown"
+      return {
+        accepted: true,
+        workflow_run: {
+          id: `run-${prompt}`,
+          status: "Completed",
+          final_output: {
+            message: JSON.stringify({
+              kind: "response",
+              response: { mode: "serve", entry: "/generated/checkout.html" },
+              effects: {
+                overlay: [{
+                  path: "/generated/checkout.html",
+                  mime_type: "text/html; charset=utf-8",
+                  content: `<!doctype html><main>${prompt} checkout</main>`,
+                }],
+              },
+            }),
+          },
+        },
+      }
+    },
+  })
+
+  try {
+    const firstInvoke = await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html" } })
+    assert.equal(firstInvoke.statusCode, 200)
+    const firstCookie = firstSetCookieValue(firstInvoke.headers["set-cookie"])
+
+    const secondInvoke = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html" } })
+    assert.equal(secondInvoke.statusCode, 200)
+    const secondCookie = firstSetCookieValue(secondInvoke.headers["set-cookie"])
+    assert.notEqual(firstCookie, secondCookie)
+
+    const firstCheckout = await app.inject({ method: "GET", url: "/generated/checkout.html", headers: { cookie: firstCookie } })
+    assert.equal(firstCheckout.statusCode, 200)
+    assert.equal(firstCheckout.body, "<!doctype html><main>bananas checkout</main>")
+
+    const secondCheckout = await app.inject({ method: "GET", url: "/generated/checkout.html", headers: { cookie: secondCookie } })
+    assert.equal(secondCheckout.statusCode, 200)
+    assert.equal(secondCheckout.body, "<!doctype html><main>chips checkout</main>")
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })
