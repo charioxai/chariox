@@ -10,7 +10,11 @@ import {
 import {
   agentAppCallerKey,
   agentAppCallerSession,
-  selectAgentAppReplica,
+  acquireAgentAppReplica,
+  enqueueAgentAppReplicaDispatch,
+  releaseAgentAppReplicaInvocation,
+  trackAgentAppReplicaInvocation,
+  type AgentAppReplicaLease,
 } from "./publication-agent-app-replicas.js"
 import {
   invokeKernelWorkflow,
@@ -26,8 +30,10 @@ import type {
   AgentAppRouteConfig,
   GatewayDeps,
   NormalizedInvocation,
+  WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type AgentAppFastify = {
   get: (path: string, handler: (request: AgentAppRequest, reply: AgentAppReply) => unknown) => unknown
@@ -87,34 +93,91 @@ async function invokeAgentAppRoute(
   const prompt = promptFromRoute(request.url, route)
   const callerSession = agentAppCallerSession(request.headers, randomUUID)
   if (callerSession.setCookie) reply.header("set-cookie", callerSession.setCookie)
-  const selectedPublication = selectAgentAppReplica(publication, callerSession.callerKey)
   const requestId = `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  rememberAgentAppInvocationRoute(publication, requestId, route, {
+    sessionKey: callerSession.callerKey,
+  })
+  const lease = acquireAgentAppReplica(publication, callerSession.callerKey)
+  if (!lease) {
+    const queued = enqueueAgentAppReplicaDispatch(publication, callerSession.callerKey, async (queuedLease) => {
+      await invokeSelectedAgentAppRoute({
+        route,
+        prompt,
+        publication,
+        lease: queuedLease,
+        requestId,
+        callerKey: callerSession.callerKey,
+        deps,
+      })
+    })
+    if (!queued) {
+      reply.code(429)
+      return { error: "agent app replica pool queue is full" }
+    }
+    return forwardHumanHttpResult(reply as never, publication, {
+      accepted: true,
+      queued: true,
+      response: { agent_app_pool_queued: true, invocation_id: requestId },
+    }, requestId)
+  }
+
+  const { selectedPublication, result } = await invokeSelectedAgentAppRoute({
+    route,
+    prompt,
+    publication,
+    lease,
+    requestId,
+    callerKey: callerSession.callerKey,
+    deps,
+  })
+  return forwardHumanHttpResult(reply as never, selectedPublication, result, requestId)
+}
+
+async function invokeSelectedAgentAppRoute(options: {
+  route: AgentAppRouteConfig
+  prompt: string
+  publication: WorkflowPublicationConfig
+  lease: AgentAppReplicaLease
+  requestId: string
+  callerKey: string
+  deps: GatewayDeps
+}): Promise<{ selectedPublication: WorkflowPublicationConfig; result: WorkflowInvocationResult }> {
+  const selectedPublication = options.lease.publication
   const invocation: NormalizedInvocation = {
     publication_id: selectedPublication.publication_id,
-    request_id: requestId,
+    request_id: options.requestId,
     caller: {
       type: "anonymous",
       proof: {
         transport: "agent_app_human_http",
-        route: route.path,
-        agent_app_session: callerSession.callerKey,
-        agent_app_request_id: requestId,
+        route: options.route.path,
+        agent_app_session: options.callerKey,
+        agent_app_request_id: options.requestId,
         replica_session_id: selectedPublication.session_id,
-        agent_app_actions: routeAgentAppActions(publication, route),
+        agent_app_actions: routeAgentAppActions(options.publication, options.route),
       },
     },
-    input: { prompt },
+    input: { prompt: options.prompt },
     mode: "async",
   }
-  rememberAgentAppInvocationRoute(publication, invocation.request_id, route, {
-    sessionKey: callerSession.callerKey,
+  rememberAgentAppInvocationRoute(options.publication, options.requestId, options.route, {
+    sessionKey: options.callerKey,
     runtimeSessionId: selectedPublication.session_id,
   })
-  const result = deps.invokeWorkflow
-    ? await deps.invokeWorkflow(invocation)
-    : await invokeKernelWorkflow({ ...selectedPublication, mode: "async" }, invocation)
-  registerAgentAppWorkflowRunEffects(selectedPublication, result.workflow_run, invocation.request_id)
-  return forwardHumanHttpResult(reply as never, selectedPublication, result, invocation.request_id)
+  trackAgentAppReplicaInvocation(options.publication, options.requestId, options.lease)
+  try {
+    const result = options.deps.invokeWorkflow
+      ? await options.deps.invokeWorkflow(invocation)
+      : await invokeKernelWorkflow({ ...selectedPublication, mode: "async" }, invocation)
+    registerAgentAppWorkflowRunEffects(selectedPublication, result.workflow_run, invocation.request_id)
+    if (result.workflow_run && isTerminalWorkflowRunStatus(result.workflow_run.status)) {
+      releaseAgentAppReplicaInvocation(options.publication, options.requestId)
+    }
+    return { selectedPublication, result }
+  } catch (error) {
+    releaseAgentAppReplicaInvocation(options.publication, options.requestId)
+    throw error
+  }
 }
 
 async function invokeAgentAppAction(

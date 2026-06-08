@@ -20,6 +20,7 @@ import {
   publicationForAgentAppInvocation,
   rememberAgentAppInvocationRoute,
 } from "./publication-agent-app-effects.js"
+import { releaseAgentAppReplicaInvocation } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import {
   collectPublicationTraceEvents,
@@ -41,6 +42,19 @@ function firstSetCookieValue(value: string | string[] | number | undefined): str
   const raw = Array.isArray(value) ? value[0] : value
   if (typeof raw !== "string") assert.fail("expected set-cookie header")
   return raw.split(";")[0] ?? raw
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 1_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.fail(message)
 }
 
 test("publication gateway registers local runtime backend with Cloud deployment", async () => {
@@ -2016,6 +2030,67 @@ test("agent app replica selection preserves caller affinity across hidden sessio
     await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
     await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
     assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2", "replica-session-1"])
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app replica scheduler queues different callers until a replica is idle", async () => {
+  const invocations: Array<{ caller: unknown; requestId: string; replica: unknown }> = []
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-queue-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-replica-queue",
+    transport: "human_http",
+    package_root: root,
+    replica_session_ids: ["replica-session-1", "replica-session-2"],
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      replicas: { count: 2, per_caller_ordering: true, max_queue_depth: 2 },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+      }],
+    },
+  }
+  const { app } = buildServer(publication, {
+    invokeWorkflow: async (invocation) => {
+      const proof = invocation.caller.proof as Record<string, unknown>
+      invocations.push({
+        caller: proof.agent_app_session,
+        requestId: invocation.request_id,
+        replica: proof.replica_session_id,
+      })
+      return {
+        accepted: true,
+        workflow_run: { id: `run-${invocations.length}`, status: "Running" },
+      }
+    },
+  })
+
+  try {
+    await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
+    const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-c" } })
+
+    assert.equal(queued.statusCode, 200)
+    assert.match(queued.body, /agent_app_pool_queued/)
+    assert.deepEqual(invocations.map((invocation) => invocation.replica), ["replica-session-1", "replica-session-2"])
+
+    releaseAgentAppReplicaInvocation(publication, invocations[0]?.requestId)
+    await waitForCondition(
+      () => invocations.length === 3,
+      "queued caller should dispatch after a replica is released",
+    )
+    assert.equal(invocations[2]?.caller, "caller-c")
+    assert.equal(invocations[2]?.replica, "replica-session-1")
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })

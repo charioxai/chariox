@@ -6,7 +6,8 @@ import {
   publicationForAgentAppInvocation,
   registerAgentAppWorkflowRunEffects,
 } from "./publication-agent-app-effects.js"
-import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { releaseAgentAppReplicaInvocation } from "./publication-agent-app-replicas.js"
+import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import {
   collectPublicationTraceEvents,
@@ -102,7 +103,6 @@ async function streamInvocationEvents(
   publication: WorkflowPublicationConfig,
   requestId: string,
 ) {
-  const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
   reply.hijack()
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -112,19 +112,21 @@ async function streamInvocationEvents(
   const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     writeSse(reply, "queued", { invocation_id: requestId })
-    const workflowRun = await waitForWorkflowRunByInvocationRequestId(client, runtimePublication, requestId, {
+    const workflowRun = await waitForAgentAppWorkflowRunByInvocationRequestId(client, publication, requestId, {
       shouldContinue: () => !reply.raw.destroyed,
     })
     if (!workflowRun) {
       writeSse(reply, "timeout", { invocation_id: requestId })
       return
     }
+    const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
     writeSse(reply, "status", { workflow_run: workflowRun })
     const state: HumanHttpStreamState = { partialIds: new Set(), traces: createPublicationTraceStreamState() }
     emitPartialOutputs(reply, workflowRun, state)
     emitTraceOutputs(reply, publication, workflowRun, state)
     if (isTerminalWorkflowRunStatus(workflowRun.status)) {
       registerAgentAppWorkflowRunEffects(runtimePublication, workflowRun, requestId)
+      releaseAgentAppReplicaInvocation(publication, requestId)
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
@@ -190,6 +192,7 @@ async function streamWorkflowRunEventsWithClient(
     }
     if (workflowRun && isTerminalWorkflowRunStatus(workflowRun.status)) {
       registerAgentAppWorkflowRunEffects(publication, workflowRun, invocationRequestId)
+      releaseAgentAppReplicaInvocation(publication, invocationRequestId)
       writeSse(reply, "final", { workflow_run: workflowRun })
       return
     }
@@ -234,4 +237,25 @@ function writeSse(reply: HumanHttpReply, event: string, payload: unknown) {
 
 async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForAgentAppWorkflowRunByInvocationRequestId(
+  client: LocalIpcClient,
+  publication: WorkflowPublicationConfig,
+  requestId: string,
+  options: { timeoutMs?: number; pollMs?: number; shouldContinue?: () => boolean } = {},
+): Promise<WorkflowRun | null> {
+  const timeoutMs = options.timeoutMs ?? publicationWaitTimeoutMs(publication)
+  const pollMs = options.pollMs ?? publication.poll_ms ?? 500
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline && (options.shouldContinue?.() ?? true)) {
+    const workflowRun = await findWorkflowRunByInvocationRequestId(
+      client,
+      publicationForAgentAppInvocation(publication, requestId),
+      requestId,
+    )
+    if (workflowRun) return workflowRun
+    await sleep(pollMs)
+  }
+  return null
 }
