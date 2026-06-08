@@ -234,9 +234,8 @@ impl KernelRuntimeState {
         name: Option<&str>,
         source_path: Option<&Path>,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
-        let permission_level =
-            crate::session::effective_agent_permission_level(session, Some(agent));
-        if permission_level != crate::provider::AgentPermissionLevel::Required {
+        let authority = crate::session::effective_agent_user_authority(session, Some(agent));
+        if !authority.requires_approval() {
             return Ok(None);
         }
         let title = "Arroba extension registration approval".to_string();

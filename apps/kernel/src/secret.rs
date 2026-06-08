@@ -731,7 +731,16 @@ fn vault_store_for_backend(
 ) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
     match backend {
         CredentialVaultBackend::OsKeychain => Ok(Arc::new(PlatformKeychainCredentialVaultStore)),
-        CredentialVaultBackend::ProcessMemory => Ok(Arc::new(ProcessMemoryCredentialVaultStore)),
+        CredentialVaultBackend::ProcessMemory => {
+            if process_memory_vault_backend_allowed() {
+                Ok(Arc::new(ProcessMemoryCredentialVaultStore))
+            } else {
+                Err(secret_error(
+                    "credential_vault",
+                    "credential_vault.backend=process_memory is volatile and is only allowed inside Arroba slices or with ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1".to_string(),
+                ))
+            }
+        }
         CredentialVaultBackend::LinuxKeyutils => {
             #[cfg(target_os = "linux")]
             {
@@ -747,6 +756,13 @@ fn vault_store_for_backend(
             }
         }
     }
+}
+
+fn process_memory_vault_backend_allowed() -> bool {
+    std::env::var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || std::env::var_os("ARROBA_SLICE_MACHINE_ID").is_some()
 }
 
 fn process_memory_vault() -> &'static std::sync::Mutex<BTreeMap<(String, String), String>> {
@@ -1165,6 +1181,8 @@ mod tests {
 
     #[test]
     fn process_memory_backend_round_trips_across_services() {
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
         let config = UserCredentialVaultConfig {
             backend: CredentialVaultBackend::ProcessMemory,
             service: format!(
@@ -1200,5 +1218,24 @@ mod tests {
                 .expect("process memory secret should resolve"),
             "super-secret"
         );
+        std::env::remove_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+    }
+
+    #[test]
+    fn process_memory_backend_requires_explicit_volatile_context() {
+        let _guard = crate::env_lock::lock();
+        std::env::remove_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        let config = UserCredentialVaultConfig {
+            backend: CredentialVaultBackend::ProcessMemory,
+            ..UserCredentialVaultConfig::default()
+        };
+
+        let error = RuntimeSecretService::with_vault_config(Vec::new(), &config)
+            .expect_err("home kernels should not use volatile process memory by accident");
+
+        assert!(error
+            .to_string()
+            .contains("only allowed inside Arroba slices"));
     }
 }

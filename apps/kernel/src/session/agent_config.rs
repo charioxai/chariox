@@ -12,6 +12,22 @@ pub struct EffectiveAgentExecutionConfig {
     pub permission_level: AgentPermissionLevel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveAgentUserAuthority {
+    Full,
+    ApprovalRequired,
+}
+
+impl EffectiveAgentUserAuthority {
+    pub fn is_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    pub fn requires_approval(self) -> bool {
+        matches!(self, Self::ApprovalRequired)
+    }
+}
+
 pub fn effective_agent_execution_config(
     session: &RuntimeSession,
     agent: Option<&AgentInstance>,
@@ -54,6 +70,16 @@ pub fn effective_agent_permission_level(
         })
         .or(session.agent_defaults().permission_level)
         .unwrap_or_default()
+}
+
+pub fn effective_agent_user_authority(
+    session: &RuntimeSession,
+    agent: Option<&AgentInstance>,
+) -> EffectiveAgentUserAuthority {
+    match effective_agent_permission_level(session, agent) {
+        AgentPermissionLevel::Yolo => EffectiveAgentUserAuthority::Full,
+        AgentPermissionLevel::Required => EffectiveAgentUserAuthority::ApprovalRequired,
+    }
 }
 
 #[cfg(test)]
@@ -117,5 +143,46 @@ mod tests {
 
         assert_eq!(config.mode, AgentExecutionMode::Build);
         assert_eq!(config.permission_level, AgentPermissionLevel::Yolo);
+    }
+
+    #[test]
+    fn effective_user_authority_tracks_permission_level() {
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(
+                CreateSessionRequest::new("workspace", "worktree").with_agent_defaults(
+                    SessionAgentDefaults::new("dev-stub")
+                        .with_permission_level(AgentPermissionLevel::Required),
+                ),
+            )
+            .expect("session should be created");
+
+        assert_eq!(
+            effective_agent_user_authority(&session, None),
+            EffectiveAgentUserAuthority::ApprovalRequired
+        );
+
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "ref-1",
+            session.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
+
+        assert_eq!(
+            effective_agent_user_authority(&session, Some(&agent)),
+            EffectiveAgentUserAuthority::Full
+        );
     }
 }

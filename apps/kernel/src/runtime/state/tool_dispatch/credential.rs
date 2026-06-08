@@ -498,7 +498,7 @@ impl KernelRuntimeState {
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        let Some(_agent_id) = provider_run.agent_instance_id() else {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
             return Err(DaemonError::LocalTransport {
                 operation: "agent_vault_management_policy",
                 message: "credential creation requires an agent-scoped provider run".to_string(),
@@ -506,15 +506,29 @@ impl KernelRuntimeState {
         };
         let config = self.owned.config_projection.snapshot().user_config;
         match config.credential_vault.agent_management {
-            crate::config::CredentialVaultAgentManagementPolicy::Allow => Ok(()),
+            crate::config::CredentialVaultAgentManagementPolicy::Allow => {}
             crate::config::CredentialVaultAgentManagementPolicy::Deny => {
-                Err(DaemonError::LocalTransport {
+                return Err(DaemonError::LocalTransport {
                     operation: "agent_vault_management_policy",
                     message: "agent vault credential creation is disabled by user config"
                         .to_string(),
-                })
+                });
             }
         }
+        let session = self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let authority = crate::session::effective_agent_user_authority(&session, Some(&agent));
+        if authority.is_full() {
+            return Ok(());
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "agent_vault_management_policy",
+            message: "agent vault credential creation requires full agent user authority"
+                .to_string(),
+        })
     }
 }
 
