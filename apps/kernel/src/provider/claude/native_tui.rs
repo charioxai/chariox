@@ -148,6 +148,11 @@ if (eventName === "UserPromptSubmit") {
     }
   }))
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
+  const toolName = String(input.tool_name ?? "")
+  const isArrobaRuntimeTool = toolName.startsWith("mcp__arroba__") || toolName.startsWith("arroba.")
+  if (eventName === "PreToolUse" && (input.permission_mode === "bypassPermissions" || isArrobaRuntimeTool)) {
+    process.exit(0)
+  }
   const responseDir = process.env.ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES
   const responseFile = responseDir && hookContextRequestId
     ? join(responseDir, `${hookContextRequestId}.json`)
@@ -227,4 +232,19 @@ pub(super) fn claude_native_tui_args(
         args.push("--strict-mcp-config".to_string());
     }
     Ok(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claude_native_hook_handler;
+
+    #[test]
+    fn hook_does_not_block_bypass_or_arroba_runtime_pre_tool_use() {
+        let handler = claude_native_hook_handler();
+
+        assert!(handler.contains("input.permission_mode === \"bypassPermissions\""));
+        assert!(handler.contains("toolName.startsWith(\"mcp__arroba__\")"));
+        assert!(handler.contains("toolName.startsWith(\"arroba.\")"));
+        assert!(handler.contains("process.exit(0)"));
+    }
 }
