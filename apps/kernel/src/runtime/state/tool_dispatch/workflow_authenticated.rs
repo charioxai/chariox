@@ -38,6 +38,11 @@ impl KernelRuntimeState {
                 .ok()
                 .and_then(|args| args.delivery_token)
             }
+            crate::transport::runtime_tools::AGENT_APP_ACTION_TOOL => serde_json::from_value::<
+                crate::transport::runtime_tools::AgentAppActionArgs,
+            >(arguments.clone())
+            .ok()
+            .and_then(|args| args.delivery_token),
             _ => None,
         };
         let session_id = provider_runs[0].session_id().to_string();

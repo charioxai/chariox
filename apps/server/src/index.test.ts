@@ -1700,6 +1700,7 @@ test("agent app gateway serves packaged app assets", async () => {
 
 test("agent app wrapped route invokes workflow with path-tail prompt and streams viewer shell", async () => {
   let seenInput: unknown = null
+  let seenProof: Record<string, unknown> | null = null
   const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-route-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
@@ -1730,13 +1731,27 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
         manipulation: {
           level: "state_and_overlay",
           scope: "session",
-          allowed_actions: ["cart.search", "cart.add", "cart.checkout"],
+          allowed_actions: ["cart.add"],
         },
       }],
+      actions: {
+        "cart.add": {
+          input_schema: {
+            type: "object",
+            required: ["sku"],
+            properties: { sku: { type: "string" } },
+          },
+          transport: { kind: "http", method: "POST", url: "http://127.0.0.1:1/cart/add" },
+        },
+        "cart.admin": {
+          transport: { kind: "http", method: "POST", url: "http://127.0.0.1:1/cart/admin" },
+        },
+      },
     },
   }, {
     invokeWorkflow: async (invocation) => {
       seenInput = invocation.input
+      seenProof = invocation.caller.proof as Record<string, unknown>
       return {
         accepted: true,
         workflow_run: { id: "run-shopping", status: "Running" },
@@ -1755,6 +1770,8 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
     assert.match(response.body, /class="split-viewer"/)
     assert.match(response.body, /run-shopping/)
     assert.deepEqual(seenInput, { prompt: "1 kg bananas" })
+    const proof = seenProof as Record<string, unknown> | null
+    assert.deepEqual(Object.keys((proof?.agent_app_actions as Record<string, unknown>) ?? {}), ["cart.add"])
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })

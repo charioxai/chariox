@@ -85,6 +85,9 @@ impl KernelRuntimeState {
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_slice_tool_name(tool_name)
                     })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name)
+                    })
                     .unwrap_or_else(|| tool_name.strip_prefix("arroba_").unwrap_or(tool_name));
             let provider_runs = owned
                 .provider_store

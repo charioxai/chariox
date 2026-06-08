@@ -21,6 +21,8 @@ pub const READ_WORKFLOW_TURN_CONTEXT_TOOL: &str = "read_workflow_turn_context";
 pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
 pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
+pub const AGENT_APP_ACTION_TOOL: &str = "agent_app_action";
+pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "arroba.agent_app_action";
 pub const LIST_EXTENSIONS_TOOL: &str = "arroba.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "arroba.request_extension";
 pub const REGISTER_MCP_TOOL: &str = "arroba.register_mcp";
@@ -1004,6 +1006,15 @@ pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub delivery_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAppActionArgs {
+    pub action_id: String,
+    #[serde(default)]
+    pub input: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
@@ -1099,5 +1110,42 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: AGENT_APP_ACTION_TOOL_QUALIFIED.to_string(),
+            description: "Call a route-scoped Agent App action exposed by the current published workflow invocation. The action must be allowed by the matched endpoint route.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action_id", "input"],
+                "properties": {
+                    "action_id": {"type": "string"},
+                    "input": {"type": "object"},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
+}
+
+pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        ACK_WORKFLOW_TURN_TOOL => Some(ACK_WORKFLOW_TURN_TOOL),
+        VALIDATE_WORKFLOW_HANDOFF_TOOL => Some(VALIDATE_WORKFLOW_HANDOFF_TOOL),
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => {
+            Some(VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL)
+        }
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
+            Some(VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL)
+        }
+        READ_WORKFLOW_TURN_CONTEXT_TOOL => Some(READ_WORKFLOW_TURN_CONTEXT_TOOL),
+        WORKFLOW_CONSOLE_READ_TOOL => Some(WORKFLOW_CONSOLE_READ_TOOL),
+        WORKFLOW_CONSOLE_WRITE_TOOL => Some(WORKFLOW_CONSOLE_WRITE_TOOL),
+        WORKFLOW_CONSOLE_CLEAR_TOOL => Some(WORKFLOW_CONSOLE_CLEAR_TOOL),
+        AGENT_APP_ACTION_TOOL
+        | AGENT_APP_ACTION_TOOL_QUALIFIED
+        | "arroba_agent_app_action"
+        | "mcp__arroba__agent_app_action"
+        | "mcp__arroba__arroba_agent_app_action" => Some(AGENT_APP_ACTION_TOOL),
+        _ => None,
+    }
 }

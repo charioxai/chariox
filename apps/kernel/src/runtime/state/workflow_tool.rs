@@ -82,6 +82,9 @@ impl KernelRuntimeOwnedState {
             crate::transport::runtime_tools::WORKFLOW_CONSOLE_CLEAR_TOOL => {
                 self.workflow_console_clear_tool_result(&context)
             }
+            crate::transport::runtime_tools::AGENT_APP_ACTION_TOOL => {
+                self.workflow_agent_app_action_tool_result(&arguments, &context)
+            }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
                 message: format!("unsupported runtime tool `{other}`"),
@@ -110,6 +113,122 @@ impl KernelRuntimeOwnedState {
             );
         let _ = self.session_snapshot(&context.session_id);
         result.map(|result| (result, dispatches))
+    }
+
+    fn workflow_agent_app_action_tool_result(
+        &self,
+        arguments: &serde_json::Value,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args = serde_json::from_value::<crate::transport::runtime_tools::AgentAppActionArgs>(
+            arguments.clone(),
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_agent_app_action",
+            message: format!("invalid tool arguments: {error}"),
+        })?;
+        let action = {
+            let workflow_run = self
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+            let invocation = workflow_run
+                .publication_invocation()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_agent_app_action",
+                    message: "current workflow run was not started by a publication invocation"
+                        .to_string(),
+                })?;
+            invocation
+                .caller
+                .get("proof")
+                .and_then(|value| value.get("agent_app_actions"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|actions| actions.get(&args.action_id))
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_agent_app_action",
+                    message: format!(
+                        "agent app action `{}` is not allowed for this invocation",
+                        args.action_id
+                    ),
+                })?
+        };
+        if let Some(schema) = action.get("input_schema") {
+            let compiled =
+                jsonschema::JSONSchema::compile(schema).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_agent_app_action",
+                        message: format!(
+                            "agent app action `{}` has invalid input schema: {error}",
+                            args.action_id
+                        ),
+                    }
+                })?;
+            let messages = match compiled.validate(&args.input) {
+                Ok(()) => Vec::new(),
+                Err(errors) => errors.map(|error| error.to_string()).collect::<Vec<_>>(),
+            };
+            if !messages.is_empty() {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({
+                        "action_id": args.action_id,
+                        "valid": false,
+                        "errors": messages,
+                    }),
+                });
+            }
+        }
+        let transport = action
+            .get("transport")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_agent_app_action",
+                message: format!("agent app action `{}` has no transport", args.action_id),
+            })?;
+        if transport
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("http")
+            != "http"
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_agent_app_action",
+                message: format!(
+                    "agent app action `{}` uses unsupported transport",
+                    args.action_id
+                ),
+            });
+        }
+        let url = transport
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_agent_app_action",
+                message: format!("agent app action `{}` has no URL", args.action_id),
+            })?;
+        let method = transport
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("POST")
+            .to_ascii_uppercase();
+        let response = call_agent_app_http_action(url, &method, &args.input).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_agent_app_action",
+                message: format!("agent app action `{}` failed: {error}", args.action_id),
+            }
+        })?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: (200..300).contains(&response.status),
+            payload: serde_json::json!({
+                "action_id": args.action_id,
+                "status": response.status,
+                "content_type": response.content_type,
+                "body": response.body,
+            }),
+        })
     }
 
     fn workflow_turn_context_tool_result(
@@ -318,4 +437,52 @@ impl KernelRuntimeOwnedState {
             }),
         }
     }
+}
+
+struct AgentAppHttpActionResponse {
+    status: u16,
+    content_type: String,
+    body: serde_json::Value,
+}
+
+fn call_agent_app_http_action(
+    url: &str,
+    method: &str,
+    input: &serde_json::Value,
+) -> Result<AgentAppHttpActionResponse, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let input_json = serde_json::to_string(input).map_err(|error| error.to_string())?;
+    let request = match method {
+        "GET" => agent.get(url).query("input", &input_json),
+        "POST" => agent
+            .post(url)
+            .set("content-type", "application/json")
+            .set("accept", "application/json"),
+        other => return Err(format!("unsupported HTTP method `{other}`")),
+    };
+    let response = match method {
+        "GET" => request.call(),
+        "POST" => request.send_string(&input_json),
+        _ => unreachable!(),
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => response,
+        Err(error) => return Err(error.to_string()),
+    };
+    let status = response.status();
+    let content_type = response.content_type().to_string();
+    let text = response.into_string().map_err(|error| error.to_string())?;
+    let body = if content_type.contains("application/json") {
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
+    } else {
+        serde_json::Value::String(text)
+    };
+    Ok(AgentAppHttpActionResponse {
+        status,
+        content_type,
+        body,
+    })
 }

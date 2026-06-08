@@ -69,6 +69,18 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn workflow_specs_expose_agent_app_action_tool() {
+        let specs = workflow_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == AGENT_APP_ACTION_TOOL_QUALIFIED));
+        assert_eq!(
+            canonical_workflow_tool_name("mcp__arroba__arroba_agent_app_action"),
+            Some(AGENT_APP_ACTION_TOOL)
+        );
+    }
+
+    #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
         assert!(specs

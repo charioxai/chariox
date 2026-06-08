@@ -93,6 +93,7 @@ async function invokeAgentAppRoute(
         transport: "agent_app_human_http",
         route: route.path,
         replica_session_id: selectedPublication.session_id,
+        agent_app_actions: routeAgentAppActions(publication, route),
       },
     },
     input: { prompt },
@@ -178,6 +179,18 @@ function allowedAgentAppActions(publication: WorkflowPublicationConfig): Set<str
     }
   }
   return allowed
+}
+
+function routeAgentAppActions(
+  publication: WorkflowPublicationConfig,
+  route: AgentAppRouteConfig,
+): Record<string, AgentAppActionConfig> {
+  const actions: Record<string, AgentAppActionConfig> = {}
+  for (const actionId of route.manipulation?.allowed_actions ?? []) {
+    const action = publication.agent_app?.actions?.[actionId]
+    if (action) actions[actionId] = action
+  }
+  return actions
 }
 
 async function serveAgentAppAsset(
