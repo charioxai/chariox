@@ -88,14 +88,17 @@ async function invokeAgentAppRoute(
   const callerSession = agentAppCallerSession(request.headers, randomUUID)
   if (callerSession.setCookie) reply.header("set-cookie", callerSession.setCookie)
   const selectedPublication = selectAgentAppReplica(publication, callerSession.callerKey)
+  const requestId = `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`
   const invocation: NormalizedInvocation = {
     publication_id: selectedPublication.publication_id,
-    request_id: `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    request_id: requestId,
     caller: {
       type: "anonymous",
       proof: {
         transport: "agent_app_human_http",
         route: route.path,
+        agent_app_session: callerSession.callerKey,
+        agent_app_request_id: requestId,
         replica_session_id: selectedPublication.session_id,
         agent_app_actions: routeAgentAppActions(publication, route),
       },

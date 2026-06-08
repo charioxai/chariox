@@ -127,19 +127,34 @@ impl KernelRuntimeOwnedState {
             operation: "runtime_tool_agent_app_action",
             message: format!("invalid tool arguments: {error}"),
         })?;
-        let action = {
+        let (action, action_context) = {
             let workflow_run = self
                 .session_store
                 .read()
                 .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
-            let invocation = workflow_run
-                .publication_invocation()
-                .ok_or_else(|| DaemonError::LocalTransport {
+            let invocation = workflow_run.publication_invocation().ok_or_else(|| {
+                DaemonError::LocalTransport {
                     operation: "runtime_tool_agent_app_action",
                     message: "current workflow run was not started by a publication invocation"
                         .to_string(),
-                })?;
-            invocation
+                }
+            })?;
+            let proof = invocation
+                .caller
+                .get("proof")
+                .and_then(serde_json::Value::as_object);
+            let action_context = AgentAppHttpActionContext {
+                action_id: args.action_id.clone(),
+                session: proof
+                    .and_then(|value| value.get("agent_app_session"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                invocation_request_id: proof
+                    .and_then(|value| value.get("agent_app_request_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            };
+            let action = invocation
                 .caller
                 .get("proof")
                 .and_then(|value| value.get("agent_app_actions"))
@@ -152,19 +167,19 @@ impl KernelRuntimeOwnedState {
                         "agent app action `{}` is not allowed for this invocation",
                         args.action_id
                     ),
-                })?
+                })?;
+            (action, action_context)
         };
         if let Some(schema) = action.get("input_schema") {
-            let compiled =
-                jsonschema::JSONSchema::compile(schema).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "runtime_tool_agent_app_action",
-                        message: format!(
-                            "agent app action `{}` has invalid input schema: {error}",
-                            args.action_id
-                        ),
-                    }
-                })?;
+            let compiled = jsonschema::JSONSchema::compile(schema).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "runtime_tool_agent_app_action",
+                    message: format!(
+                        "agent app action `{}` has invalid input schema: {error}",
+                        args.action_id
+                    ),
+                }
+            })?;
             let messages = match compiled.validate(&args.input) {
                 Ok(()) => Vec::new(),
                 Err(errors) => errors.map(|error| error.to_string()).collect::<Vec<_>>(),
@@ -214,12 +229,11 @@ impl KernelRuntimeOwnedState {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("POST")
             .to_ascii_uppercase();
-        let response = call_agent_app_http_action(url, &method, &args.input).map_err(|error| {
-            DaemonError::LocalTransport {
+        let response = call_agent_app_http_action(url, &method, &args.input, &action_context)
+            .map_err(|error| DaemonError::LocalTransport {
                 operation: "runtime_tool_agent_app_action",
                 message: format!("agent app action `{}` failed: {error}", args.action_id),
-            }
-        })?;
+            })?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: (200..300).contains(&response.status),
             payload: serde_json::json!({
@@ -445,16 +459,23 @@ struct AgentAppHttpActionResponse {
     body: serde_json::Value,
 }
 
+struct AgentAppHttpActionContext {
+    action_id: String,
+    session: Option<String>,
+    invocation_request_id: Option<String>,
+}
+
 fn call_agent_app_http_action(
     url: &str,
     method: &str,
     input: &serde_json::Value,
+    context: &AgentAppHttpActionContext,
 ) -> Result<AgentAppHttpActionResponse, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))
         .build();
     let input_json = serde_json::to_string(input).map_err(|error| error.to_string())?;
-    let request = match method {
+    let mut request = match method {
         "GET" => agent.get(url).query("input", &input_json),
         "POST" => agent
             .post(url)
@@ -462,6 +483,13 @@ fn call_agent_app_http_action(
             .set("accept", "application/json"),
         other => return Err(format!("unsupported HTTP method `{other}`")),
     };
+    request = request.set("x-arroba-agent-app-action-id", &context.action_id);
+    if let Some(session) = context.session.as_deref() {
+        request = request.set("x-arroba-agent-app-session", session);
+    }
+    if let Some(invocation_request_id) = context.invocation_request_id.as_deref() {
+        request = request.set("x-arroba-publication-invocation", invocation_request_id);
+    }
     let response = match method {
         "GET" => request.call(),
         "POST" => request.send_string(&input_json),
@@ -485,4 +513,51 @@ fn call_agent_app_http_action(
         content_type,
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    #[test]
+    fn agent_app_http_action_forwards_invocation_context_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind action server");
+        let address = listener.local_addr().expect("action server address");
+        let (sender, receiver) = mpsc::channel::<String>();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept action request");
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).expect("read action request");
+            let request_text = String::from_utf8_lossy(&request[..read]).to_string();
+            sender.send(request_text).expect("send captured request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
+                )
+                .expect("write response");
+        });
+
+        let response = call_agent_app_http_action(
+            &format!("http://{address}/cart/add"),
+            "POST",
+            &serde_json::json!({"sku": "banana"}),
+            &AgentAppHttpActionContext {
+                action_id: "cart.add".to_string(),
+                session: Some("session-a".to_string()),
+                invocation_request_id: Some("invocation-a".to_string()),
+            },
+        )
+        .expect("action response");
+
+        assert_eq!(response.status, 200);
+        let captured = receiver.recv().expect("captured request");
+        assert!(captured.contains("x-arroba-agent-app-action-id: cart.add"));
+        assert!(captured.contains("x-arroba-agent-app-session: session-a"));
+        assert!(captured.contains("x-arroba-publication-invocation: invocation-a"));
+        handle.join().expect("action server thread");
+    }
 }

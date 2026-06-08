@@ -55,6 +55,9 @@ const REAL_DASHBOARD_PROMPT = [
 ].join(' ')
 
 const SHOPPING_LIST_PROMPT = '1 kg bananas, 2 bottles of 1l Coca-Cola, and a bag of chips'
+const SHOPPING_LIST_PROMPT_B = '2 red apples, 1 bag of coffee beans, and 3 packs of pasta'
+const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
+const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'apples', 'coffee', 'pasta']
 const AGENT_APP_SHOPPING_PROMPT = [
   'You are the checkout automation agent for a published Arroba Agent App.',
   'The invocation prompt is a grocery shopping list from the browser URL.',
@@ -62,7 +65,7 @@ const AGENT_APP_SHOPPING_PROMPT = [
   'Then call arroba.agent_app_action with action_id "cart.checkout" and input {"ready":true}.',
   'Use the action responses to build a compact checkout page.',
   'The final workflow output must be JSON stringified through validate_and_submit_workflow_run_output with this exact outer shape: {"kind":"response","response":{"mode":"serve","entry":"/generated/checkout.html"},"effects":{"overlay":[{"path":"/generated/checkout.html","mime_type":"text/html; charset=utf-8","content":"<full html document>"}]}}.',
-  'The generated HTML must include the visible title text `Agent App Grocery Checkout`, the attribute data-arroba-agent-app-checkout="true", and the items bananas, Coca-Cola, and chips.',
+  'The generated HTML must include the visible title text `Agent App Grocery Checkout`, the attribute data-arroba-agent-app-checkout="true", and the products requested by the invocation prompt.',
   'Use inline CSS only. Do not use shell, bash, python, node, filesystem, or network tools.',
   'If the Arroba runtime MCP tools are unavailable, emit the final fenced workflow JSON block directly with the same output.message object, but still include the checkout HTML.',
 ].join(' ')
@@ -79,6 +82,7 @@ function usage() {
     '  --credential-profile NAME',
     '  --real-dashboard',
     '  --agent-app-shopping',
+    '  --agent-app-session-isolation',
     '  --artifacts-dir DIR',
     '  --browser-screenshot',
     '  --keep-tmp',
@@ -96,6 +100,7 @@ function parseArgs(argv) {
     credentialProfile: null,
     realDashboard: false,
     agentAppShopping: false,
+    agentAppSessionIsolation: false,
     artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
     browserScreenshot: false,
     keepTmp: false,
@@ -111,6 +116,7 @@ function parseArgs(argv) {
     else if (arg === '--credential-profile') options.credentialProfile = argv[++index]
     else if (arg === '--real-dashboard') options.realDashboard = true
     else if (arg === '--agent-app-shopping') options.agentAppShopping = true
+    else if (arg === '--agent-app-session-isolation') options.agentAppSessionIsolation = true
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
     else if (arg === '--browser-screenshot') options.browserScreenshot = true
     else if (arg === '--keep-tmp') options.keepTmp = true
@@ -123,6 +129,7 @@ function parseArgs(argv) {
     }
   }
   if (!options.mode) throw new Error(`--mode is required\n${usage()}`)
+  if (options.agentAppSessionIsolation) options.agentAppShopping = true
   if (options.agentAppShopping && options.transport !== 'human_http') {
     throw new Error('--agent-app-shopping currently requires --transport human_http')
   }
@@ -314,6 +321,7 @@ async function main() {
       slug: options.slug,
       expectHtmlDashboard: options.realDashboard,
       expectAgentAppShopping: options.agentAppShopping,
+      agentAppSessionIsolation: options.agentAppSessionIsolation,
       browserScreenshot: options.browserScreenshot,
     }).catch((error) => {
       if (options.debugHoldMs > 0) {
@@ -520,14 +528,15 @@ async function writeShoppingAgentAppAssets(workspace) {
   }, null, 2))
   await writeFile(path.join(assetsDir, 'actions.mjs'), [
     'import http from "node:http";',
-    'const cart = [];',
+    'const carts = new Map();',
     'function readBody(req){return new Promise((resolve,reject)=>{let data="";req.on("data",c=>data+=c);req.on("end",()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(e)}});req.on("error",reject);});}',
     'function send(res,status,body){res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(body));}',
+    'function sessionCart(req){const key=String(req.headers["x-arroba-agent-app-session"]||"anonymous");if(!carts.has(key))carts.set(key,[]);return {key,cart:carts.get(key)};}',
     'http.createServer(async (req,res)=>{',
     '  try {',
     '    if (req.url === "/health") return send(res,200,{ok:true});',
-    '    if (req.method === "POST" && req.url === "/cart/add") { const body = await readBody(req); cart.push(body); return send(res,200,{ok:true,item:body,cart}); }',
-    '    if (req.method === "POST" && req.url === "/cart/checkout") return send(res,200,{ok:true,ready:true,cart,total_items:cart.length});',
+    '    if (req.method === "POST" && req.url === "/cart/add") { const body = await readBody(req); const scoped=sessionCart(req); scoped.cart.push(body); return send(res,200,{ok:true,session:scoped.key,item:body,cart:scoped.cart}); }',
+    '    if (req.method === "POST" && req.url === "/cart/checkout") { const scoped=sessionCart(req); return send(res,200,{ok:true,session:scoped.key,ready:true,cart:scoped.cart,total_items:scoped.cart.length}); }',
     '    return send(res,404,{error:"not found"});',
     '  } catch (error) { return send(res,500,{error:String(error?.message ?? error)}); }',
     '}).listen(Number(process.env.PORT || 33119), "127.0.0.1");',
@@ -589,10 +598,20 @@ async function validateTransport(input) {
       : `${base}/final/${encodeURIComponent(input.prompt)}`
     if (input.browserScreenshot) {
       if (input.expectAgentAppShopping) {
+        if (input.agentAppSessionIsolation) {
+          return await runAgentAppShoppingSessionIsolation({
+            baseUrl: base,
+            prompt: input.prompt,
+            secondPrompt: SHOPPING_LIST_PROMPT_B,
+            artifactsDir: input.artifactsDir,
+            slug: input.slug,
+          })
+        }
         return await runAgentAppShoppingBrowserScreenshot({
           url: promptUrl,
           artifactsDir: input.artifactsDir,
           slug: input.slug,
+          expectedSnippets: SHOPPING_EXPECTED_SNIPPETS,
         })
       }
       return await runHumanHttpDashboardBrowserScreenshot({
@@ -918,12 +937,63 @@ async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir, slug 
   }
 }
 
-async function runAgentAppShoppingBrowserScreenshot({ url, artifactsDir, slug }) {
+async function runAgentAppShoppingSessionIsolation({ baseUrl, prompt, secondPrompt, artifactsDir, slug }) {
+  const firstUrl = `${baseUrl}/add/${encodeURIComponent(prompt)}`
+  const secondUrl = `${baseUrl}/add/${encodeURIComponent(secondPrompt)}`
+  const first = await runAgentAppShoppingBrowserScreenshot({
+    url: firstUrl,
+    artifactsDir,
+    slug,
+    expectedSnippets: SHOPPING_EXPECTED_SNIPPETS,
+    screenshotName: 'agent-app-shopping-checkout-session-a',
+  })
+  const second = await runAgentAppShoppingBrowserScreenshot({
+    url: secondUrl,
+    artifactsDir,
+    slug,
+    expectedSnippets: SHOPPING_EXPECTED_SNIPPETS_B,
+    screenshotName: 'agent-app-shopping-checkout-session-b',
+  })
+  if (!first.cookieHeader) throw new Error('first Agent App session did not expose a browser session cookie')
+  if (!first.finalState?.iframeSrc) throw new Error('first Agent App session did not expose a generated checkout iframe URL')
+  const firstCheckoutUrl = new URL(first.finalState.iframeSrc, firstUrl)
+  const revisited = await fetch(firstCheckoutUrl, {
+    headers: { cookie: first.cookieHeader },
+  })
+  const revisitedHtml = await revisited.text()
+  const firstMissing = SHOPPING_EXPECTED_SNIPPETS.filter((snippet) => !revisitedHtml.includes(snippet))
+  const leakedSecond = SHOPPING_EXPECTED_SNIPPETS_B.filter((snippet) => !SHOPPING_EXPECTED_SNIPPETS.includes(snippet) && revisitedHtml.includes(snippet))
+  if (!revisited.ok || firstMissing.length || leakedSecond.length) {
+    throw new Error(`Agent App session isolation failed: ${JSON.stringify({
+      status: revisited.status,
+      firstMissing,
+      leakedSecond,
+      firstCheckoutUrl: firstCheckoutUrl.toString(),
+    })}`)
+  }
+  return {
+    promptUrl: firstUrl,
+    secondPromptUrl: secondUrl,
+    screenshotPath: first.screenshotPath,
+    secondScreenshotPath: second.screenshotPath,
+    finalState: first.finalState,
+    secondFinalState: second.finalState,
+    isolation: { firstCheckoutUrl: firstCheckoutUrl.toString(), status: revisited.status },
+  }
+}
+
+async function runAgentAppShoppingBrowserScreenshot({
+  url,
+  artifactsDir,
+  slug,
+  expectedSnippets = SHOPPING_EXPECTED_SNIPPETS,
+  screenshotName = 'agent-app-shopping-checkout',
+}) {
   const chromePath = await findChromeExecutable()
   if (!chromePath) throw new Error('Chrome executable was not found for Agent App browser screenshot validation')
   const debuggingPort = await freePort()
   const userDataDir = path.join(artifactsDir, `${slug}-agent-app-chrome-profile`)
-  const screenshotPath = path.join(artifactsDir, `${slug}-agent-app-shopping-checkout.png`)
+  const screenshotPath = path.join(artifactsDir, `${slug}-${screenshotName}.png`)
   await rm(userDataDir, { recursive: true, force: true })
   await mkdir(userDataDir, { recursive: true })
   const chrome = startProcess(
@@ -951,8 +1021,9 @@ async function runAgentAppShoppingBrowserScreenshot({ url, artifactsDir, slug })
     cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
     await cdp.send('Page.enable')
     await cdp.send('Runtime.enable')
+    await cdp.send('Network.enable')
     await withTimeout(cdp.send('Page.navigate', { url }), 10_000, `browser navigate ${url}`)
-    const finalState = await waitForAgentAppShoppingFinal(cdp, 600_000)
+    const finalState = await waitForAgentAppShoppingFinal(cdp, 600_000, expectedSnippets)
     const screenshot = await withTimeout(
       cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
       10_000,
@@ -962,7 +1033,8 @@ async function runAgentAppShoppingBrowserScreenshot({ url, artifactsDir, slug })
       throw new Error('Agent App shopping screenshot was empty')
     }
     await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
-    return { promptUrl: url, screenshotPath, finalState }
+    const cookieHeader = await agentAppCookieHeader(cdp)
+    return { promptUrl: url, screenshotPath, finalState, cookieHeader }
   } catch (error) {
     throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome.logs.stdout}\nchrome stderr:\n${chrome.logs.stderr}`)
   } finally {
@@ -972,14 +1044,16 @@ async function runAgentAppShoppingBrowserScreenshot({ url, artifactsDir, slug })
   }
 }
 
-async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
+async function waitForAgentAppShoppingFinal(cdp, timeoutMs, expectedSnippets) {
   const deadline = Date.now() + timeoutMs
   let lastState = null
+  const requiredSnippetsJson = JSON.stringify(expectedSnippets)
   while (Date.now() < deadline) {
     const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
       returnByValue: true,
       awaitPromise: true,
       expression: `(async () => {
+        const required = ${requiredSnippetsJson};
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const iframe = document.querySelector('#html-output iframe');
         const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
@@ -998,7 +1072,6 @@ async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
         const iframeDocumentHtml = iframe?.contentDocument?.documentElement?.outerHTML || '';
         const renderedHtml = iframeSrcdoc || fetchedHtml || iframeDocumentHtml;
         const traceText = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => item.textContent || '').join('\\n');
-        const required = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips'];
         const missing = required.filter((snippet) => !renderedHtml.includes(snippet));
         return {
           status,
@@ -1026,6 +1099,14 @@ async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
     await delay(750)
   }
   throw new Error(`Agent App shopping browser did not render final checkout: ${JSON.stringify(lastState)}`)
+}
+
+async function agentAppCookieHeader(cdp) {
+  const response = await cdp.send('Network.getAllCookies')
+  const cookies = Array.isArray(response?.cookies) ? response.cookies : []
+  const sessionCookie = cookies.find((cookie) => cookie?.name === 'arroba_agent_app_session')
+  if (!sessionCookie?.value) return null
+  return `${sessionCookie.name}=${encodeURIComponent(sessionCookie.value)}`
 }
 
 async function findChromeExecutable() {
