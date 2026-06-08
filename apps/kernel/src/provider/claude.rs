@@ -385,6 +385,10 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg == "--strict-mcp-config"));
+        assert!(launch
+            .pty_args
+            .windows(2)
+            .any(|pair| pair == ["--disallowedTools", "ToolSearch"]));
     }
 
     #[test]

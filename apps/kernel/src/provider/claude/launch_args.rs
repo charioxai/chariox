@@ -80,6 +80,9 @@ fn claude_launch_args_from_parts(
     {
         args.extend(["--mcp-config".to_string(), config]);
         args.push("--strict-mcp-config".to_string());
+        if runtime_mcp_server_url.is_some() {
+            args.extend(["--disallowedTools".to_string(), "ToolSearch".to_string()]);
+        }
     }
 
     match (execution_mode, permission_level) {
