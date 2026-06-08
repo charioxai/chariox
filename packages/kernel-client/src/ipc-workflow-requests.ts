@@ -114,6 +114,8 @@ export function exportWorkflowPublicationPackageRequest(
   publicationRef: string,
   options: {
     kernelUrl?: string | null
+    agentApp?: Record<string, unknown> | null
+    agentAppAssetsDir?: string | null
   } = {},
 ) {
   return {
@@ -121,6 +123,8 @@ export function exportWorkflowPublicationPackageRequest(
       session_id: sessionId,
       publication_ref: publicationRef,
       kernel_url: options.kernelUrl ?? null,
+      agent_app: options.agentApp ?? null,
+      agent_app_assets_dir: options.agentAppAssetsDir ?? null,
     },
   }
 }
