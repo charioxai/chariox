@@ -72,10 +72,25 @@ kernel() {
   run_as_arroba arroba-kernel "$@"
 }
 
+ACTION_SERVER_PID=""
+
+start_action_server() {
+  if [[ ! -f /publication/app/actions.mjs ]]; then
+    return
+  fi
+  spawn_as_arroba env \
+    PORT="${ARROBA_AGENT_APP_ACTIONS_PORT:-33119}" \
+    node /publication/app/actions.mjs
+  ACTION_SERVER_PID="$!"
+}
+
 standalone() {
   spawn_as_arroba arroba-kernel
   local kernel_pid=$!
-  trap 'kill "$kernel_pid" 2>/dev/null || true' EXIT INT TERM
+  local action_pid=""
+  start_action_server
+  action_pid="$ACTION_SERVER_PID"
+  trap 'kill "$kernel_pid" "$action_pid" 2>/dev/null || true' EXIT INT TERM
 
   node /usr/local/bin/arroba-wait-for-tcp.mjs "${ARROBA_KERNEL_HOST:-127.0.0.1}" "${ARROBA_KERNEL_PORT:-43118}" 20000
   gateway "$@"

@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
@@ -39,6 +39,7 @@ const {
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
+  exportWorkflowPublicationPackageRequest,
 } = requests
 
 const REAL_DASHBOARD_PROMPT = [
@@ -53,6 +54,19 @@ const REAL_DASHBOARD_PROMPT = [
   'If the Arroba runtime MCP tool is unavailable, do not search for it: emit the final fenced workflow JSON block directly with output.message set to {"kind":"html","html":"<full html document>"}.',
 ].join(' ')
 
+const SHOPPING_LIST_PROMPT = '1 kg bananas, 2 bottles of 1l Coca-Cola, and a bag of chips'
+const AGENT_APP_SHOPPING_PROMPT = [
+  'You are the checkout automation agent for a published Arroba Agent App.',
+  'The invocation prompt is a grocery shopping list from the browser URL.',
+  'First call the Arroba runtime MCP tool arroba.agent_app_action for action_id "cart.add" once per product with input containing sku, name, quantity, and unit.',
+  'Then call arroba.agent_app_action with action_id "cart.checkout" and input {"ready":true}.',
+  'Use the action responses to build a compact checkout page.',
+  'The final workflow output must be JSON stringified through validate_and_submit_workflow_run_output with this exact outer shape: {"kind":"response","response":{"mode":"serve","entry":"/generated/checkout.html"},"effects":{"overlay":[{"path":"/generated/checkout.html","mime_type":"text/html; charset=utf-8","content":"<full html document>"}]}}.',
+  'The generated HTML must include the visible title text `Agent App Grocery Checkout`, the attribute data-arroba-agent-app-checkout="true", and the items bananas, Coca-Cola, and chips.',
+  'Use inline CSS only. Do not use shell, bash, python, node, filesystem, or network tools.',
+  'If the Arroba runtime MCP tools are unavailable, emit the final fenced workflow JSON block directly with the same output.message object, but still include the checkout HTML.',
+].join(' ')
+
 function usage() {
   return [
     'Usage: node apps/cli/scripts/live-cloud-publication-deployment-drill.mjs --mode hosted-container|local-runtime [options]',
@@ -64,6 +78,7 @@ function usage() {
     '  --model MODEL',
     '  --credential-profile NAME',
     '  --real-dashboard',
+    '  --agent-app-shopping',
     '  --artifacts-dir DIR',
     '  --browser-screenshot',
     '  --keep-tmp',
@@ -80,6 +95,7 @@ function parseArgs(argv) {
     slug: null,
     credentialProfile: null,
     realDashboard: false,
+    agentAppShopping: false,
     artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
     browserScreenshot: false,
     keepTmp: false,
@@ -94,6 +110,7 @@ function parseArgs(argv) {
     else if (arg === '--slug') options.slug = argv[++index]
     else if (arg === '--credential-profile') options.credentialProfile = argv[++index]
     else if (arg === '--real-dashboard') options.realDashboard = true
+    else if (arg === '--agent-app-shopping') options.agentAppShopping = true
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
     else if (arg === '--browser-screenshot') options.browserScreenshot = true
     else if (arg === '--keep-tmp') options.keepTmp = true
@@ -106,6 +123,9 @@ function parseArgs(argv) {
     }
   }
   if (!options.mode) throw new Error(`--mode is required\n${usage()}`)
+  if (options.agentAppShopping && options.transport !== 'human_http') {
+    throw new Error('--agent-app-shopping currently requires --transport human_http')
+  }
   if (!options.model) options.model = defaultModel(options.provider, options.transport, options.realDashboard)
   if (!options.slug) options.slug = `cloud-${options.mode.replace('_', '-')}-${options.transport.replace(/_/g, '-')}-${Date.now()}`
   if (!Number.isFinite(options.debugHoldMs) || options.debugHoldMs < 0) throw new Error('--debug-hold-ms must be a non-negative integer')
@@ -158,6 +178,7 @@ async function main() {
   const opencodePort = await freePort()
   const codexPort = await freePort()
   const servePort = await freePort()
+  const actionPort = options.mode === 'local_runtime' ? await freePort() : 33119
   const daemonAlias = `cloud-publication-drill-${process.pid}-${Date.now()}`
   const relayToken = `cloud-publication-drill-${process.pid}-${Date.now()}`
   const useLocalRelay = options.mode !== 'local_runtime'
@@ -186,6 +207,7 @@ async function main() {
   let kernel = null
   let relay = null
   let serve = null
+  let actionServer = null
   let client = null
   let deploymentId = null
   let succeeded = false
@@ -230,6 +252,8 @@ async function main() {
       provider: options.provider,
       model: options.model,
       realDashboard: options.realDashboard,
+      agentAppShopping: options.agentAppShopping,
+      actionPort,
     })
     const profile = relayCloudProfile(await loadPreferences())
     if (!profile) throw new Error('cloud is not linked. Run /cloud login from the TUI before this drill.')
@@ -245,6 +269,15 @@ async function main() {
     deploymentId = deployment.id
     let readyDeployment = deployment
     if (options.mode === 'local_runtime') {
+      if (options.agentAppShopping) {
+        actionServer = startProcess(process.execPath, [path.join(packageDir, 'app', 'actions.mjs')], {
+          ...env,
+          PORT: String(actionPort),
+        }, 'agent-app-actions')
+        await waitForTcpPort('127.0.0.1', actionPort).catch((error) => {
+          throw new Error(`${errorMessage(error)}\naction stdout:\n${actionServer?.logs?.stdout ?? ''}\naction stderr:\n${actionServer?.logs?.stderr ?? ''}`)
+        })
+      }
       serve = startProcess(process.execPath, [path.join(repoRoot, 'apps/server/dist/index.js')], {
         ...env,
         XDG_CONFIG_HOME: serverConfigHome,
@@ -272,10 +305,15 @@ async function main() {
     const evidence = await validateTransport({
       transport: options.transport,
       publicBaseUrl: readyDeployment.publicBaseUrl,
-      prompt: options.realDashboard ? REAL_DASHBOARD_PROMPT : `cloud deployment drill ${options.transport}`,
+      prompt: options.agentAppShopping
+        ? SHOPPING_LIST_PROMPT
+        : options.realDashboard
+          ? REAL_DASHBOARD_PROMPT
+          : `cloud deployment drill ${options.transport}`,
       artifactsDir: options.artifactsDir,
       slug: options.slug,
       expectHtmlDashboard: options.realDashboard,
+      expectAgentAppShopping: options.agentAppShopping,
       browserScreenshot: options.browserScreenshot,
     }).catch((error) => {
       if (options.debugHoldMs > 0) {
@@ -301,6 +339,7 @@ async function main() {
       if (profile) await changePublicationDeployment(profile, deploymentId, 'stop').catch(() => {})
     }
     await stopProcess(serve).catch((error) => logStep('cleanup_warning', { process: 'serve', error: errorMessage(error) }))
+    await stopProcess(actionServer).catch((error) => logStep('cleanup_warning', { process: 'actionServer', error: errorMessage(error) }))
     for (const id of sessionIds.reverse()) await client?.send(endSessionRequest(id)).catch(() => {})
     await client?.close?.().catch(() => {})
     await stopProcess(kernel).catch((error) => logStep('cleanup_warning', { process: 'kernel', error: errorMessage(error) }))
@@ -322,6 +361,8 @@ async function createPublicationPackage(input) {
     provider,
     model,
     realDashboard,
+    agentAppShopping,
+    actionPort,
   } = input
   const session = (await client.send(createSessionRequest(workspace, workspace, `cloud-publication-${transport}`))).SessionCreated.session
   sessionIds.push(session.id)
@@ -335,7 +376,9 @@ async function createPublicationPackage(input) {
     session.id,
     workflow.id,
     node.id,
-    realDashboard
+    agentAppShopping
+      ? AGENT_APP_SHOPPING_PROMPT
+      : realDashboard
       ? REAL_DASHBOARD_PROMPT
       : 'Complete this cloud publication deployment drill with a concise deterministic final output.',
   ))
@@ -356,12 +399,26 @@ async function createPublicationPackage(input) {
       1,
     ))).WorkflowWatchdogCreated.watchdog
   }
-  const exportResult = await executeShellCommand(
-    parseShellCommand(`workflow publication export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
-    createDefaultShellContext({ workspace, worktree: workspace, sessionId: session.id, workflowId: workflow.id }),
-    { client },
-  )
-  if (!exportResult.ok) throw new Error(`publication export failed: ${exportResult.message}`)
+  if (agentAppShopping) {
+    const assetsDir = await writeShoppingAgentAppAssets(workspace)
+    const exported = await client.send(exportWorkflowPublicationPackageRequest(session.id, publication.id, {
+      kernelUrl,
+      agentApp: shoppingAgentAppConfig(publication.id, actionPort),
+      agentAppAssetsDir: assetsDir,
+    }))
+    const payload = exported.WorkflowPublicationPackageExported
+    if (!payload?.package_files) {
+      throw new Error(`agent app publication export failed: ${JSON.stringify(exported)}`)
+    }
+    await writePackageFiles(exportDir, payload.package_files)
+  } else {
+    const exportResult = await executeShellCommand(
+      parseShellCommand(`workflow publication export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
+      createDefaultShellContext({ workspace, worktree: workspace, sessionId: session.id, workflowId: workflow.id }),
+      { client },
+    )
+    if (!exportResult.ok) throw new Error(`publication export failed: ${exportResult.message}`)
+  }
   if (watchdog) {
     const snapshotPath = path.join(exportDir, 'workflow.snapshot.json')
     const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'))
@@ -431,11 +488,113 @@ async function makePortablePackage(sourceDir, targetDir) {
   await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
 }
 
+async function writePackageFiles(targetDir, packageFiles) {
+  await rm(targetDir, { recursive: true, force: true })
+  for (const file of packageFiles) {
+    const target = path.join(targetDir, file.path)
+    if (!target.startsWith(`${path.resolve(targetDir)}${path.sep}`) && path.resolve(target) !== path.resolve(targetDir)) {
+      throw new Error(`exported package file escapes target directory: ${file.path}`)
+    }
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, Buffer.from(file.content_base64, 'base64'))
+    if (file.executable) await chmod(target, 0o755)
+  }
+}
+
+async function writeShoppingAgentAppAssets(workspace) {
+  const assetsDir = path.join(workspace, 'shopping-agent-app')
+  await rm(assetsDir, { recursive: true, force: true })
+  await mkdir(path.join(assetsDir, 'assets'), { recursive: true })
+  await writeFile(path.join(assetsDir, 'index.html'), [
+    '<!doctype html>',
+    '<html><head><meta charset="utf-8"><title>Agent Grocery</title>',
+    '<style>body{font-family:Inter,system-ui,sans-serif;margin:0;background:#f7f7f2;color:#1d2433}.shell{max-width:960px;margin:0 auto;padding:32px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.card{background:white;border:1px solid #ddd;border-radius:8px;padding:16px}</style>',
+    '</head><body><main class="shell"><h1>Agent Grocery</h1><p>Use /add/&lt;shopping list&gt; to let the agent prepare checkout.</p><section class="grid"><div class="card">Bananas</div><div class="card">Coca-Cola 1l</div><div class="card">Chips</div></section></main></body></html>',
+  ].join(''))
+  await writeFile(path.join(assetsDir, 'assets', 'catalog.json'), JSON.stringify({
+    products: [
+      { sku: 'banana-kg', name: 'Bananas', unit: 'kg' },
+      { sku: 'coca-cola-1l', name: 'Coca-Cola 1l bottle', unit: 'bottle' },
+      { sku: 'chips-bag', name: 'Chips', unit: 'bag' },
+    ],
+  }, null, 2))
+  await writeFile(path.join(assetsDir, 'actions.mjs'), [
+    'import http from "node:http";',
+    'const cart = [];',
+    'function readBody(req){return new Promise((resolve,reject)=>{let data="";req.on("data",c=>data+=c);req.on("end",()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(e)}});req.on("error",reject);});}',
+    'function send(res,status,body){res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(body));}',
+    'http.createServer(async (req,res)=>{',
+    '  try {',
+    '    if (req.url === "/health") return send(res,200,{ok:true});',
+    '    if (req.method === "POST" && req.url === "/cart/add") { const body = await readBody(req); cart.push(body); return send(res,200,{ok:true,item:body,cart}); }',
+    '    if (req.method === "POST" && req.url === "/cart/checkout") return send(res,200,{ok:true,ready:true,cart,total_items:cart.length});',
+    '    return send(res,404,{error:"not found"});',
+    '  } catch (error) { return send(res,500,{error:String(error?.message ?? error)}); }',
+    '}).listen(Number(process.env.PORT || 33119), "127.0.0.1");',
+  ].join('\n'))
+  return assetsDir
+}
+
+function shoppingAgentAppConfig(publicationId, actionPort) {
+  const actionBase = `http://127.0.0.1:${actionPort}`
+  return {
+    enabled: true,
+    assets: { public_dir: 'app', index: 'index.html' },
+    routes: [{
+      path: '/add/*',
+      hook_id: `${publicationId}-agent-app-hook`,
+      prompt_source: 'path_tail',
+      response: 'streaming_shell',
+      required_role: 'public',
+      manipulation: {
+        level: 'state_and_overlay',
+        scope: 'session',
+        allowed_paths: ['/generated/**'],
+        protected_paths: ['/auth/**', '/payments/**', '/secrets/**'],
+        allowed_actions: ['cart.add', 'cart.checkout'],
+      },
+    }],
+    actions: {
+      'cart.add': {
+        input_schema: {
+          type: 'object',
+          required: ['sku', 'name', 'quantity'],
+          properties: {
+            sku: { type: 'string' },
+            name: { type: 'string' },
+            quantity: { type: 'number' },
+            unit: { type: 'string' },
+          },
+        },
+        transport: { kind: 'http', method: 'POST', url: `${actionBase}/cart/add` },
+      },
+      'cart.checkout': {
+        input_schema: {
+          type: 'object',
+          properties: { ready: { type: 'boolean' } },
+        },
+        transport: { kind: 'http', method: 'POST', url: `${actionBase}/cart/checkout` },
+      },
+    },
+    replicas: { count: 1, per_caller_ordering: true, max_queue_depth: 100 },
+    persistent_patch: { enabled: false },
+  }
+}
+
 async function validateTransport(input) {
   const base = input.publicBaseUrl.replace(/\/+$/, '')
   if (input.transport === 'human_http') {
-    const promptUrl = `${base}/final/${encodeURIComponent(input.prompt)}`
+    const promptUrl = input.expectAgentAppShopping
+      ? `${base}/add/${encodeURIComponent(input.prompt)}`
+      : `${base}/final/${encodeURIComponent(input.prompt)}`
     if (input.browserScreenshot) {
+      if (input.expectAgentAppShopping) {
+        return await runAgentAppShoppingBrowserScreenshot({
+          url: promptUrl,
+          artifactsDir: input.artifactsDir,
+          slug: input.slug,
+        })
+      }
       return await runHumanHttpDashboardBrowserScreenshot({
         url: promptUrl,
         artifactsDir: input.artifactsDir,
@@ -757,6 +916,93 @@ async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir, slug 
     await stopProcess(chrome)
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
   }
+}
+
+async function runAgentAppShoppingBrowserScreenshot({ url, artifactsDir, slug }) {
+  const chromePath = await findChromeExecutable()
+  if (!chromePath) throw new Error('Chrome executable was not found for Agent App browser screenshot validation')
+  const debuggingPort = await freePort()
+  const userDataDir = path.join(artifactsDir, `${slug}-agent-app-chrome-profile`)
+  const screenshotPath = path.join(artifactsDir, `${slug}-agent-app-shopping-checkout.png`)
+  await rm(userDataDir, { recursive: true, force: true })
+  await mkdir(userDataDir, { recursive: true })
+  const chrome = startProcess(
+    chromePath,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-extensions',
+      '--window-size=1440,1000',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-sandbox',
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${debuggingPort}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    process.env,
+    'chrome-cloud-agent-app-shopping',
+  )
+  let cdp = null
+  try {
+    const target = await waitForChromeTarget(debuggingPort, chrome)
+    cdp = await connectChromeTarget(target.webSocketDebuggerUrl)
+    await cdp.send('Page.enable')
+    await cdp.send('Runtime.enable')
+    await withTimeout(cdp.send('Page.navigate', { url }), 10_000, `browser navigate ${url}`)
+    const finalState = await waitForAgentAppShoppingFinal(cdp, 600_000)
+    const screenshot = await withTimeout(
+      cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
+      10_000,
+      'Agent App shopping screenshot',
+    )
+    if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
+      throw new Error('Agent App shopping screenshot was empty')
+    }
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+    return { promptUrl: url, screenshotPath, finalState }
+  } catch (error) {
+    throw new Error(`${errorMessage(error)}\nchrome stdout:\n${chrome.logs.stdout}\nchrome stderr:\n${chrome.logs.stderr}`)
+  } finally {
+    await cdp?.close?.().catch(() => {})
+    await stopProcess(chrome)
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  while (Date.now() < deadline) {
+    const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const status = document.querySelector('#status')?.textContent?.trim() || '';
+        const iframe = document.querySelector('#html-output iframe');
+        const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
+        const traceText = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => item.textContent || '').join('\\n');
+        const required = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips'];
+        const missing = required.filter((snippet) => !iframeSrcdoc.includes(snippet));
+        return {
+          status,
+          missing,
+          traceText,
+          traceCount: document.querySelectorAll('#trace-feed .trace-item').length,
+          actionTraceOk: traceText.includes('agent_app_action') || traceText.includes('arroba.agent_app_action') || traceText.includes('cart.add'),
+          ok: status === 'Completed' && missing.length === 0 && (traceText.includes('cart.add') || traceText.includes('agent_app_action')),
+        };
+      })()`,
+    }), 15_000, 'Agent App shopping Runtime.evaluate')
+    lastState = evaluated.result?.value ?? null
+    if (lastState?.ok) return lastState
+    if (lastState?.status === 'Completed' && Array.isArray(lastState?.missing) && lastState.missing.length > 0) {
+      throw new Error(`Agent App shopping completed without checkout snippets: ${JSON.stringify(lastState)}`)
+    }
+    await delay(750)
+  }
+  throw new Error(`Agent App shopping browser did not render final checkout: ${JSON.stringify(lastState)}`)
 }
 
 async function findChromeExecutable() {
