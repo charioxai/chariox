@@ -304,6 +304,7 @@ Validation requirements:
   validation drills may use provider CLIs plus mounted or runner-provided
   provider CLI credentials and Arroba credentials so the full hosted-container
   and local-runtime pipelines can be tested with real providers.
-- OpenCode validation is currently blocked and is outside this goal. Agent Apps
-  validation should proceed with the available real providers; OpenCode should
-  be reintroduced as a separate validation target once the blocker is resolved.
+- OpenCode validation is currently blocked and is explicitly outside this goal
+  and its completion criteria. Agent Apps validation should proceed with the
+  available real providers; OpenCode should be reintroduced as a separate
+  validation target once the blocker is resolved.
