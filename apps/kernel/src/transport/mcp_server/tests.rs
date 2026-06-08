@@ -220,6 +220,12 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
         .iter()
         .any(|tool| tool["name"] == "arroba.slice_find_text"));
     assert!(tools.iter().any(|tool| tool["name"] == "slice_mouse"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_browser_status"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "slice_browser_status"));
 }
 
 #[cfg(unix)]

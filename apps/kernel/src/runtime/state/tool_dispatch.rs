@@ -224,6 +224,12 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::SLICE_KEYBOARD_TOOL
                     | crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
                     | crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL
+                    | crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL
             ) {
                 return self
                     .dispatch_slice_runtime_tool_call(
