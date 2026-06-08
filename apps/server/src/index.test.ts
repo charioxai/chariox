@@ -1657,7 +1657,7 @@ test("human HTTP status page renders split trace viewer and sandboxed HTML outpu
     assert.match(response.body, /events\.addEventListener\('trace'/)
     assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals'\)/)
     assert.match(response.body, /frame\.srcdoc = renderable\.html/)
-    assert.match(response.body, /frame\.src = renderable\.src/)
+    assert.match(response.body, /frame\.src = publicationUrl\(renderable\.src\)/)
     assert.match(response.body, /parsed\.kind === 'response'/)
   } finally {
     await app.close()
@@ -1879,6 +1879,7 @@ test("agent app final response effects overlay generated files for serve mode", 
     assert.match(invoke.body, /initialTraces/)
     assert.match(invoke.body, /Checkout ready with three products/)
     assert.match(invoke.body, /cart.checkout ok/)
+    assert.match(invoke.body, /frame\.src = publicationUrl\(renderable\.src\)/)
 
     const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html" })
     assert.equal(checkout.statusCode, 200)

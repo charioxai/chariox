@@ -40,10 +40,11 @@ export function publicationViewerResultPage(
   invocationRequestId?: string,
 ) {
   const workflowRunId = result.workflow_run?.id ?? null
-  const eventsUrl = workflowRunId && !isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
-    ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
-    : result.queued && invocationRequestId
+  const terminal = isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
+  const eventsUrl = invocationRequestId && (result.queued || (workflowRunId && !terminal))
       ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
+      : workflowRunId && !terminal
+        ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
       : null
   return publicationViewerPage(publication, { result, eventsUrl })
 }
@@ -339,7 +340,7 @@ function renderFinalOutput(message) {
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
     if (renderable.html !== null) frame.srcdoc = renderable.html;
-    if (renderable.src !== null) frame.src = renderable.src;
+    if (renderable.src !== null) frame.src = publicationUrl(renderable.src);
     htmlOutputEl.append(frame);
     return;
   }

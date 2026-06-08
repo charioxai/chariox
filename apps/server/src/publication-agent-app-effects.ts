@@ -42,7 +42,7 @@ export function registerAgentAppWorkflowRunEffects(
   if (!effects) return
   for (const asset of effects.overlay) {
     const stored = normalizeStoredAsset(asset)
-    if (!stored || !routeAllowsOverlay(route, stored.path)) continue
+    if (!stored || !publicationAllowsOverlay(publication, route, stored.path)) continue
     store.overlays.set(stored.path, stored)
   }
   if (publication.agent_app.persistent_patch?.enabled === true && route?.manipulation?.level === "persistent_patch") {
@@ -52,6 +52,15 @@ export function registerAgentAppWorkflowRunEffects(
       store.persistentPatches.set(stored.path, stored)
     }
   }
+}
+
+function publicationAllowsOverlay(
+  publication: WorkflowPublicationConfig,
+  route: AgentAppRouteConfig | undefined,
+  path: string,
+): boolean {
+  if (route) return routeAllowsOverlay(route, path)
+  return (publication.agent_app?.routes ?? []).some((candidate) => routeAllowsOverlay(candidate, path))
 }
 
 export function resolveAgentAppEffectAsset(

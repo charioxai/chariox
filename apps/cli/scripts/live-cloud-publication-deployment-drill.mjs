@@ -978,16 +978,34 @@ async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
   while (Date.now() < deadline) {
     const evaluated = await withTimeout(cdp.send('Runtime.evaluate', {
       returnByValue: true,
-      expression: `(() => {
+      awaitPromise: true,
+      expression: `(async () => {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const iframe = document.querySelector('#html-output iframe');
         const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
+        const iframeSrc = iframe?.getAttribute('src') || '';
+        let fetchedHtml = '';
+        let fetchStatus = null;
+        if (!iframeSrcdoc && iframeSrc) {
+          try {
+            const response = await fetch(iframeSrc, { cache: 'no-store' });
+            fetchStatus = response.status;
+            fetchedHtml = await response.text();
+          } catch (error) {
+            fetchedHtml = String(error?.message || error);
+          }
+        }
+        const iframeDocumentHtml = iframe?.contentDocument?.documentElement?.outerHTML || '';
+        const renderedHtml = iframeSrcdoc || fetchedHtml || iframeDocumentHtml;
         const traceText = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => item.textContent || '').join('\\n');
         const required = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips'];
-        const missing = required.filter((snippet) => !iframeSrcdoc.includes(snippet));
+        const missing = required.filter((snippet) => !renderedHtml.includes(snippet));
         return {
           status,
           missing,
+          iframeSrc,
+          fetchStatus,
+          renderedLength: renderedHtml.length,
           traceText,
           traceCount: document.querySelectorAll('#trace-feed .trace-item').length,
           actionTraceOk: traceText.includes('agent_app_action') || traceText.includes('arroba.agent_app_action') || traceText.includes('cart.add'),
@@ -997,7 +1015,12 @@ async function waitForAgentAppShoppingFinal(cdp, timeoutMs) {
     }), 15_000, 'Agent App shopping Runtime.evaluate')
     lastState = evaluated.result?.value ?? null
     if (lastState?.ok) return lastState
-    if (lastState?.status === 'Completed' && Array.isArray(lastState?.missing) && lastState.missing.length > 0) {
+    if (
+      lastState?.status === 'Completed'
+      && Number(lastState?.renderedLength ?? 0) > 0
+      && Array.isArray(lastState?.missing)
+      && lastState.missing.length > 0
+    ) {
       throw new Error(`Agent App shopping completed without checkout snippets: ${JSON.stringify(lastState)}`)
     }
     await delay(750)
