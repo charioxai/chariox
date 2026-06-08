@@ -1517,6 +1517,7 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /subscribeHumanHttpEvents\(viewerConfig\.eventsUrl\)/)
     assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
+    assert.match(response.body, /parts\[0\] === 'publication-ingress'/)
     assert.match(response.body, /run-1/)
     assert.deepEqual(seenInput, { prompt: "make tea" })
   } finally {

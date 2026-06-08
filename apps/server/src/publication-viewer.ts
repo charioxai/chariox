@@ -393,6 +393,7 @@ function publicationWebSocketUrl(path) {
 function publicationIngressPrefix() {
   const parts = window.location.pathname.split('/').filter(Boolean);
   if (!parts.length) return '';
+  if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts[0] + '/' + parts[1];
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
   if (routeFirst && parts[0] === routeFirst) return '';
   if (!routeFirst && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
