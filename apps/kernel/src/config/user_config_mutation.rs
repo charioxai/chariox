@@ -265,6 +265,13 @@ impl ArrobaUserConfig {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
             }
+            "credential_vault.agent_management" => {
+                self.credential_vault.agent_management =
+                    crate::config::CredentialVaultAgentManagementPolicy::parse(
+                        "credential_vault.agent_management",
+                        &value,
+                    )?
+            }
             "providers.workspace_live_sync" => {
                 self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::from_mode(
                     WorkspaceLiveSyncMode::parse_config_policy(&value)?,
@@ -375,6 +382,10 @@ impl ArrobaUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
+            "credential_vault.agent_management" => {
+                self.credential_vault.agent_management =
+                    crate::config::CredentialVaultAgentManagementPolicy::default()
+            }
             "providers.workspace_live_sync" => {
                 self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::default()
             }

@@ -197,6 +197,8 @@ impl KernelRuntimeState {
             if matches!(
                 canonical_tool_name,
                 crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
+                    | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
+                    | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
                     | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
                     | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
                     | crate::transport::runtime_tools::REQUEST_POPUP_TOOL

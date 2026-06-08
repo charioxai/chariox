@@ -57,6 +57,28 @@ test("focused interaction choice submit reports response failures", async () => 
   assert.equal(harness.footerMessages().at(-1)?.tone, "error")
 })
 
+test("focused interaction choice clears secret custom replies on submit", async () => {
+  const harness = createHarness({ interaction: interactionFixture({ customInputKind: "secret" }) })
+  harness.selectedIndexes.set("interaction-1", 2)
+  harness.customReplies.set("interaction-1", "secret-value")
+  harness.customEditing.add("interaction-1")
+
+  assert.equal(await harness.controller.submitChoice(), true)
+
+  assert.deepEqual(harness.responses(), [{
+    sessionId: "session-1",
+    interactionId: "interaction-1",
+    choiceId: "custom",
+    customReply: "secret-value",
+  }])
+  assert.equal(harness.customReplies.has("interaction-1"), false)
+  assert.deepEqual(harness.customReplyDeletes(), ["interaction-1"])
+  assert.deepEqual(harness.customEditingValues().filter((value) => !value.editing), [{
+    interactionId: "interaction-1",
+    editing: false,
+  }])
+})
+
 test("focused interaction choice cycle updates selection and exits custom editing", () => {
   const harness = createHarness()
   harness.selectedIndexes.set("interaction-1", 2)
@@ -171,7 +193,9 @@ function createHarness(options: {
   }
 }
 
-function interactionFixture(): RuntimeInteraction {
+function interactionFixture(options: {
+  customInputKind?: "text" | "secret" | null
+} = {}): RuntimeInteraction {
   return {
     id: "interaction-1",
     agent_id: "agent-1",
@@ -187,6 +211,7 @@ function interactionFixture(): RuntimeInteraction {
       label: "Custom",
       min_length: 2,
       max_length: 10,
+      ...(options.customInputKind !== undefined ? { input_kind: options.customInputKind } : {}),
     },
     requested_at_ms: 1,
   }

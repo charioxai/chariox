@@ -13,6 +13,7 @@ use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
     UserCredentialUse,
 };
+use crate::credential::ArrobaCredentialRegistry;
 use crate::error::DaemonError;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -61,6 +62,14 @@ pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
     vault_service: String,
     vault_store: Arc<dyn CredentialVaultStore>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultCredentialUpsertResult {
+    pub credential_id: String,
+    pub vault_key: String,
+    pub stored: bool,
+    pub metadata_path: PathBuf,
 }
 
 impl RuntimeSecretService {
@@ -291,6 +300,47 @@ impl RuntimeSecretService {
         validate_vault_key(key)?;
         self.vault_store
             .delete_secret(self.vault_service_name()?, key.trim())
+    }
+
+    pub fn upsert_vault_backed_credential_with_secret(
+        &self,
+        registry: &ArrobaCredentialRegistry,
+        credential: UserCredentialConfig,
+        secret: &str,
+        overwrite: bool,
+    ) -> Result<VaultCredentialUpsertResult, DaemonError> {
+        let vault_key = match &credential.source {
+            UserCredentialSourceConfig::Vault { key } => key.trim().to_string(),
+            UserCredentialSourceConfig::Env { .. } | UserCredentialSourceConfig::File { .. } => {
+                return Err(secret_error(
+                    "credential_vault_upsert",
+                    "runtime-created credentials must use a vault source".to_string(),
+                ));
+            }
+        };
+        validate_vault_key(&vault_key)?;
+        if !overwrite && registry.get(&credential.id)?.is_some() {
+            return Err(secret_error(
+                "credential_vault_upsert",
+                format!(
+                    "credential `{}` already exists; pass overwrite=true to replace it",
+                    credential.id
+                ),
+            ));
+        }
+        self.set_vault_secret(&vault_key, secret)?;
+        match registry.upsert(credential.clone()) {
+            Ok((_credential, path)) => Ok(VaultCredentialUpsertResult {
+                credential_id: credential.id,
+                vault_key,
+                stored: true,
+                metadata_path: path,
+            }),
+            Err(error) => {
+                let _ = self.delete_vault_secret(&vault_key);
+                Err(error)
+            }
+        }
     }
 
     fn credential(&self, id: &str) -> Result<&UserCredentialConfig, DaemonError> {
@@ -847,6 +897,61 @@ mod tests {
             .to_string()
             .contains("not configured for browser input"));
         std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
+    }
+
+    #[test]
+    fn upsert_vault_backed_credential_stores_secret_and_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-vault-credential-upsert-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let registry = ArrobaCredentialRegistry::new(root.clone());
+        let vault = Arc::new(MemoryVaultStore::default());
+        let service = RuntimeSecretService::with_vault_store(Vec::new(), "arroba-test", vault);
+        let credential = UserCredentialConfig {
+            id: "generated-browser-password".to_string(),
+            description: Some("generated".to_string()),
+            source: UserCredentialSourceConfig::Vault {
+                key: "generated-browser-password".to_string(),
+            },
+            allowed_hosts: vec!["accounts.example.test".to_string()],
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+        };
+
+        let result = service
+            .upsert_vault_backed_credential_with_secret(
+                &registry,
+                credential.clone(),
+                "secret-value",
+                false,
+            )
+            .expect("vault-backed credential should store");
+
+        assert_eq!(result.credential_id, "generated-browser-password");
+        assert_eq!(result.vault_key, "generated-browser-password");
+        assert_eq!(
+            registry
+                .get("generated-browser-password")
+                .expect("credential should read"),
+            Some(credential)
+        );
+        let resolving_service = RuntimeSecretService::with_vault_store(
+            vec![registry
+                .get("generated-browser-password")
+                .expect("credential should read")
+                .expect("credential should exist")],
+            "arroba-test",
+            service.vault_store.clone(),
+        );
+        assert_eq!(
+            resolving_service
+                .browser_secret_input("generated-browser-password")
+                .expect("stored secret should resolve"),
+            "secret-value"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

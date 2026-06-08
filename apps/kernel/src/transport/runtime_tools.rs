@@ -33,6 +33,10 @@ pub const SEARCH_RECALL_TOOL: &str = "arroba.search_recall";
 pub const QUERY_RECALL_TOOL: &str = "arroba.query_recall";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "arroba.list_credential_handles";
 pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
+pub const CREATE_GENERATED_CREDENTIAL_TOOL: &str = "arroba.create_generated_credential";
+pub const CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS: &str = "create_generated_credential";
+pub const REQUEST_CREDENTIAL_SECRET_TOOL: &str = "arroba.request_credential_secret";
+pub const REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS: &str = "request_credential_secret";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "arroba.http_request_with_credential";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS: &str = "http_request_with_credential";
 pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
@@ -215,6 +219,64 @@ pub struct QueryRecallArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCredentialConfigInput {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::config::UserCredentialSourceConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_uses: Vec<crate::config::UserCredentialUse>,
+    pub injection: crate::config::UserCredentialInjectionConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateGeneratedCredentialArgs {
+    pub credential: RuntimeCredentialConfigInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<GeneratedCredentialSecretGeneratorArgs>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratedCredentialSecretGeneratorArgs {
+    #[serde(default = "default_generated_secret_kind")]
+    pub kind: String,
+    #[serde(default = "default_generated_secret_length")]
+    pub length: usize,
+    #[serde(default = "default_generated_secret_symbols")]
+    pub symbols: bool,
+    #[serde(default)]
+    pub avoid_ambiguous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestCredentialSecretArgs {
+    pub credential: RuntimeCredentialConfigInput,
+    pub prompt: RequestCredentialSecretPromptArgs,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestCredentialSecretPromptArgs {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpRequestWithCredentialArgs {
     pub credential_id: String,
     pub url: String,
@@ -334,6 +396,18 @@ pub struct SliceOpenUrlArgs {
 }
 
 fn default_append_newline() -> bool {
+    true
+}
+
+fn default_generated_secret_kind() -> String {
+    "password".to_string()
+}
+
+fn default_generated_secret_length() -> usize {
+    32
+}
+
+fn default_generated_secret_symbols() -> bool {
     true
 }
 
@@ -551,6 +625,55 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: CREATE_GENERATED_CREDENTIAL_TOOL.to_string(),
+            description: "Create or update a vault-backed Arroba credential handle with a kernel-generated random password. The generated secret is stored in the vault and is never returned to the model.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential"],
+                "properties": {
+                    "credential": credential_creation_schema(),
+                    "generator": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["password"]},
+                            "length": {"type": "integer", "minimum": 12, "maximum": 256},
+                            "symbols": {"type": "boolean"},
+                            "avoid_ambiguous": {"type": "boolean"}
+                        },
+                        "additionalProperties": false
+                    },
+                    "overwrite": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
+            description: "Ask the user for a credential secret through a redacted Arroba interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["credential", "prompt"],
+                "properties": {
+                    "credential": credential_creation_schema(),
+                    "prompt": {
+                        "type": "object",
+                        "required": ["message"],
+                        "properties": {
+                            "title": {"type": "string"},
+                            "message": {"type": "string"},
+                            "placeholder": {"type": "string"},
+                            "min_length": {"type": "integer", "minimum": 1},
+                            "max_length": {"type": "integer", "minimum": 1},
+                            "timeout_sec": {"type": "integer", "minimum": 1}
+                        },
+                        "additionalProperties": false
+                    },
+                    "overwrite": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
             description: "Perform an HTTP request using an Arroba credential handle. Arroba resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
             input_schema: serde_json::json!({
@@ -668,9 +791,59 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     specs
 }
 
+fn credential_creation_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["id", "injection"],
+        "properties": {
+            "id": {"type": "string"},
+            "description": {"type": "string"},
+            "source": {
+                "type": "object",
+                "required": ["type", "key"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["vault"]},
+                    "key": {"type": "string"}
+                },
+                "additionalProperties": false
+            },
+            "allowed_hosts": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "allowed_uses": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["http", "pty", "connector", "browser", "mcp"]
+                }
+            },
+            "injection": {
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["header", "query", "basic", "hmac", "pty", "browser"]
+                    },
+                    "name": {"type": "string"},
+                    "value": {"type": "string"},
+                    "username": {"type": "string"},
+                    "timestamp_header": {"type": "string"},
+                    "signature_header": {"type": "string"}
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
 fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     let alias = match spec.name.as_str() {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
+        CREATE_GENERATED_CREDENTIAL_TOOL => CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS,
+        REQUEST_CREDENTIAL_SECRET_TOOL => REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
@@ -690,6 +863,18 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_list_credential_handles"
         | "mcp__arroba__list_credential_handles"
         | "mcp__arroba__arroba_list_credential_handles" => Some(LIST_CREDENTIAL_HANDLES_TOOL),
+        CREATE_GENERATED_CREDENTIAL_TOOL
+        | CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS
+        | "arroba_create_generated_credential"
+        | "mcp__arroba__create_generated_credential"
+        | "mcp__arroba__arroba_create_generated_credential" => {
+            Some(CREATE_GENERATED_CREDENTIAL_TOOL)
+        }
+        REQUEST_CREDENTIAL_SECRET_TOOL
+        | REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS
+        | "arroba_request_credential_secret"
+        | "mcp__arroba__request_credential_secret"
+        | "mcp__arroba__arroba_request_credential_secret" => Some(REQUEST_CREDENTIAL_SECRET_TOOL),
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL
         | HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS
         | "arroba_http_request_with_credential"

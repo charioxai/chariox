@@ -701,6 +701,7 @@ export type RuntimeInteractionCustomChoice = {
   placeholder?: string | null
   min_length?: number | null
   max_length?: number | null
+  input_kind?: "text" | "secret" | null
 }
 
 export type RequestNativeProviderInteractionRequest = {
@@ -1299,7 +1300,7 @@ export type RuntimeProviderRun = {
   }[]
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 120
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 121
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

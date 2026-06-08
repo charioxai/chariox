@@ -21,8 +21,9 @@ mod user_config_schema;
 mod validation;
 
 pub use credentials::{
-    validate_credentials, CredentialVaultBackend, UserCredentialConfig,
-    UserCredentialInjectionConfig, UserCredentialSourceConfig, UserCredentialUse,
+    validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
+    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
+    UserCredentialUse,
     UserCredentialVaultConfig,
 };
 #[cfg(test)]

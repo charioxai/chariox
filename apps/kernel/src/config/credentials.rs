@@ -31,6 +31,8 @@ pub struct UserCredentialVaultConfig {
     pub backend: CredentialVaultBackend,
     #[serde(default = "default_credential_vault_service")]
     pub service: String,
+    #[serde(default)]
+    pub agent_management: CredentialVaultAgentManagementPolicy,
 }
 
 impl Default for UserCredentialVaultConfig {
@@ -38,6 +40,7 @@ impl Default for UserCredentialVaultConfig {
         Self {
             backend: default_credential_vault_backend(),
             service: default_credential_vault_service(),
+            agent_management: CredentialVaultAgentManagementPolicy::default(),
         }
     }
 }
@@ -52,6 +55,35 @@ impl UserCredentialVaultConfig {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultBackend {
     OsKeychain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialVaultAgentManagementPolicy {
+    Allow,
+    Deny,
+}
+
+impl Default for CredentialVaultAgentManagementPolicy {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
+impl CredentialVaultAgentManagementPolicy {
+    pub(crate) fn parse(
+        field: &'static str,
+        value: &str,
+    ) -> Result<Self, DaemonError> {
+        match value.trim() {
+            "allow" => Ok(Self::Allow),
+            "deny" => Ok(Self::Deny),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "unsupported credential vault agent management policy",
+            }),
+        }
+    }
 }
 
 fn default_credential_vault_backend() -> CredentialVaultBackend {

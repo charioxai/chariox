@@ -79,6 +79,14 @@ export function createFocusedInteractionChoiceController(
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
+    const submittedSecret = interaction.custom_choice
+      && submitDecision.selectedIndex === interactionCustomChoiceIndex(interaction)
+      && interaction.custom_choice.input_kind === "secret"
+    if (submittedSecret) {
+      deps.clearCustomReply(interaction.id)
+      deps.setCustomEditing(interaction.id, false)
+      repaintInteractions()
+    }
     try {
       const session = await deps.respondToInteraction(
         deps.getSessionId(),
@@ -87,8 +95,10 @@ export function createFocusedInteractionChoiceController(
         submitDecision.customReply,
       )
       deps.applySessionState(session)
-      deps.clearCustomReply(interaction.id)
-      deps.setCustomEditing(interaction.id, false)
+      if (!submittedSecret) {
+        deps.clearCustomReply(interaction.id)
+        deps.setCustomEditing(interaction.id, false)
+      }
       deps.flashFooter("interaction answered", "info")
       return true
     } catch (error) {

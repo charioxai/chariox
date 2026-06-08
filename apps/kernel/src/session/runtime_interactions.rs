@@ -76,6 +76,8 @@ pub struct RuntimeInteractionCustomChoice {
     min_length: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "runtime_interaction_input_kind_is_text")]
+    input_kind: RuntimeInteractionInputKind,
 }
 
 impl RuntimeInteractionCustomChoice {
@@ -92,6 +94,24 @@ impl RuntimeInteractionCustomChoice {
             placeholder,
             min_length,
             max_length,
+            input_kind: RuntimeInteractionInputKind::Text,
+        }
+    }
+
+    pub fn secret(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: Option<String>,
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            placeholder,
+            min_length,
+            max_length,
+            input_kind: RuntimeInteractionInputKind::Secret,
         }
     }
 
@@ -114,6 +134,27 @@ impl RuntimeInteractionCustomChoice {
     pub fn max_length(&self) -> Option<usize> {
         self.max_length
     }
+
+    pub fn input_kind(&self) -> RuntimeInteractionInputKind {
+        self.input_kind
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionInputKind {
+    Text,
+    Secret,
+}
+
+impl Default for RuntimeInteractionInputKind {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
+fn runtime_interaction_input_kind_is_text(kind: &RuntimeInteractionInputKind) -> bool {
+    *kind == RuntimeInteractionInputKind::Text
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

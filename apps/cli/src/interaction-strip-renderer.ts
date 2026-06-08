@@ -8,6 +8,7 @@ import type {
   AgentInstance,
   RuntimeInteraction,
 } from "./cli-types.js"
+import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
 import { theme } from "./theme.js"
 
 type InteractionStripRenderOptions = {
@@ -127,7 +128,11 @@ function renderInteractionChoices(
     const editing = options.customEditing(interaction.id)
     const value = options.customReply(interaction.id)
     const placeholder = interaction.custom_choice.placeholder ?? "type another option"
-    const renderedValue = value ? value : `<${placeholder}>`
+    const renderedValue = renderInteractionCustomChoiceValue(
+      value,
+      placeholder,
+      interaction.custom_choice.input_kind,
+    )
     text.content = `${selected ? ">" : " "} ${index + 1}.${interaction.custom_choice.label}: ${renderedValue}${editing ? "_" : ""}`
     text.fg = selected ? theme.background : theme.primary
     text.bg = selected ? theme.primary : undefined

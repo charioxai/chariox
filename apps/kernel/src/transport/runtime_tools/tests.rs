@@ -97,6 +97,18 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
     }
 
     #[test]
@@ -152,6 +164,14 @@ mod workspace_live_sync_tests {
 
     #[test]
     fn canonical_credential_tool_name_accepts_browser_paste_aliases() {
+        assert_eq!(
+            canonical_credential_tool_name("mcp__arroba__arroba_create_generated_credential"),
+            Some(CREATE_GENERATED_CREDENTIAL_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("request_credential_secret"),
+            Some(REQUEST_CREDENTIAL_SECRET_TOOL)
+        );
         assert_eq!(
             canonical_credential_tool_name("paste_secret_to_slice"),
             Some(PASTE_SECRET_TO_SLICE_TOOL)

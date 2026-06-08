@@ -430,6 +430,7 @@ export type RuntimeInteractionCustomChoice = {
   placeholder?: string | null
   min_length?: number | null
   max_length?: number | null
+  input_kind?: "text" | "secret" | null
 }
 
 export type SessionConfigState = {

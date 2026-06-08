@@ -6,7 +6,8 @@ pub use super::prompt_queue::{
 };
 pub use super::runtime_interactions::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionKind, RuntimeInteractionLevel,
+    RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
+    RuntimeInteractionLevel,
 };
 pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
