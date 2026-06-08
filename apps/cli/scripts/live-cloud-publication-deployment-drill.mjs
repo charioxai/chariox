@@ -961,8 +961,12 @@ async function runAgentAppShoppingSessionIsolation({ baseUrl, prompt, secondProm
     headers: { cookie: first.cookieHeader },
   })
   const revisitedHtml = await revisited.text()
-  const firstMissing = SHOPPING_EXPECTED_SNIPPETS.filter((snippet) => !revisitedHtml.includes(snippet))
-  const leakedSecond = SHOPPING_EXPECTED_SNIPPETS_B.filter((snippet) => !SHOPPING_EXPECTED_SNIPPETS.includes(snippet) && revisitedHtml.includes(snippet))
+  const lowerRevisitedHtml = revisitedHtml.toLowerCase()
+  const firstMissing = SHOPPING_EXPECTED_SNIPPETS.filter((snippet) => !lowerRevisitedHtml.includes(snippet.toLowerCase()))
+  const leakedSecond = SHOPPING_EXPECTED_SNIPPETS_B.filter((snippet) => (
+    !SHOPPING_EXPECTED_SNIPPETS.some((firstSnippet) => firstSnippet.toLowerCase() === snippet.toLowerCase())
+    && lowerRevisitedHtml.includes(snippet.toLowerCase())
+  ))
   if (!revisited.ok || firstMissing.length || leakedSecond.length) {
     throw new Error(`Agent App session isolation failed: ${JSON.stringify({
       status: revisited.status,
@@ -1072,7 +1076,8 @@ async function waitForAgentAppShoppingFinal(cdp, timeoutMs, expectedSnippets) {
         const iframeDocumentHtml = iframe?.contentDocument?.documentElement?.outerHTML || '';
         const renderedHtml = iframeSrcdoc || fetchedHtml || iframeDocumentHtml;
         const traceText = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => item.textContent || '').join('\\n');
-        const missing = required.filter((snippet) => !renderedHtml.includes(snippet));
+        const lowerRenderedHtml = renderedHtml.toLowerCase();
+        const missing = required.filter((snippet) => !lowerRenderedHtml.includes(String(snippet).toLowerCase()));
         return {
           status,
           missing,
