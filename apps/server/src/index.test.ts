@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
@@ -1778,6 +1779,91 @@ test("agent app overlay effects cannot write protected paths", async () => {
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app action proxy only exposes route-allowed manifest actions", async () => {
+  const actionCalls: unknown[] = []
+  const actionServer = createServer((request, response) => {
+    const chunks: Buffer[] = []
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as unknown
+      actionCalls.push(body)
+      response.writeHead(200, { "content-type": "application/json" })
+      response.end(JSON.stringify({ ok: true, body }))
+    })
+  })
+  await new Promise<void>((resolve) => actionServer.listen(0, "127.0.0.1", resolve))
+  const address = actionServer.address()
+  assert.ok(address && typeof address === "object")
+  const actionUrl = `http://127.0.0.1:${address.port}/cart/add`
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-actions-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          allowed_actions: ["cart.add"],
+        },
+      }],
+      actions: {
+        "cart.add": {
+          input_schema: {
+            type: "object",
+            required: ["sku"],
+            properties: { sku: { type: "string" }, quantity: { type: "number" } },
+          },
+          transport: { kind: "http", method: "POST", url: actionUrl },
+        },
+        "cart.admin": {
+          transport: { kind: "http", method: "POST", url: actionUrl },
+        },
+      },
+    },
+  })
+
+  try {
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.add",
+      payload: { sku: "banana", quantity: 2 },
+    })
+    assert.equal(allowed.statusCode, 200)
+    assert.deepEqual(allowed.json(), { ok: true, body: { sku: "banana", quantity: 2 } })
+    assert.deepEqual(actionCalls, [{ sku: "banana", quantity: 2 }])
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.add",
+      payload: { quantity: 2 },
+    })
+    assert.equal(invalid.statusCode, 400)
+    assert.match(invalid.json().error, /missing required field sku/)
+    assert.equal(actionCalls.length, 1)
+
+    const forbidden = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.admin",
+      payload: { sku: "banana" },
+    })
+    assert.equal(forbidden.statusCode, 403)
+    assert.equal(actionCalls.length, 1)
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
+    await new Promise<void>((resolve) => actionServer.close(() => resolve()))
   }
 })
 

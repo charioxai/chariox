@@ -12,7 +12,11 @@ import {
 import {
   forwardHumanHttpResult,
 } from "./publication-human-http.js"
+import {
+  validateInput,
+} from "./publication-parser.js"
 import type {
+  AgentAppActionConfig,
   AgentAppRouteConfig,
   GatewayDeps,
   NormalizedInvocation,
@@ -32,6 +36,8 @@ type AgentAppRequest = {
   method: string
   url: string
   headers: Record<string, string | string[] | undefined>
+  params?: unknown
+  body?: unknown
 }
 
 type AgentAppReply = {
@@ -57,6 +63,11 @@ export function installAgentAppRoutes(
       handler: async (request, reply) => invokeAgentAppRoute(route, request, reply, publication, deps),
     })
   }
+  app.route({
+    method: "POST",
+    url: "/.well-known/arroba/agent-app/actions/:actionId",
+    handler: async (request, reply) => invokeAgentAppAction(request, reply, publication),
+  })
   app.get("/*", async (request, reply) => serveAgentAppAsset(request, reply, publication))
 }
 
@@ -89,12 +100,78 @@ async function invokeAgentAppRoute(
   return forwardHumanHttpResult(reply as never, publication, result, invocation.request_id)
 }
 
+async function invokeAgentAppAction(
+  request: AgentAppRequest,
+  reply: AgentAppReply,
+  publication: WorkflowPublicationConfig,
+) {
+  const actionId = (request.params as { actionId?: string } | undefined)?.actionId
+  if (!actionId) {
+    reply.code(400)
+    return { error: "agent app action id is required" }
+  }
+  if (!allowedAgentAppActions(publication).has(actionId)) {
+    reply.code(403)
+    return { error: "agent app action is not allowed by any wrapped route" }
+  }
+  const action = publication.agent_app?.actions?.[actionId]
+  if (!action) {
+    reply.code(404)
+    return { error: "agent app action not found" }
+  }
+  try {
+    validateInput(request.body ?? {}, action.input_schema)
+    const response = await invokeHttpAction(action, request.body ?? {})
+    reply.code(response.status).type(response.contentType)
+    return response.body
+  } catch (error) {
+    reply.code(400)
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function invokeHttpAction(
+  action: AgentAppActionConfig,
+  input: unknown,
+): Promise<{ status: number; contentType: string; body: unknown }> {
+  const transport = action.transport
+  if (transport?.kind !== "http" || !transport.url) {
+    throw new Error("agent app action requires http transport url")
+  }
+  const response = await fetch(transport.url, {
+    method: transport.method ?? "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  })
+  const contentType = response.headers.get("content-type") ?? "application/json; charset=utf-8"
+  const text = await response.text()
+  let body: unknown = text
+  if (contentType.includes("application/json")) {
+    try {
+      body = text ? JSON.parse(text) : null
+    } catch {
+      body = text
+    }
+  }
+  return { status: response.status, contentType, body }
+}
+
 function promptFromRoute(requestUrl: string, route: AgentAppRouteConfig): string {
   if (route.prompt_source !== "path_tail") return ""
   const path = new URL(requestUrl, "http://agent-app.local").pathname
   const routePrefix = route.path.endsWith("*") ? route.path.slice(0, -1) : route.path
   if (!path.startsWith(routePrefix)) return ""
   return decodeURIComponent(path.slice(routePrefix.length).replace(/^\/+/, ""))
+}
+
+function allowedAgentAppActions(publication: WorkflowPublicationConfig): Set<string> {
+  const allowed = new Set<string>()
+  for (const route of publication.agent_app?.routes ?? []) {
+    for (const actionId of route.manipulation?.allowed_actions ?? []) {
+      allowed.add(actionId)
+    }
+  }
+  return allowed
 }
 
 async function serveAgentAppAsset(
