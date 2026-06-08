@@ -213,8 +213,10 @@ session or invocation overlay
 
 - Live validation drills:
   - hosted-container Agent App with real provider CLIs and development-mounted
-    provider/Arroba credentials
-  - local-runtime ingress Agent App with the same package
+    provider/Arroba credentials for available providers. OpenCode is blocked
+    and explicitly excluded from this goal's validation criteria.
+  - local-runtime ingress Agent App with the same package and available
+    providers, excluding blocked OpenCode
   - browser GET prompt path returns streaming shell, traces, partials, and final
     rendered app view
   - app action drill: prompt modifies app state through allowed action
