@@ -32,6 +32,8 @@ pub struct CredentialHandleView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_uses: Vec<UserCredentialUse>,
     pub injection_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<crate::config::UserCredentialMetadataConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,7 @@ impl RuntimeSecretService {
                 allowed_hosts: credential.allowed_hosts.clone(),
                 allowed_uses: credential.allowed_uses.clone(),
                 injection_kind: injection_kind(&credential.injection).to_string(),
+                metadata: credential.metadata.clone(),
             })
             .collect()
     }
@@ -688,6 +691,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         }]);
 
         let serialized = serde_json::to_string(&service.list_handles()).unwrap();
@@ -740,6 +744,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         }]);
 
         let response = service
@@ -780,6 +785,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         }]);
 
         let error = service
@@ -814,6 +820,7 @@ mod tests {
             allowed_hosts: vec!["accounts.google.com".to_string()],
             allowed_uses: vec![UserCredentialUse::Browser],
             injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
         }]);
 
         let error = service
@@ -839,6 +846,7 @@ mod tests {
             allowed_hosts: Vec::new(),
             allowed_uses: vec![UserCredentialUse::Pty],
             injection: UserCredentialInjectionConfig::Pty,
+            metadata: None,
         }]);
 
         assert_eq!(
@@ -863,6 +871,7 @@ mod tests {
             allowed_hosts: Vec::new(),
             allowed_uses: vec![UserCredentialUse::Browser],
             injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
         }]);
 
         assert_eq!(
@@ -890,6 +899,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         }]);
 
         let error = service
@@ -920,6 +930,7 @@ mod tests {
             allowed_hosts: vec!["accounts.example.test".to_string()],
             allowed_uses: vec![UserCredentialUse::Browser],
             injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
         };
 
         let result = service
@@ -969,6 +980,7 @@ mod tests {
                 allowed_hosts: Vec::new(),
                 allowed_uses: vec![UserCredentialUse::Pty],
                 injection: UserCredentialInjectionConfig::Pty,
+                metadata: None,
             }],
             "arroba-test",
             vault,
@@ -1017,6 +1029,7 @@ mod tests {
                 allowed_hosts: vec!["workspace".to_string()],
                 allowed_uses: vec![UserCredentialUse::Browser],
                 injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
             }],
             &config,
         )

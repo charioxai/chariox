@@ -246,6 +246,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         };
         registry.upsert(first).expect("first upsert should write");
 
@@ -258,6 +259,7 @@ mod tests {
             allowed_hosts: Vec::new(),
             allowed_uses: vec![UserCredentialUse::Browser],
             injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
         };
         registry
             .upsert(second.clone())

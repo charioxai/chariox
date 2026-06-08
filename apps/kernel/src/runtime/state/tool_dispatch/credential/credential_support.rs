@@ -66,9 +66,33 @@ pub(super) fn credential_from_runtime_input(
         allowed_hosts: input.allowed_hosts,
         allowed_uses: input.allowed_uses,
         injection: input.injection,
+        metadata: None,
     };
     crate::config::validate_credentials(std::slice::from_ref(&credential))?;
     Ok(credential)
+}
+
+pub(super) fn stamp_runtime_credential_metadata(
+    mut credential: crate::config::UserCredentialConfig,
+    provider_run: &crate::provider::RuntimeProviderRun,
+) -> crate::config::UserCredentialConfig {
+    let now_ms = crate::session::unix_epoch_ms();
+    let vault_key = match &credential.source {
+        crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
+        crate::config::UserCredentialSourceConfig::Env { .. }
+        | crate::config::UserCredentialSourceConfig::File { .. } => None,
+    };
+    credential.metadata = Some(crate::config::UserCredentialMetadataConfig {
+        created_by_kind: Some("agent".to_string()),
+        created_by_id: provider_run.agent_instance_id().map(ToOwned::to_owned),
+        session_id: Some(provider_run.session_id().to_string()),
+        provider: Some(provider_run.provider().to_string()),
+        provider_run_id: Some(provider_run.id().to_string()),
+        vault_key,
+        created_at_ms: Some(now_ms),
+        updated_at_ms: Some(now_ms),
+    });
+    credential
 }
 
 pub(super) fn generate_credential_secret(
@@ -105,4 +129,42 @@ pub(super) fn generate_credential_secret(
             chars[index]
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_credential_metadata_records_agent_provenance_without_secret() {
+        let credential = crate::config::UserCredentialConfig {
+            id: "gmail-login".to_string(),
+            description: Some("Gmail credential".to_string()),
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "gmail-login".to_string(),
+            },
+            allowed_hosts: vec!["accounts.google.com".to_string()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        };
+        let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "run-123",
+            "session-123".to_string(),
+            Some("agent-123".to_string()),
+            "codex".to_string(),
+        );
+
+        let credential = stamp_runtime_credential_metadata(credential, &provider_run);
+        let metadata = credential.metadata.expect("metadata");
+
+        assert_eq!(metadata.created_by_kind.as_deref(), Some("agent"));
+        assert_eq!(metadata.created_by_id.as_deref(), Some("agent-123"));
+        assert_eq!(metadata.session_id.as_deref(), Some("session-123"));
+        assert_eq!(metadata.provider.as_deref(), Some("codex"));
+        assert_eq!(metadata.provider_run_id.as_deref(), Some("run-123"));
+        assert_eq!(metadata.vault_key.as_deref(), Some("gmail-login"));
+        assert!(metadata.created_at_ms.is_some());
+        assert_eq!(metadata.updated_at_ms, metadata.created_at_ms);
+    }
 }

@@ -961,6 +961,7 @@ mod tests {
                 name: "authorization".to_string(),
                 value: "Bearer ${secret}".to_string(),
             },
+            metadata: None,
         };
         std::fs::write(&source, serde_yaml::to_string(&credential).unwrap()).unwrap();
         registry.install_from_file(&source).unwrap();

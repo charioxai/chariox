@@ -877,6 +877,7 @@ command: any-adapter-command
             injection: UserCredentialInjectionConfig::Basic {
                 username: "user".to_string(),
             },
+            metadata: None,
         }
     }
 }

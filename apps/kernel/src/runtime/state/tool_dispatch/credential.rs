@@ -47,7 +47,10 @@ impl KernelRuntimeState {
                     },
                 );
                 let secret = generate_credential_secret(&generator)?;
-                let credential = credential_from_runtime_input(args.credential)?;
+                let credential = stamp_runtime_credential_metadata(
+                    credential_from_runtime_input(args.credential)?,
+                    provider_run,
+                );
                 let registry = crate::credential::ArrobaCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
@@ -74,7 +77,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_request_credential_secret",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let credential = credential_from_runtime_input(args.credential)?;
+                let credential = stamp_runtime_credential_metadata(
+                    credential_from_runtime_input(args.credential)?,
+                    provider_run,
+                );
                 let vault_key = match &credential.source {
                     crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
                     crate::config::UserCredentialSourceConfig::Env { .. }

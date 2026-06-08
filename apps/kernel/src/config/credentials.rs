@@ -15,6 +15,28 @@ pub struct UserCredentialConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_uses: Vec<UserCredentialUse>,
     pub injection: UserCredentialInjectionConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<UserCredentialMetadataConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserCredentialMetadataConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
