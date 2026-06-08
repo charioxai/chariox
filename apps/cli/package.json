@@ -20,6 +20,7 @@
     "connector-extension:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-connector-extension-drill.mjs",
     "connector-extension-agent:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-connector-extension-agent-drill.mjs",
     "runtime-register-extension:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-runtime-register-extension-drill.mjs",
+    "runtime-register-mcp-use:drill": "pnpm --filter @arroba/kernel-client run build && node scripts/live-runtime-register-mcp-use-drill.mjs",
     "workspace-live-sync:drill": "node scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5",
     "workspace-live-sync:managed-drill": "node scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --mode managed --managed-target-count 2",
     "workspace-live-sync:same-branch-tracked-drill": "node scripts/live-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --mode tracked --tracked-target-count 2 --tracked-bidirectional --target-branch main --timeout-ms 700000",
