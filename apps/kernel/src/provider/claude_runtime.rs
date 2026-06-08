@@ -129,6 +129,7 @@ pub(crate) fn drain_claude_events(
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
         match state.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
+                reject_unsupported_claude_tool_uses(run.id(), state, &value, &mut batch)?;
                 apply_claude_message(run.id(), state, value, &mut batch);
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
@@ -170,6 +171,57 @@ pub(crate) fn drain_claude_events(
     }
 
     Ok(batch)
+}
+
+fn reject_unsupported_claude_tool_uses(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+    value: &serde_json::Value,
+    batch: &mut ProviderPromptSignalBatch,
+) -> Result<(), DaemonError> {
+    let message = value.get("message").unwrap_or(value);
+    let Some(content) = message.get("content").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    let tool_results: Vec<serde_json::Value> = content
+        .iter()
+        .filter(|block| {
+            block
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool_use")
+        })
+        .filter_map(|block| {
+            let id = block.get("id").and_then(serde_json::Value::as_str)?;
+            let name = block
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            Some(json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "is_error": true,
+                "content": format!(
+                    "Arroba does not execute Claude stream-json tool `{name}` in this runtime path. If this is an Arroba workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
+                ),
+            }))
+        })
+        .collect();
+    if tool_results.is_empty() {
+        return Ok(());
+    }
+    let response = json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": tool_results,
+        }
+    });
+    write_json_line(&mut state.stdin, &response)?;
+    batch.notices.push(format!(
+        "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
+    ));
+    Ok(())
 }
 
 fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRuntimeState) -> bool {
@@ -246,8 +298,8 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        events::apply_claude_message, input::claude_user_content, ClaudeRuntimeState,
-        ProviderPromptSignalBatch,
+        events::apply_claude_message, input::claude_user_content,
+        reject_unsupported_claude_tool_uses, ClaudeRuntimeState, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -360,6 +412,35 @@ mod tests {
         assert_eq!(batch.completions.len(), 1);
         assert_eq!(batch.resolved_usage_tokens_total, Some(10));
         assert_eq!(state.active_turn_id, None);
+    }
+
+    #[test]
+    fn rejects_unsupported_claude_tool_use_without_completing_turn() {
+        let (mut state, mut batch) = parser_state();
+
+        reject_unsupported_claude_tool_uses(
+            "run-1",
+            &mut state,
+            &json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "ToolSearch",
+                        "input": { "query": "arroba workflow tools" }
+                    }]
+                }
+            }),
+            &mut batch,
+        )
+        .expect("tool-use rejection should write a tool result");
+
+        assert!(!batch.prompt_completed);
+        assert!(batch
+            .notices
+            .iter()
+            .any(|notice| notice.contains("Rejected unsupported Claude stream-json tool use")));
     }
 
     #[test]

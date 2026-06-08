@@ -50,6 +50,7 @@ const REAL_DASHBOARD_PROMPT = [
   'Keep the HTML under 1800 characters so it fits comfortably in one runtime tool call.',
   'This is the final workflow node: call the Arroba runtime MCP tool validate_and_submit_workflow_run_output directly with workflow_output_json set to {"kind":"html","html":"<full html document>"}.',
   'Do not use bash, python, node, or other provider tools to construct or submit this payload. After the runtime tool succeeds, emit the final fenced workflow JSON block with the same output.message object.',
+  'If the Arroba runtime MCP tool is unavailable, do not search for it: emit the final fenced workflow JSON block directly with output.message set to {"kind":"html","html":"<full html document>"}.',
 ].join(' ')
 
 function usage() {

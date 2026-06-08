@@ -18,7 +18,7 @@ const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
-const RUNTIME_NATIVE_TUI_WORKFLOW_FALLBACK: &str = "Native TUI workflow fallback:\nArroba runtime MCP tools may not be exposed as provider-native callable tools in this native TUI turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
+const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Workflow direct JSON fallback:\nArroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
 
 const WORKFLOW_TURN: &str = "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes a `handoff_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above, that `handoff_schema_ref`, and your proposed `output.message` JSON. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nDo not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Arroba runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements.";
 
@@ -219,12 +219,10 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
-        if mode == PromptAssemblyMode::NativeTuiProviderTurn
-            && additional_hidden_context
-                .is_some_and(|context| context.contains("Arroba workflow turn"))
+        if additional_hidden_context.is_some_and(|context| context.contains("Arroba workflow turn"))
         {
             self.push_template(
-                "runtime/native-tui-workflow-fallback",
+                "runtime/workflow-direct-json-fallback",
                 &mut hidden_fragments,
                 &mut manifest,
             )?;
@@ -324,8 +322,8 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             RUNTIME_MCP_SKILL_CONTINUATION,
         ),
         BundledPromptTemplate::new(
-            "runtime/native-tui-workflow-fallback",
-            RUNTIME_NATIVE_TUI_WORKFLOW_FALLBACK,
+            "runtime/workflow-direct-json-fallback",
+            RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK,
         ),
         BundledPromptTemplate::new("workflow/turn", WORKFLOW_TURN),
         BundledPromptTemplate::new("workflow/run-completion", WORKFLOW_RUN_COMPLETION),
@@ -500,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tui_workflow_turns_include_direct_json_fallback() {
+    fn workflow_turns_include_direct_json_fallback() {
         let root = temp_prompt_root("native-workflow-fallback");
         let registry = PromptTemplateRegistry::new(root);
         registry
@@ -514,7 +512,7 @@ mod tests {
                 "visible prompt",
                 Some("You are an agent participating in an Arroba workflow turn."),
                 Vec::new(),
-                PromptAssemblyMode::NativeTuiProviderTurn,
+                PromptAssemblyMode::NormalProviderTurn,
             )
             .expect("envelope should assemble");
 
@@ -525,7 +523,7 @@ mod tests {
             .manifest
             .entries
             .iter()
-            .any(|entry| entry.template_id == "runtime/native-tui-workflow-fallback"));
+            .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback"));
     }
 
     #[test]
