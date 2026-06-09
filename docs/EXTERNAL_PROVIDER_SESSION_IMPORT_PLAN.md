@@ -34,6 +34,22 @@ The effective import mode is derived from those flags:
 - **Tier 2, observed history**: Arroba can read provider history at import time and keep observing imported external sessions for new provider-native turns. New external turns are projected into Arroba transcripts as observed records, but they are not kernel-managed prompts and cannot use kernel-owned prompt features.
 - **Tier 1, resume only**: Arroba can create a new managed provider run using provider resume state, but cannot observe new external activity until the user interacts through Arroba.
 
+## Existing Native TUI Architecture Grounding
+
+Arroba already has provider-native TUI integration, but the current contract is launch-time ownership:
+
+- `arroba codex` creates or attaches an Arroba session/agent, starts or selects a Codex app-server endpoint, places an Arroba WebSocket proxy in front of that endpoint, then starts `codex --remote <arroba-proxy>` and binds the observed Codex thread to a `client_interface = native_tui` provider run.
+- `arroba opencode` creates or attaches an Arroba session/agent, starts or selects an `opencode serve` endpoint, places an Arroba HTTP/SSE proxy in front of that endpoint, then starts `opencode attach <arroba-proxy> --session <provider-session-id>` and binds the provider session to a `client_interface = native_tui` provider run.
+- `arroba claude` creates or attaches an Arroba session/agent and launches Claude Code in a kernel-owned PTY with Arroba hook settings. The hook bridge reports `UserPromptSubmit`, tool, stop, and permission events; hidden context is returned through `additionalContext`; permission decisions are resolved through kernel-owned interactions.
+
+The external-session feature should extend those exact native-TUI paths. It should not invent a separate provider runtime. The new question is whether Arroba can adopt an already-running provider session into one of the existing managed native-TUI seams.
+
+External adoption modes:
+
+- **Reparented native TUI**: Arroba starts its existing native proxy against the external provider endpoint/session, creates a `native_tui` provider run, and the provider TUI reconnects through the Arroba proxy. From that point onward, provider-native prompts again enter `SubmitPrompt`, Arroba prompts go through the same provider session, permissions flow through one `RuntimeInteraction`, and outputs fan out to TUI and web. This is true Tier 3.
+- **Second-client attach**: Arroba connects to the provider endpoint/session as another client while the already-running provider TUI remains directly connected to the provider. Arroba can submit its own prompts through the provider endpoint and can observe provider events when the provider broadcasts them, but prompts typed into the already-running direct provider TUI do not enter Arroba's `SubmitPrompt` path. This is not full Tier 3 unless the provider exposes an interception/hook channel for direct-client prompts before execution.
+- **History watcher**: Arroba reads provider history files or provider export APIs and projects deltas into imported Arroba transcripts as observed turns. This is Tier 2.
+
 ## Provider Targets
 
 ### Codex
@@ -50,22 +66,21 @@ Expected behavior:
 
 Tier 3 feasibility:
 
-- Status: conditionally feasible, spike required.
-- Relevant provider shape: current Codex CLI exposes experimental `app-server`, `remote-control`, `--remote`, `resume`, and structured app-server primitives around threads, turns, and streamed items.
-- Feasible case: an external Codex session is already running behind an attachable app-server/remote-control endpoint, or can be resumed onto one without replacing the provider-owned thread.
-- Unproven case: an arbitrary already-open Codex TUI that is not connected to an attachable app-server. The spike must verify whether app-server broadcasts turns from one client to another and whether an ordinary TUI can be discovered and attached after startup.
-- Not acceptable as Tier 3: launching a separate Arroba-owned Codex resume process while the native external TUI keeps running independently. That is Tier 2 plus kernel-managed continuation, not live attach.
+- Status: feasible for reparented native TUI when the external Codex session has an attachable app-server/remote-control endpoint; second-client attach remains a feasibility spike.
+- Existing Arroba component to reuse: `apps/cli/src/native-tui/codex-proxy.ts` and the native provider-run launch path. The proxy already handles `turn/start`, binds the observed thread, launches a `client_interface = native_tui` provider run, resolves native permission responses, redacts hidden instructions for TUI clients, and broadcasts upstream events.
+- Full Tier 3 path: start the Arroba Codex proxy with `upstreamEndpoint = external codex app-server`, bind `providerSessionId = external Codex thread id`, create/import the Arroba session or agent, launch/bind a native provider run with `native.structuredEndpoint = arroba proxy`, then reparent a Codex TUI through `codex resume --remote <arroba-proxy> <thread-id>`.
+- Second-client path: if an already-running Codex TUI remains connected directly to the upstream app-server, Arroba can only be full Tier 3 if Codex app-server emits all direct-client user turns before execution and accepts an Arroba decision/interception. If it merely broadcasts resulting items, native direct-TUI prompts are Tier 2 observed turns.
+- Not acceptable as Tier 3: launching a separate Arroba-owned Codex resume process while the original native TUI keeps running independently. That is Tier 2 plus kernel-managed continuation, not native-TUI adoption.
 
 Tier 3 implementation spike:
 
-1. Generate or vendor the installed Codex app-server schema for the version Arroba supports.
-2. Discover endpoints from `codex remote-control`, process args, configured Unix sockets, and explicit user-supplied URLs.
-3. Connect as a second app-server client and resume the provider thread by id.
-4. Submit Arroba prompts through the app-server turn API rather than through a separate CLI process.
-5. Subscribe to turn/item notifications and project provider-native turns into the kernel transcript.
-6. Verify whether prompts submitted from the native Codex TUI are broadcast to the Arroba client within the active polling/live threshold.
-7. Map permission/tool approval events to `RuntimeInteraction` only if app-server exposes a supported bidirectional approval channel.
-8. If any required broadcast or approval channel is absent, classify Codex external ordinary TUI sessions as Tier 2 while keeping Tier 3 available for app-server-backed sessions.
+1. Factor Codex proxy startup so it can be called by external-session import without launching a new Codex app-server.
+2. Add discovery for external Codex app-server endpoints from explicit user input, `codex remote-control`, process args, and durable thread metadata.
+3. Add `ImportExternalProviderSession` and `ImportExternalProviderAgent` options that create a native-TUI adoption binding instead of an Arroba resume-only provider run when an endpoint is available.
+4. Start the existing Codex proxy against the external endpoint and bind the imported thread id immediately, without waiting for a new `thread/start`.
+5. Launch an optional reparented native Codex TUI through `codex resume --remote <arroba-proxy> <thread-id>` from the TUI command path, or display the exact command for the user to reparent an already-open provider UI.
+6. Drill the second-client case separately: keep the original direct Codex TUI running, connect Arroba to the same app-server/thread, and prove whether direct-TUI prompts can be intercepted before execution. If they cannot, mark direct-running Codex TUI as Tier 2 observed while reparented Codex TUI remains Tier 3.
+7. Preserve existing permission and hidden-context behavior by routing only reparented native-TUI prompts through `SubmitPrompt` and `RuntimeInteraction`.
 
 ### OpenCode
 
@@ -80,21 +95,22 @@ Expected behavior:
 
 Tier 3 feasibility:
 
-- Status: likely feasible for server-backed sessions, spike required.
-- Relevant provider shape: current OpenCode CLI exposes `opencode serve`, `opencode attach <url>`, `opencode session`, `opencode export`, `opencode run --session`, and `opencode web`.
-- Feasible case: the external session lives in, or can be attached through, a running OpenCode server endpoint.
-- Tier 2-only case: a file-only session with no live server or no discoverable event/prompt API. Reading `opencode export` or local session files can observe history but does not put Arroba behind the native TUI.
+- Status: feasible for reparented native TUI when the external OpenCode session has a running `opencode serve` endpoint; second-client direct-TUI interception still needs proof.
+- Existing Arroba component to reuse: `apps/cli/src/native-tui/opencode-proxy.ts` and `apps/cli/src/native-tui/opencode-event-stream.ts`. The proxy already converts native TUI prompt HTTP requests into Arroba `SubmitPrompt`, forwards kernel-origin requests to the OpenCode server, routes native permission replies back to `RuntimeInteraction`, redacts hidden instructions, and refreshes native transcript state every second.
+- Full Tier 3 path: start the Arroba OpenCode proxy with `upstreamBaseUrl = external opencode serve`, bind `providerSessionId = external OpenCode session id`, create/import the Arroba session or agent, launch/bind a native provider run with `native.structuredEndpoint = arroba proxy`, then reparent an OpenCode TUI through `opencode attach <arroba-proxy> --session <session-id>`.
+- Second-client path: if an already-running OpenCode TUI remains attached directly to the upstream server, Arroba can observe server events and submit Arroba-origin prompts through the server, but direct-TUI prompts only become kernel-managed if the OpenCode server offers a pre-execution interception or middleware channel. Otherwise they are Tier 2 observed turns.
+- Tier 2-only case: a file-only OpenCode session with no live server endpoint. Reading local session data or `opencode export` can observe history but cannot place Arroba behind a native TUI.
 
 Tier 3 implementation spike:
 
-1. Discover running OpenCode servers through explicit config, process args, mDNS where enabled, and recent known endpoints.
-2. Authenticate using the provider's supported server password/token mechanism when configured.
-3. Map server session ids to Arroba external session ids using the session list/export API.
-4. Find and implement the live event channel, preferably WebSocket or server-sent events; if only polling is available, keep the mode at Tier 2 observed history.
-5. Submit Arroba prompts through the OpenCode server session endpoint so native `opencode attach` clients and Arroba operate on the same provider session.
-6. Project server events into kernel terminal history and attached clients.
-7. Map permissions/tool requests into one kernel-owned `RuntimeInteraction` only if the server protocol exposes supported request and reply events.
-8. Run a two-client attach drill: native `opencode attach` sends a prompt that Arroba sees, Arroba sends a prompt that native `opencode attach` sees, then both clients observe the same assistant output.
+1. Factor OpenCode proxy startup so it can be called by external-session import without launching a new `opencode serve`.
+2. Discover external OpenCode servers through explicit config, process args, mDNS where enabled, and recent known endpoints.
+3. Authenticate using the provider's supported server password/token mechanism when configured.
+4. Map server session ids to Arroba external session ids using the server session list/export API.
+5. Add external-session import options that create a native-TUI adoption binding when a server endpoint is available.
+6. Start the existing OpenCode proxy against the external server and bind the imported session id immediately.
+7. Launch an optional reparented native OpenCode TUI with `opencode attach <arroba-proxy> --session <session-id>`, or display the exact command for the user to reparent an already-open provider UI.
+8. Drill the direct second-client case separately: keep the original direct OpenCode TUI running and prove whether server events are only post-facto observation or can be intercepted before execution. Classify direct-running OpenCode TUI accordingly.
 
 ### Claude Code
 
@@ -110,20 +126,22 @@ Expected behavior:
 
 Tier 3 feasibility:
 
-- Status: not feasible for ordinary external Claude TUI sessions with the currently confirmed stable shape; conditionally unknown for sessions started with Claude Remote Control.
-- Relevant provider shape: current Claude CLI exposes `--remote-control [name]`, `--session-id`, `--resume`, and `--input-format stream-json` / `--output-format stream-json` only in print mode. The existing native TUI integration relies on Arroba-owned PTY and hook setup; that cannot be retroactively inserted into an already-running external TUI.
-- Not feasible case: an ordinary external interactive Claude TUI. Arroba can resume/read history, but it cannot take ownership of that process' stdin/stdout, hidden context hook, or permission bridge after the process started.
-- Conditional case: sessions started with `claude --remote-control`. This requires a dedicated protocol spike because the CLI advertises the mode, but the plan must prove there is a supported second-client prompt/event/permission channel before claiming Tier 3.
-- Not acceptable as Tier 3: `claude --print --input-format stream-json --output-format stream-json` for an already-running external TUI. That is useful for Arroba-launched programmatic runs, but not for attaching behind a native interactive session started outside Arroba.
+- Status: not feasible for ordinary already-running external Claude TUI sessions with the current Arroba integration shape; conditionally possible only for sessions that were preconfigured with an attachable Claude remote-control or Arroba-compatible hook bridge before startup.
+- Existing Arroba component to reuse: `apps/kernel/src/provider/claude/native_tui.rs`, `apps/kernel/src/app/provider_output_claude_native.rs`, and the kernel-owned PTY path. Claude native TUI today depends on launch-time hook settings and environment variables for event capture, hidden context responses, and permission responses.
+- Full Tier 3 path for ordinary Claude would require taking control of the running PTY and retroactively installing Arroba hook settings into the already-running process. That is not technically available from the current stable CLI surface.
+- Conditional path: if `claude --remote-control` exposes a supported second-client prompt/event/permission API, Arroba could implement a new Claude remote-control adoption proxy and bind it as a native-TUI provider run. This is a provider-protocol spike, not a PTY adoption.
+- Tier 2 path: read Claude transcript/history deltas and project them as observed turns. Arroba-origin prompts can still resume the Claude session through an Arroba-managed provider run, but the original external Claude TUI remains outside kernel prompt ownership.
+- Not acceptable as Tier 3: `claude --print --input-format stream-json --output-format stream-json` for an already-running external TUI. That creates a separate programmatic run and does not reparent the existing native TUI.
 
 Tier 3 implementation spike:
 
-1. Start Claude with `--remote-control <name>` and inspect its advertised endpoint, auth, process state, and session identity.
-2. Determine whether a second client can attach to the same remote-control session without stealing the interactive TUI.
-3. Verify second-client prompt submission, user-message replay, assistant stream replay, tool/permission events, abort, and disconnect/reconnect behavior.
-4. Check whether hidden context can be supplied through a supported remote-control channel. If not, Tier 3 must explicitly disable hidden-context expectations for external Claude sessions.
-5. If remote-control supports the full bidirectional surface, implement conditional Tier 3 only for remote-control-backed Claude sessions.
-6. If remote-control cannot support second-client live attach, keep Claude external sessions at Tier 2 with optional hook-enhanced observation only when the user preconfigured those hooks before starting Claude.
+1. Prove the negative for ordinary external Claude TUI by confirming no stable way exists to attach to the live PTY, inject the Arroba settings file, or install `UserPromptSubmit`/permission hooks after process startup.
+2. Start Claude with `--remote-control <name>` and inspect its advertised endpoint, auth, process state, session identity, and whether it coexists with the interactive TUI.
+3. Determine whether a second client can submit prompts to the same session without stealing the TUI.
+4. Verify event coverage: user prompt, assistant delta, tool request/result, permission request/reply, stop, abort, disconnect, and reconnect.
+5. Verify hidden-context support. If remote-control cannot supply the equivalent of `UserPromptSubmit.additionalContext`, Tier 3 must either disable Arroba hidden context for that adopted Claude mode or reject Tier 3.
+6. If remote-control supports prompt, event, permission, and hidden-context channels, implement a Claude remote-control adoption proxy and bind it through the same `client_interface = native_tui` provider-run contract.
+7. If remote-control lacks any required channel, keep Claude external sessions at Tier 2 with optional hook-enhanced observation only for sessions the user preconfigured before launching Claude.
 
 ## Tier 2 Observer Requirements
 
@@ -245,9 +263,14 @@ When the user selects an external provider session from the waiting room:
 
 1. Kernel creates a new Arroba session.
 2. Kernel creates the first agent.
-3. Kernel launches the provider run with the provider-specific `ProviderResumeState`.
-4. Kernel stores import metadata on the session, agent, and provider run.
-5. Clients attach to the new Arroba session through the existing session attachment path.
+3. Kernel selects the strongest available import mode for the external session:
+   - reparented native TUI adoption when an attachable provider endpoint is available and the user chooses to route the provider TUI through Arroba's proxy
+   - second-client observation when Arroba can attach to the provider endpoint but cannot intercept the existing direct provider TUI
+   - observed-history watcher when only provider history/export state is available
+   - resume-only continuation when no watcher or live endpoint is available
+4. Kernel launches or binds the provider run using the selected mode. Reparented native TUI adoption creates a `client_interface = native_tui` provider run bound to the existing provider session; resume-only continuation uses the provider-specific `ProviderResumeState`.
+5. Kernel stores import metadata on the session, agent, and provider run.
+6. Clients attach to the new Arroba session through the existing session attachment path.
 
 Naming priority:
 
@@ -260,8 +283,9 @@ Naming priority:
 When the user imports an external provider session into an existing Arroba session:
 
 1. Kernel creates a new top-level agent in the current session.
-2. Kernel launches the provider run with the provider-specific `ProviderResumeState`.
-3. Kernel focuses the new agent only if requested by the client or current spawn policy.
+2. Kernel selects the strongest available import mode using the same priority as new-session import.
+3. Kernel launches or binds the provider run using the selected mode.
+4. Kernel focuses the new agent only if requested by the client or current spawn policy.
 
 Store import metadata:
 
@@ -271,6 +295,8 @@ imported_at_ms
 import_mode
 capability_tier
 title_source
+external_endpoint_ref
+reparent_command
 ```
 
 ### Safety Boundaries
