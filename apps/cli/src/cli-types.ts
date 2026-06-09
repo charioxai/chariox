@@ -810,6 +810,11 @@ export type SessionHistoryEntry = {
   provider_run_id?: string | null
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   merge_key?: string
+  source?: "external_provider_observed" | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
+  observed_at_ms?: number | null
   text: string
   timestamp_ms?: number
   source_attachment_id?: string | null

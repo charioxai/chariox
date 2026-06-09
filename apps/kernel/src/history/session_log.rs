@@ -32,8 +32,24 @@ pub struct SessionHistoryEntry {
     pub kind: SessionHistoryEntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SessionHistoryEntrySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at_ms: Option<u64>,
     pub text: String,
     pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHistoryEntrySource {
+    ExternalProviderObserved,
 }
 
 impl SessionHistoryEntry {
@@ -50,6 +66,11 @@ impl SessionHistoryEntry {
             source_attachment_id: Some(source_attachment_id.to_string()),
             kind: SessionHistoryEntryKind::UserPrompt,
             merge_key: None,
+            source: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            observed_at_ms: None,
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
         }
@@ -77,6 +98,11 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },
             merge_key,
+            source: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            observed_at_ms: None,
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
         }
@@ -95,8 +121,44 @@ impl SessionHistoryEntry {
             source_attachment_id: None,
             kind: SessionHistoryEntryKind::Notice,
             merge_key: None,
+            source: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            observed_at_ms: None,
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
+        }
+    }
+
+    pub fn external_provider_observed(
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        kind: SessionHistoryEntryKind,
+        text: impl Into<String>,
+        provider: &str,
+        provider_session_id: &str,
+        provider_turn_id: Option<String>,
+        observed_at_ms: Option<u64>,
+    ) -> Self {
+        let observed_at_ms = observed_at_ms.unwrap_or_else(super::unix_epoch_ms);
+        Self {
+            session_id: session_id.to_string(),
+            provider_run_id: Some(provider_run_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            source_attachment_id: None,
+            kind,
+            merge_key: provider_turn_id
+                .as_ref()
+                .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}")),
+            source: Some(SessionHistoryEntrySource::ExternalProviderObserved),
+            external_provider: Some(provider.to_string()),
+            external_provider_session_id: Some(provider_session_id.to_string()),
+            external_provider_turn_id: provider_turn_id,
+            observed_at_ms: Some(observed_at_ms),
+            text: text.into(),
+            timestamp_ms: observed_at_ms,
         }
     }
 }
@@ -168,6 +230,7 @@ impl SessionHistoryStore {
     ) -> Result<(), DaemonError> {
         if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
             && entry.source_attachment_id.is_none()
+            && entry.source != Some(SessionHistoryEntrySource::ExternalProviderObserved)
         {
             return Err(DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),

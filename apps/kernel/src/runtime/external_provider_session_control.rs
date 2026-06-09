@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
@@ -124,6 +125,7 @@ fn import_external_provider_session(
         &model,
         request.effort,
     )?;
+    append_observed_external_history(app, &session, &agent, &provider_run, &external);
     store.mark_imported(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderSessionImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
@@ -173,6 +175,7 @@ fn import_external_provider_agent(
         &model,
         request.effort,
     )?;
+    append_observed_external_history(app, &session, &agent, &provider_run, &external);
     store.mark_imported(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderAgentImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
@@ -227,6 +230,47 @@ fn launch_imported_external_provider(
         request = request.with_working_directory(std::path::PathBuf::from(worktree_path));
     }
     app.launch_provider(request)
+}
+
+fn append_observed_external_history(
+    app: &mut DaemonApp,
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    provider_run: &RuntimeProviderRun,
+    external: &ExternalProviderSessionRecord,
+) {
+    let turns = crate::app::read_external_provider_observed_turns(
+        &external.provider,
+        &external.provider_session_id,
+    );
+    if turns.is_empty() {
+        return;
+    }
+    for (index, turn) in turns.into_iter().enumerate() {
+        let kind = match turn.role {
+            crate::app::ObservedExternalProviderTurnRole::User => {
+                SessionHistoryEntryKind::UserPrompt
+            }
+            crate::app::ObservedExternalProviderTurnRole::Assistant => {
+                SessionHistoryEntryKind::ProviderOutput
+            }
+        };
+        app.append_history_entry(
+            session.id(),
+            SessionHistoryEntry::external_provider_observed(
+                session.id(),
+                provider_run.id(),
+                agent.id(),
+                kind,
+                turn.text,
+                &external.provider,
+                &external.provider_session_id,
+                turn.provider_turn_id
+                    .or_else(|| Some(format!("observed-{index}"))),
+                turn.observed_at_ms,
+            ),
+        );
+    }
 }
 
 fn resume_state_for_external_session(

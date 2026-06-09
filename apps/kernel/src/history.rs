@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -19,7 +19,9 @@ mod operational_session;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
-pub use session_log::{SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore};
+pub use session_log::{
+    SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -203,6 +205,36 @@ impl HistoryEvent {
                 serde_json::Value::String(source_attachment_id),
             );
         }
+        if let Some(source) = entry.source {
+            metadata.insert(
+                "source".to_string(),
+                serde_json::to_value(source).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        if let Some(provider) = entry.external_provider.clone() {
+            metadata.insert(
+                "external_provider".to_string(),
+                serde_json::Value::String(provider),
+            );
+        }
+        if let Some(provider_session_id) = entry.external_provider_session_id.clone() {
+            metadata.insert(
+                "external_provider_session_id".to_string(),
+                serde_json::Value::String(provider_session_id),
+            );
+        }
+        if let Some(provider_turn_id) = entry.external_provider_turn_id.clone() {
+            metadata.insert(
+                "external_provider_turn_id".to_string(),
+                serde_json::Value::String(provider_turn_id),
+            );
+        }
+        if let Some(observed_at_ms) = entry.observed_at_ms {
+            metadata.insert(
+                "observed_at_ms".to_string(),
+                serde_json::Value::Number(observed_at_ms.into()),
+            );
+        }
         Self {
             event_id,
             sequence,
@@ -259,6 +291,30 @@ impl HistoryEvent {
                 .get("merge_key")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
+            source: self
+                .metadata
+                .get("source")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            external_provider: self
+                .metadata
+                .get("external_provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            external_provider_session_id: self
+                .metadata
+                .get("external_provider_session_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            external_provider_turn_id: self
+                .metadata
+                .get("external_provider_turn_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            observed_at_ms: self
+                .metadata
+                .get("observed_at_ms")
+                .and_then(|value| value.as_u64()),
             text: self.content.clone().unwrap_or_default(),
             timestamp_ms: self.timestamp_ms,
         })
@@ -854,9 +910,11 @@ mod tests {
             .prune_events_before(i64::MAX as u64, false)
             .expect("archived events should prune");
         assert_eq!(deleted, 1);
-        assert!(!store
-            .has_session_events("session-1")
-            .expect("session event presence should load"));
+        assert!(
+            !store
+                .has_session_events("session-1")
+                .expect("session event presence should load")
+        );
         assert!(
             store
                 .legacy_fallback_disabled("session-1")
