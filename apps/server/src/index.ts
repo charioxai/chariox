@@ -297,7 +297,18 @@ async function registerServedPublicationEndpoint(
     })
     const access = registered?.access ?? "local"
     const openUrl = registered?.open_url ?? localUrl
-    if (process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim() && access !== "tunnel") {
+    const cloudDeploymentId = process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
+    const cloudRunnerKey = process.env.ARROBA_PUBLICATION_CLOUD_RUNNER_KEY?.trim()
+    if (cloudDeploymentId && cloudRunnerKey) {
+      logger.info("skipping local-runtime Cloud backend registration for hosted publication container", {
+        publication_id: publication.publication_id,
+        local_url: localUrl,
+        open_url: openUrl,
+        access,
+      })
+      return
+    }
+    if (cloudDeploymentId && access !== "tunnel") {
       const message = `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${access}`
       logger.warn("Cloud publication deployment backend is unavailable", {
         publication_id: publication.publication_id,
