@@ -1,15 +1,25 @@
 import type { LocalIpcClient } from "./ipc.js"
-import type { SliceDisplayEndpoint, SliceLogEntry, SliceRecord } from "./cli-types.js"
+import type {
+  SliceBackupRecord,
+  SliceDisplayEndpoint,
+  SliceLogEntry,
+  SliceRecord,
+  SliceSavedStateRecord,
+} from "./cli-types.js"
 import {
+  createSliceBackupRequest,
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
   getSliceLogsRequest,
   getSliceRequest,
+  getSliceStateStatusRequest,
   importSliceProviderAuthRequest,
   listSliceAuditRequest,
   listSlicesRequest,
   removeSliceProviderAuthRequest,
+  resetSliceStateRequest,
+  saveSliceStateRequest,
   setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -34,6 +44,7 @@ export async function createSlice(
     workspaceMount?: string | null
     workerKernelRef?: string | null
     displayUrl?: string | null
+    fromSavedState?: string | null
   },
 ): Promise<SliceRecord> {
   const response = await client.send<Record<string, unknown>>(createSliceRequest(options))
@@ -118,4 +129,37 @@ export async function listSliceAudit(
 ): Promise<Record<string, unknown>[]> {
   const response = await client.send<Record<string, unknown>>(listSliceAuditRequest(sliceRef, limit))
   return expectVariant<{ events: Record<string, unknown>[] }>(response, "SliceAuditListed").events
+}
+
+export async function saveSliceState(
+  client: LocalIpcClient,
+  sliceRef: string,
+): Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }> {
+  const response = await client.send<Record<string, unknown>>(saveSliceStateRequest(sliceRef))
+  return expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
+}
+
+export async function getSliceStateStatus(
+  client: LocalIpcClient,
+  sliceRef: string,
+): Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }> {
+  const response = await client.send<Record<string, unknown>>(getSliceStateStatusRequest(sliceRef))
+  return expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>(response, "SliceStateStatus")
+}
+
+export async function resetSliceState(
+  client: LocalIpcClient,
+  sliceRef: string,
+): Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }> {
+  const response = await client.send<Record<string, unknown>>(resetSliceStateRequest(sliceRef))
+  return expectVariant<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>(response, "SliceStateReset")
+}
+
+export async function createSliceBackup(
+  client: LocalIpcClient,
+  sliceRef: string,
+  name?: string | null,
+): Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }> {
+  const response = await client.send<Record<string, unknown>>(createSliceBackupRequest(sliceRef, name))
+  return expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>(response, "SliceBackupCreated")
 }

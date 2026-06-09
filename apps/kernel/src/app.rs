@@ -45,9 +45,8 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
+    discover_external_provider_sessions, read_external_provider_observed_turns,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
-    discover_external_provider_sessions,
-    read_external_provider_observed_turns,
 };
 pub(crate) use external_provider_sessions::ExternalProviderSessionIndexStore;
 pub(crate) use prompt_activity::{
@@ -55,9 +54,9 @@ pub(crate) use prompt_activity::{
     PromptWorkspaceClaimStore,
 };
 pub(crate) use prompt_lifecycle::{
-    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
-    serialize_remote_prompt_attachments,
+    serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
+    KernelRemotePromptDispatch,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -92,8 +91,8 @@ pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
-    ProviderFirstOutputTimeoutCandidate, provider_first_output_timeout_candidates,
-    provider_first_output_timeout_diagnostic,
+    provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
+    ProviderFirstOutputTimeoutCandidate,
 };
 pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,
@@ -518,6 +517,7 @@ mod tests {
                         worker_kernel_ref: None,
                         display_url: Some("http://127.0.0.1:6080".to_string()),
                         provider_auth: Vec::new(),
+                        from_saved_state: None,
                         now_ms: 42,
                     },
                 )

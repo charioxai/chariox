@@ -7,7 +7,7 @@ use crate::agent::{AgentInstance, AgentServiceStore};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::session::{RuntimeSession, SessionStateStore};
-use crate::slice::{SliceRecord, SliceStore};
+use crate::slice::{SliceBackupRecord, SliceRecord, SliceSavedStateRecord, SliceStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DurableKernelSnapshotPayload {
@@ -15,6 +15,10 @@ pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) agents: Vec<AgentInstance>,
     #[serde(default)]
     pub(crate) slices: Vec<SliceRecord>,
+    #[serde(default)]
+    pub(crate) slice_saved_states: Vec<SliceSavedStateRecord>,
+    #[serde(default)]
+    pub(crate) slice_backups: Vec<SliceBackupRecord>,
 }
 
 impl DurableKernelSnapshotPayload {
@@ -25,11 +29,15 @@ impl DurableKernelSnapshotPayload {
     ) -> Self {
         let sessions = sessions.read().store().list();
         let agents = agents.list_agents();
-        let slices = slices.list();
+        let slice_records = slices.list();
+        let slice_saved_states = slices.list_saved_states();
+        let slice_backups = slices.list_backups();
         Self {
             sessions,
             agents,
-            slices,
+            slices: slice_records,
+            slice_saved_states,
+            slice_backups,
         }
     }
 }
@@ -180,6 +188,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )

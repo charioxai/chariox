@@ -69,6 +69,13 @@ pub struct RemoteExtensionInvocationContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteCredentialSecretInjection {
+    Browser { target_url: String },
+    Pty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteNativeInteractionContext {
     pub home_session_id: String,
     pub home_agent_id: String,
@@ -297,6 +304,21 @@ pub enum RelayPeerRequest {
         #[serde(default)]
         metadata: crate::extension::RemoteExtensionInvocationMetadata,
     },
+    InvokeHomeCredentialTool {
+        context: RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    InvokeHomeSliceStateTool {
+        context: RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ResolveHomeCredentialSecret {
+        context: RemoteExtensionInvocationContext,
+        credential_id: String,
+        injection: RemoteCredentialSecretInjection,
+    },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
@@ -398,6 +420,16 @@ pub enum RelayPeerResponse {
     HomeExtensionInvocationCancelled {
         invocation_id: String,
         cancelled: bool,
+    },
+    HomeCredentialToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    HomeSliceStateToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    HomeCredentialSecretResolved {
+        credential_id: String,
+        secret_input: String,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,

@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 125;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 127;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -163,6 +163,10 @@ pub enum LocalDaemonRequest {
     GetSliceDisplayEndpoint(SliceRefRequest),
     GetSliceLogs(GetSliceLogsRequest),
     ListSliceAudit(ListSliceAuditRequest),
+    SaveSliceState(SliceStateSaveRequest),
+    GetSliceStateStatus(SliceStateStatusRequest),
+    ResetSliceState(SliceStateResetRequest),
+    CreateSliceBackup(CreateSliceBackupRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
@@ -634,6 +638,23 @@ pub enum LocalDaemonResponse {
     SliceLogs {
         slice: SliceRecord,
         entries: Vec<SliceLogEntry>,
+    },
+    SliceStateSaved {
+        slice: SliceRecord,
+        state: crate::slice::SliceSavedStateRecord,
+    },
+    SliceStateStatus {
+        slice: SliceRecord,
+        state: Option<crate::slice::SliceSavedStateRecord>,
+    },
+    SliceStateReset {
+        slice: SliceRecord,
+        removed_state: Option<crate::slice::SliceSavedStateRecord>,
+    },
+    SliceBackupCreated {
+        slice: SliceRecord,
+        backup: crate::slice::SliceBackupRecord,
+        instructions: String,
     },
     RemoteMachinesListed {
         machines: Vec<RemoteMachineRecord>,

@@ -260,6 +260,7 @@ async fn end_session_detaches_reusable_slice_agents() {
                 worker_kernel_ref: Some("slice:test-slice".to_string()),
                 display_url: None,
                 provider_auth: Vec::new(),
+                from_saved_state: None,
                 now_ms: crate::session::unix_epoch_ms(),
             },
         )
@@ -330,6 +331,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
             alias: Some("forged".to_string()),
             source: "client".to_string(),
         }],
+        from_saved_state: None,
     });
     let command =
         KernelCommand::from_local_request("cmd-create-slice-forged-auth", None, None, &request);
@@ -390,6 +392,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         worker_kernel_ref: None,
         display_url: None,
         provider_auth: Vec::new(),
+        from_saved_state: None,
     });
     let create_command =
         KernelCommand::from_local_request("cmd-create-ssh-slice", None, None, &create_request);
@@ -887,6 +890,7 @@ fn create_router_test_slice(
                 worker_kernel_ref: Some(format!("slice:{name}")),
                 display_url: None,
                 provider_auth: Vec::new(),
+                from_saved_state: None,
                 now_ms: crate::session::unix_epoch_ms(),
             },
         )

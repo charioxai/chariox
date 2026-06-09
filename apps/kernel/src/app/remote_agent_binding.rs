@@ -590,6 +590,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )
@@ -636,6 +637,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )
@@ -689,6 +691,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: Some("http://127.0.0.1:6080".to_string()),
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )

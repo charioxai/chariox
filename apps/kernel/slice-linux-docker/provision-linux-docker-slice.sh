@@ -12,6 +12,7 @@ SLICE_EXTENSION_DOCKERFILE="${ARROBA_SLICE_EXTENSION_DOCKERFILE:-}"
 SLICE_DOCKER_MEMORY="${ARROBA_SLICE_DOCKER_MEMORY:-}"
 SLICE_DOCKER_CPUS="${ARROBA_SLICE_DOCKER_CPUS:-}"
 SLICE_HOME_VOLUME="${ARROBA_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
+SLICE_SAVED_HOME_ARCHIVE="${ARROBA_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${ARROBA_SLICE_WORKSPACE:-$REPO_ROOT}"
 SLICE_WORKSPACE_MOUNT_MODE="${ARROBA_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
@@ -145,6 +146,20 @@ container_running() {
   [[ "$state" == "true" ]]
 }
 
+restore_saved_home_volume() {
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
+  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+  local archive_dir archive_name
+  archive_dir="$(dirname "$SLICE_SAVED_HOME_ARCHIVE")"
+  archive_name="$(basename "$SLICE_SAVED_HOME_ARCHIVE")"
+  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
+  run_with_timeout 120 docker run --rm --user root \
+    -v "$SLICE_HOME_VOLUME:/home-dst" \
+    -v "$archive_dir:/arroba-state:ro" \
+    "$SLICE_IMAGE" \
+    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf '/arroba-state/$archive_name'; chown -R slice:slice /home-dst"
+}
+
 wait_for_container_running() {
   local attempts="${1:-6}"
   local delay_seconds="${2:-5}"
@@ -240,6 +255,7 @@ ensure_container() {
   else
     log "creating container $SLICE_NAME"
     run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
+    restore_saved_home_volume
     local docker_create_args=(
       --name "$SLICE_NAME"
       --ulimit core=0:0

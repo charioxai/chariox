@@ -24,11 +24,35 @@ pub struct CreateSliceRequest {
     pub display_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_auth: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_saved_state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceRefRequest {
     pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceStateSaveRequest {
+    pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceStateStatusRequest {
+    pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceStateResetRequest {
+    pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSliceBackupRequest {
+    pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

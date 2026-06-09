@@ -83,7 +83,11 @@ impl CommandRouter {
             | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
             | LocalDaemonRequest::GetSliceLogs(_)
-            | LocalDaemonRequest::ListSliceAudit(_)) => {
+            | LocalDaemonRequest::ListSliceAudit(_)
+            | LocalDaemonRequest::SaveSliceState(_)
+            | LocalDaemonRequest::GetSliceStateStatus(_)
+            | LocalDaemonRequest::ResetSliceState(_)
+            | LocalDaemonRequest::CreateSliceBackup(_)) => {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,

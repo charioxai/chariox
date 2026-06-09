@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, SliceDisplayEndpoint, SliceRecord } from "./cli-types.js"
+import type { AgentInstance, SliceBackupRecord, SliceDisplayEndpoint, SliceRecord, SliceSavedStateRecord } from "./cli-types.js"
 import { handleSliceSlashCommand, type SliceCommandHandlerDeps } from "./slice-command-handlers.js"
 
 test("slice command list renders lifecycle scope and provider auth details", async () => {
@@ -116,8 +116,18 @@ test("slice command create passes display mode and current worktree mount", asyn
     workspaceMount: "/repo/wt",
     workerKernelRef: null,
     displayUrl: null,
+    fromSavedState: null,
   }])
   assert.equal(harness.footers.at(-1)?.message, "created slice qa")
+})
+
+test("slice command create can restore from saved state", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command("create", "qa-restored", "--from-state", "qa"))
+
+  assert.equal(harness.createdSlices[0]?.fromSavedState, "qa")
+  assert.equal(harness.footers.at(-1)?.message, "created slice qa-restored")
 })
 
 test("slice command screen resolves focused agent slice and opens endpoint", async () => {
@@ -338,6 +348,31 @@ test("slice command audit resolves focused slice and passes limit", async () => 
   assert.equal(harness.footers.at(-1)?.message, "slice audit linux-dev")
 })
 
+test("slice saved-state commands call kernel APIs and render metadata", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command("save-state", "linux-dev"))
+  await handleSliceSlashCommand(harness.deps, command("state", "linux-dev"))
+  await handleSliceSlashCommand(harness.deps, command("reset-state", "linux-dev"))
+
+  assert.deepEqual(harness.savedStates, ["linux-dev"])
+  assert.deepEqual(harness.stateStatusRequests, ["linux-dev"])
+  assert.deepEqual(harness.resetStates, ["linux-dev"])
+  assert.match(harness.notices.join("\n"), /saved slice state linux-dev/)
+  assert.match(harness.notices.join("\n"), /slice state linux-dev/)
+  assert.match(harness.notices.join("\n"), /removed_state=state-1/)
+})
+
+test("slice backup command supports explicit create action and backup name", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command("backup", "create", "linux-dev", "--name", "before-upgrade"))
+
+  assert.deepEqual(harness.backups, [{ sliceRef: "linux-dev", name: "before-upgrade" }])
+  assert.match(harness.notices.at(-1) ?? "", /created slice backup linux-dev/)
+  assert.match(harness.notices.at(-1) ?? "", /Use this backup by swapping slice state directories/)
+})
+
 test("slice command auth import can target the focused agent slice", async () => {
   const harness = sliceHarness({
     slices: [
@@ -514,7 +549,7 @@ function sliceHarness(options: {
 } = {}) {
   const notices: string[] = []
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
-  const createdSlices: unknown[] = []
+  const createdSlices: Array<Parameters<NonNullable<SliceCommandHandlerDeps["createSlice"]>>[0]> = []
   const displayEndpointRefs: string[] = []
   const openedUrls: string[] = []
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
@@ -525,6 +560,10 @@ function sliceHarness(options: {
   const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
   const auditRequests: Array<{ sliceRef: string; limit: number | null | undefined }> = []
+  const savedStates: string[] = []
+  const stateStatusRequests: string[] = []
+  const resetStates: string[] = []
+  const backups: Array<{ sliceRef: string; name: string | null | undefined }> = []
   const slices = options.slices ?? []
   const endpoint = options.endpoint ?? { slice_id: "slice-1", kind: "novnc", url: "http://slice.local", access: "local" }
   const focusedAgent = agent(options.focusedAgent)
@@ -622,8 +661,28 @@ function sliceHarness(options: {
         },
       }]
     },
+    saveSliceState: async (sliceRef) => {
+      savedStates.push(sliceRef)
+      return { slice: slice({ id: sliceRef, name: sliceRef, saved_state_status: "saved" }), state: savedState({ source_slice_id: sliceRef }) }
+    },
+    getSliceStateStatus: async (sliceRef) => {
+      stateStatusRequests.push(sliceRef)
+      return { slice: slice({ id: sliceRef, name: sliceRef, saved_state_status: "saved" }), state: savedState({ source_slice_id: sliceRef }) }
+    },
+    resetSliceState: async (sliceRef) => {
+      resetStates.push(sliceRef)
+      return { slice: slice({ id: sliceRef, name: sliceRef, saved_state_status: null }), removed_state: savedState({ source_slice_id: sliceRef }) }
+    },
+    createSliceBackup: async (sliceRef, name) => {
+      backups.push({ sliceRef, name })
+      return {
+        slice: slice({ id: sliceRef, name: sliceRef }),
+        backup: backup({ source_slice_id: sliceRef, name: name ?? "backup-1" }),
+        instructions: "Use this backup by swapping slice state directories.",
+      }
+    },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests, auditRequests }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
@@ -650,6 +709,34 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     display_endpoint: null,
     created_at_ms: 0,
     updated_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function savedState(overrides: Partial<SliceSavedStateRecord> = {}): SliceSavedStateRecord {
+  return {
+    id: "state-1",
+    slice_name: "slice-1",
+    source_slice_id: "slice-1",
+    backend: "local_docker",
+    os: "linux",
+    image_ref: "arroba-slice-state:slice-1",
+    home_archive_path: "/tmp/slice-home.tar.zst",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function backup(overrides: Partial<SliceBackupRecord> = {}): SliceBackupRecord {
+  return {
+    id: "backup-1",
+    name: "backup-1",
+    source_slice_id: "slice-1",
+    source_state_id: "state-1",
+    image_ref: "arroba-slice-backup:backup-1",
+    home_archive_path: "/tmp/slice-home-backup.tar.zst",
+    created_at_ms: 0,
     ...overrides,
   }
 }

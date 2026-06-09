@@ -125,14 +125,18 @@ import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "./session-state.js"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
+  createSliceBackup,
   deleteSlice,
   getSlice,
   getSliceDisplayEndpoint,
   getSliceLogs,
+  getSliceStateStatus,
   importSliceProviderAuth,
   listSliceAudit,
   listSlices,
   removeSliceProviderAuth,
+  resetSliceState,
+  saveSliceState,
   setSliceProviderAuthAlias,
   startSliceProviderLogin,
   startSlice,
@@ -470,6 +474,22 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
     getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
+    saveSliceState: async (sliceRef) => {
+      const result = await saveSliceState(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    getSliceStateStatus: async (sliceRef) => getSliceStateStatus(client, sliceRef),
+    resetSliceState: async (sliceRef) => {
+      const result = await resetSliceState(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    createSliceBackup: async (sliceRef, name) => {
+      const result = await createSliceBackup(client, sliceRef, name)
+      setSlicesState(await listSlices(client))
+      return result
+    },
     listProviderProcesses: (provider) => listProviderProcesses(client, provider),
     teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),
     listMcpServers: () => listMcpServers(client, pendingWorkspaceTarget()),

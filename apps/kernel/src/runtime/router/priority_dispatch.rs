@@ -6,7 +6,7 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::execute_required_capability_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{KernelCommand, command_caller_user_id};
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
@@ -115,7 +115,11 @@ impl CommandRouter {
             | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
             | LocalDaemonRequest::GetSliceLogs(_)
-            | LocalDaemonRequest::ListSliceAudit(_)) => {
+            | LocalDaemonRequest::ListSliceAudit(_)
+            | LocalDaemonRequest::SaveSliceState(_)
+            | LocalDaemonRequest::GetSliceStateStatus(_)
+            | LocalDaemonRequest::ResetSliceState(_)
+            | LocalDaemonRequest::CreateSliceBackup(_)) => {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,

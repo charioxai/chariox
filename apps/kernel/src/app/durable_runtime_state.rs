@@ -79,6 +79,8 @@ impl DaemonApp {
             .filter(|slice| slice.owner_kernel_id == self.config.daemon_id)
             .collect::<Vec<_>>();
         self.slices.restore_records(restored_slices);
+        self.slices
+            .restore_saved_state_records(snapshot.slice_saved_states, snapshot.slice_backups);
         for agent in snapshot.agents {
             if !restored_session_ids.contains(agent.session_id()) {
                 continue;
@@ -298,6 +300,41 @@ impl DaemonApp {
                     slices.retain(|record| record.id != slice.id);
                     self.slices.restore_records(slices);
                 }
+            }
+            "slice.state.saved" => {
+                let state: crate::slice::SliceSavedStateRecord = decode_durable_payload_field(
+                    &event,
+                    "state",
+                    "durable_state.restore_slice_saved_state",
+                )?;
+                let mut states = self.slices.list_saved_states();
+                states.retain(|record| record.id != state.id);
+                states.push(state);
+                self.slices
+                    .restore_saved_state_records(states, self.slices.list_backups());
+            }
+            "slice.state.deleted" => {
+                let state: crate::slice::SliceSavedStateRecord = decode_durable_payload_field(
+                    &event,
+                    "state",
+                    "durable_state.restore_deleted_slice_saved_state",
+                )?;
+                let mut states = self.slices.list_saved_states();
+                states.retain(|record| record.id != state.id);
+                self.slices
+                    .restore_saved_state_records(states, self.slices.list_backups());
+            }
+            "slice.backup.created" => {
+                let backup: crate::slice::SliceBackupRecord = decode_durable_payload_field(
+                    &event,
+                    "backup",
+                    "durable_state.restore_slice_backup",
+                )?;
+                let mut backups = self.slices.list_backups();
+                backups.retain(|record| record.id != backup.id);
+                backups.push(backup);
+                self.slices
+                    .restore_saved_state_records(self.slices.list_saved_states(), backups);
             }
             _ => {}
         }

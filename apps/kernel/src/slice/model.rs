@@ -106,9 +106,23 @@ pub struct SliceRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_auth: Vec<SliceProviderAuthSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_state_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_state_status: Option<SliceSavedStateStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_state_updated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_endpoint: Option<SliceDisplayEndpoint>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceSavedStateStatus {
+    Saved,
+    Missing,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +182,42 @@ pub struct SliceLogEntry {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceSavedStateRecord {
+    pub id: String,
+    pub slice_name: String,
+    pub source_slice_id: String,
+    pub backend: SliceBackendKind,
+    pub os: String,
+    pub image_ref: String,
+    pub home_archive_path: String,
+    pub manifest_path: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_operation_status: Option<SliceOperationStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBackupRecord {
+    pub id: String,
+    pub name: String,
+    pub source_slice_id: String,
+    pub source_state_id: String,
+    pub image_ref: String,
+    pub home_archive_path: String,
+    pub manifest_path: String,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateSliceInput {
     pub name: String,
@@ -180,6 +230,7 @@ pub struct CreateSliceInput {
     pub worker_kernel_ref: Option<String>,
     pub display_url: Option<String>,
     pub provider_auth: Vec<SliceProviderAuthSummary>,
+    pub from_saved_state: Option<SliceSavedStateRecord>,
     pub now_ms: u64,
 }
 

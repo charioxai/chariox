@@ -5,9 +5,9 @@ use crate::error::DaemonError;
 use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
-    CreateSliceInput, SliceBackendKind, SliceDisplayEndpoint, SliceDisplayEndpointAccess,
-    SliceDisplayEndpointKind, SliceDisplayMode, SliceOperationStatus, SliceRecord,
-    SliceRelayEndpoint, SliceStatus,
+    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceDisplayEndpoint,
+    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceOperationStatus,
+    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
@@ -48,6 +48,8 @@ impl Drop for SliceOperationGuard {
 struct SliceStoreState {
     next_slice_number: u64,
     records: BTreeMap<String, SliceRecord>,
+    saved_states: BTreeMap<String, SliceSavedStateRecord>,
+    backups: BTreeMap<String, SliceBackupRecord>,
     active_operations: BTreeMap<String, String>,
 }
 
@@ -134,6 +136,18 @@ impl SliceStore {
             local_docker_ports,
             providers: Vec::new(),
             provider_auth: input.provider_auth,
+            saved_state_ref: input
+                .from_saved_state
+                .as_ref()
+                .map(|state| state.id.clone()),
+            saved_state_status: input
+                .from_saved_state
+                .as_ref()
+                .map(|_| SliceSavedStateStatus::Saved),
+            saved_state_updated_at_ms: input
+                .from_saved_state
+                .as_ref()
+                .map(|state| state.updated_at_ms),
             display_endpoint,
             created_at_ms: input.now_ms,
             updated_at_ms: input.now_ms,
@@ -161,6 +175,165 @@ impl SliceStore {
             }
             state.records.insert(record.id.clone(), record);
         }
+    }
+
+    pub fn saved_state(&self, state_ref: &str) -> Result<SliceSavedStateRecord, DaemonError> {
+        let state_ref = state_ref.trim();
+        if state_ref.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.state.get",
+                message: "saved state reference must not be empty".to_string(),
+            });
+        }
+        let state = self.inner.lock().expect("slice store poisoned");
+        state
+            .saved_states
+            .values()
+            .find(|record| record.id == state_ref || record.slice_name == state_ref)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.state.get",
+                message: format!("unknown saved slice state `{state_ref}`"),
+            })
+    }
+
+    pub fn active_saved_state_for_slice(
+        &self,
+        slice_ref: &str,
+    ) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
+        let slice = self.resolve(slice_ref)?;
+        let state = self.inner.lock().expect("slice store poisoned");
+        Ok(slice
+            .saved_state_ref
+            .as_ref()
+            .and_then(|state_ref| state.saved_states.get(state_ref))
+            .cloned())
+    }
+
+    pub fn list_saved_states(&self) -> Vec<SliceSavedStateRecord> {
+        self.inner
+            .lock()
+            .expect("slice store poisoned")
+            .saved_states
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn list_backups(&self) -> Vec<SliceBackupRecord> {
+        self.inner
+            .lock()
+            .expect("slice store poisoned")
+            .backups
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn restore_saved_state_records(
+        &self,
+        states: Vec<SliceSavedStateRecord>,
+        backups: Vec<SliceBackupRecord>,
+    ) {
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        state.saved_states.clear();
+        state.backups.clear();
+        for saved in states {
+            state.saved_states.insert(saved.id.clone(), saved);
+        }
+        for backup in backups {
+            state.backups.insert(backup.id.clone(), backup);
+        }
+    }
+
+    pub fn upsert_saved_state(
+        &self,
+        slice_ref: &str,
+        saved_state: SliceSavedStateRecord,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state.clone());
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.state.save",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.saved_state_ref = Some(saved_state.id);
+        record.saved_state_status = Some(SliceSavedStateStatus::Saved);
+        record.saved_state_updated_at_ms = Some(now_ms);
+        record.last_operation = Some("state.save".to_string());
+        record.last_operation_status = Some(SliceOperationStatus::Completed);
+        record.last_error = None;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn mark_saved_state_failed(
+        &self,
+        slice_ref: &str,
+        error: &DaemonError,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.state.save",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.saved_state_status = Some(SliceSavedStateStatus::Failed);
+        record.last_operation = Some("state.save".to_string());
+        record.last_operation_status = Some(SliceOperationStatus::Failed);
+        record.last_error = Some(redact_slice_operation_error(&error.to_string()));
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn reset_saved_state(
+        &self,
+        slice_ref: &str,
+        now_ms: u64,
+    ) -> Result<(SliceRecord, Option<SliceSavedStateRecord>), DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        let (updated_record, removed_state_ref) =
+            {
+                let record = state.records.get_mut(&resolved.id).ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "slice.state.reset",
+                        message: format!("unknown slice `{slice_ref}`"),
+                    }
+                })?;
+                let removed_state_ref = record.saved_state_ref.take();
+                record.saved_state_status = None;
+                record.saved_state_updated_at_ms = None;
+                record.last_operation = Some("state.reset".to_string());
+                record.last_operation_status = Some(SliceOperationStatus::Completed);
+                record.last_error = None;
+                record.last_operation_at_ms = Some(now_ms);
+                record.updated_at_ms = now_ms;
+                (record.clone(), removed_state_ref)
+            };
+        let removed = removed_state_ref.and_then(|state_ref| state.saved_states.remove(&state_ref));
+        Ok((updated_record, removed))
+    }
+
+    pub fn upsert_backup(&self, backup: SliceBackupRecord) -> SliceBackupRecord {
+        let mut state = self.inner.lock().expect("slice store poisoned");
+        state.backups.insert(backup.id.clone(), backup.clone());
+        backup
     }
 
     pub fn reconcile_after_kernel_restart(&self, now_ms: u64) -> Vec<SliceRecord> {

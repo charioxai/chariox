@@ -343,6 +343,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
         LocalDaemonRequest::GetSliceLogs(_) => "slice.logs.get",
         LocalDaemonRequest::ListSliceAudit(_) => "slice.audit.list",
+        LocalDaemonRequest::SaveSliceState(_) => "slice.state.save",
+        LocalDaemonRequest::GetSliceStateStatus(_) => "slice.state.status",
+        LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
+        LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
         LocalDaemonRequest::ListRemoteMachines(_) => "remote_machine.list",
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
@@ -434,7 +438,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkflowPublication(_) => "workflow_publication.create",
         LocalDaemonRequest::ListWorkflowPublications(_) => "workflow_publication.list",
         LocalDaemonRequest::GetWorkflowPublication(_) => "workflow_publication.get",
-        LocalDaemonRequest::ExportWorkflowPublicationPackage(_) => "workflow_publication.package.export",
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(_) => {
+            "workflow_publication.package.export"
+        }
         LocalDaemonRequest::DisableWorkflowPublication(_) => "workflow_publication.disable",
         LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(_) => {
             "workflow_publication.endpoint.register"

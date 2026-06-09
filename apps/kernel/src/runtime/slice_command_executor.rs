@@ -14,10 +14,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use lifecycle::{
-    execute_create_slice_request, execute_delete_slice_request,
-    execute_get_slice_display_endpoint_request, execute_get_slice_logs_request,
-    execute_get_slice_request, execute_list_slice_audit_request, execute_list_slices_request,
-    execute_start_slice_request, execute_stop_slice_request,
+    execute_create_slice_backup_request, execute_create_slice_request,
+    execute_delete_slice_request, execute_get_slice_display_endpoint_request,
+    execute_get_slice_logs_request, execute_get_slice_request,
+    execute_get_slice_state_status_request, execute_list_slice_audit_request,
+    execute_list_slices_request, execute_reset_slice_state_request,
+    execute_save_slice_state_request, execute_start_slice_request, execute_stop_slice_request,
 };
 use provider_auth::{
     merge_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
@@ -79,6 +81,18 @@ pub(crate) async fn execute_slice_request(
         }
         LocalDaemonRequest::ListSliceAudit(request) => {
             execute_list_slice_audit_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::SaveSliceState(request) => {
+            execute_save_slice_state_request(runtime_state, config_projection, request).await
+        }
+        LocalDaemonRequest::GetSliceStateStatus(request) => {
+            execute_get_slice_state_status_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::ResetSliceState(request) => {
+            execute_reset_slice_state_request(runtime_state, config_projection, request).await
+        }
+        LocalDaemonRequest::CreateSliceBackup(request) => {
+            execute_create_slice_backup_request(runtime_state, config_projection, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "slice request",

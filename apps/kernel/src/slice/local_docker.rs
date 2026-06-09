@@ -8,8 +8,8 @@ use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOC
 use crate::error::DaemonError;
 
 use super::model::{
-    LocalDockerSliceAction, SliceBackendKind, SliceDisplayMode, SliceLogEntry,
-    SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
+    LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord, SliceDisplayMode, SliceLogEntry,
+    SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
 };
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
@@ -27,6 +27,7 @@ pub struct LocalDockerSliceOptions {
     pub docker_image: String,
     pub build_image: SliceImageBuildPolicy,
     pub extension_dockerfile: Option<PathBuf>,
+    pub saved_home_archive: Option<PathBuf>,
     pub allow_unconfined_seccomp: bool,
     pub memory_mb: Option<u32>,
     pub cpus: Option<String>,
@@ -51,6 +52,7 @@ impl LocalDockerSliceOptions {
                 .extension_dockerfile
                 .as_deref()
                 .map(expand_user_path_for_slice),
+            saved_home_archive: None,
             allow_unconfined_seccomp: linux.allow_unconfined_seccomp.unwrap_or(false),
             memory_mb: linux.memory_mb,
             cpus: linux.cpus.clone(),
@@ -59,9 +61,158 @@ impl LocalDockerSliceOptions {
         }
     }
 
+    pub fn with_saved_state(mut self, state: &SliceSavedStateRecord) -> Self {
+        self.docker_image = state.image_ref.clone();
+        self.saved_home_archive = Some(PathBuf::from(&state.home_archive_path));
+        self
+    }
+
     fn screen_geometry(&self) -> String {
         format!("{}x{}x24", self.screen_width, self.screen_height)
     }
+}
+
+pub fn save_local_docker_slice_state(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<SliceSavedStateRecord, DaemonError> {
+    save_local_docker_slice_state_inner(record, options, true)
+}
+
+pub fn save_local_docker_slice_state_live(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<SliceSavedStateRecord, DaemonError> {
+    save_local_docker_slice_state_inner(record, options, false)
+}
+
+fn save_local_docker_slice_state_inner(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    quiesce_container: bool,
+) -> Result<SliceSavedStateRecord, DaemonError> {
+    ensure_local_docker_state_target(record, "slice.state.save")?;
+    ensure_host_docker_ready()?;
+    let state_id = active_state_id(record);
+    let image_ref = active_state_image_ref(&state_id);
+    let state_dir = options.root.join("states").join(&state_id);
+    let manifest_path = state_dir.join("manifest.json");
+    let home_archive_path = state_dir.join("home.tar.zst");
+    std::fs::create_dir_all(&state_dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.state.save",
+        message: format!(
+            "failed to create slice state directory {}: {error}",
+            state_dir.display()
+        ),
+    })?;
+    if quiesce_container {
+        stop_local_docker_container_if_running(record)?;
+    }
+    docker_commit_container(record, &image_ref, "slice.state.save")?;
+    archive_local_docker_home_volume(record, options, &home_archive_path, "slice.state.save")?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let size_bytes = file_size(&home_archive_path);
+    let state = SliceSavedStateRecord {
+        id: state_id,
+        slice_name: record.name.clone(),
+        source_slice_id: record.id.clone(),
+        backend: record.backend.clone(),
+        os: record.os.clone(),
+        image_ref,
+        home_archive_path: home_archive_path.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+        size_bytes,
+        last_operation: Some("state.save".to_string()),
+        last_operation_status: Some(super::model::SliceOperationStatus::Completed),
+        last_error: None,
+    };
+    write_state_manifest(&manifest_path, &state)?;
+    Ok(state)
+}
+
+pub fn create_local_docker_slice_backup(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    name: Option<&str>,
+) -> Result<SliceBackupRecord, DaemonError> {
+    create_local_docker_slice_backup_inner(record, options, name, true)
+}
+
+pub fn create_local_docker_slice_backup_live(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    name: Option<&str>,
+) -> Result<SliceBackupRecord, DaemonError> {
+    create_local_docker_slice_backup_inner(record, options, name, false)
+}
+
+fn create_local_docker_slice_backup_inner(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    name: Option<&str>,
+    quiesce_container: bool,
+) -> Result<SliceBackupRecord, DaemonError> {
+    ensure_local_docker_state_target(record, "slice.backup.create")?;
+    ensure_host_docker_ready()?;
+    let backup_id = backup_id(record, name);
+    let state_id = active_state_id(record);
+    let image_ref = format!("arroba-slice-backup:{backup_id}");
+    let backup_dir = options.root.join("backups").join(&backup_id);
+    let manifest_path = backup_dir.join("manifest.json");
+    let home_archive_path = backup_dir.join("home.tar.zst");
+    std::fs::create_dir_all(&backup_dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.create",
+        message: format!(
+            "failed to create slice backup directory {}: {error}",
+            backup_dir.display()
+        ),
+    })?;
+    if quiesce_container {
+        stop_local_docker_container_if_running(record)?;
+    }
+    docker_commit_container(record, &image_ref, "slice.backup.create")?;
+    archive_local_docker_home_volume(record, options, &home_archive_path, "slice.backup.create")?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let backup = SliceBackupRecord {
+        id: backup_id,
+        name: name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&record.name)
+            .to_string(),
+        source_slice_id: record.id.clone(),
+        source_state_id: state_id,
+        image_ref,
+        home_archive_path: home_archive_path.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        created_at_ms: now_ms,
+        size_bytes: file_size(&home_archive_path),
+    };
+    write_state_manifest(&manifest_path, &backup)?;
+    Ok(backup)
+}
+
+pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<(), DaemonError> {
+    let _ = Command::new("docker")
+        .args(["image", "rm", "-f", &state.image_ref])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let manifest_path = PathBuf::from(&state.manifest_path);
+    if let Some(dir) = manifest_path.parent() {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.state.reset",
+                message: format!(
+                    "failed to remove slice saved state directory {}: {error}",
+                    dir.display()
+                ),
+            })?;
+        }
+    }
+    Ok(())
 }
 
 pub fn run_local_docker_slice_action(
@@ -433,6 +584,9 @@ fn configure_local_docker_slice_command(
     if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
         command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
     }
+    if let Some(saved_home_archive) = options.saved_home_archive.as_deref() {
+        command.env("ARROBA_SLICE_SAVED_HOME_ARCHIVE", saved_home_archive);
+    }
     if let Some(relay) = relay {
         let LocalDockerSliceRelay {
             relay_token,
@@ -603,6 +757,220 @@ fn local_docker_container_is_running(record: &SliceRecord) -> bool {
         .any(|line| line.trim() == container_name)
 }
 
+fn ensure_local_docker_state_target(
+    record: &SliceRecord,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    if record.os != "linux" {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "local Docker saved state only supports linux slices, got `{}`",
+                record.os
+            ),
+        });
+    }
+    if !container_exists_by_name(&local_docker_container_name(record)) {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "slice container `{}` does not exist; start the slice before saving state",
+                local_docker_container_name(record)
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn container_exists_by_name(container_name: &str) -> bool {
+    Command::new("docker")
+        .args(["container", "inspect", container_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), DaemonError> {
+    if !local_docker_container_is_running(record) {
+        return Ok(());
+    }
+    let container = local_docker_container_name(record);
+    let _ = Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "slice",
+            &container,
+            "bash",
+            "-lc",
+            "screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true; screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true; /opt/arroba-slice/slice-screen.sh stop >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let status = Command::new("docker")
+        .args(["stop", &container])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.state.stop",
+            message: format!("failed to stop slice container `{container}`: {error}"),
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "slice.state.stop",
+            message: format!("docker stop `{container}` failed with status {status}"),
+        })
+    }
+}
+
+fn docker_commit_container(
+    record: &SliceRecord,
+    image_ref: &str,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let container = local_docker_container_name(record);
+    let status = Command::new("docker")
+        .args(["commit", &container, image_ref])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to commit slice container `{container}`: {error}"),
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "docker commit `{container}` to `{image_ref}` failed with status {status}"
+            ),
+        })
+    }
+}
+
+fn archive_local_docker_home_volume(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    archive_path: &Path,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let archive_dir = archive_path
+        .parent()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: format!("archive path `{}` has no parent", archive_path.display()),
+        })?;
+    let archive_name = archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: format!("archive path `{}` has no file name", archive_path.display()),
+        })?;
+    let volume = format!("{}-home", local_docker_container_name(record));
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            "root",
+            "-v",
+            &format!("{volume}:/home-src:ro"),
+            "-v",
+            &format!("{}:/arroba-state", archive_dir.display()),
+            &options.docker_image,
+            "bash",
+            "-lc",
+            &format!(
+                "set -euo pipefail; cd /home-src; tar --zstd -cf /arroba-state/{archive_name} ."
+            ),
+        ])
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to archive slice home volume `{volume}`: {error}"),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "home volume archive failed with status {}: {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    })
+}
+
+fn active_state_id(record: &SliceRecord) -> String {
+    sanitize_state_component(&record.name)
+}
+
+fn active_state_image_ref(state_id: &str) -> String {
+    format!("arroba-slice-state:{state_id}")
+}
+
+fn backup_id(record: &SliceRecord, name: Option<&str>) -> String {
+    let label = name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&record.name);
+    format!(
+        "{}-{}",
+        sanitize_state_component(label),
+        crate::session::unix_epoch_ms()
+    )
+}
+
+fn sanitize_state_component(value: &str) -> String {
+    let sanitized = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "slice".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), DaemonError> {
+    let payload =
+        serde_json::to_vec_pretty(value).map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.state.manifest",
+            message: format!("failed to encode saved state manifest: {error}"),
+        })?;
+    std::fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.state.manifest",
+        message: format!(
+            "failed to write saved state manifest {}: {error}",
+            path.display()
+        ),
+    })
+}
+
+fn file_size(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
 pub(super) fn local_docker_slice_action_log_path(
     root: &Path,
     record: &SliceRecord,
@@ -769,6 +1137,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: None,
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )
@@ -786,6 +1155,7 @@ mod tests {
             cpus: None,
             screen_width: 1280,
             screen_height: 800,
+            saved_home_archive: None,
         }
     }
 
@@ -826,6 +1196,7 @@ mod tests {
                     worker_kernel_ref: None,
                     display_url: None,
                     provider_auth: Vec::new(),
+                    from_saved_state: None,
                     now_ms: 42,
                 },
             )

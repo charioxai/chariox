@@ -13,6 +13,7 @@ export function createSliceRequest(options: {
   workerKernelRef?: string | null
   displayUrl?: string | null
   providerAuth?: unknown[]
+  fromSavedState?: string | null
 }) {
   return {
     CreateSlice: {
@@ -26,6 +27,7 @@ export function createSliceRequest(options: {
       worker_kernel_ref: options.workerKernelRef ?? null,
       display_url: options.displayUrl ?? null,
       provider_auth: options.providerAuth ?? [],
+      from_saved_state: options.fromSavedState ?? null,
     },
   }
 }
@@ -101,6 +103,27 @@ export function listSliceAuditRequest(sliceRef: string, limit?: number | null) {
     ListSliceAudit: {
       slice_ref: sliceRef,
       ...(limit == null ? {} : { limit }),
+    },
+  }
+}
+
+export function saveSliceStateRequest(sliceRef: string) {
+  return { SaveSliceState: { slice_ref: sliceRef } }
+}
+
+export function getSliceStateStatusRequest(sliceRef: string) {
+  return { GetSliceStateStatus: { slice_ref: sliceRef } }
+}
+
+export function resetSliceStateRequest(sliceRef: string) {
+  return { ResetSliceState: { slice_ref: sliceRef } }
+}
+
+export function createSliceBackupRequest(sliceRef: string, name?: string | null) {
+  return {
+    CreateSliceBackup: {
+      slice_ref: sliceRef,
+      name: name ?? null,
     },
   }
 }

@@ -547,6 +547,65 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::InvokeHomeCredentialTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_home_credential_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::HomeCredentialToolHandled { result },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::InvokeHomeSliceStateTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_home_slice_state_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::HomeSliceStateToolHandled { result },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ResolveHomeCredentialSecret {
+            context,
+            credential_id,
+            injection,
+        } => {
+            let resolved = router
+                .resolve_forwarded_home_credential_secret(context, credential_id, injection)
+                .await;
+            match resolved {
+                Ok((credential_id, secret_input)) => {
+                    RelayPeerResponse::HomeCredentialSecretResolved {
+                        credential_id,
+                        secret_input,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change } => {
             let applied = router
                 .relay_apply_workspace_live_sync_change(context, change)

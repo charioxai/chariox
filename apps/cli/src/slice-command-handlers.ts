@@ -1,7 +1,9 @@
 import type {
+  SliceBackupRecord,
   SliceDisplayEndpoint,
   SliceLogEntry,
   SliceRecord,
+  SliceSavedStateRecord,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "./session-agent-resolver.js"
@@ -28,6 +30,7 @@ type SliceCreateOptions = {
   workspaceMount?: string | null
   workerKernelRef?: string | null
   displayUrl?: string | null
+  fromSavedState?: string | null
 }
 
 export type SliceCommandHandlerDeps = {
@@ -51,6 +54,10 @@ export type SliceCommandHandlerDeps = {
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
   listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
+  saveSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
+  getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
+  resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
+  createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
 }
 
 type SliceProviderLogin = {
@@ -92,6 +99,22 @@ export async function handleSliceSlashCommand(
     await showSliceAudit(deps, args)
     return
   }
+  if (subcommand === "state") {
+    await showSliceState(deps, args)
+    return
+  }
+  if (subcommand === "save-state" || subcommand === "save") {
+    await saveSliceState(deps, args[0])
+    return
+  }
+  if (subcommand === "reset-state") {
+    await resetSliceState(deps, args[0])
+    return
+  }
+  if (subcommand === "backup") {
+    await createSliceBackup(deps, args)
+    return
+  }
   if (subcommand === "start" || subcommand === "stop") {
     await setSliceRunning(deps, subcommand, args[0])
     return
@@ -120,7 +143,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -138,6 +161,48 @@ function formatSlice(slice: SliceRecord): string {
   const diagnostics = formatSliceDiagnostics(slice)
   const next = sliceProviderAuthNextAction(slice)
   return `${formatSliceLabel(slice)} id=${slice.id} status=${slice.status} display=${slice.display_mode ?? "headless"} backend=${slice.backend} os=${slice.os} worktree=${worktree} agents=${slice.agent_ids?.length ?? 0} sessions=${slice.session_ids?.length ?? 0} worker=${worker} relay=${relay} providers=${providers} auth_status=${authStatus} auth=${auth}${diagnostics}${next ? ` next=${next}` : ""}${display}`
+}
+
+function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord | null): string {
+  if (!state) {
+    return `slice state ${formatSliceLabel(slice)} (${slice.id}): none`
+  }
+  return [
+    `slice state ${formatSliceLabel(slice)} (${slice.id}): ${slice.saved_state_status ?? "saved"}`,
+    `state=${state.id}`,
+    `image=${state.image_ref}`,
+    `home_archive=${state.home_archive_path}`,
+    state.updated_at_ms ? `updated=${new Date(state.updated_at_ms).toISOString()}` : "",
+  ].filter(Boolean).join("\n")
+}
+
+function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
+  return [
+    `saved slice state ${formatSliceLabel(slice)} (${slice.id})`,
+    `state=${state.id}`,
+    `image=${state.image_ref}`,
+    `home_archive=${state.home_archive_path}`,
+  ].join("\n")
+}
+
+function formatSliceStateReset(slice: SliceRecord, removedState: SliceSavedStateRecord | null): string {
+  return removedState
+    ? `reset slice state ${formatSliceLabel(slice)} (${slice.id})\nremoved_state=${removedState.id}\nremoved_home_archive=${removedState.home_archive_path}`
+    : `reset slice state ${formatSliceLabel(slice)} (${slice.id})\nremoved_state=none`
+}
+
+function formatSliceBackupCreated(
+  slice: SliceRecord,
+  backup: SliceBackupRecord,
+  instructions: string,
+): string {
+  return [
+    `created slice backup ${formatSliceLabel(slice)} (${slice.id})`,
+    `backup=${backup.id}`,
+    `image=${backup.image_ref}`,
+    `home_archive=${backup.home_archive_path}`,
+    instructions,
+  ].filter(Boolean).join("\n")
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
@@ -313,6 +378,104 @@ async function showSliceAudit(deps: SliceCommandHandlerDeps, args: string[]): Pr
   }
 }
 
+async function showSliceState(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.getSliceStateStatus) {
+    deps.flashFooter("slice state is unavailable in this build", "error")
+    return
+  }
+  const sliceRef = await explicitOrFocusedSliceRef(deps, args[0])
+  try {
+    const payload = await deps.getSliceStateStatus(sliceRef)
+    deps.appendNotice(formatSliceStateStatus(payload.slice, payload.state))
+    deps.flashFooter(`slice state ${formatSliceLabel(payload.slice)}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice state failed", "error")
+  }
+}
+
+async function saveSliceState(deps: SliceCommandHandlerDeps, sliceRef: string | undefined): Promise<void> {
+  if (!deps.saveSliceState) {
+    deps.flashFooter("slice save-state is unavailable in this build", "error")
+    return
+  }
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "save-state", resolvedRef)) {
+    return
+  }
+  try {
+    const payload = await deps.saveSliceState(resolvedRef)
+    deps.appendNotice(formatSliceStateSaved(payload.slice, payload.state))
+    deps.flashFooter(`saved slice state ${formatSliceLabel(payload.slice)}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice save-state failed", "error")
+  }
+}
+
+async function resetSliceState(deps: SliceCommandHandlerDeps, sliceRef: string | undefined): Promise<void> {
+  if (!deps.resetSliceState) {
+    deps.flashFooter("slice reset-state is unavailable in this build", "error")
+    return
+  }
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "reset-state", resolvedRef)) {
+    return
+  }
+  try {
+    const payload = await deps.resetSliceState(resolvedRef)
+    deps.appendNotice(formatSliceStateReset(payload.slice, payload.removed_state))
+    deps.flashFooter(`reset slice state ${formatSliceLabel(payload.slice)}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice reset-state failed", "error")
+  }
+}
+
+async function createSliceBackup(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.createSliceBackup) {
+    deps.flashFooter("slice backup is unavailable in this build", "error")
+    return
+  }
+  const parsed = parseSliceBackupArgs(args[0] === "create" ? args.slice(1) : args)
+  if (parsed.error) {
+    deps.flashFooter(parsed.error, "error")
+    return
+  }
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, parsed.sliceRef)
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "backup", resolvedRef)) {
+    return
+  }
+  try {
+    const payload = await deps.createSliceBackup(resolvedRef, parsed.name ?? null)
+    deps.appendNotice(formatSliceBackupCreated(payload.slice, payload.backup, payload.instructions))
+    deps.flashFooter(`created slice backup ${payload.backup.id}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice backup failed", "error")
+  }
+}
+
+function parseSliceBackupArgs(args: string[]): {
+  sliceRef?: string
+  name?: string
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let name: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if (arg === "--name" && value && !value.startsWith("--")) {
+      name = value
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: /slice backup [slice-ref] [--name <name>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(name ? { name } : {}) }
+}
+
 function parseSliceCreateOptions(
   deps: SliceCommandHandlerDeps,
   args: string[],
@@ -325,6 +488,7 @@ function parseSliceCreateOptions(
   workspaceId?: string | null
   worktreeId?: string | null
   displayMode?: "headless" | "headed"
+  fromSavedState?: string | null
   error?: string
 } {
   const name = args[0]
@@ -335,6 +499,7 @@ function parseSliceCreateOptions(
   let worktreeId: string | null | undefined = deps.currentWorktreeTarget()
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
   let displayMode: "headless" | "headed" | undefined
+  let fromSavedState: string | null | undefined
   let error: string | undefined
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index]
@@ -374,6 +539,15 @@ function parseSliceCreateOptions(
       index += 1
       continue
     }
+    if (arg === "--from-state" || arg === "--from-saved-state") {
+      if (!value || value.startsWith("--")) {
+        error = "usage: /slice create <name> --from-state <state-ref>"
+        break
+      }
+      fromSavedState = value
+      index += 1
+      continue
+    }
     if (arg === "--mount") {
       if (!value || value.startsWith("--")) {
         error = "usage: /slice create <name> --mount <path|none>"
@@ -396,6 +570,7 @@ function parseSliceCreateOptions(
     ...(worktreeId !== undefined ? { worktreeId } : {}),
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
     ...(displayMode !== undefined ? { displayMode } : {}),
+    ...(fromSavedState !== undefined ? { fromSavedState } : {}),
     ...(error !== undefined ? { error } : {}),
   }
 }
@@ -432,6 +607,7 @@ async function createSlice(
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),
     workerKernelRef: parsed.workerKernelRef ?? null,
     displayUrl: parsed.displayUrl ?? null,
+    fromSavedState: parsed.fromSavedState ?? null,
   }
   const slice = await deps.createSlice(createOptions)
   deps.flashFooter(`created slice ${formatSliceLabel(slice)}`, "info")
@@ -608,7 +784,7 @@ async function deleteSlice(
 
 async function rejectSliceLifecycleWithAttachedAgents(
   deps: SliceCommandHandlerDeps,
-  action: "stop" | "delete",
+  action: "stop" | "delete" | "save-state" | "reset-state" | "backup",
   sliceRef: string,
 ): Promise<boolean> {
   const slice = await loadSliceForLifecycleGuard(deps, sliceRef)

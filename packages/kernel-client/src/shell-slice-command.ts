@@ -1,18 +1,24 @@
 import type {
   SliceDisplayEndpoint,
+  SliceBackupRecord,
   SliceLogEntry,
   SliceRecord,
+  SliceSavedStateRecord,
 } from "./kernel-types.js"
 import {
+  createSliceBackupRequest,
   createSliceRequest,
   deleteSliceRequest,
   getSliceDisplayEndpointRequest,
   getSliceLogsRequest,
   getSliceRequest,
+  getSliceStateStatusRequest,
   importSliceProviderAuthRequest,
   listSliceAuditRequest,
   listSlicesRequest,
   removeSliceProviderAuthRequest,
+  resetSliceStateRequest,
+  saveSliceStateRequest,
   setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
@@ -51,10 +57,11 @@ export async function executeSliceCommand(
     }
     case "create": {
       if (!first) {
-        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
       }
       let workerKernelRef: string | undefined
       let displayUrl: string | undefined
+      let fromSavedState: string | undefined
       let displayMode: "headless" | "headed" | undefined
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index]
@@ -65,6 +72,9 @@ export async function executeSliceCommand(
         } else if (arg === "--display-url" && value && !value.startsWith("--")) {
           displayUrl = value
           index += 1
+        } else if ((arg === "--from-state" || arg === "--from-saved-state") && value && !value.startsWith("--")) {
+          fromSavedState = value
+          index += 1
         } else if (arg === "--headed" || arg === "--display") {
           displayMode = "headed"
         } else if (arg === "--headless" || arg === "--no-display") {
@@ -72,7 +82,7 @@ export async function executeSliceCommand(
         } else if (arg?.startsWith("--")) {
           return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
         } else if (arg) {
-          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>]" }
+          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
         }
       }
       const response = await deps.client.send(createSliceRequest({
@@ -83,6 +93,7 @@ export async function executeSliceCommand(
         workspaceMount: context.worktree,
         workerKernelRef: workerKernelRef ?? null,
         displayUrl: displayUrl ?? null,
+        fromSavedState: fromSavedState ?? null,
       }))
       const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceCreated").slice
       return resourceResult(`created slice ${formatSliceLabel(slice)}`, parsed.assignment, slice.id, {}, { slice })
@@ -120,6 +131,38 @@ export async function executeSliceCommand(
       const response = await deps.client.send(listSliceAuditRequest(resolvedSliceRef, limit))
       const events = expectVariant<{ events: Record<string, unknown>[] }>(response, "SliceAuditListed").events
       return { ok: true, message: formatSliceAuditEvents(events), data: { events } }
+    }
+    case "state": {
+      const sliceRef = first === "status" || first === "show"
+        ? rest[0] ?? await focusedAgentSliceRef(context, deps)
+        : first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(getSliceStateStatusRequest(sliceRef))
+      const payload = expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>(response, "SliceStateStatus")
+      return { ok: true, message: formatSliceStateStatus(payload.slice, payload.state), data: payload }
+    }
+    case "save-state":
+    case "save": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(saveSliceStateRequest(sliceRef))
+      const payload = expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
+      return { ok: true, message: formatSliceStateSaved(payload.slice, payload.state), data: payload }
+    }
+    case "reset-state": {
+      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(resetSliceStateRequest(sliceRef))
+      const payload = expectVariant<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>(response, "SliceStateReset")
+      return { ok: true, message: formatSliceStateReset(payload.slice, payload.removed_state), data: payload }
+    }
+    case "backup": {
+      const backupArgs = first === "create" ? rest : [first, ...rest].filter((arg): arg is string => Boolean(arg))
+      const { sliceRef, name, error } = parseSliceBackupArgs(backupArgs)
+      if (error) {
+        return { ok: false, message: error }
+      }
+      const resolvedSliceRef = sliceRef ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(createSliceBackupRequest(resolvedSliceRef, name ?? null))
+      const payload = expectVariant<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>(response, "SliceBackupCreated")
+      return { ok: true, message: formatSliceBackupCreated(payload.slice, payload.backup, payload.instructions), data: payload }
     }
     case "start": {
       const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
@@ -223,7 +266,7 @@ export async function executeSliceCommand(
       return { ok: false, message: "usage: slice auth import|remove [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
   }
 }
 
@@ -285,6 +328,30 @@ function parseSliceAuditArgs(first: string | undefined, rest: string[]): {
   return { ...(sliceRef ? { sliceRef } : {}), ...(limit ? { limit } : {}) }
 }
 
+function parseSliceBackupArgs(args: string[]): {
+  sliceRef?: string
+  name?: string
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let name: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const value = args[index + 1]
+    if (arg === "--name" && value && !value.startsWith("--")) {
+      name = value
+      index += 1
+      continue
+    }
+    if (!sliceRef && arg && !arg.startsWith("--")) {
+      sliceRef = arg
+      continue
+    }
+    return { error: "usage: slice backup [slice-ref] [--name <name>]" }
+  }
+  return { ...(sliceRef ? { sliceRef } : {}), ...(name ? { name } : {}) }
+}
+
 function formatSliceLoginMessage(
   slice: SliceRecord,
   login: {
@@ -321,6 +388,48 @@ function formatSliceProviderAuthCommandResult(
     return `slice ${label} auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
   }
   return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
+}
+
+function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord | null): string {
+  if (!state) {
+    return `slice state ${formatSliceLabel(slice)}: none`
+  }
+  return [
+    `slice state ${formatSliceLabel(slice)}: ${slice.saved_state_status ?? "saved"}`,
+    `state=${state.id}`,
+    `image=${state.image_ref}`,
+    `home_archive=${state.home_archive_path}`,
+    state.updated_at_ms ? `updated=${new Date(state.updated_at_ms).toISOString()}` : "",
+  ].filter(Boolean).join("\n")
+}
+
+function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
+  return [
+    `saved slice state ${formatSliceLabel(slice)}`,
+    `state=${state.id}`,
+    `image=${state.image_ref}`,
+    `home_archive=${state.home_archive_path}`,
+  ].join("\n")
+}
+
+function formatSliceStateReset(slice: SliceRecord, removedState: SliceSavedStateRecord | null): string {
+  return removedState
+    ? `reset slice state ${formatSliceLabel(slice)}\nremoved_state=${removedState.id}\nremoved_home_archive=${removedState.home_archive_path}`
+    : `reset slice state ${formatSliceLabel(slice)}\nremoved_state=none`
+}
+
+function formatSliceBackupCreated(
+  slice: SliceRecord,
+  backup: SliceBackupRecord,
+  instructions: string,
+): string {
+  return [
+    `created slice backup ${formatSliceLabel(slice)}`,
+    `backup=${backup.id}`,
+    `image=${backup.image_ref}`,
+    `home_archive=${backup.home_archive_path}`,
+    instructions,
+  ].filter(Boolean).join("\n")
 }
 
 function resourceResult(

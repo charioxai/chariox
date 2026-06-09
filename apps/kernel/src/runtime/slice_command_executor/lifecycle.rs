@@ -5,8 +5,9 @@ use tokio::time::{sleep, Duration};
 
 use crate::error::DaemonError;
 use crate::local::{
-    CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest, ListSlicesRequest,
-    LocalDaemonResponse, SliceRefRequest,
+    CreateSliceBackupRequest, CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest,
+    ListSlicesRequest, LocalDaemonResponse, SliceRefRequest, SliceStateResetRequest,
+    SliceStateSaveRequest, SliceStateStatusRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -71,6 +72,145 @@ pub(super) async fn execute_list_slice_audit_request(
     Ok(LocalDaemonResponse::SliceAuditListed { events })
 }
 
+pub(super) async fn execute_save_slice_state_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: SliceStateSaveRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&slice, "state.save", "accepted", None, None)?;
+    if let Err(error) = ensure_slice_has_no_active_agents(&slice, "slice.state.save") {
+        let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "state.save",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let save_result = tokio::task::spawn_blocking(move || {
+        crate::slice::save_local_docker_slice_state(&task_slice, &docker_options)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.state.save",
+        message: format!("slice state save task failed: {error}"),
+    })?;
+    let state = match save_result {
+        Ok(state) => state,
+        Err(error) => {
+            let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "state.save",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    let slice = runtime_state.save_slice_state_record(&request.slice_ref, state.clone())?;
+    runtime_state.record_slice_audit_event(&slice, "state.save", "completed", None, None)?;
+    Ok(LocalDaemonResponse::SliceStateSaved { slice, state })
+}
+
+pub(super) async fn execute_get_slice_state_status_request(
+    runtime_state: &KernelRuntimeState,
+    request: SliceStateStatusRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let state = runtime_state.active_saved_state_for_slice(&request.slice_ref)?;
+    Ok(LocalDaemonResponse::SliceStateStatus { slice, state })
+}
+
+pub(super) async fn execute_reset_slice_state_request(
+    runtime_state: &KernelRuntimeState,
+    _config_projection: &DaemonConfigProjectionStore,
+    request: SliceStateResetRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation =
+        runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.reset")?;
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&slice, "state.reset", "accepted", None, None)?;
+    if let Err(error) = ensure_slice_has_no_active_agents(&slice, "slice.state.reset") {
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "state.reset",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
+    let (slice, removed_state) = runtime_state.reset_slice_state_record(&request.slice_ref)?;
+    if let Some(state) = &removed_state {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || crate::slice::remove_local_docker_saved_state(&state))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.state.reset",
+                message: format!("slice state reset cleanup task failed: {error}"),
+            })??;
+    }
+    runtime_state.record_slice_audit_event(&slice, "state.reset", "completed", None, None)?;
+    Ok(LocalDaemonResponse::SliceStateReset {
+        slice,
+        removed_state,
+    })
+}
+
+pub(super) async fn execute_create_slice_backup_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: CreateSliceBackupRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let _operation =
+        runtime_state.begin_slice_operation(&request.slice_ref, "slice.backup.create")?;
+    let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    runtime_state.record_slice_audit_event(&slice, "backup.create", "accepted", None, None)?;
+    if let Err(error) = ensure_slice_has_no_active_agents(&slice, "slice.backup.create") {
+        let _ = runtime_state.record_slice_audit_event(
+            &slice,
+            "backup.create",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
+    let docker_options =
+        crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let task_slice = slice.clone();
+    let backup_name = request.name.clone();
+    let backup = tokio::task::spawn_blocking(move || {
+        crate::slice::create_local_docker_slice_backup(
+            &task_slice,
+            &docker_options,
+            backup_name.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.backup.create",
+        message: format!("slice backup task failed: {error}"),
+    })??;
+    let backup = runtime_state.save_slice_backup_record(backup)?;
+    let instructions = slice_backup_instructions(&backup);
+    runtime_state.record_slice_audit_event(&slice, "backup.create", "completed", None, None)?;
+    Ok(LocalDaemonResponse::SliceBackupCreated {
+        slice,
+        backup,
+        instructions,
+    })
+}
+
 pub(super) async fn execute_start_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -89,8 +229,11 @@ pub(super) async fn execute_start_slice_request(
     )?;
     let supervisor_slice = initial_slice.clone();
     let supervisor_relay = Some(relay.clone());
-    let docker_options =
+    let mut docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    if let Some(state) = runtime_state.active_saved_state_for_slice(&initial_slice.id)? {
+        docker_options = docker_options.with_saved_state(&state);
+    }
     let supervisor_result = tokio::task::spawn_blocking(move || {
         crate::slice::run_local_docker_slice_action(
             &supervisor_slice,
@@ -116,11 +259,34 @@ pub(super) async fn execute_start_slice_request(
         );
         return Err(error);
     }
+    if relay.container_relay_url.is_none() {
+        if let Err(error) = runtime_state
+            .ensure_slice_private_relay_home_connection(
+                &initial_slice.id,
+                relay.relay_url.clone(),
+                relay.relay_token.clone(),
+            )
+            .await
+        {
+            let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &initial_record,
+                "start",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    }
     let discovered = match discover_started_slice_worker(config_projection, &initial_slice, &relay)
         .await
     {
         Ok(worker) => Some(worker),
         Err(error) => {
+            runtime_state
+                .stop_slice_private_relay_home_connection(&initial_slice.id)
+                .await;
             let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
             let _ = runtime_state.record_slice_audit_event(
                 &initial_record,
@@ -244,6 +410,9 @@ pub(super) async fn execute_stop_slice_request(
         return Err(error);
     }
     let slice = runtime_state.mark_slice_stopped(&request.slice_ref)?;
+    runtime_state
+        .stop_slice_private_relay_home_connection(&slice.id)
+        .await;
     revoke_display_tunnels_for_slice(relay_state, &slice.id).await;
     runtime_state.record_slice_audit_event(&slice, "stop", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStopped { slice })
@@ -301,6 +470,9 @@ pub(super) async fn execute_delete_slice_request(
         }
     }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
+    runtime_state
+        .stop_slice_private_relay_home_connection(&slice.id)
+        .await;
     revoke_display_tunnels_for_slice(relay_state, &slice.id).await;
     runtime_state.record_slice_audit_event(&slice, "delete", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceDeleted { slice })
@@ -459,6 +631,17 @@ fn random_hex_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn slice_backup_instructions(backup: &crate::slice::SliceBackupRecord) -> String {
+    let backup_dir = std::path::Path::new(&backup.manifest_path)
+        .parent()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| backup.manifest_path.clone());
+    format!(
+        "Backup saved:\n  {backup_dir}\n\nTo use it manually, stop Arroba slice operations, then swap this backup directory with the active state directory for the slice.\n\nThe Docker image tag for this backup is:\n  {}",
+        backup.image_ref
+    )
 }
 
 #[cfg(test)]
@@ -704,6 +887,9 @@ mod tests {
             local_docker_ports: None,
             providers: Vec::new(),
             provider_auth: Vec::new(),
+            saved_state_ref: None,
+            saved_state_status: None,
+            saved_state_updated_at_ms: None,
             display_endpoint: None,
             created_at_ms: 0,
             updated_at_ms: 0,

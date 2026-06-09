@@ -161,4 +161,37 @@ impl CommandRouter {
             .cancel_forwarded_home_extension_invocation(context, metadata)
             .await
     }
+
+    pub(crate) async fn dispatch_forwarded_home_credential_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_home_credential_tool_call(context, tool_name, arguments)
+            .await
+    }
+
+    pub(crate) async fn dispatch_forwarded_home_slice_state_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime_state
+            .dispatch_forwarded_home_slice_state_tool_call(context, tool_name, arguments)
+            .await
+    }
+
+    pub(crate) async fn resolve_forwarded_home_credential_secret(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        credential_id: String,
+        injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
+    ) -> Result<(String, String), DaemonError> {
+        self.runtime_state
+            .resolve_forwarded_home_credential_secret(context, credential_id, injection)
+            .await
+    }
 }

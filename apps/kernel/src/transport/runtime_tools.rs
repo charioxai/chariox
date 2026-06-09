@@ -73,6 +73,10 @@ pub const SLICE_BROWSER_SUBMIT_TOOL: &str = "arroba.slice_browser_submit";
 pub const SLICE_BROWSER_SUBMIT_TOOL_ALIAS: &str = "slice_browser_submit";
 pub const SLICE_BROWSER_TEXT_TOOL: &str = "arroba.slice_browser_text";
 pub const SLICE_BROWSER_TEXT_TOOL_ALIAS: &str = "slice_browser_text";
+pub const SAVE_SLICE_STATE_TOOL: &str = "arroba.save_slice_state";
+pub const SAVE_SLICE_STATE_TOOL_ALIAS: &str = "save_slice_state";
+pub const CREATE_SLICE_BACKUP_TOOL: &str = "arroba.create_slice_backup";
+pub const CREATE_SLICE_BACKUP_TOOL_ALIAS: &str = "create_slice_backup";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -149,11 +153,15 @@ pub struct RequestExtensionArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterMcpArgs {
     pub config: crate::mcp::ArrobaMcpServerConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_to_current_agent: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterSkillPathArgs {
     pub path: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_to_current_agent: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,11 +175,19 @@ pub struct RegisterScriptPathArgs {
     pub environment: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_to_current_agent: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterConnectorPathArgs {
     pub path: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_to_current_agent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +246,20 @@ pub struct QueryRecallArgs {
     pub before_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SaveSliceStateArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CreateSliceBackupArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,24 +549,26 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_MCP_TOOL.to_string(),
-            description: "Register or update a global Arroba-managed MCP definition. Registration does not grant the MCP to the current agent.".to_string(),
+            description: "Register or update a global Arroba-managed MCP definition. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["config"],
                 "properties": {
-                    "config": {"type": "object"}
+                    "config": {"type": "object"},
+                    "grant_to_current_agent": {"type": "boolean"}
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: REGISTER_SKILL_PATH_TOOL.to_string(),
-            description: "Register or update a global Arroba skill from a directory containing SKILL.md. Registration does not grant the skill to the current agent.".to_string(),
+            description: "Register or update a global Arroba skill from a directory containing SKILL.md. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
                 "properties": {
-                    "path": {"type": "string"}
+                    "path": {"type": "string"},
+                    "grant_to_current_agent": {"type": "boolean"}
                 },
                 "additionalProperties": false
             }),
@@ -555,26 +587,30 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_SCRIPT_PATH_TOOL.to_string(),
-            description: "Register a global Arroba script extension from a Python or TypeScript file. Registration does not grant the script to the current agent.".to_string(),
+            description: "Register a global Arroba script extension from a Python or TypeScript file. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path", "environment"],
                 "properties": {
                     "path": {"type": "string"},
                     "environment": {"type": "string"},
-                    "name": {"type": "string"}
+                    "name": {"type": "string"},
+                    "grant_to_current_agent": {"type": "boolean"}
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: REGISTER_CONNECTOR_PATH_TOOL.to_string(),
-            description: "Register or update a global Arroba connector from connector YAML. Registration does not grant the connector to the current agent.".to_string(),
+            description: "Register or update a global Arroba connector from connector YAML. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
                 "properties": {
-                    "path": {"type": "string"}
+                    "path": {"type": "string"},
+                    "grant_to_current_agent": {"type": "boolean"},
+                    "credential": {"type": "string"},
+                    "allow": {"type": "string", "enum": ["read", "write", "destructive"]}
                 },
                 "additionalProperties": false
             }),

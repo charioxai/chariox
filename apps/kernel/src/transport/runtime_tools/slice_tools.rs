@@ -165,6 +165,29 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: SAVE_SLICE_STATE_TOOL.to_string(),
+            description: "Ask the home Arroba kernel to save the current reusable state for a slice. If slice_ref is omitted, Arroba infers the current agent's slice.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slice_ref": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: CREATE_SLICE_BACKUP_TOOL.to_string(),
+            description: "Ask the home Arroba kernel to create a backup copy of a slice state. If slice_ref is omitted, Arroba infers the current agent's slice.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slice_ref": {"type": "string"},
+                    "name": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
     ];
     let aliases = canonical
         .iter()
@@ -190,6 +213,8 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
         SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
         SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
+        SAVE_SLICE_STATE_TOOL => SAVE_SLICE_STATE_TOOL_ALIAS,
+        CREATE_SLICE_BACKUP_TOOL => CREATE_SLICE_BACKUP_TOOL_ALIAS,
         _ => return None,
     };
     let mut spec = spec.clone();
@@ -269,6 +294,16 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_slice_browser_text"
         | "mcp__arroba__slice_browser_text"
         | "mcp__arroba__arroba_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
+        SAVE_SLICE_STATE_TOOL
+        | SAVE_SLICE_STATE_TOOL_ALIAS
+        | "arroba_save_slice_state"
+        | "mcp__arroba__save_slice_state"
+        | "mcp__arroba__arroba_save_slice_state" => Some(SAVE_SLICE_STATE_TOOL),
+        CREATE_SLICE_BACKUP_TOOL
+        | CREATE_SLICE_BACKUP_TOOL_ALIAS
+        | "arroba_create_slice_backup"
+        | "mcp__arroba__create_slice_backup"
+        | "mcp__arroba__arroba_create_slice_backup" => Some(CREATE_SLICE_BACKUP_TOOL),
         _ => None,
     }
 }

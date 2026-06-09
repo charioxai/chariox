@@ -1038,9 +1038,38 @@ export type SliceRecord = {
   local_docker_ports?: SliceLocalDockerPorts | null
   providers?: string[]
   provider_auth?: SliceProviderAuthSummary[]
+  saved_state_ref?: string | null
+  saved_state_status?: "saved" | "missing" | "failed" | null
+  saved_state_updated_at_ms?: number | null
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type SliceSavedStateRecord = {
+  id: string
+  slice_name: string
+  source_slice_id: string
+  backend: "local_docker" | "ssh_docker"
+  os: string
+  image_ref: string
+  home_archive_path: string
+  created_at_ms: number
+  updated_at_ms: number
+  last_operation?: string | null
+  last_operation_status?: "accepted" | "in_progress" | "completed" | "failed" | "reconciled" | null
+  last_error?: string | null
+}
+
+export type SliceBackupRecord = {
+  id: string
+  name: string
+  source_slice_id: string
+  source_state_id: string
+  image_ref: string
+  home_archive_path: string
+  created_at_ms: number
+  size_bytes?: number | null
 }
 
 export type SliceLocalDockerPorts = {
@@ -1322,7 +1351,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 125
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 127
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

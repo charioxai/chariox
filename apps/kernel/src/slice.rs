@@ -4,10 +4,13 @@ mod ports;
 mod store;
 
 pub use local_docker::{
-    collect_local_docker_slice_logs, inspect_local_docker_slice_host_runtime,
+    collect_local_docker_slice_logs, create_local_docker_slice_backup,
+    create_local_docker_slice_backup_live, inspect_local_docker_slice_host_runtime,
     local_docker_private_relay, local_docker_private_relay_endpoint,
-    local_docker_private_relay_token, run_local_docker_slice_action,
-    start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
+    local_docker_private_relay_token, remove_local_docker_saved_state,
+    run_local_docker_slice_action, save_local_docker_slice_state,
+    save_local_docker_slice_state_live, start_local_docker_slice_provider_login,
+    LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -15,10 +18,10 @@ use local_docker::{
     relay_url_for_container,
 };
 pub use model::{
-    CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceDisplayEndpoint,
-    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts,
-    SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
-    SliceStatus,
+    CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
+    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
+    SliceLocalDockerPorts, SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart,
+    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
@@ -45,6 +48,7 @@ mod tests {
             worker_kernel_ref: None,
             display_url: Some("http://127.0.0.1:6080".to_string()),
             provider_auth: Vec::new(),
+            from_saved_state: None,
             now_ms: 42,
         }
     }
@@ -343,6 +347,7 @@ mod tests {
             cpus: None,
             screen_width: 1280,
             screen_height: 800,
+            saved_home_archive: None,
         };
         let log_path =
             local_docker_slice_action_log_path(&root, &slice, LocalDockerSliceAction::Provision);
