@@ -6,6 +6,10 @@ Agent Apps. It covers only Arroba self-deployment through the existing
 middleware, Vercel integration, Git patching, and arbitrary third-party app
 hosting are out of scope for this phase.
 
+OpenCode validation is blocked and stays outside this goal's validation and
+completion criteria; it will be reintroduced as a separate validation target
+after the blocker is resolved.
+
 ## Summary
 
 An Agent App deployment is a workflow publication package with static app
