@@ -24,6 +24,20 @@ pub(crate) async fn execute_external_provider_session_request(
             })
         }
         LocalDaemonRequest::RefreshExternalProviderSessions(request) => {
+            let provider = request.provider.clone();
+            let discovered = crate::app::discover_external_provider_sessions(provider.as_deref());
+            if let Some(provider) = provider.as_deref() {
+                store.replace_provider_sessions(provider, discovered);
+            } else {
+                for provider in ["codex", "claude", "opencode"] {
+                    let provider_sessions = discovered
+                        .iter()
+                        .filter(|session| session.provider == provider)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    store.replace_provider_sessions(provider, provider_sessions);
+                }
+            }
             let list_request = ListExternalProviderSessionsRequest {
                 provider: request.provider,
                 cursor: None,

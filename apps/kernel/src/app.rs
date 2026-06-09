@@ -6,6 +6,7 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
+mod external_provider_session_discovery;
 mod external_provider_sessions;
 mod history_access;
 mod kernel_agent;
@@ -43,6 +44,8 @@ pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
+pub(crate) use external_provider_session_discovery::discover_external_provider_sessions;
+pub(crate) use external_provider_sessions::ExternalProviderSessionIndexStore;
 pub(crate) use prompt_activity::{
     ActivePromptState, ActiveTurnPhase, ActiveTurnState, ActiveTurnStore, PromptActivityStore,
     PromptWorkspaceClaimStore,
@@ -56,7 +59,6 @@ pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };
 pub(crate) use workflow_design_events::WorkflowDesignEventStore;
-pub(crate) use external_provider_sessions::ExternalProviderSessionIndexStore;
 
 use crate::agent::{AgentService, AgentServiceStore};
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
