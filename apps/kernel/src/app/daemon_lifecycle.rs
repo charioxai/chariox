@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::app::{provider_runtime, DaemonApp};
+use crate::app::{DaemonApp, provider_runtime};
 use crate::error::DaemonError;
 
 impl DaemonApp {
@@ -126,6 +126,12 @@ impl DaemonApp {
             relay_state,
             shutdown_rx,
         ));
+        let external_provider_discovery_task = tokio::spawn(
+            crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
+                Arc::clone(&app),
+                shutdown_tx.subscribe(),
+            ),
+        );
 
         let result =
             crate::runtime_transport::run_kernel_websocket_server(Arc::clone(&app), async {
@@ -136,6 +142,7 @@ impl DaemonApp {
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
+        let _ = external_provider_discovery_task.await;
         result
     }
 }

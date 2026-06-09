@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
@@ -13,6 +14,60 @@ use crate::local::{
 };
 use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionAgentDefaults};
+
+const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
+
+pub(crate) async fn run_external_provider_session_discovery_poller(
+    app: Arc<Mutex<DaemonApp>>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    refresh_external_provider_session_index(&app).await;
+    let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            _ = interval.tick() => {
+                refresh_external_provider_session_index(&app).await;
+            }
+        }
+    }
+}
+
+async fn refresh_external_provider_session_index(app: &Arc<Mutex<DaemonApp>>) {
+    let discovered =
+        match tokio::task::spawn_blocking(|| crate::app::discover_external_provider_sessions(None))
+            .await
+        {
+            Ok(discovered) => discovered,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.external_provider_sessions",
+                    "external provider session discovery task failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+    let store = {
+        let app = app.lock().await;
+        app.external_provider_session_index_store()
+    };
+    for provider in ["codex", "claude", "opencode"] {
+        let provider_sessions = discovered
+            .iter()
+            .filter(|session| session.provider == provider)
+            .cloned()
+            .collect::<Vec<_>>();
+        store.replace_provider_sessions(provider, provider_sessions);
+    }
+}
 
 pub(crate) async fn execute_external_provider_session_request(
     app: &Arc<Mutex<DaemonApp>>,
