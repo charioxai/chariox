@@ -31,7 +31,7 @@ Each discovered external provider session should advertise capability flags rath
 The effective import mode is derived from those flags:
 
 - **Tier 3, live attach**: Arroba can attach to or proxy the provider session so provider-native prompts and Arroba prompts are both projected through the kernel session as they happen.
-- **Tier 2, observed history**: Arroba can read or watch provider history and append external turns as observed transcript records, but those turns are not kernel-managed prompts.
+- **Tier 2, observed history**: Arroba can read provider history at import time and keep observing imported external sessions for new provider-native turns. New external turns are projected into Arroba transcripts as observed records, but they are not kernel-managed prompts and cannot use kernel-owned prompt features.
 - **Tier 1, resume only**: Arroba can create a new managed provider run using provider resume state, but cannot observe new external activity until the user interacts through Arroba.
 
 ## Provider Targets
@@ -48,6 +48,25 @@ Expected behavior:
 - If live attach is active, native Codex TUI prompts appear in Arroba TUI and web terminals.
 - If live attach is unavailable, externally submitted turns appear as observed history when detectable.
 
+Tier 3 feasibility:
+
+- Status: conditionally feasible, spike required.
+- Relevant provider shape: current Codex CLI exposes experimental `app-server`, `remote-control`, `--remote`, `resume`, and structured app-server primitives around threads, turns, and streamed items.
+- Feasible case: an external Codex session is already running behind an attachable app-server/remote-control endpoint, or can be resumed onto one without replacing the provider-owned thread.
+- Unproven case: an arbitrary already-open Codex TUI that is not connected to an attachable app-server. The spike must verify whether app-server broadcasts turns from one client to another and whether an ordinary TUI can be discovered and attached after startup.
+- Not acceptable as Tier 3: launching a separate Arroba-owned Codex resume process while the native external TUI keeps running independently. That is Tier 2 plus kernel-managed continuation, not live attach.
+
+Tier 3 implementation spike:
+
+1. Generate or vendor the installed Codex app-server schema for the version Arroba supports.
+2. Discover endpoints from `codex remote-control`, process args, configured Unix sockets, and explicit user-supplied URLs.
+3. Connect as a second app-server client and resume the provider thread by id.
+4. Submit Arroba prompts through the app-server turn API rather than through a separate CLI process.
+5. Subscribe to turn/item notifications and project provider-native turns into the kernel transcript.
+6. Verify whether prompts submitted from the native Codex TUI are broadcast to the Arroba client within the active polling/live threshold.
+7. Map permission/tool approval events to `RuntimeInteraction` only if app-server exposes a supported bidirectional approval channel.
+8. If any required broadcast or approval channel is absent, classify Codex external ordinary TUI sessions as Tier 2 while keeping Tier 3 available for app-server-backed sessions.
+
 ### OpenCode
 
 Target Tier 3 when an external `opencode serve` endpoint or session API can be discovered or explicitly attached.
@@ -58,6 +77,24 @@ Expected behavior:
 
 - Arroba-origin prompts continue the selected OpenCode session through `ProviderResumeState::from_opencode_session_id`.
 - OpenCode should be the strongest Tier 3 candidate because it already has structured HTTP/session APIs.
+
+Tier 3 feasibility:
+
+- Status: likely feasible for server-backed sessions, spike required.
+- Relevant provider shape: current OpenCode CLI exposes `opencode serve`, `opencode attach <url>`, `opencode session`, `opencode export`, `opencode run --session`, and `opencode web`.
+- Feasible case: the external session lives in, or can be attached through, a running OpenCode server endpoint.
+- Tier 2-only case: a file-only session with no live server or no discoverable event/prompt API. Reading `opencode export` or local session files can observe history but does not put Arroba behind the native TUI.
+
+Tier 3 implementation spike:
+
+1. Discover running OpenCode servers through explicit config, process args, mDNS where enabled, and recent known endpoints.
+2. Authenticate using the provider's supported server password/token mechanism when configured.
+3. Map server session ids to Arroba external session ids using the session list/export API.
+4. Find and implement the live event channel, preferably WebSocket or server-sent events; if only polling is available, keep the mode at Tier 2 observed history.
+5. Submit Arroba prompts through the OpenCode server session endpoint so native `opencode attach` clients and Arroba operate on the same provider session.
+6. Project server events into kernel terminal history and attached clients.
+7. Map permissions/tool requests into one kernel-owned `RuntimeInteraction` only if the server protocol exposes supported request and reply events.
+8. Run a two-client attach drill: native `opencode attach` sends a prompt that Arroba sees, Arroba sends a prompt that native `opencode attach` sees, then both clients observe the same assistant output.
 
 ### Claude Code
 
@@ -71,6 +108,52 @@ Expected behavior:
 - External Claude turns are imported as observed transcript records when history can be read.
 - The UI must not imply kernel-owned permission or hidden-context behavior for externally submitted Claude turns.
 
+Tier 3 feasibility:
+
+- Status: not feasible for ordinary external Claude TUI sessions with the currently confirmed stable shape; conditionally unknown for sessions started with Claude Remote Control.
+- Relevant provider shape: current Claude CLI exposes `--remote-control [name]`, `--session-id`, `--resume`, and `--input-format stream-json` / `--output-format stream-json` only in print mode. The existing native TUI integration relies on Arroba-owned PTY and hook setup; that cannot be retroactively inserted into an already-running external TUI.
+- Not feasible case: an ordinary external interactive Claude TUI. Arroba can resume/read history, but it cannot take ownership of that process' stdin/stdout, hidden context hook, or permission bridge after the process started.
+- Conditional case: sessions started with `claude --remote-control`. This requires a dedicated protocol spike because the CLI advertises the mode, but the plan must prove there is a supported second-client prompt/event/permission channel before claiming Tier 3.
+- Not acceptable as Tier 3: `claude --print --input-format stream-json --output-format stream-json` for an already-running external TUI. That is useful for Arroba-launched programmatic runs, but not for attaching behind a native interactive session started outside Arroba.
+
+Tier 3 implementation spike:
+
+1. Start Claude with `--remote-control <name>` and inspect its advertised endpoint, auth, process state, and session identity.
+2. Determine whether a second client can attach to the same remote-control session without stealing the interactive TUI.
+3. Verify second-client prompt submission, user-message replay, assistant stream replay, tool/permission events, abort, and disconnect/reconnect behavior.
+4. Check whether hidden context can be supplied through a supported remote-control channel. If not, Tier 3 must explicitly disable hidden-context expectations for external Claude sessions.
+5. If remote-control supports the full bidirectional surface, implement conditional Tier 3 only for remote-control-backed Claude sessions.
+6. If remote-control cannot support second-client live attach, keep Claude external sessions at Tier 2 with optional hook-enhanced observation only when the user preconfigured those hooks before starting Claude.
+
+## Tier 2 Observer Requirements
+
+Discovery/index polling is not enough for Tier 2. Full Tier 2 requires a separate imported-session observer that follows each imported external provider session and projects new provider-native turns into all Arroba terminals attached to the importing session.
+
+Polling cadence:
+
+- Idle discovered-but-not-imported sessions: slow index refresh, for example 30 seconds.
+- Imported sessions with no recent change: slower transcript refresh, for example 15 to 30 seconds.
+- Imported sessions that are running or recently modified: active transcript refresh around 1 second.
+- A session should remain active for a short window after a detected change, for example two minutes, then decay back to idle.
+- Provider errors should use per-provider backoff without blocking other providers or the main app.
+
+Kernel implementation:
+
+- Run provider discovery and transcript reads outside the main app lock, using async provider APIs or blocking filesystem reads isolated from state mutation.
+- Hold the kernel/app lock only to merge index state, append observed transcript entries, mark import metadata, and publish projections.
+- Maintain durable cursors per imported agent: provider turn id when stable; otherwise file path plus byte offset, line number, content hash, and last observed timestamp.
+- Deduplicate observed turns by provider turn id or a stable content merge key.
+- If the same external provider session is imported into multiple Arroba sessions, each imported agent receives its own observed transcript projection for that provider session. The provider session is not owned exclusively by the first Arroba import.
+- Publish observed turns through the same session/history/projection event paths used by ordinary terminal updates so TUI and web terminals refresh naturally.
+- Clearly label observed turns in product UI as external/provider-observed.
+
+Tier 2 acceptance:
+
+- A new prompt sent in the native provider TUI after import appears in the imported Arroba TUI and web terminal without requiring manual refresh.
+- The same event is marked observed, not kernel-managed.
+- Arroba-origin prompts continue through the Arroba-managed resumed provider run and remain eligible for normal Arroba features.
+- Permission prompts from external provider-native turns are not presented as answerable kernel interactions unless the provider exposes a supported reply channel.
+
 ## Kernel Architecture
 
 Add a kernel-owned `ExternalProviderSessionIndex` service beside the existing managed provider process tracker.
@@ -83,6 +166,8 @@ Responsibilities:
 - Track whether an external session has already been imported.
 - Store enough index state for deduplication and stable pagination cursors.
 - Publish changes through the normal kernel projection/event path.
+- Run a separate imported-session observer for transcript deltas after import.
+- Use active and idle polling cadences so running sessions can project new turns quickly without forcing expensive scans for every idle provider session.
 
 Normalized record:
 
@@ -231,18 +316,25 @@ Each table has its own `Load Older` action.
 Extend `/agent spawn`:
 
 ```text
-/agent spawn --import codex:<thread-id>
-/agent spawn --import opencode:<session-id>
-/agent spawn --import claude:<session-id>
+/agent spawn --external codex:<thread-id>
+/agent spawn --external opencode:<session-id>
+/agent spawn --external claude:<session-id>
 ```
 
-Optional follow-up shorthand can use the current provider:
+The equivalent alias is:
 
 ```text
-/agent spawn --provider-session <id>
+/agent spawn --external-session <provider>:<provider-session-id>
 ```
 
-The command should create a new agent in the current Arroba session and continue the selected provider session.
+The command creates a new agent in the current Arroba session and continues the selected provider session. External-session import is a provider-session import path, so it should reject placement options such as `--slice`, `--machine`, `--kernel`, and explicit worktree placement.
+
+Optional follow-up shorthand can be added after the main path is stable:
+
+```text
+/agent spawn --import <provider>:<provider-session-id>
+/agent spawn --provider-session <id>
+```
 
 ## Web UX
 
@@ -333,7 +425,7 @@ Open Arroba waiting room, select Join Existing Sessions, select the external pro
 Attach to an existing Arroba session and run:
 
 ```text
-/agent spawn --import <provider>:<provider-session-id>
+/agent spawn --external <provider>:<provider-session-id>
 ```
 
 Verify:
@@ -341,6 +433,7 @@ Verify:
 - A new agent appears in the session.
 - The provider run resumes the selected provider session.
 - The imported agent can receive Arroba prompts.
+- Placement options are rejected for external-session imports.
 
 ### Drill 4: Web Waiting Room Import
 
@@ -433,12 +526,12 @@ All evidence must be written under:
 
 The `.artifacts/` directory is intentionally ignored by git.
 
-Each drill should collect:
+Each drill should collect product screenshots, not generated evidence cards:
 
 - Provider-native TUI before import.
 - TUI waiting room external table.
 - TUI imported session terminal.
-- TUI `/agent spawn --import` result.
+- TUI `/agent spawn --external` result.
 - Web waiting room external table.
 - Web import popup tab.
 - Web imported terminal.
