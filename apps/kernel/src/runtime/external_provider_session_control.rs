@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
@@ -13,8 +13,8 @@ use crate::local::{
     ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
     LocalDaemonResponse, WatchExternalProviderSessionStatusRequest,
 };
-use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
 use crate::provider::ExternalProviderImportMetadata;
+use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionAgentDefaults};
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
@@ -125,10 +125,7 @@ async fn poll_imported_external_provider_transcripts(
     for target in due {
         let key = imported_observer_target_key(&target);
         let provider = target.import.external_provider.clone();
-        let provider_session_id = target
-            .import
-            .external_provider_session_provider_id
-            .clone();
+        let provider_session_id = target.import.external_provider_session_provider_id.clone();
         let read = match tokio::task::spawn_blocking(move || {
             crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
         })
@@ -141,18 +138,18 @@ async fn poll_imported_external_provider_transcripts(
             Ok(read) => {
                 let appended = {
                     let mut app = app.lock().await;
-                    append_observed_external_turns_for_import(&mut app, read)
-                        .unwrap_or_default()
+                    append_observed_external_turns_for_import(&mut app, read).unwrap_or_default()
                 };
                 let state = schedule
                     .entry(key)
                     .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
                 state.consecutive_errors = 0;
                 if appended > 0 {
-                    state.active_until =
-                        Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW);
+                    state.active_until = Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW);
                 }
-                let active = state.active_until.is_some_and(|active_until| active_until > now);
+                let active = state
+                    .active_until
+                    .is_some_and(|active_until| active_until > now);
                 state.next_due_at = now
                     + if active {
                         EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL
@@ -330,12 +327,7 @@ fn import_external_provider_session(
         external.provider.clone(),
         external.provider_session_id.clone(),
     );
-    let agent = persist_external_import_metadata(
-        app,
-        session.id(),
-        agent.id(),
-        import.clone(),
-    )?;
+    let agent = persist_external_import_metadata(app, session.id(), agent.id(), import.clone())?;
     append_observed_external_history(app, &session, &agent, Some(&provider_run), &external);
     store.mark_imported(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderSessionImported {
@@ -392,12 +384,7 @@ fn import_external_provider_agent(
         external.provider.clone(),
         external.provider_session_id.clone(),
     );
-    let agent = persist_external_import_metadata(
-        app,
-        session.id(),
-        agent.id(),
-        import.clone(),
-    )?;
+    let agent = persist_external_import_metadata(app, session.id(), agent.id(), import.clone())?;
     append_observed_external_history(app, &session, &agent, Some(&provider_run), &external);
     store.mark_imported(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderAgentImported {
@@ -471,13 +458,11 @@ fn append_observed_external_history(
         &external.provider,
         &external.provider_session_id,
     );
-    let provider_run_id = provider_run
-        .map(|run| run.id().to_string())
-        .or_else(|| {
-            app.providers()
-                .get_latest_run_for_agent(session.id(), agent.id())
-                .map(|run| run.id().to_string())
-        });
+    let provider_run_id = provider_run.map(|run| run.id().to_string()).or_else(|| {
+        app.providers()
+            .get_latest_run_for_agent(session.id(), agent.id())
+            .map(|run| run.id().to_string())
+    });
     let target = ImportedExternalObserverTarget {
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
@@ -508,15 +493,11 @@ fn append_observed_external_turns_for_import(
     }
     let session = app.sessions().get_session(&read.target.session_id)?;
     let agent = app.agents.get_agent(&read.target.agent_id)?;
-    let provider_run_id = read
-        .target
-        .provider_run_id
-        .clone()
-        .or_else(|| {
-            app.providers()
-                .get_latest_run_for_agent(session.id(), agent.id())
-                .map(|run| run.id().to_string())
-        });
+    let provider_run_id = read.target.provider_run_id.clone().or_else(|| {
+        app.providers()
+            .get_latest_run_for_agent(session.id(), agent.id())
+            .map(|run| run.id().to_string())
+    });
     let existing_merge_keys = app
         .load_session_history_entries(&session, Some(agent.id()))?
         .into_iter()
@@ -553,19 +534,23 @@ fn append_observed_external_turns_for_import(
         {
             continue;
         }
-        app.append_history_entry(
+        let entry = SessionHistoryEntry::external_provider_observed(
             &read.target.session_id,
-            SessionHistoryEntry::external_provider_observed(
-                &read.target.session_id,
-                provider_run_id.as_deref(),
-                &read.target.agent_id,
-                kind,
-                turn.text,
-                &provider,
-                &provider_session_id,
-                provider_turn_id.clone(),
-                turn.observed_at_ms,
-            ),
+            provider_run_id.as_deref(),
+            &read.target.agent_id,
+            kind,
+            turn.text,
+            &provider,
+            &provider_session_id,
+            provider_turn_id.clone(),
+            turn.observed_at_ms,
+        );
+        app.append_history_entry(&read.target.session_id, entry.clone());
+        emit_observed_external_history_signal(
+            app,
+            &read.target,
+            provider_run_id.as_deref(),
+            &entry,
         );
         if let Some(merge_key) = merge_key {
             seen_merge_keys.insert(merge_key.clone());
@@ -587,6 +572,35 @@ fn append_observed_external_turns_for_import(
             .session_snapshot(&read.target.session_id);
     }
     Ok(appended)
+}
+
+fn emit_observed_external_history_signal(
+    app: &DaemonApp,
+    target: &ImportedExternalObserverTarget,
+    provider_run_id: Option<&str>,
+    entry: &SessionHistoryEntry,
+) {
+    let Some(provider_run_id) = provider_run_id else {
+        return;
+    };
+    let Ok(agent) = app.agents().get_agent(&target.agent_id) else {
+        return;
+    };
+    let recipient_attachment_ids = app
+        .attachments
+        .list_session_attachment_ids_for_user(&target.session_id, agent.owner_user_id());
+    if recipient_attachment_ids.is_empty() {
+        return;
+    }
+    app.terminal_stream_store().fan_out_output(
+        &target.session_id,
+        provider_run_id,
+        Some(&target.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderStatus,
+        entry.merge_key.clone(),
+        recipient_attachment_ids,
+        b"external_provider_history_updated",
+    );
 }
 
 fn imported_external_observer_targets(app: &DaemonApp) -> Vec<ImportedExternalObserverTarget> {
@@ -833,8 +847,9 @@ mod tests {
             "codex".to_string(),
             "thread-observed".to_string(),
         );
-        let agent = persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
-            .expect("metadata should persist");
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
         let appended = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
@@ -864,13 +879,85 @@ mod tests {
         );
         assert_eq!(entries[0].provider_run_id, None);
         assert_eq!(entries[0].external_provider.as_deref(), Some("codex"));
-        let persisted = app.agents().get_agent(agent.id()).expect("agent should exist");
+        let persisted = app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should exist");
         let cursor = &persisted
             .external_provider_import()
             .expect("metadata should persist")
             .observed_cursor;
         assert_eq!(cursor.last_observed_turn_id.as_deref(), Some("item-1"));
         assert_eq!(cursor.last_observed_at_ms, Some(42));
+    }
+
+    #[test]
+    fn append_observed_external_turns_signals_attached_terminals_to_refresh_history() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "opencode:thread-observed".to_string(),
+            "opencode".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let appended = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: ImportedExternalObserverTarget {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    provider_run_id: Some(run.id().to_string()),
+                    import,
+                },
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("item-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    text: "observed reply".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("observed turn should append");
+
+        assert_eq!(appended, 1);
+        let records = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider_run_id, run.id());
+        assert_eq!(records[0].agent_id.as_deref(), Some(agent.id()));
+        assert_eq!(
+            records[0].kind,
+            crate::terminal::TerminalOutputKind::ProviderStatus
+        );
+        assert_eq!(
+            records[0].merge_key.as_deref(),
+            Some("external:opencode:thread-observed:item-1")
+        );
     }
 
     #[test]
