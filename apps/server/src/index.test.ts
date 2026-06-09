@@ -15,7 +15,10 @@ import {
   type WorkflowPublicationConfig,
 } from "./index.js"
 import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
-import { registerCloudPublicationDeploymentBackend } from "./publication-cloud-deployment.js"
+import {
+  appendCloudPublicationDeploymentLogs,
+  registerCloudPublicationDeploymentBackend,
+} from "./publication-cloud-deployment.js"
 import {
   publicationForAgentAppInvocation,
   rememberAgentAppInvocationRoute,
@@ -148,6 +151,60 @@ test("publication gateway can register Cloud backend from env profile", async ()
     setOptionalEnv("ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID", previous.accountId)
     setOptionalEnv("ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN", previous.token)
   }
+})
+
+test("publication gateway appends account-scoped deployment logs", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  const appended = await appendCloudPublicationDeploymentLogs({
+    deploymentId: "deployment-log",
+    profile: {
+      apiUrl: "https://cloud.example.test/",
+      accountId: "account-1",
+      cloudSessionToken: "session-token",
+    },
+    entries: [{
+      level: "info",
+      message: "agent app action `cart.add` completed",
+      metadata: { kind: "agent_app_action", action_id: "cart.add" },
+    }],
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return new Response(JSON.stringify({ logs: [] }), { status: 201 })
+    },
+  })
+
+  assert.equal(appended, true)
+  assert.equal(calls[0]?.url, "https://cloud.example.test/publication-deployments/deployment-log/logs")
+  assert.equal((calls[0]?.init.headers as Record<string, string>).authorization, "Bearer session-token")
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
+    accountId: "account-1",
+    entries: [{
+      level: "info",
+      message: "agent app action `cart.add` completed",
+      metadata: { kind: "agent_app_action", action_id: "cart.add" },
+    }],
+  })
+})
+
+test("publication gateway appends runner-scoped deployment logs", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  const appended = await appendCloudPublicationDeploymentLogs({
+    deploymentId: "deployment-log",
+    profile: { apiUrl: "https://cloud.example.test/", accountId: "account-1" },
+    runnerKey: "runner-secret",
+    entries: [{ level: "warn", message: "agent app action `cart.add` failed" }],
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return new Response(JSON.stringify({ logs: [] }), { status: 201 })
+    },
+  })
+
+  assert.equal(appended, true)
+  assert.equal(calls[0]?.url, "https://cloud.example.test/runner/publication-deployments/deployment-log/logs")
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
+    runnerKey: "runner-secret",
+    entries: [{ level: "warn", message: "agent app action `cart.add` failed" }],
+  })
 })
 
 test("publication trace events honor per-node level policy", () => {
@@ -1725,6 +1782,8 @@ test("agent app gateway serves packaged app assets", async () => {
 test("agent app wrapped route invokes workflow with path-tail prompt and streams viewer shell", async () => {
   let seenInput: unknown = null
   let seenProof: Record<string, unknown> | null = null
+  const previousPort = process.env.PORT
+  process.env.PORT = "34567"
   const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-route-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
@@ -1796,7 +1855,28 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
     assert.deepEqual(seenInput, { prompt: "1 kg bananas" })
     const proof = seenProof as Record<string, unknown> | null
     assert.deepEqual(Object.keys((proof?.agent_app_actions as Record<string, unknown>) ?? {}), ["cart.add"])
+    assert.deepEqual(
+      (proof?.agent_app_audit as Record<string, unknown> | undefined)?.url,
+      "http://127.0.0.1:34567/.well-known/arroba/agent-app/audit-log",
+    )
+    const auditToken = (proof?.agent_app_audit as Record<string, unknown> | undefined)?.token
+    assert.equal(typeof auditToken, "string")
+    const auditResponse = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/audit-log",
+      payload: {
+        token: auditToken,
+        entries: [{
+          level: "info",
+          message: "agent app action `cart.add` completed",
+          metadata: { kind: "agent_app_action", action_id: "cart.add" },
+        }],
+      },
+    })
+    assert.equal(auditResponse.statusCode, 200)
+    assert.deepEqual(JSON.parse(auditResponse.body), { accepted: true, appended: false })
   } finally {
+    setOptionalEnv("PORT", previousPort)
     await app.close()
     await rm(root, { recursive: true, force: true })
   }

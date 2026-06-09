@@ -143,6 +143,20 @@ impl KernelRuntimeOwnedState {
                 .caller
                 .get("proof")
                 .and_then(serde_json::Value::as_object);
+            let audit = proof
+                .and_then(|value| value.get("agent_app_audit"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| {
+                    let url = value.get("url").and_then(serde_json::Value::as_str)?;
+                    let token = value.get("token").and_then(serde_json::Value::as_str)?;
+                    if url.trim().is_empty() || token.trim().is_empty() {
+                        return None;
+                    }
+                    Some(AgentAppActionAuditContext {
+                        url: url.to_string(),
+                        token: token.to_string(),
+                    })
+                });
             let action_context = AgentAppHttpActionContext {
                 action_id: args.action_id.clone(),
                 session: proof
@@ -153,6 +167,7 @@ impl KernelRuntimeOwnedState {
                     .and_then(|value| value.get("agent_app_request_id"))
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
+                audit,
             };
             let action = invocation
                 .caller
@@ -185,6 +200,15 @@ impl KernelRuntimeOwnedState {
                 Err(errors) => errors.map(|error| error.to_string()).collect::<Vec<_>>(),
             };
             if !messages.is_empty() {
+                send_agent_app_action_audit(
+                    &action_context,
+                    AgentAppActionAuditOutcome {
+                        ok: false,
+                        http_status: None,
+                        duration_ms: None,
+                        error: Some("input validation failed".to_string()),
+                    },
+                );
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
                     payload: serde_json::json!({
@@ -229,11 +253,37 @@ impl KernelRuntimeOwnedState {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("POST")
             .to_ascii_uppercase();
-        let response = call_agent_app_http_action(url, &method, &args.input, &action_context)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "runtime_tool_agent_app_action",
-                message: format!("agent app action `{}` failed: {error}", args.action_id),
-            })?;
+        let started = std::time::Instant::now();
+        let response = match call_agent_app_http_action(url, &method, &args.input, &action_context)
+        {
+            Ok(response) => {
+                send_agent_app_action_audit(
+                    &action_context,
+                    AgentAppActionAuditOutcome {
+                        ok: (200..300).contains(&response.status),
+                        http_status: Some(response.status),
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                        error: None,
+                    },
+                );
+                response
+            }
+            Err(error) => {
+                send_agent_app_action_audit(
+                    &action_context,
+                    AgentAppActionAuditOutcome {
+                        ok: false,
+                        http_status: None,
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                        error: Some(error.clone()),
+                    },
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_agent_app_action",
+                    message: format!("agent app action `{}` failed: {error}", args.action_id),
+                });
+            }
+        };
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: (200..300).contains(&response.status),
             payload: serde_json::json!({
@@ -463,6 +513,19 @@ struct AgentAppHttpActionContext {
     action_id: String,
     session: Option<String>,
     invocation_request_id: Option<String>,
+    audit: Option<AgentAppActionAuditContext>,
+}
+
+struct AgentAppActionAuditContext {
+    url: String,
+    token: String,
+}
+
+struct AgentAppActionAuditOutcome {
+    ok: bool,
+    http_status: Option<u16>,
+    duration_ms: Option<u64>,
+    error: Option<String>,
 }
 
 fn call_agent_app_http_action(
@@ -515,13 +578,56 @@ fn call_agent_app_http_action(
     })
 }
 
+fn send_agent_app_action_audit(
+    context: &AgentAppHttpActionContext,
+    outcome: AgentAppActionAuditOutcome,
+) {
+    let Some(audit) = context.audit.as_ref() else {
+        return;
+    };
+    let message = if outcome.ok {
+        format!("agent app action `{}` completed", context.action_id)
+    } else {
+        format!("agent app action `{}` failed", context.action_id)
+    };
+    let payload = serde_json::json!({
+        "token": audit.token,
+        "entries": [{
+            "level": if outcome.ok { "info" } else { "warn" },
+            "message": message,
+            "metadata": {
+                "kind": "agent_app_action",
+                "action_id": context.action_id.as_str(),
+                "session": context.session.as_deref(),
+                "invocation_request_id": context.invocation_request_id.as_deref(),
+                "ok": outcome.ok,
+                "http_status": outcome.http_status,
+                "duration_ms": outcome.duration_ms,
+                "error": outcome.error,
+            }
+        }]
+    });
+    let Ok(payload_json) = serde_json::to_string(&payload) else {
+        return;
+    };
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .build();
+    let _ = agent
+        .post(&audit.url)
+        .set("content-type", "application/json")
+        .set("accept", "application/json")
+        .send_string(&payload_json);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn agent_app_http_action_forwards_invocation_context_headers() {
@@ -530,14 +636,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel::<String>();
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept action request");
-            let mut request = [0_u8; 4096];
-            let read = stream.read(&mut request).expect("read action request");
-            let request_text = String::from_utf8_lossy(&request[..read]).to_string();
+            let request_text = read_http_request(&mut stream);
             sender.send(request_text).expect("send captured request");
+            let body = b"{\"ok\":true}";
             stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
-                )
+                .write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    String::from_utf8_lossy(body),
+                ).as_bytes())
                 .expect("write response");
         });
 
@@ -549,6 +656,7 @@ mod tests {
                 action_id: "cart.add".to_string(),
                 session: Some("session-a".to_string()),
                 invocation_request_id: Some("invocation-a".to_string()),
+                audit: None,
             },
         )
         .expect("action response");
@@ -559,5 +667,85 @@ mod tests {
         assert!(captured.contains("x-arroba-agent-app-session: session-a"));
         assert!(captured.contains("x-arroba-publication-invocation: invocation-a"));
         handle.join().expect("action server thread");
+    }
+
+    #[test]
+    fn agent_app_action_audit_posts_deployment_log_entry() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind audit server");
+        let address = listener.local_addr().expect("audit server address");
+        let (sender, receiver) = mpsc::channel::<String>();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept audit request");
+            let request_text = read_http_request(&mut stream);
+            sender.send(request_text).expect("send captured request");
+            let body = b"{\"accepted\":true}";
+            stream
+                .write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    String::from_utf8_lossy(body),
+                ).as_bytes())
+                .expect("write response");
+        });
+
+        send_agent_app_action_audit(
+            &AgentAppHttpActionContext {
+                action_id: "cart.checkout".to_string(),
+                session: Some("session-a".to_string()),
+                invocation_request_id: Some("invocation-a".to_string()),
+                audit: Some(AgentAppActionAuditContext {
+                    url: format!("http://{address}/.well-known/arroba/agent-app/audit-log"),
+                    token: "audit-token".to_string(),
+                }),
+            },
+            AgentAppActionAuditOutcome {
+                ok: true,
+                http_status: Some(200),
+                duration_ms: Some(25),
+                error: None,
+            },
+        );
+
+        let captured = receiver.recv().expect("captured request");
+        assert!(captured.contains("POST /.well-known/arroba/agent-app/audit-log"));
+        assert!(captured.contains("\"token\":\"audit-token\""));
+        assert!(captured.contains("\"kind\":\"agent_app_action\""));
+        assert!(captured.contains("\"action_id\":\"cart.checkout\""));
+        assert!(captured.contains("\"invocation_request_id\":\"invocation-a\""));
+        assert!(captured.contains("\"http_status\":200"));
+        handle.join().expect("audit server thread");
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set read timeout");
+        let mut data = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).expect("read request chunk");
+            if read == 0 {
+                break;
+            }
+            data.extend_from_slice(&buffer[..read]);
+            if request_complete(&data) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
+    }
+
+    fn request_complete(data: &[u8]) -> bool {
+        let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return false;
+        };
+        let header_end = header_end + 4;
+        let headers = String::from_utf8_lossy(&data[..header_end]).to_ascii_lowercase();
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        data.len() >= header_end + content_length
     }
 }

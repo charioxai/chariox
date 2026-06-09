@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
 
 import {
+  appendCloudPublicationDeploymentLogs,
+  type PublicationDeploymentLogEntry,
+} from "./publication-cloud-deployment.js"
+import {
   rememberAgentAppInvocationRoute,
   resolveAgentAppEffectAsset,
   registerAgentAppWorkflowRunEffects,
@@ -58,6 +62,9 @@ type AgentAppReply = {
   type: (contentType: string) => AgentAppReply
 }
 
+const AGENT_APP_AUDIT_PATH = "/.well-known/arroba/agent-app/audit-log"
+const AGENT_APP_AUDIT_TOKEN = randomUUID()
+
 export function isAgentAppPublication(publication: WorkflowPublicationConfig): boolean {
   return publication.agent_app?.enabled === true
 }
@@ -79,6 +86,11 @@ export function installAgentAppRoutes(
     method: "POST",
     url: "/.well-known/arroba/agent-app/actions/:actionId",
     handler: async (request, reply) => invokeAgentAppAction(request, reply, publication),
+  })
+  app.route({
+    method: "POST",
+    url: AGENT_APP_AUDIT_PATH,
+    handler: async (request, reply) => appendAgentAppAuditLog(request, reply),
   })
   app.get("/*", async (request, reply) => serveAgentAppAsset(request, reply, publication))
 }
@@ -155,6 +167,7 @@ async function invokeSelectedAgentAppRoute(options: {
         agent_app_request_id: options.requestId,
         replica_session_id: selectedPublication.session_id,
         agent_app_actions: routeAgentAppActions(options.publication, options.route),
+        agent_app_audit: agentAppAuditProof(),
       },
     },
     input: { prompt: options.prompt },
@@ -177,6 +190,62 @@ async function invokeSelectedAgentAppRoute(options: {
   } catch (error) {
     releaseAgentAppReplicaInvocation(options.publication, options.requestId)
     throw error
+  }
+}
+
+async function appendAgentAppAuditLog(
+  request: AgentAppRequest,
+  reply: AgentAppReply,
+) {
+  const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+    ? request.body as { token?: unknown; entries?: unknown }
+    : null
+  if (body?.token !== AGENT_APP_AUDIT_TOKEN) {
+    reply.code(403)
+    return { error: "agent app audit token is invalid" }
+  }
+  if (!Array.isArray(body.entries)) {
+    reply.code(400)
+    return { error: "agent app audit entries are required" }
+  }
+  const entries = body.entries
+    .map(normalizeAuditEntry)
+    .filter((entry): entry is PublicationDeploymentLogEntry => Boolean(entry))
+  if (entries.length === 0) {
+    reply.code(400)
+    return { error: "agent app audit entries are invalid" }
+  }
+  try {
+    const appended = await appendCloudPublicationDeploymentLogs({ entries })
+    return { accepted: true, appended }
+  } catch (error) {
+    reply.code(502)
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function normalizeAuditEntry(value: unknown): PublicationDeploymentLogEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (typeof record.message !== "string" || record.message.trim() === "") return null
+  return {
+    level: typeof record.level === "string" ? record.level : "info",
+    message: record.message,
+    metadata: record.metadata,
+    occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : new Date().toISOString(),
+  }
+}
+
+function agentAppAuditProof(): { url: string; token: string } | undefined {
+  const explicitUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  if (explicitUrl) {
+    return { url: explicitUrl, token: AGENT_APP_AUDIT_TOKEN }
+  }
+  const port = process.env.PORT?.trim()
+  if (!port) return undefined
+  return {
+    url: `http://127.0.0.1:${port}${AGENT_APP_AUDIT_PATH}`,
+    token: AGENT_APP_AUDIT_TOKEN,
   }
 }
 
