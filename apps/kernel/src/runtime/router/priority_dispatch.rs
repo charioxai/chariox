@@ -258,6 +258,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_waiting_room_request(
+                    Arc::clone(&self.app),
                     &self.runtime_state,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
@@ -271,7 +272,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportExternalProviderSession(_)
             | LocalDaemonRequest::ImportExternalProviderAgent(_)
             | LocalDaemonRequest::WatchExternalProviderSessionStatus(_)) => {
-                execute_external_provider_session_request(request).await
+                execute_external_provider_session_request(&self.app, request).await
             }
             LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(request) => {
                 let caller_user_id = command_caller_user_id(&command);

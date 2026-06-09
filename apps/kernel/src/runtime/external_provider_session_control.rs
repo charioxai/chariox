@@ -1,26 +1,40 @@
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    ExternalProviderSessionPage, LocalDaemonRequest, LocalDaemonResponse,
+    ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
     WatchExternalProviderSessionStatusRequest,
 };
-use crate::session::unix_epoch_ms;
 
 pub(crate) async fn execute_external_provider_session_request(
+    app: &Arc<Mutex<DaemonApp>>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let store = {
+        let app = app.lock().await;
+        app.external_provider_session_index_store()
+    };
     match request {
-        LocalDaemonRequest::ListExternalProviderSessions(_request) => {
+        LocalDaemonRequest::ListExternalProviderSessions(request) => {
             Ok(LocalDaemonResponse::ExternalProviderSessionsListed {
-                page: empty_external_provider_session_page(),
+                page: store.list(&request),
             })
         }
-        LocalDaemonRequest::RefreshExternalProviderSessions(_request) => {
+        LocalDaemonRequest::RefreshExternalProviderSessions(request) => {
+            let list_request = ListExternalProviderSessionsRequest {
+                provider: request.provider,
+                cursor: None,
+                limit: None,
+            };
             Ok(LocalDaemonResponse::ExternalProviderSessionsRefreshed {
-                page: empty_external_provider_session_page(),
+                page: store.list(&list_request),
             })
         }
         LocalDaemonRequest::WatchExternalProviderSessionStatus(request) => {
-            Ok(watch_status_response(request))
+            Ok(watch_status_response(&store, request))
         }
         LocalDaemonRequest::ImportExternalProviderSession(_)
         | LocalDaemonRequest::ImportExternalProviderAgent(_) => Err(DaemonError::LocalTransport {
@@ -34,20 +48,24 @@ pub(crate) async fn execute_external_provider_session_request(
     }
 }
 
-fn empty_external_provider_session_page() -> ExternalProviderSessionPage {
-    ExternalProviderSessionPage {
-        sessions: Vec::new(),
-        next_cursor: None,
-        has_more: false,
-        generated_at_ms: unix_epoch_ms(),
-    }
-}
-
 fn watch_status_response(
+    store: &crate::app::ExternalProviderSessionIndexStore,
     request: WatchExternalProviderSessionStatusRequest,
 ) -> LocalDaemonResponse {
+    let status = store
+        .get(&request.external_session_id)
+        .map(|session| {
+            if session.already_imported {
+                "imported".to_string()
+            } else {
+                session
+                    .running_state
+                    .unwrap_or_else(|| "available".to_string())
+            }
+        })
+        .unwrap_or_else(|| "unavailable".to_string());
     LocalDaemonResponse::ExternalProviderSessionWatchStatus {
         external_session_id: request.external_session_id,
-        status: "unavailable".to_string(),
+        status,
     }
 }

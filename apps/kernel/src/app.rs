@@ -6,6 +6,7 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
+mod external_provider_sessions;
 mod history_access;
 mod kernel_agent;
 mod kernel_api_facade;
@@ -55,6 +56,7 @@ pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };
 pub(crate) use workflow_design_events::WorkflowDesignEventStore;
+pub(crate) use external_provider_sessions::ExternalProviderSessionIndexStore;
 
 use crate::agent::{AgentService, AgentServiceStore};
 use crate::attachment::{AttachmentService, AttachmentServiceStore};
@@ -107,6 +109,7 @@ pub struct DaemonApp {
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
+    external_provider_sessions: ExternalProviderSessionIndexStore,
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -198,6 +201,7 @@ impl DaemonApp {
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
+            external_provider_sessions: ExternalProviderSessionIndexStore::default(),
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
@@ -320,6 +324,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {
         self.provider_process_tracking.clone()
+    }
+
+    pub(crate) fn external_provider_session_index_store(
+        &self,
+    ) -> ExternalProviderSessionIndexStore {
+        self.external_provider_sessions.clone()
     }
 
     pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {

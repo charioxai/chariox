@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::runtime::daemon_health_projection::{
-    build_daemon_health_projection, DaemonHealthProjectionInput,
+    DaemonHealthProjectionInput, build_daemon_health_projection,
 };
 use crate::runtime::projection::DaemonHealthProjection;
 use crate::runtime::waiting_room_control::waiting_room_inventory_version;
@@ -12,6 +12,7 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 impl CommandRouter {
     pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
         waiting_room_inventory_version(
+            Arc::clone(&self.app),
             &self.runtime_state,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
