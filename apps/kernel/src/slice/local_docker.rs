@@ -38,6 +38,12 @@ pub struct LocalDockerSliceOptions {
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SliceSnapshotQuiesce {
+    Container,
+    Desktop,
+}
+
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
         let linux = &config.user_config.slices.linux;
@@ -76,20 +82,20 @@ pub fn save_local_docker_slice_state(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, true)
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Container)
 }
 
 pub fn save_local_docker_slice_state_live(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
-    save_local_docker_slice_state_inner(record, options, false)
+    save_local_docker_slice_state_inner(record, options, SliceSnapshotQuiesce::Desktop)
 }
 
 fn save_local_docker_slice_state_inner(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
-    quiesce_container: bool,
+    quiesce: SliceSnapshotQuiesce,
 ) -> Result<SliceSavedStateRecord, DaemonError> {
     ensure_local_docker_state_target(record, "slice.state.save")?;
     ensure_host_docker_ready()?;
@@ -105,31 +111,30 @@ fn save_local_docker_slice_state_inner(
             state_dir.display()
         ),
     })?;
-    if quiesce_container {
-        stop_local_docker_container_if_running(record)?;
-    }
-    docker_commit_container(record, &image_ref, "slice.state.save")?;
-    archive_local_docker_home_volume(record, options, &home_archive_path, "slice.state.save")?;
-    let now_ms = crate::session::unix_epoch_ms();
-    let size_bytes = file_size(&home_archive_path);
-    let state = SliceSavedStateRecord {
-        id: state_id,
-        slice_name: record.name.clone(),
-        source_slice_id: record.id.clone(),
-        backend: record.backend.clone(),
-        os: record.os.clone(),
-        image_ref,
-        home_archive_path: home_archive_path.display().to_string(),
-        manifest_path: manifest_path.display().to_string(),
-        created_at_ms: now_ms,
-        updated_at_ms: now_ms,
-        size_bytes,
-        last_operation: Some("state.save".to_string()),
-        last_operation_status: Some(super::model::SliceOperationStatus::Completed),
-        last_error: None,
-    };
-    write_state_manifest(&manifest_path, &state)?;
-    Ok(state)
+    with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.state.save", || {
+        docker_commit_container(record, &image_ref, "slice.state.save")?;
+        archive_local_docker_home_volume(record, options, &home_archive_path, "slice.state.save")?;
+        let now_ms = crate::session::unix_epoch_ms();
+        let size_bytes = file_size(&home_archive_path);
+        let state = SliceSavedStateRecord {
+            id: state_id,
+            slice_name: record.name.clone(),
+            source_slice_id: record.id.clone(),
+            backend: record.backend.clone(),
+            os: record.os.clone(),
+            image_ref,
+            home_archive_path: home_archive_path.display().to_string(),
+            manifest_path: manifest_path.display().to_string(),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            size_bytes,
+            last_operation: Some("state.save".to_string()),
+            last_operation_status: Some(super::model::SliceOperationStatus::Completed),
+            last_error: None,
+        };
+        write_state_manifest(&manifest_path, &state)?;
+        Ok(state)
+    })
 }
 
 pub fn create_local_docker_slice_backup(
@@ -137,7 +142,7 @@ pub fn create_local_docker_slice_backup(
     options: &LocalDockerSliceOptions,
     name: Option<&str>,
 ) -> Result<SliceBackupRecord, DaemonError> {
-    create_local_docker_slice_backup_inner(record, options, name, true)
+    create_local_docker_slice_backup_inner(record, options, name, SliceSnapshotQuiesce::Container)
 }
 
 pub fn create_local_docker_slice_backup_live(
@@ -145,14 +150,14 @@ pub fn create_local_docker_slice_backup_live(
     options: &LocalDockerSliceOptions,
     name: Option<&str>,
 ) -> Result<SliceBackupRecord, DaemonError> {
-    create_local_docker_slice_backup_inner(record, options, name, false)
+    create_local_docker_slice_backup_inner(record, options, name, SliceSnapshotQuiesce::Desktop)
 }
 
 fn create_local_docker_slice_backup_inner(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
     name: Option<&str>,
-    quiesce_container: bool,
+    quiesce: SliceSnapshotQuiesce,
 ) -> Result<SliceBackupRecord, DaemonError> {
     ensure_local_docker_state_target(record, "slice.backup.create")?;
     ensure_host_docker_ready()?;
@@ -169,29 +174,33 @@ fn create_local_docker_slice_backup_inner(
             backup_dir.display()
         ),
     })?;
-    if quiesce_container {
-        stop_local_docker_container_if_running(record)?;
-    }
-    docker_commit_container(record, &image_ref, "slice.backup.create")?;
-    archive_local_docker_home_volume(record, options, &home_archive_path, "slice.backup.create")?;
-    let now_ms = crate::session::unix_epoch_ms();
-    let backup = SliceBackupRecord {
-        id: backup_id,
-        name: name
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&record.name)
-            .to_string(),
-        source_slice_id: record.id.clone(),
-        source_state_id: state_id,
-        image_ref,
-        home_archive_path: home_archive_path.display().to_string(),
-        manifest_path: manifest_path.display().to_string(),
-        created_at_ms: now_ms,
-        size_bytes: file_size(&home_archive_path),
-    };
-    write_state_manifest(&manifest_path, &backup)?;
-    Ok(backup)
+    with_local_docker_slice_snapshot_quiesced(record, quiesce, "slice.backup.create", || {
+        docker_commit_container(record, &image_ref, "slice.backup.create")?;
+        archive_local_docker_home_volume(
+            record,
+            options,
+            &home_archive_path,
+            "slice.backup.create",
+        )?;
+        let now_ms = crate::session::unix_epoch_ms();
+        let backup = SliceBackupRecord {
+            id: backup_id,
+            name: name
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&record.name)
+                .to_string(),
+            source_slice_id: record.id.clone(),
+            source_state_id: state_id,
+            image_ref,
+            home_archive_path: home_archive_path.display().to_string(),
+            manifest_path: manifest_path.display().to_string(),
+            created_at_ms: now_ms,
+            size_bytes: file_size(&home_archive_path),
+        };
+        write_state_manifest(&manifest_path, &backup)?;
+        Ok(backup)
+    })
 }
 
 pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<(), DaemonError> {
@@ -828,6 +837,101 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
         Err(DaemonError::LocalTransport {
             operation: "slice.state.stop",
             message: format!("docker stop `{container}` failed with status {status}"),
+        })
+    }
+}
+
+fn with_local_docker_slice_snapshot_quiesced<T>(
+    record: &SliceRecord,
+    quiesce: SliceSnapshotQuiesce,
+    operation: &'static str,
+    snapshot: impl FnOnce() -> Result<T, DaemonError>,
+) -> Result<T, DaemonError> {
+    let resume = match quiesce {
+        SliceSnapshotQuiesce::Container => {
+            stop_local_docker_container_if_running(record)?;
+            SliceSnapshotResume::None
+        }
+        SliceSnapshotQuiesce::Desktop => stop_local_docker_slice_desktop_for_snapshot(record)?,
+    };
+    let result = snapshot();
+    let resume_result = resume_after_local_docker_slice_snapshot(record, resume, operation);
+    match (result, resume_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(resume_error)) => {
+            tracing::warn!(
+                operation,
+                resume_error = %resume_error,
+                "failed to resume slice desktop after snapshot error"
+            );
+            Err(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SliceSnapshotResume {
+    None,
+    Desktop,
+}
+
+fn stop_local_docker_slice_desktop_for_snapshot(
+    record: &SliceRecord,
+) -> Result<SliceSnapshotResume, DaemonError> {
+    if record.display_mode != SliceDisplayMode::Headed || !local_docker_container_is_running(record)
+    {
+        return Ok(SliceSnapshotResume::None);
+    }
+    run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
+    Ok(SliceSnapshotResume::Desktop)
+}
+
+fn resume_after_local_docker_slice_snapshot(
+    record: &SliceRecord,
+    resume: SliceSnapshotResume,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    match resume {
+        SliceSnapshotResume::None => Ok(()),
+        SliceSnapshotResume::Desktop => {
+            run_local_docker_slice_screen(record, "start", operation)?;
+            Ok(())
+        }
+    }
+}
+
+fn run_local_docker_slice_screen(
+    record: &SliceRecord,
+    action: &'static str,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let container = local_docker_container_name(record);
+    let status = Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "slice",
+            &container,
+            "/opt/arroba-slice/slice-screen.sh",
+            action,
+        ])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to run slice screen `{action}` in container `{container}`: {error}"
+            ),
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "slice screen `{action}` in container `{container}` failed with status {status}"
+            ),
         })
     }
 }

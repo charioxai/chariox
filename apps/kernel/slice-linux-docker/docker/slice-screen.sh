@@ -163,11 +163,19 @@ status() {
 }
 
 stop_desktop() {
+  pkill -TERM -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
+  local attempt
+  for attempt in $(seq 1 30); do
+    if ! process_running "chromium.*$CHROME_PROFILE"; then
+      break
+    fi
+    sleep 0.1
+  done
+  pkill -KILL -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
   pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
   pkill -f "openbox" >/dev/null 2>&1 || true
   pkill -f "x11vnc.*$DISPLAY_ID" >/dev/null 2>&1 || true
   pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
-  pkill -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
 }
 
 screenshot() {
