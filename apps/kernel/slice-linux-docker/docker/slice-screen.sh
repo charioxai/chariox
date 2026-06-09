@@ -62,6 +62,14 @@ process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
 }
 
+clear_chromium_profile_locks() {
+  if [[ -d "$CHROME_PROFILE" ]]; then
+    find "$CHROME_PROFILE" -maxdepth 1 \
+      \( -name 'Singleton*' -o -name 'LOCK' -o -name 'lockfile' \) \
+      -exec rm -rf {} + >/dev/null 2>&1 || true
+  fi
+}
+
 screen_missing_components() {
   local missing=()
   if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
@@ -104,6 +112,7 @@ start_desktop() {
   pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
   pkill -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
   pkill -f "/usr/lib/chromium/chromium" >/dev/null 2>&1 || true
+  clear_chromium_profile_locks
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
   nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
