@@ -146,11 +146,17 @@ impl KernelRuntimeOwnedState {
                 &workflow_run_id,
                 &update.dispatches,
             ));
-            dispatches.extend(self.workflow_settle_completed_publication_prompt(
+            if !self.workflow_publication_prompt_waits_for_provider_completion(
                 &context.session_id,
                 &workflow_run_id,
                 &context.workflow_node_run_id,
-            )?);
+            )? {
+                dispatches.extend(self.workflow_settle_completed_publication_prompt(
+                    &context.session_id,
+                    &workflow_run_id,
+                    &context.workflow_node_run_id,
+                )?);
+            }
         }
         if !is_final && warning.is_none() {
             let update = self
@@ -208,6 +214,48 @@ impl KernelRuntimeOwnedState {
             },
             dispatches,
         ))
+    }
+
+    fn workflow_publication_prompt_waits_for_provider_completion(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let Some(node_run) = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+        else {
+            return Ok(false);
+        };
+        let Some(run) = self
+            .provider_store
+            .get_run_for_agent(session_id, node_run.agent_id())
+        else {
+            return Ok(false);
+        };
+        if run.adapter_key() != "claude" || !self.provider_store.run_uses_structured_prompt_io(&run)
+        {
+            return Ok(false);
+        }
+        let agent_id = node_run.agent_id().to_string();
+        let session = self.session_store.get_session(session_id)?;
+        let active_prompt_matches = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_some_and(|prompt| {
+                prompt.workflow_run_id() == Some(workflow_run_id)
+                    && prompt.workflow_node_run_id() == Some(workflow_node_run_id)
+            });
+        if !active_prompt_matches {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     fn workflow_settle_completed_publication_prompt(

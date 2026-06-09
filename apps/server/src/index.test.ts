@@ -917,6 +917,103 @@ test("gateway materializes Agent App replica sessions from package config", asyn
   }
 })
 
+test("gateway remaps portable package workspace paths before local materialization", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-portable-workspace-materialize-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 2,
+      publication_id: "pub-portable",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/workspace",
+        worktree_id: "/workspace",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      queues: [{ id: "workflow-1:default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }],
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        workspace_id: "/workspace",
+        worktree_id: "/workspace",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      validateProviderBindings: false,
+      validateRequirements: false,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("MaterializeWorkflowPublication" in request) {
+            return {
+              WorkflowPublicationMaterialized: {
+                publication_id: "pub-portable",
+                session: { id: "runtime-session-1" },
+                agent_id_map: { "agent-1": "agent-2" },
+              },
+            }
+          }
+          if ("AttachToSession" in request) {
+            return { SessionAttached: { attachment: { id: "attachment-1" } } }
+          }
+          throw new Error(`unexpected request ${JSON.stringify(request)}`)
+        },
+      },
+    })
+
+    const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          source_session: { workspace_id: string; worktree_id: string }
+          agents: Array<{ workspace_id?: string | null; worktree_id?: string | null }>
+        }
+      }
+    }
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, root)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, root)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, root)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.worktree_id, root)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("gateway prompts for unavailable provider/model bindings and persists the replacement", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-"))
   const requests: Record<string, unknown>[] = []

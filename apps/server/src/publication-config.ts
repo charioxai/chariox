@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
@@ -94,6 +94,7 @@ export async function loadPublicationPackageConfig(
   const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     let materializationSnapshot = clonePublicationSnapshot(snapshot)
+    materializationSnapshot = normalizePortableWorkspacePaths(materializationSnapshot, root)
     if (options.validateProviderBindings !== false) {
       const bindingsPath = join(root, publicationPackage.default_bindings_path ?? "bindings.local.json")
       const bindingOptions: { promptReplacement?: ProviderModelBindingPrompt | false } = {}
@@ -136,6 +137,34 @@ function normalizedReplicaCount(value: unknown): number {
 
 function clonePublicationSnapshot(snapshot: WorkflowPublicationSnapshot): WorkflowPublicationSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as WorkflowPublicationSnapshot
+}
+
+function normalizePortableWorkspacePaths(
+  snapshot: WorkflowPublicationSnapshot,
+  packageRoot: string,
+): WorkflowPublicationSnapshot {
+  const mappedSourceWorkspace = remapPortableWorkspacePath(snapshot.source_session?.workspace_id, packageRoot)
+  const mappedSourceWorktree = remapPortableWorkspacePath(snapshot.source_session?.worktree_id, packageRoot)
+  if (snapshot.source_session && (mappedSourceWorkspace || mappedSourceWorktree)) {
+    if (mappedSourceWorkspace) snapshot.source_session.workspace_id = mappedSourceWorkspace
+    if (mappedSourceWorktree) snapshot.source_session.worktree_id = mappedSourceWorktree
+  }
+  for (const agent of snapshot.agents ?? []) {
+    const mappedWorkspace = remapPortableWorkspacePath(agent.workspace_id, packageRoot)
+    const mappedWorktree = remapPortableWorkspacePath(agent.worktree_id, packageRoot)
+    if (mappedWorkspace) agent.workspace_id = mappedWorkspace
+    if (mappedWorktree) agent.worktree_id = mappedWorktree
+  }
+  return snapshot
+}
+
+function remapPortableWorkspacePath(value: unknown, packageRoot: string): string | null {
+  if (typeof value !== "string") return null
+  if (!value.startsWith("/workspace")) return null
+  if (existsSync("/workspace")) return null
+  if (value === "/workspace") return packageRoot
+  if (value.startsWith("/workspace/")) return resolve(packageRoot, value.slice("/workspace/".length))
+  return null
 }
 
 async function loadPublicationRequirements(root: string) {
