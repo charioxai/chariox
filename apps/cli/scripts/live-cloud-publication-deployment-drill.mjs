@@ -336,7 +336,9 @@ async function main() {
       }
       throw new Error(`${errorMessage(error)}\nkernel stdout:\n${kernel?.logs?.stdout ?? ''}\nkernel stderr:\n${kernel?.logs?.stderr ?? ''}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
     })
-    const logs = await listPublicationDeploymentLogs(profile, deployment.id).catch((error) => [{ level: 'error', occurredAt: new Date().toISOString(), message: String(error) }])
+    const logs = options.agentAppShopping
+      ? await waitForDeploymentActionAuditLogs(profile, deployment.id)
+      : await listPublicationDeploymentLogs(profile, deployment.id).catch((error) => [{ level: 'error', occurredAt: new Date().toISOString(), message: String(error) }])
     const statePath = path.join(options.artifactsDir, `${options.slug}-deployment.json`)
     await writeFile(statePath, `${JSON.stringify({ deployment: readyDeployment, publicationContext, evidence, logs }, null, 2)}\n`)
     logStep('evidence_written', { statePath, ...evidence })
@@ -1263,6 +1265,20 @@ async function waitForDeploymentReady(profile, deploymentId) {
     await delay(2_000)
   }
   throw new Error(`deployment did not become ready: ${JSON.stringify(last)}`)
+}
+
+async function waitForDeploymentActionAuditLogs(profile, deploymentId) {
+  const deadline = Date.now() + 60_000
+  let lastLogs = []
+  while (Date.now() < deadline) {
+    lastLogs = await listPublicationDeploymentLogs(profile, deploymentId)
+    const text = lastLogs.map((entry) => entry.message).join('\n')
+    if (text.includes('agent app action `cart.add` completed') && text.includes('agent app action `cart.checkout` completed')) {
+      return lastLogs
+    }
+    await delay(1_000)
+  }
+  throw new Error(`deployment logs did not include Agent App action audit entries: ${JSON.stringify(lastLogs.slice(-20))}`)
 }
 
 async function waitForProviderRunReady(client, providerRunId) {
