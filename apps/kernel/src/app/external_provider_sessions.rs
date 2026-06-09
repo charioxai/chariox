@@ -30,10 +30,19 @@ impl ExternalProviderSessionIndexStore {
             .inner
             .write()
             .expect("external provider session index poisoned");
+        let mut merged_sessions = Vec::with_capacity(sessions.len());
+        for mut session in sessions {
+            if let Some(existing) = index.sessions.get(&session.external_session_id) {
+                session.already_imported = existing.already_imported;
+                session.imported_session_ids = existing.imported_session_ids.clone();
+                session.imported_agent_ids = existing.imported_agent_ids.clone();
+            }
+            merged_sessions.push(session);
+        }
         index
             .sessions
             .retain(|_, session| session.provider != provider);
-        for session in sessions {
+        for session in merged_sessions {
             index
                 .sessions
                 .insert(session.external_session_id.clone(), session);
@@ -193,6 +202,23 @@ mod tests {
             limit: None,
         });
         assert_eq!(codex.sessions.len(), 2);
+    }
+
+    #[test]
+    fn replace_provider_sessions_preserves_import_markers() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 20));
+        store.mark_imported("codex:thread-1", "session-1", "agent-1");
+
+        store.replace_provider_sessions("codex", vec![record("codex", "thread-1", 40)]);
+
+        let session = store
+            .get("codex:thread-1")
+            .expect("session should remain indexed");
+        assert!(session.already_imported);
+        assert_eq!(session.imported_session_ids, vec!["session-1"]);
+        assert_eq!(session.imported_agent_ids, vec!["agent-1"]);
+        assert_eq!(session.last_modified_at_ms, 40);
     }
 
     fn record(
