@@ -157,6 +157,54 @@ async function seedProviderHomes(root, marker, workspace) {
   return { CODEX_HOME: codexHome, CLAUDE_HOME: claudeHome, OPENCODE_DATA_HOME: opencodeHome }
 }
 
+async function appendProviderNativeTurn(root, provider, marker) {
+  const providerSessionId = `${provider}-${marker}`
+  if (provider === "codex") {
+    const file = path.join(root, "provider-homes", "codex", "sessions", "codex-thread-drill.jsonl")
+    await writeFile(
+      file,
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: "response_item",
+        payload: {
+          id: "codex-assistant-2",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `Codex native follow-up observed ${marker}.` }],
+        },
+      }) + "\n",
+      { flag: "a" },
+    )
+    return { providerTurnId: "codex-assistant-2", text: `Codex native follow-up observed ${marker}.` }
+  }
+  if (provider === "claude") {
+    const file = path.join(root, "provider-homes", "claude", "projects", "-repo", "claude-session-drill.jsonl")
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        uuid: "claude-assistant-2",
+        sessionId: providerSessionId,
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: [{ text: `Claude native follow-up observed ${marker}.` }] },
+      }) + "\n",
+      { flag: "a" },
+    )
+    return { providerTurnId: "claude-assistant-2", text: `Claude native follow-up observed ${marker}.` }
+  }
+  const file = path.join(root, "provider-homes", "opencode", "sessions", "opencode-session-drill.json")
+  const payload = JSON.parse(await readFile(file, "utf8"))
+  payload.updatedAt = new Date().toISOString()
+  payload.messages.push({
+    id: "opencode-assistant-2",
+    role: "assistant",
+    content: `OpenCode native follow-up observed ${marker}.`,
+    createdAt: new Date().toISOString(),
+  })
+  await writeFile(file, JSON.stringify(payload, null, 2))
+  return { providerTurnId: "opencode-assistant-2", text: `OpenCode native follow-up observed ${marker}.` }
+}
+
 async function readHistoryEntries(historyRoot, sessionId) {
   const files = await readdir(historyRoot).catch(() => [])
   const historyFile = files.find((file) => file.startsWith(`${sessionId}-`) && file.endsWith(".jsonl"))
@@ -170,8 +218,21 @@ async function readHistoryEntries(historyRoot, sessionId) {
   return entries
 }
 
-async function runProviderDrill(client, root, historyRoot, provider, marker) {
-  const surfaceRoot = path.join(root, provider)
+async function waitForObservedHistory(historyRoot, sessionId, text, timeoutMs = 20_000) {
+  const started = Date.now()
+  let latest = []
+  while (Date.now() - started < timeoutMs) {
+    latest = await readHistoryEntries(historyRoot, sessionId)
+    if (latest.some((entry) => entry.source === "external_provider_observed" && entry.text === text)) {
+      return latest
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  throw new Error(`timed out waiting for observed turn ${text} in session ${sessionId}`)
+}
+
+async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker) {
+  const surfaceRoot = path.join(artifactRoot, provider)
   await mkdir(path.join(surfaceRoot, "tui"), { recursive: true })
   await mkdir(path.join(surfaceRoot, "web"), { recursive: true })
   const externalSessionId = `${provider}:${provider}-${marker}`
@@ -197,7 +258,19 @@ async function runProviderDrill(client, root, historyRoot, provider, marker) {
     focus: true,
   }))) : { ok: false, error: "host session did not create" }
   const importedAgent = importAgentResult.ok ? unwrap(importAgentResult.value, "ExternalProviderAgentImported") : null
-  const observed = history.filter((entry) => entry.source === "external_provider_observed")
+  const nativeTurnResult = imported && importedAgent
+    ? await step(`append-native-turn-${provider}`, () => appendProviderNativeTurn(runtimeRoot, provider, marker))
+    : { ok: false, error: "imports did not complete" }
+  const observedSessionHistoryResult = nativeTurnResult.ok && imported
+    ? await step(`observe-session-native-turn-${provider}`, () => waitForObservedHistory(historyRoot, imported.session.id, nativeTurnResult.value.text))
+    : historyResult
+  const observedAgentHistoryResult = nativeTurnResult.ok && existing
+    ? await step(`observe-agent-native-turn-${provider}`, () => waitForObservedHistory(historyRoot, existing.id, nativeTurnResult.value.text))
+    : { ok: false, value: [], error: "native turn append did not complete" }
+  const observedSessionHistory = observedSessionHistoryResult.ok ? observedSessionHistoryResult.value : history
+  const observedAgentHistory = observedAgentHistoryResult.ok ? observedAgentHistoryResult.value : []
+  const observed = observedSessionHistory.filter((entry) => entry.source === "external_provider_observed")
+  const observedAgent = observedAgentHistory.filter((entry) => entry.source === "external_provider_observed")
   const manifest = {
     provider,
     marker,
@@ -223,16 +296,22 @@ async function runProviderDrill(client, root, historyRoot, provider, marker) {
       assertion("drill uses noninteractive provider adapter", imported?.provider_run?.adapter_key === "dev-stub"),
       assertion("observed external turns imported", observed.length >= 2),
       assertion("observed turns carry source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
+      assertion("new provider-native turn observed in imported Arroba session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
+      assertion("new provider-native turn observed in imported agent session", nativeTurnResult.ok && observedAgent.some((entry) => entry.text === nativeTurnResult.value.text)),
       assertion("tier3 unavailable degrades to tier2", listedRecord?.capabilities?.can_attach_live === false),
     ],
     records: {
       listed: listedRecord,
       observed_history: observed,
+      observed_agent_history: observedAgent,
+      native_turn: nativeTurnResult,
       steps: {
         import_session: importResult,
         read_history: historyResult,
         create_host_session: existingResult,
         import_agent: importAgentResult,
+        observe_session_native_turn: observedSessionHistoryResult,
+        observe_agent_native_turn: observedAgentHistoryResult,
       },
     },
   }
@@ -368,7 +447,7 @@ async function main() {
     await client.send({ RefreshExternalProviderSessions: { provider: null } })
     const manifests = []
     for (const provider of providers) {
-      manifests.push(await runProviderDrill(client, artifactRoot, historyRoot, provider, marker))
+      manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker))
     }
     const summary = {
       ok: manifests.every((manifest) => manifest.assertions.every((entry) => entry.passed)),
