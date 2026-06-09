@@ -4,6 +4,7 @@ import { createStore } from "solid-js/store"
 import type {
   AgentInstance,
   BootstrapState,
+  ExternalProviderSessionRecord,
   RuntimeAttachment,
   RuntimeProviderRun,
   SliceRecord,
@@ -101,6 +102,8 @@ export function createCliAppState(options: {
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
+  const [externalProviderSessionsState, setExternalProviderSessionsState] = createSignal<ExternalProviderSessionRecord[]>([])
+  const [externalProviderSessionsPageState, setExternalProviderSessionsPageState] = createSignal<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
   const [waitingRoomInventoryStatus, setWaitingRoomInventoryStatus] = createSignal<"loading" | "ready" | "error">("loading")
   const waitingRoomHiddenKernelController = createWaitingRoomHiddenKernelController({
     initialHiddenKernelIds: initialPreferences.ui?.hiddenRemoteKernelIds ?? [],
@@ -221,6 +224,10 @@ export function createCliAppState(options: {
     setSlicesState,
     terminalsState,
     setTerminalsState,
+    externalProviderSessionsState,
+    setExternalProviderSessionsState,
+    externalProviderSessionsPageState,
+    setExternalProviderSessionsPageState,
     waitingRoomInventoryStatus,
     setWaitingRoomInventoryStatus,
     waitingRoomHiddenKernelController,

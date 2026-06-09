@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
@@ -84,6 +84,28 @@ test("waiting room activation stages existing worktree selections for session cr
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
+})
+
+test("waiting room activation imports focused external provider sessions", () => {
+  const catalog = fallbackProviderCatalog()
+  const decision = deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),
+    sessions: [],
+    catalog,
+    currentProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    remote: {
+      externalProviderSessions: [
+        externalSession("codex:old"),
+        externalSession("claude:recent"),
+      ],
+    },
+  })
+
+  assert.deepEqual(decision, {
+    action: "import-external-session",
+    externalSessionId: "claude:recent",
+  })
 })
 
 test("waiting room activation stages create-worktree selections for session creation", async () => {
@@ -410,6 +432,11 @@ test("deriveWaitingRoomControlActivationDecision handles terminal and dialog act
     workspacePath: "/workspace",
     worktreePath: "/workspace",
   }), { action: "open-session-browser" })
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({ focus: "external-session-more" }),
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+  }), { action: "load-older-external-sessions" })
 })
 
 test("deriveWaitingRoomSessionLifecycleDecision selects focused sessions for archive and delete", () => {
@@ -726,6 +753,32 @@ function session(id: string): SessionListEntry {
     status: "Created",
     created_at_ms: 1,
     attachment_ids: [],
+  }
+}
+
+function externalSession(id: string): ExternalProviderSessionRecord {
+  return {
+    external_session_id: id,
+    provider: id.split(":")[0] ?? "codex",
+    provider_session_id: id,
+    title: "Imported task",
+    title_source: "provider",
+    first_prompt_preview: "Imported task",
+    created_at_ms: 1,
+    last_modified_at_ms: 2,
+    capabilities: {
+      can_resume: true,
+      can_read_history: true,
+      can_watch_history: false,
+      can_attach_live: false,
+      can_proxy_permissions: false,
+      can_receive_hidden_context: false,
+      supports_workspace_live_sync: false,
+    },
+    mode: "resume_only",
+    already_imported: false,
+    imported_session_ids: [],
+    imported_agent_ids: [],
   }
 }
 

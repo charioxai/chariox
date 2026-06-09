@@ -1,4 +1,4 @@
-import type { SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
 import type { ProviderAccountSummary } from "@arroba/kernel-client"
 import type { ThemeName } from "./theme-registry.js"
@@ -19,6 +19,8 @@ export type WaitingRoomFocus =
   | "theme"
   | "join-sessions"
   | "session"
+  | "external-session"
+  | "external-session-more"
   | "relay"
   | "machine"
   | "remote-kernel"
@@ -36,6 +38,7 @@ export type WaitingRoomKeyState = {
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
+  externalSessionIndex?: number
   machineIndex: number
   remoteKernelIndex: number
   sliceIndex?: number
@@ -94,6 +97,9 @@ export type WaitingRoomRemoteState = {
   kernels?: WaitingRoomRemoteKernel[]
   terminals?: WaitingRoomTerminal[]
   slices?: SliceRecord[]
+  externalProviderSessions?: ExternalProviderSessionRecord[]
+  externalProviderSessionsHasMore?: boolean
+  externalProviderSessionsNextCursor?: string | null
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

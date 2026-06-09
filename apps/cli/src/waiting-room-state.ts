@@ -44,6 +44,7 @@ export function createWaitingRoomState(
     {
       focus: "new",
       sessionIndex: 0,
+      externalSessionIndex: 0,
       machineIndex: 0,
       remoteKernelIndex: 0,
       sliceIndex: 0,
@@ -80,6 +81,7 @@ export function normalizeWaitingRoomState(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
+  const externalSessions = remote.externalProviderSessions ?? []
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
@@ -98,6 +100,10 @@ export function normalizeWaitingRoomState(
     ? "new"
     : previewSessions.length === 0 && state.focus === "session"
       ? "join-sessions"
+    : externalSessions.length === 0 && state.focus === "external-session"
+      ? visibleSessions.length > 0 ? "join-sessions" : "new"
+    : state.focus === "external-session-more" && !remote.externalProviderSessionsHasMore
+      ? externalSessions.length > 0 ? "external-session" : visibleSessions.length > 0 ? "join-sessions" : "new"
     : remoteMachines.length === 0 && state.focus === "machine"
       ? "relay"
         : remoteKernels.length === 0 && state.focus === "remote-kernel"
@@ -114,6 +120,7 @@ export function normalizeWaitingRoomState(
     focus,
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
+    externalSessionIndex: externalSessions.length === 0 ? 0 : modulo(state.externalSessionIndex ?? 0, externalSessions.length),
     machineIndex: remoteMachines.length === 0 ? 0 : modulo(state.machineIndex, remoteMachines.length),
     remoteKernelIndex: remoteKernels.length === 0 ? 0 : modulo(state.remoteKernelIndex, remoteKernels.length),
     sliceIndex: allSlices.length === 0 ? 0 : modulo(state.sliceIndex ?? 0, allSlices.length),

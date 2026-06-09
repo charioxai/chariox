@@ -1,5 +1,6 @@
 import { updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
+import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -67,6 +68,10 @@ export type CliWaitingRoomCompositionDeps = {
   setTerminalsState: AnyFn
   slicesState: AnyFn
   setSlicesState: AnyFn
+  externalProviderSessionsState: AnyFn
+  setExternalProviderSessionsState: AnyFn
+  externalProviderSessionsPageState: AnyFn
+  setExternalProviderSessionsPageState: AnyFn
   pendingWorkspaceTarget: AnyFn
   pendingWorktreeTarget: AnyFn
   preferencesState: AnyFn
@@ -115,6 +120,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       kernels: deps.remoteKernelsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
+      externalProviderSessions: deps.externalProviderSessionsState(),
+      externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
+      externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
     }),
     getThemeRegistry: deps.themeRegistryState,
     getCurrentProvider: () => deps.options.provider ?? "opencode",
@@ -160,6 +168,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRemoteKernels: deps.setRemoteKernelsState,
     setTerminals: deps.setTerminalsState,
     setSlices: deps.setSlicesState,
+    setExternalProviderSessions: deps.setExternalProviderSessionsState,
+    setExternalProviderSessionsPage: deps.setExternalProviderSessionsPageState,
     reconcileWaitingRoom,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
@@ -191,6 +201,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       kernels: deps.remoteKernelsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
+      externalProviderSessions: deps.externalProviderSessionsState(),
+      externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
+      externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
     }),
     getWorkspaceTarget: deps.pendingWorkspaceTarget,
     getWorktreeTarget: deps.pendingWorktreeTarget,
@@ -213,6 +226,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
     }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : launch.kernelRef),
+    importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
+    loadOlderExternalProviderSessions: async () => {
+      const pageState = deps.externalProviderSessionsPageState()
+      if (!pageState?.hasMore || !pageState.nextCursor) {
+        return 0
+      }
+      const page = await listExternalProviderSessions(deps.client, { cursor: pageState.nextCursor })
+      deps.setExternalProviderSessionsState((current: any[] = []) => {
+        const seen = new Set(current.map((session) => session.external_session_id))
+        return [
+          ...current,
+          ...page.sessions.filter((session) => !seen.has(session.external_session_id)),
+        ]
+      })
+      deps.setExternalProviderSessionsPageState({
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      })
+      reconcileWaitingRoom(deps.waitingRoomState())
+      return page.sessions.length
+    },
     createSlice: (options) => createSlice(deps.client, {
       name: options.name,
       displayMode: options.displayMode,
@@ -251,6 +285,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       kernels: deps.remoteKernelsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
+      externalProviderSessions: deps.externalProviderSessionsState(),
+      externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
+      externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
     }),
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,

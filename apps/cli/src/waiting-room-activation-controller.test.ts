@@ -208,6 +208,58 @@ test("waiting room activation attaches selected sessions", async () => {
   ])
 })
 
+test("waiting room activation imports external provider sessions as arroba sessions", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "import-external-session",
+      externalSessionId: "codex:thread-1",
+    },
+    importSession: runtimeSession("imported-session", "Imported", {
+      agent_defaults: {
+        provider: "codex",
+        model: "codex/gpt-5.4",
+        effort: "high",
+        account_profile: null,
+        execution_mode: "build",
+        permission_level: "yolo",
+      },
+    }),
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.importedExternalSessions, ["codex:thread-1"])
+  assert.deepEqual(harness.attachedSessions, [{
+    sessionId: "imported-session",
+    createdSession: true,
+    launch: {
+      provider: "codex",
+      model: "codex/gpt-5.4",
+      effort: "high",
+    },
+  }])
+  assert.deepEqual(harness.calls.slice(-3), [
+    "importExternalProviderSession:codex:thread-1",
+    "attachBinding",
+    "flash:info:imported external session codex:thread-1",
+  ])
+})
+
+test("waiting room activation loads older external provider session pages", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "load-older-external-sessions" },
+    loadOlderExternalProviderSessions: async () => 2,
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.calls, [
+    "loadOlderExternalProviderSessions",
+    "flash:info:loaded 2 older external sessions",
+  ])
+})
+
 test("waiting room activation reports activation failures", async () => {
   const harness = createHarness({
     controlDecision: { action: "none" },
@@ -242,6 +294,8 @@ function createHarness(options: {
   accountProfile?: string | null
   createError?: Error
   sessionOverrides?: Partial<RuntimeSession>
+  importSession?: RuntimeSession
+  loadOlderExternalProviderSessions?: () => Promise<number>
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -261,6 +315,7 @@ function createHarness(options: {
     workspaceMount: string
   }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const importedExternalSessions: string[] = []
   let promptText = ""
   const controller = createWaitingRoomActivationController({
     isKernelConnected: () => options.kernelConnected ?? true,
@@ -303,6 +358,17 @@ function createHarness(options: {
       createdLaunches.push({ workspacePath, worktreePath, launch })
       return runtimeSession("created-session", "Review", options.sessionOverrides)
     },
+    importExternalProviderSession: async (externalSessionId) => {
+      calls.push(`importExternalProviderSession:${externalSessionId}`)
+      importedExternalSessions.push(externalSessionId)
+      return {
+        session: options.importSession ?? runtimeSession("imported-session", "Imported"),
+      }
+    },
+    loadOlderExternalProviderSessions: async () => {
+      calls.push("loadOlderExternalProviderSessions")
+      return await (options.loadOlderExternalProviderSessions?.() ?? Promise.resolve(0))
+    },
     createSlice: async (slice) => {
       calls.push("createSlice")
       createdSlices.push({
@@ -344,6 +410,7 @@ function createHarness(options: {
     attachedSessions,
     createdLaunches,
     createdSlices,
+    importedExternalSessions,
     warnings,
     controller,
   }

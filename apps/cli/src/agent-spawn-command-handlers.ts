@@ -59,6 +59,9 @@ export type AgentSpawnCommandHandlerDeps = {
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
     sliceRef?: string,
   ) => Promise<AgentSpawnPayload>
+  importExternalProviderAgent?: (
+    externalSessionId: string,
+  ) => Promise<AgentSpawnPayload & { providerRun?: RuntimeProviderRun | null }>
   listRemoteMachineKernels?: (machineRef: string) => Promise<WaitingRoomRemoteKernelView[]>
   refreshSplitPaneFocusRepaint: () => void
 }
@@ -76,9 +79,23 @@ export async function handleAgentSpawnCommand(
     const count = parseSpawnCount(parsed.positional[0])
     if (
       count !== null
-      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.kernelRef || parsed.sliceRef || parsed.sliceDisplayMode || parsed.gitWorktree || parsed.branch || parsed.fromRef)
+      && (parsed.positional.length > 1 || parsed.directory || parsed.machineRef || parsed.kernelRef || parsed.sliceRef || parsed.sliceDisplayMode || parsed.gitWorktree || parsed.branch || parsed.fromRef || parsed.externalSessionId)
     ) {
       deps.flashFooter("usage: /agent spawn <count>", "error")
+      return
+    }
+    if (parsed.externalSessionId) {
+      if (!deps.importExternalProviderAgent) {
+        deps.flashFooter("external provider session import is unavailable", "error")
+        return
+      }
+      const payload = await deps.importExternalProviderAgent(parsed.externalSessionId)
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.setProviderRunState(payload.providerRun ?? null)
+      deps.rebuildTranscript()
+      deps.refreshSplitPaneFocusRepaint()
+      deps.flashFooter(`imported external session ${parsed.externalSessionId} as ${payload.agent.agent_ref}`, "info")
       return
     }
     if (count !== null && parsed.positional.length === 1) {

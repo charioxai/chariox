@@ -9,6 +9,10 @@ import {
   waitingRoomSessionTitleWidth,
 } from "./waiting-room-session-rows.js"
 import {
+  waitingRoomExternalProviderSessionRows,
+  waitingRoomExternalProviderSessionTitleWidth,
+} from "./waiting-room-external-provider-session-rows.js"
+import {
   waitingRoomSliceRows,
   waitingRoomSliceTitleWidth,
 } from "./waiting-room-slice-rows.js"
@@ -42,6 +46,7 @@ export function waitingRoomRows(
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
   const titleWidth = Math.max(
     waitingRoomSessionTitleWidth(sessions),
+    waitingRoomExternalProviderSessionTitleWidth(remote),
     waitingRoomSliceTitleWidth(remote),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
@@ -57,6 +62,7 @@ export function waitingRoomRows(
   })
 
   rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))
+  rows.push(...waitingRoomExternalProviderSessionRows(state, remote, { inventoryLoading, loadingText, titleWidth }))
 
   rows.push(
     ...waitingRoomRemoteRows(state, remote, titleWidth),

@@ -25,6 +25,7 @@ export type PlacementParseResult = {
   kernelRef?: string | undefined
   sliceRef?: string | undefined
   sliceDisplayMode?: "headless" | "headed" | undefined
+  externalSessionId?: string | undefined
   gitWorktree?: string | undefined
   branch?: string | undefined
   fromRef?: string | undefined
@@ -57,6 +58,7 @@ export function parsePlacementOptions(
   let kernelRef: string | undefined
   let sliceRef: string | undefined
   let sliceDisplayMode: "headless" | "headed" | undefined
+  let externalSessionId: string | undefined
   let gitWorktree: string | undefined
   let branch: string | undefined
   let fromRef: string | undefined
@@ -141,6 +143,16 @@ export function parsePlacementOptions(
       index += 1
       continue
     }
+    if ((arg === "--external" || arg === "--external-session") && allowMachine) {
+      const value = args[index + 1]
+      if (!value || value.startsWith("--")) {
+        error = "usage: /agent spawn --external <external-session-id>"
+        break
+      }
+      externalSessionId = value
+      index += 1
+      continue
+    }
     if (arg.startsWith("--")) {
       error = `unknown ${commandName} option ${arg}`
       break
@@ -166,6 +178,9 @@ export function parsePlacementOptions(
   if (!error && sliceRef && !sliceCreatesPlacement && (directory || gitRequested)) {
     error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
   }
+  if (!error && externalSessionId && (directory || gitRequested || machineRef || kernelRef || sliceRef)) {
+    error = "usage: /agent spawn --external <external-session-id> does not accept placement options"
+  }
   if (!error && remoteRef && gitRequested && !gitWorktree) {
     error = "usage: /agent spawn [alias] [model] --machine/--kernel <ref> --worktree <remote-directory> --branch <branch>"
   }
@@ -180,6 +195,7 @@ export function parsePlacementOptions(
     kernelRef,
     sliceRef,
     sliceDisplayMode,
+    externalSessionId,
     gitWorktree,
     branch,
     fromRef,
@@ -191,7 +207,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(args, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>]"
+    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--external <external-session-id>]"
   }
   return {
     ...parsed,

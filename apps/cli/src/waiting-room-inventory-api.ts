@@ -1,5 +1,6 @@
 import type {
   SliceRecord,
+  ExternalProviderSessionRecord,
   WaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot,
 } from "./cli-types.js"
@@ -42,6 +43,9 @@ export type WaitingRoomInventory = {
   remoteKernels: RemoteKernelView[]
   terminals: TerminalView[]
   slices: SliceRecord[]
+  externalProviderSessions?: ExternalProviderSessionRecord[]
+  externalProviderSessionsHasMore?: boolean
+  externalProviderSessionsNextCursor?: string | null
 }
 
 export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<WaitingRoomInventory> {
@@ -58,5 +62,8 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     remoteKernels: payload.remote_kernels,
     terminals: payload.terminals ?? [],
     slices,
+    externalProviderSessions: payload.external_provider_sessions ?? [],
+    externalProviderSessionsHasMore: payload.external_provider_sessions_has_more ?? false,
+    externalProviderSessionsNextCursor: payload.external_provider_sessions_next_cursor ?? null,
   }
 }

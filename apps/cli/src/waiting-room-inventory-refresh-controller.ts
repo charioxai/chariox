@@ -1,6 +1,6 @@
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import { waitingRoomRemoteKernelCanDelete } from "./waiting-room-remote-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
@@ -24,6 +24,8 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setRemoteKernels: (kernels: RemoteKernelView[]) => void
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
+  setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
+  setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
   warn?: (message: string, fields: Record<string, unknown>) => void
   formatError?: (error: unknown) => string
@@ -73,6 +75,11 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
+    options.setExternalProviderSessions?.(snapshot.externalProviderSessions ?? [])
+    options.setExternalProviderSessionsPage?.({
+      hasMore: snapshot.externalProviderSessionsHasMore ?? false,
+      nextCursor: snapshot.externalProviderSessionsNextCursor ?? null,
+    })
     options.reconcileWaitingRoom(options.getWaitingRoomState())
   }
 

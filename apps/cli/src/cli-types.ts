@@ -303,6 +303,35 @@ export type WaitingRoomTerminalView = {
   revoked: boolean
 }
 
+export type ExternalProviderSessionCapabilities = {
+  can_resume?: boolean
+  can_read_history?: boolean
+  can_watch_history?: boolean
+  can_attach_live?: boolean
+  can_proxy_permissions?: boolean
+  can_receive_hidden_context?: boolean
+  supports_workspace_live_sync?: boolean
+}
+
+export type ExternalProviderSessionRecord = {
+  external_session_id: string
+  provider: string
+  provider_session_id: string
+  title?: string | null
+  title_source?: string | null
+  first_prompt_preview?: string | null
+  created_at_ms?: number | null
+  last_modified_at_ms: number
+  worktree_path?: string | null
+  account_profile?: string | null
+  running_state?: string | null
+  capabilities?: ExternalProviderSessionCapabilities
+  mode?: "live" | "observed" | "resume_only" | "imported" | "unavailable"
+  already_imported?: boolean
+  imported_session_ids?: string[]
+  imported_agent_ids?: string[]
+}
+
 export type WaitingRoomPublicSnapshot = {
   schema_version: number
   inventory_version: string
@@ -312,6 +341,9 @@ export type WaitingRoomPublicSnapshot = {
   remote_machines: WaitingRoomRemoteMachineView[]
   remote_kernels: WaitingRoomRemoteKernelView[]
   terminals?: WaitingRoomTerminalView[]
+  external_provider_sessions?: ExternalProviderSessionRecord[]
+  external_provider_sessions_has_more?: boolean
+  external_provider_sessions_next_cursor?: string | null
   launch_target?: {
     workspace_id: string
     worktree_id: string

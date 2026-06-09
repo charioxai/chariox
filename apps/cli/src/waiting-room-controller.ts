@@ -50,6 +50,7 @@ export type WaitingRoomStateUpdate = {
 export type WaitingRoomActivationDecision =
   | { action: "create"; launch: WaitingRoomLaunchConfig }
   | { action: "join"; session: SessionListEntry; launch: WaitingRoomLaunchConfig }
+  | { action: "import-external-session"; externalSessionId: string }
   | { action: "error"; message: string }
   | { action: "none" }
 
@@ -64,6 +65,7 @@ export type WaitingRoomControlActivationDecision =
   | { action: "error"; message: string }
   | { action: "open-terminal-pairing" }
   | { action: "open-session-browser" }
+  | { action: "load-older-external-sessions" }
   | { action: "none" }
 
 export type WaitingRoomSessionLifecycleAction = "archive" | "delete"
@@ -267,6 +269,17 @@ export function deriveWaitingRoomActivationDecision(options: {
     return { action: "none" }
   }
 
+  if (options.state.focus === "external-session") {
+    clearStagedWaitingRoomWorktreeSelection()
+    if (!choice.externalProviderSession) {
+      return { action: "error", message: "no external provider session available to import" }
+    }
+    return {
+      action: "import-external-session",
+      externalSessionId: choice.externalProviderSession.external_session_id,
+    }
+  }
+
   if (options.state.focus !== "session") {
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
@@ -432,6 +445,8 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       return { action: "open-terminal-pairing" }
     case "join-sessions":
       return { action: "open-session-browser" }
+    case "external-session-more":
+      return { action: "load-older-external-sessions" }
     default:
       return { action: "none" }
   }

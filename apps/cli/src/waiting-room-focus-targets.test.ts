@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { SessionListEntry } from "./sessions.js"
 import { moveWaitingRoomFocus, waitingRoomFocusTargets } from "./waiting-room-focus-targets.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
@@ -69,6 +69,32 @@ test("waiting room focus movement tracks indexed targets", () => {
   state = moveWaitingRoomFocus(state, sessions, 1, remoteState())
   assert.equal(state.focus, "slice-entry")
   assert.equal(state.sliceIndex, 0)
+})
+
+test("waiting room focus targets include external provider sessions and pagination", () => {
+  const sessions = [session({ id: "arroba-session" })]
+  const targets = waitingRoomFocusTargets(sessions, {
+    externalProviderSessions: [
+      externalSession({ external_session_id: "codex:first" }),
+      externalSession({ external_session_id: "claude:second" }),
+    ],
+    externalProviderSessionsHasMore: true,
+    externalProviderSessionsNextCursor: "cursor-2",
+  })
+
+  assert.deepEqual(
+    targets.slice(12, 16).map((target) => ({
+      focus: target.focus,
+      sessionIndex: target.sessionIndex,
+      externalSessionIndex: target.externalSessionIndex,
+    })),
+    [
+      { focus: "session", sessionIndex: 0, externalSessionIndex: 0 },
+      { focus: "external-session", sessionIndex: 0, externalSessionIndex: 0 },
+      { focus: "external-session", sessionIndex: 0, externalSessionIndex: 1 },
+      { focus: "external-session-more", sessionIndex: 0, externalSessionIndex: 0 },
+    ],
+  )
 })
 
 function remoteState(): WaitingRoomRemoteState {
@@ -141,6 +167,33 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     display_endpoint: null,
     created_at_ms: 0,
     updated_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function externalSession(overrides: Partial<ExternalProviderSessionRecord> = {}): ExternalProviderSessionRecord {
+  return {
+    external_session_id: "codex:first",
+    provider: "codex",
+    provider_session_id: "first",
+    title: "External task",
+    title_source: "provider",
+    first_prompt_preview: "External task",
+    created_at_ms: 1,
+    last_modified_at_ms: 2,
+    capabilities: {
+      can_resume: true,
+      can_read_history: true,
+      can_watch_history: false,
+      can_attach_live: false,
+      can_proxy_permissions: false,
+      can_receive_hidden_context: false,
+      supports_workspace_live_sync: false,
+    },
+    mode: "resume_only",
+    already_imported: false,
+    imported_session_ids: [],
+    imported_agent_ids: [],
     ...overrides,
   }
 }

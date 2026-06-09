@@ -2,6 +2,7 @@ import type { BootstrapState } from "./cli-types.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
+import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
 import {
@@ -610,6 +611,17 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return {
         agent,
         session: await getSessionState(client, sessionState().id),
+      }
+    },
+    importExternalProviderAgent: async (externalSessionId) => {
+      const payload = await importExternalProviderAgent(client, sessionState().id, externalSessionId)
+      if (payload.providerRun) {
+        setProviderRunState(payload.providerRun)
+      }
+      return {
+        agent: payload.agent,
+        session: payload.session,
+        providerRun: payload.providerRun,
       }
     },
     destroyAgent: async (agentId) => {

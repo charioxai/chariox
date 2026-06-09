@@ -3,6 +3,7 @@ import type {
   BackendProviderId,
   ProviderCatalog,
 } from "./provider-catalog.js"
+import { normalizeBackendProviderId } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
   deriveWaitingRoomActivationDecision,
@@ -48,6 +49,10 @@ export type WaitingRoomActivationControllerDeps = {
     worktreePath: string,
     launch: WaitingRoomCreateSessionLaunch,
   ) => Promise<Pick<RuntimeSession, "id"> & Partial<RuntimeSession>>
+  importExternalProviderSession?: (
+    externalSessionId: string,
+  ) => Promise<{ session: RuntimeSession; agent?: unknown; providerRun?: unknown }>
+  loadOlderExternalProviderSessions?: () => Promise<number>
   createSlice?: (options: {
     name: string
     displayMode: "headless" | "headed"
@@ -160,6 +165,18 @@ export function createWaitingRoomActivationController(
       deps.openSessionBrowserDialog()
       return true
     }
+    if (decision.action === "load-older-external-sessions") {
+      if (!deps.loadOlderExternalProviderSessions) {
+        deps.flashFooter("external provider session pagination is unavailable", "error")
+        return true
+      }
+      const count = await deps.loadOlderExternalProviderSessions()
+      deps.flashFooter(
+        count > 0 ? `loaded ${count} older external session${count === 1 ? "" : "s"}` : "no older external sessions available",
+        "info",
+      )
+      return true
+    }
     deps.flashFooter(decision.message, decision.action === "error" ? "error" : "info")
     return true
   }
@@ -174,6 +191,22 @@ export function createWaitingRoomActivationController(
     if (decision.action === "join") {
       await deps.attachBinding(decision.session, false, decision.launch)
       deps.flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
+      return
+    }
+    if (decision.action === "import-external-session") {
+      if (!deps.importExternalProviderSession) {
+        deps.flashFooter("external provider session import is unavailable", "error")
+        return
+      }
+      const imported = await deps.importExternalProviderSession(decision.externalSessionId)
+      await deps.attachBinding(imported.session, true, {
+        provider: imported.session.agent_defaults?.provider
+          ? normalizeBackendProviderId(imported.session.agent_defaults.provider)
+          : deps.getCurrentProvider(),
+        model: imported.session.agent_defaults?.model ?? deps.getCurrentModel(),
+        effort: imported.session.agent_defaults?.effort ?? "",
+      })
+      deps.flashFooter(`imported external session ${decision.externalSessionId}`, "info")
       return
     }
     if (decision.action === "error") {

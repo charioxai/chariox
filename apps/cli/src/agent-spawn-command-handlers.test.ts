@@ -47,6 +47,84 @@ test("agent spawn command count inherits session defaults and launches each agen
   assert.equal(flashedMessage, "spawned 2 agents from session defaults")
 })
 
+test("agent spawn command imports an external provider session as a new agent", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => {
+      calls.push(`apply:${nextSession.id}`)
+      currentSession = nextSession
+    },
+    refreshAgentPanes: async (nextSession) => { calls.push(`panes:${nextSession.id}`) },
+    rebuildTranscript: () => { calls.push("rebuild") },
+    launchAgentProviderRun: async () => {
+      throw new Error("external import should launch through the kernel import response")
+    },
+    setProviderRunState: (run) => { calls.push(`run:${run?.id ?? "none"}`) },
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      throw new Error("external import should not call normal spawn")
+    },
+    importExternalProviderAgent: async (externalSessionId) => {
+      calls.push(`import:${externalSessionId}`)
+      const importedAgent = agent({ id: "agent-imported", agent_ref: "provider-thread" })
+      currentSession = session({ focused_agent_id: importedAgent.id, agents: [...currentSession.agents, importedAgent] })
+      return {
+        session: currentSession,
+        agent: importedAgent,
+        providerRun: providerRun({ id: "run-imported", agent_instance_id: importedAgent.id }),
+      }
+    },
+    refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
+  }, ["--external", "codex:thread-1"])
+
+  assert.deepEqual(calls, [
+    "import:codex:thread-1",
+    "apply:session-1",
+    "panes:session-1",
+    "run:run-imported",
+    "rebuild",
+    "repaint",
+  ])
+  assert.equal(flashedMessage, "imported external session codex:thread-1 as provider-thread")
+})
+
+test("agent spawn command rejects external imports with placement options", async () => {
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => session(),
+    spawnAgent: async () => {
+      throw new Error("invalid external import should not spawn")
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["--external", "codex:thread-1", "--slice", "new"])
+
+  assert.equal(flashedMessage, "usage: /agent spawn --external <external-session-id> does not accept placement options")
+})
+
+
 test("agent spawn command can create and start a new slice", async () => {
   let currentSession = session()
   const calls: string[] = []

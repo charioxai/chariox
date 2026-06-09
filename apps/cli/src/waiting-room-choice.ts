@@ -43,6 +43,7 @@ export function waitingRoomChoice(
   const remoteMachines = waitingRoomRemoteMachines(remote)
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const terminals = waitingRoomTerminals(remote)
+  const externalProviderSessions = remote.externalProviderSessions ?? []
   const placement = waitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
@@ -55,6 +56,7 @@ export function waitingRoomChoice(
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
+    externalProviderSession: externalProviderSessions[state.externalSessionIndex ?? 0] ?? null,
     sliceInventory: allSlices[state.sliceIndex ?? 0] ?? null,
     slice: waitingRoomSelectedSlice(state.sliceSelectionId, slices),
     sliceRef: selectedWaitingRoomSliceRef(state.sliceSelectionId, slices),

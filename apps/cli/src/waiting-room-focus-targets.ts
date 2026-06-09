@@ -12,6 +12,7 @@ export type WaitingRoomFocusTarget = {
   remoteKernelIndex: number
   sliceIndex: number
   terminalIndex: number
+  externalSessionIndex: number
 }
 
 export function moveWaitingRoomFocus(
@@ -30,6 +31,7 @@ export function moveWaitingRoomFocus(
       && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
       && (target.focus !== "slice-entry" || target.sliceIndex === (state.sliceIndex ?? 0))
       && (target.focus !== "terminal" || target.terminalIndex === state.terminalIndex)
+      && (target.focus !== "external-session" || target.externalSessionIndex === (state.externalSessionIndex ?? 0))
     )),
   )
   const next = order[modulo(currentIndex + delta, order.length)] ?? order[0]
@@ -44,6 +46,7 @@ export function moveWaitingRoomFocus(
     machineIndex: next.focus === "machine" ? next.machineIndex : state.machineIndex,
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
     terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
+    ...(next.focus === "external-session" ? { externalSessionIndex: next.externalSessionIndex } : {}),
   }
   return next.focus === "slice-entry"
     ? { ...nextState, sliceIndex: next.sliceIndex }
@@ -60,6 +63,7 @@ export function waitingRoomFocusTargets(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const slices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
+  const externalSessions = remote.externalProviderSessions ?? []
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
@@ -77,6 +81,14 @@ export function waitingRoomFocusTargets(
       focus: "session" as const,
       sessionIndex: Math.max(0, visibleSessions.findIndex((candidate) => candidate.id === session.id)),
     })),
+    ...externalSessions.map((_, externalSessionIndex) => ({
+      focus: "external-session" as const,
+      sessionIndex: 0,
+      externalSessionIndex,
+    })),
+    ...(remote.externalProviderSessionsHasMore
+      ? [{ focus: "external-session-more" as const, sessionIndex: 0 }]
+      : []),
     { focus: "relay" as const, sessionIndex: 0 },
     ...remoteMachines.map((_, machineIndex) => ({
       focus: "machine" as const,
@@ -105,6 +117,7 @@ export function waitingRoomFocusTargets(
     remoteKernelIndex: 0,
     sliceIndex: 0,
     terminalIndex: 0,
+    externalSessionIndex: 0,
     ...target,
   }))
 }
