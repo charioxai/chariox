@@ -125,6 +125,9 @@ async fn projected_waiting_room_public_snapshot(
     let terminals = paired_terminal_records();
     build_waiting_room_public_snapshot(
         runtime_sessions,
+        Vec::new(),
+        false,
+        None,
         relay_status,
         terminals,
         unix_epoch_ms(),

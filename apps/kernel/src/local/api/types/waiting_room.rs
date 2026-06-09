@@ -16,6 +16,12 @@ pub struct WaitingRoomLaunchTarget {
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    #[serde(default)]
+    pub external_provider_sessions_has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_sessions_next_cursor: Option<String>,
     pub relay_status: RelayStatus,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
@@ -28,6 +34,12 @@ pub struct WaitingRoomPublicSnapshot {
     pub inventory_version: String,
     pub generated_at_ms: u64,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    #[serde(default)]
+    pub external_provider_sessions_has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_sessions_next_cursor: Option<String>,
     pub relay_status: RelayStatus,
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
@@ -162,6 +174,9 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
         Self {
             inventory_version: snapshot.inventory_version,
             sessions: snapshot.sessions,
+            external_provider_sessions: snapshot.external_provider_sessions,
+            external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,
+            external_provider_sessions_next_cursor: snapshot.external_provider_sessions_next_cursor,
             relay_status: snapshot.relay_status,
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,

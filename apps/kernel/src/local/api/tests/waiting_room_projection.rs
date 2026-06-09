@@ -86,7 +86,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 5);
+    assert_eq!(snapshot.schema_version, 6);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -128,9 +128,11 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         serialized.pointer("/agents/0/mode"),
         Some(&serde_json::Value::String("build".to_string()))
     );
-    assert!(serialized
-        .pointer("/agents/0/provider_resume_state")
-        .is_none());
+    assert!(
+        serialized
+            .pointer("/agents/0/provider_resume_state")
+            .is_none()
+    );
     assert!(serialized.pointer("/agents/0/active_prompt").is_none());
     assert_eq!(
         serialized.pointer("/workspace_live_sync_mode"),
@@ -334,15 +336,21 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
 
     let serialized =
         serde_json::to_value(summary).expect("public session summary should serialize");
-    assert!(serialized
-        .pointer("/workflows/0/nodes/0/agent_id")
-        .is_some());
-    assert!(serialized
-        .pointer("/workflows/0/edges/0/from_node_id")
-        .is_some());
-    assert!(serialized
-        .pointer("/workflows/0/endpoints/0/entry_node_id")
-        .is_some());
+    assert!(
+        serialized
+            .pointer("/workflows/0/nodes/0/agent_id")
+            .is_some()
+    );
+    assert!(
+        serialized
+            .pointer("/workflows/0/edges/0/from_node_id")
+            .is_some()
+    );
+    assert!(
+        serialized
+            .pointer("/workflows/0/endpoints/0/entry_node_id")
+            .is_some()
+    );
     assert!(
         serialized
             .pointer("/workflows/0/nodes/0/instructions")

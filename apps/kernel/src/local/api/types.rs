@@ -15,6 +15,7 @@ mod agent_utility;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
+mod external_provider_session;
 mod history;
 mod prompt_control;
 mod provider_control;
@@ -31,6 +32,7 @@ pub use agent_utility::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
+pub use external_provider_session::*;
 pub use history::*;
 pub use prompt_control::*;
 pub use provider_control::*;
@@ -42,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 122;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 123;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -165,6 +167,11 @@ pub enum LocalDaemonRequest {
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
     GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
+    ListExternalProviderSessions(ListExternalProviderSessionsRequest),
+    RefreshExternalProviderSessions(RefreshExternalProviderSessionsRequest),
+    ImportExternalProviderSession(ImportExternalProviderSessionRequest),
+    ImportExternalProviderAgent(ImportExternalProviderAgentRequest),
+    WatchExternalProviderSessionStatus(WatchExternalProviderSessionStatusRequest),
     SearchWorkspaceDirectories(SearchWorkspaceDirectoriesRequest),
     CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
@@ -640,6 +647,28 @@ pub enum LocalDaemonResponse {
     },
     WaitingRoomPublicSnapshot {
         snapshot: WaitingRoomPublicSnapshot,
+    },
+    ExternalProviderSessionsListed {
+        page: ExternalProviderSessionPage,
+    },
+    ExternalProviderSessionsRefreshed {
+        page: ExternalProviderSessionPage,
+    },
+    ExternalProviderSessionImported {
+        session: RuntimeSession,
+        agent: AgentInstance,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_run: Option<RuntimeProviderRun>,
+    },
+    ExternalProviderAgentImported {
+        session: RuntimeSession,
+        agent: AgentInstance,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_run: Option<RuntimeProviderRun>,
+    },
+    ExternalProviderSessionWatchStatus {
+        external_session_id: String,
+        status: String,
     },
     WorkspaceDirectoriesSearched {
         directories: Vec<String>,

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::local::{
-    RelayStatus, TerminalRecord, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
-    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    ExternalProviderSessionRecord, RelayStatus, TerminalRecord, WaitingRoomLaunchTarget,
+    WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
 };
@@ -22,6 +22,9 @@ use crate::session::RuntimeSession;
 
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
+    external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<String>,
     relay_status: RelayStatus,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
@@ -31,15 +34,21 @@ pub(crate) fn build_waiting_room_public_snapshot(
     let launch_target = infer_waiting_room_launch_target();
     let inventory_version = waiting_room_inventory_version(
         &sessions,
+        &external_provider_sessions,
+        external_provider_sessions_has_more,
+        external_provider_sessions_next_cursor.as_deref(),
         &relay_status,
         &terminals,
         launch_target.as_ref(),
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 5,
+        schema_version: 6,
         inventory_version,
         generated_at_ms,
         sessions,
+        external_provider_sessions,
+        external_provider_sessions_has_more,
+        external_provider_sessions_next_cursor,
         relay_status,
         terminals,
         launch_target,
@@ -86,12 +95,18 @@ pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarg
 
 fn waiting_room_inventory_version(
     sessions: &[WaitingRoomPublicSessionSummary],
+    external_provider_sessions: &[ExternalProviderSessionRecord],
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<&str>,
     relay_status: &RelayStatus,
     terminals: &[TerminalRecord],
     launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(&serde_json::json!({
         "sessions": sessions,
+        "external_provider_sessions": external_provider_sessions,
+        "external_provider_sessions_has_more": external_provider_sessions_has_more,
+        "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
         "relay_status": relay_status,
         "terminals": terminals,
         "launch_target": launch_target,
@@ -307,6 +322,9 @@ mod tests {
                 "machine",
                 "daemon",
             )],
+            Vec::new(),
+            false,
+            None,
             RelayStatus {
                 configured: false,
                 connected: false,
@@ -328,9 +346,10 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 5);
+        assert_eq!(snapshot.schema_version, 6);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
+        assert!(snapshot.external_provider_sessions.is_empty());
         assert_eq!(snapshot.terminals.len(), 1);
         assert!(!snapshot.inventory_version.is_empty());
     }

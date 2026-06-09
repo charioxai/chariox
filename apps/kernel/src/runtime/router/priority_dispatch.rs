@@ -6,9 +6,10 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::execute_required_capability_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
+use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
 use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::interactive_command_dispatcher::{
     dispatch_interactive_command, is_interactive_command,
@@ -264,6 +265,13 @@ impl CommandRouter {
                     &caller_user_id,
                 )
                 .await
+            }
+            request @ (LocalDaemonRequest::ListExternalProviderSessions(_)
+            | LocalDaemonRequest::RefreshExternalProviderSessions(_)
+            | LocalDaemonRequest::ImportExternalProviderSession(_)
+            | LocalDaemonRequest::ImportExternalProviderAgent(_)
+            | LocalDaemonRequest::WatchExternalProviderSessionStatus(_)) => {
+                execute_external_provider_session_request(request).await
             }
             LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(request) => {
                 let caller_user_id = command_caller_user_id(&command);

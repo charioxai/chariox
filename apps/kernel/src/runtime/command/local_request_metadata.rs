@@ -347,6 +347,19 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListRemoteMachineKernels(_) => "remote_machine.kernel.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
+        LocalDaemonRequest::RefreshExternalProviderSessions(_) => {
+            "external_provider_session.refresh"
+        }
+        LocalDaemonRequest::ImportExternalProviderSession(_) => {
+            "external_provider_session.import_session"
+        }
+        LocalDaemonRequest::ImportExternalProviderAgent(_) => {
+            "external_provider_session.import_agent"
+        }
+        LocalDaemonRequest::WatchExternalProviderSessionStatus(_) => {
+            "external_provider_session.watch_status"
+        }
         LocalDaemonRequest::SearchWorkspaceDirectories(_) => "workspace.directory.search",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",

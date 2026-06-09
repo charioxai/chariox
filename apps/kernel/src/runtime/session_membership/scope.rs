@@ -162,6 +162,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SpawnAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ImportExternalProviderAgent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::MoveAgentToRemote(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
