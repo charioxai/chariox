@@ -72,6 +72,7 @@ async fn refresh_external_provider_session_index(app: &Arc<Mutex<DaemonApp>>) {
 pub(crate) async fn execute_external_provider_session_request(
     app: &Arc<Mutex<DaemonApp>>,
     request: LocalDaemonRequest,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let store = {
         let app = app.lock().await;
@@ -112,11 +113,11 @@ pub(crate) async fn execute_external_provider_session_request(
         }
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
             let mut app = app.lock().await;
-            import_external_provider_session(&mut app, &store, request)
+            import_external_provider_session(&mut app, &store, request, caller_user_id)
         }
         LocalDaemonRequest::ImportExternalProviderAgent(request) => {
             let mut app = app.lock().await;
-            import_external_provider_agent(&mut app, &store, request)
+            import_external_provider_agent(&mut app, &store, request, caller_user_id)
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "external provider session request",
@@ -129,6 +130,7 @@ fn import_external_provider_session(
     app: &mut DaemonApp,
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderSessionRequest,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external = external_session_or_refresh(app, store, &request.external_session_id)?;
     let provider = request
@@ -158,7 +160,8 @@ fn import_external_provider_session(
     let (session, mut agent) = crate::app::KernelSessionService::new(app).create_session(
         CreateSessionRequest::new(workspace_id, worktree_id)
             .with_alias(session_alias.clone())
-            .with_agent_defaults(defaults),
+            .with_agent_defaults(defaults)
+            .with_owner_user_id(caller_user_id.to_string()),
     )?;
     agent = app
         .agents
@@ -193,6 +196,7 @@ fn import_external_provider_agent(
     app: &mut DaemonApp,
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderAgentRequest,
+    caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external = external_session_or_refresh(app, store, &request.external_session_id)?;
     let session = app.sessions().get_session(&request.session_id)?;
@@ -210,7 +214,7 @@ fn import_external_provider_agent(
     let mut create_request = CreateAgentRequest::new(session.id(), provider.clone())
         .with_alias(alias)
         .with_model(model.clone())
-        .with_owner_user_id(session.owner_user_id().to_string());
+        .with_owner_user_id(caller_user_id.to_string());
     if let Some(effort) = request.effort.clone() {
         create_request = create_request.with_effort(effort);
     }
@@ -383,6 +387,7 @@ mod tests {
                         worktree_id: None,
                     },
                 ),
+                "external-import-user",
             )
             .await
             .expect("import should succeed");
@@ -397,8 +402,10 @@ mod tests {
             };
             assert_eq!(session.alias(), Some("imported_external_one"));
             assert_eq!(session.worktree_id(), "/tmp/external-one");
+            assert_eq!(session.owner_user_id(), "external-import-user");
             assert_eq!(agent.provider(), "dev-stub");
             assert_eq!(agent.alias(), Some("Imported external one"));
+            assert_eq!(agent.owner_user_id(), "external-import-user");
             let provider_run = provider_run.expect("provider run should launch");
             assert_eq!(provider_run.session_id(), session.id());
             assert_eq!(provider_run.agent_instance_id(), Some(agent.id()));
@@ -442,6 +449,7 @@ mod tests {
                         focus: Some(true),
                     },
                 ),
+                "external-agent-user",
             )
             .await
             .expect("import should succeed");
@@ -458,6 +466,7 @@ mod tests {
             assert_eq!(session.focused_agent_id(), Some(agent.id()));
             assert_eq!(agent.provider(), "dev-stub");
             assert_eq!(agent.alias(), Some("Imported agent"));
+            assert_eq!(agent.owner_user_id(), "external-agent-user");
             assert_eq!(agent.worktree_id(), Some("/tmp/external-two"));
             assert_eq!(
                 provider_run
