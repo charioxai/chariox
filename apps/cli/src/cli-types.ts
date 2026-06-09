@@ -140,6 +140,26 @@ export type RuntimeSession = {
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  external_provider_imports?: ExternalProviderImportMetadata[]
+}
+
+export type ExternalProviderImportMode = "observed_history" | "resume_only"
+
+export type ExternalProviderObservedCursor = {
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  last_observed_merge_key?: string | null
+}
+
+export type ExternalProviderImportMetadata = {
+  external_provider_session_id: string
+  external_provider: string
+  external_provider_session_provider_id: string
+  import_mode: ExternalProviderImportMode
+  observed_cursor: ExternalProviderObservedCursor
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  imported_at_ms: number
 }
 
 export type SessionCollaborationAgentCounts = {
@@ -644,6 +664,7 @@ export type AgentInstance = {
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
   substitution_timeout_ms?: number | null
+  external_provider_import?: ExternalProviderImportMetadata | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
   grid_row: number
@@ -720,6 +741,7 @@ export type RuntimeProviderRun = {
     operation: string
     mode: string
   }[]
+  external_provider_import?: ExternalProviderImportMetadata | null
 }
 
 export type ProviderProcessInfo = {
@@ -880,6 +902,11 @@ export type TranscriptEntry = {
   text: string
   sourceText?: string
   mergeKey?: string
+  source?: "external_provider_observed" | string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  observedAtMs?: number | null
   emphasis?: "muted" | "warning" | "error"
   turnId?: number
   hidden?: boolean

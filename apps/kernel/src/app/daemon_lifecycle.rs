@@ -132,6 +132,12 @@ impl DaemonApp {
                 shutdown_tx.subscribe(),
             ),
         );
+        let imported_external_provider_observer_task = tokio::spawn(
+            crate::runtime::external_provider_session_control::run_imported_external_provider_transcript_observer(
+                Arc::clone(&app),
+                shutdown_tx.subscribe(),
+            ),
+        );
 
         let result =
             crate::runtime_transport::run_kernel_websocket_server(Arc::clone(&app), async {
@@ -143,6 +149,7 @@ impl DaemonApp {
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
         let _ = external_provider_discovery_task.await;
+        let _ = imported_external_provider_observer_task.await;
         result
     }
 }

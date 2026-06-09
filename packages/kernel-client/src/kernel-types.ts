@@ -130,6 +130,26 @@ export type RuntimeSession = {
   workflow_consoles?: WorkflowConsole[]
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  external_provider_imports?: ExternalProviderImportMetadata[]
+}
+
+export type ExternalProviderImportMode = "observed_history" | "resume_only"
+
+export type ExternalProviderObservedCursor = {
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  last_observed_merge_key?: string | null
+}
+
+export type ExternalProviderImportMetadata = {
+  external_provider_session_id: string
+  external_provider: string
+  external_provider_session_provider_id: string
+  import_mode: ExternalProviderImportMode
+  observed_cursor: ExternalProviderObservedCursor
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  imported_at_ms: number
 }
 
 export type SessionCollaborationAgentCounts = {
@@ -833,6 +853,7 @@ export type AgentInstance = {
   last_substitution?: AgentSubstitutionRecord | null
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean
+  external_provider_import?: ExternalProviderImportMetadata | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
   grid_row: number
@@ -1298,9 +1319,10 @@ export type RuntimeProviderRun = {
     operation: string
     mode: string
   }[]
+  external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 122
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 125
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1446,6 +1468,11 @@ export type SessionHistoryEntry = {
   provider_run_id?: string | null
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   merge_key?: string
+  source?: "external_provider_observed" | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
+  observed_at_ms?: number | null
   text: string
   timestamp_ms?: number
   source_attachment_id?: string | null
@@ -1613,6 +1640,11 @@ export type TranscriptEntry = {
   text: string
   sourceText?: string
   mergeKey?: string
+  source?: "external_provider_observed" | string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  observedAtMs?: number | null
   emphasis?: "muted" | "warning" | "error"
   turnId?: number
   hidden?: boolean

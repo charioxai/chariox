@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
 use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
-use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
+use crate::provider::{
+    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata, ProviderResumeState,
+};
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
@@ -380,6 +382,21 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_remote_extension_manifest_sync(status);
+        Ok(agent.clone())
+    }
+
+    pub fn set_external_provider_import(
+        &mut self,
+        agent_id: &str,
+        import: Option<ExternalProviderImportMetadata>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_external_provider_import(import);
         Ok(agent.clone())
     }
 
@@ -871,6 +888,14 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_remote_extension_manifest_sync(agent_id, status)
+    }
+
+    pub fn set_external_provider_import(
+        &self,
+        agent_id: &str,
+        import: Option<ExternalProviderImportMetadata>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_external_provider_import(agent_id, import)
     }
 
     pub fn update_agent_config(

@@ -98,6 +98,45 @@ test("agent spawn command imports an external provider session as a new agent", 
   assert.equal(flashedMessage, "imported external session codex:thread-1 as provider-thread")
 })
 
+test("agent spawn command accepts --import as external provider session alias", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: () => {},
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async () => {
+      throw new Error("external import should launch through the kernel import response")
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      throw new Error("external import should not call normal spawn")
+    },
+    importExternalProviderAgent: async (externalSessionId) => {
+      calls.push(`import:${externalSessionId}`)
+      const importedAgent = agent({ id: "agent-imported", agent_ref: "provider-thread" })
+      currentSession = session({ focused_agent_id: importedAgent.id, agents: [...currentSession.agents, importedAgent] })
+      return {
+        session: currentSession,
+        agent: importedAgent,
+        providerRun: providerRun({ id: "run-imported", agent_instance_id: importedAgent.id }),
+      }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["--import", "codex:thread-1"])
+
+  assert.deepEqual(calls, ["import:codex:thread-1"])
+})
+
 test("agent spawn command rejects external imports with placement options", async () => {
   let flashedMessage = ""
 
@@ -121,7 +160,7 @@ test("agent spawn command rejects external imports with placement options", asyn
     refreshSplitPaneFocusRepaint: () => {},
   }, ["--external", "codex:thread-1", "--slice", "new"])
 
-  assert.equal(flashedMessage, "usage: /agent spawn --external <external-session-id> does not accept placement options")
+  assert.equal(flashedMessage, "usage: /agent spawn --external|--import <external-session-id> does not accept placement options")
 })
 
 

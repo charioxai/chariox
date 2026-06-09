@@ -110,6 +110,33 @@ test("mergeAdjacentHistoryPageEntries preserves merge keys across stitched fragm
   assert.equal(merged[0]?.entry.merge_key, "a-1")
 })
 
+test("hydrateTranscriptEntries preserves external provider observed metadata", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 7,
+      fragment_start: 0,
+      fragment_end: 16,
+      total_chars: 16,
+      entry: {
+        kind: "provider_output",
+        text: "native reply\n",
+        merge_key: "external:codex:thread-1:item-1",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "item-1",
+        observed_at_ms: 123,
+      },
+    },
+  ])
+
+  assert.equal(entries[0]?.source, "external_provider_observed")
+  assert.equal(entries[0]?.externalProvider, "codex")
+  assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
+  assert.equal(entries[0]?.externalProviderTurnId, "item-1")
+  assert.equal(entries[0]?.observedAtMs, 123)
+})
+
 test("stitchPrependedHistory merges adjacent assistant fragments", () => {
   const stitched = stitchPrependedHistory(
     [entry(1, "assistant", "hello ", {

@@ -9,7 +9,8 @@ use crate::session::unix_epoch_ms;
 
 use super::launch_contract::{
     default_provider_owner_user_id, AgentExecutionMode, AgentPermissionLevel,
-    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
+    ExternalProviderImportMetadata, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderResumeState, ProviderWriteAccessMode,
 };
 use super::types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
@@ -70,6 +71,8 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     resume_state: ProviderResumeState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_import: Option<ExternalProviderImportMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_diagnostic: Option<String>,
@@ -127,6 +130,7 @@ impl RuntimeProviderRun {
                 request.runtime_mcp_binding.is_some(),
             ),
             resume_state: request.resume_state.clone().unwrap_or_default(),
+            external_provider_import: request.external_provider_import.clone(),
             provider_session_id: request
                 .resume_state
                 .as_ref()
@@ -190,6 +194,7 @@ impl RuntimeProviderRun {
                 inferred_has_runtime_mcp_binding,
             ),
             resume_state: ProviderResumeState::default(),
+            external_provider_import: None,
             provider_session_id: None,
             terminal_diagnostic: None,
             started_at_ms: now,
@@ -367,6 +372,17 @@ impl RuntimeProviderRun {
 
     pub fn set_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.resume_state = resume_state;
+    }
+
+    pub fn external_provider_import(&self) -> Option<&ExternalProviderImportMetadata> {
+        self.external_provider_import.as_ref()
+    }
+
+    pub fn set_external_provider_import(
+        &mut self,
+        import: Option<ExternalProviderImportMetadata>,
+    ) {
+        self.external_provider_import = import;
     }
 
     pub fn provider_session_id(&self) -> Option<&str> {

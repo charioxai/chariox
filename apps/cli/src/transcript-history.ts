@@ -128,6 +128,11 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
         ...(entry.entry.agent_id !== undefined ? { agent_id: entry.entry.agent_id } : {}),
         ...(entry.entry.provider_run_id !== undefined ? { provider_run_id: entry.entry.provider_run_id } : {}),
         ...(entry.entry.merge_key !== undefined ? { merge_key: entry.entry.merge_key } : {}),
+        ...(entry.entry.source !== undefined ? { source: entry.entry.source } : {}),
+        ...(entry.entry.external_provider !== undefined ? { external_provider: entry.entry.external_provider } : {}),
+        ...(entry.entry.external_provider_session_id !== undefined ? { external_provider_session_id: entry.entry.external_provider_session_id } : {}),
+        ...(entry.entry.external_provider_turn_id !== undefined ? { external_provider_turn_id: entry.entry.external_provider_turn_id } : {}),
+        ...(entry.entry.observed_at_ms !== undefined ? { observed_at_ms: entry.entry.observed_at_ms } : {}),
       },
     })
   }
@@ -148,6 +153,11 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
     options: {
       mergeKey?: string
       sourceText?: string
+      source?: TranscriptEntry["source"]
+      externalProvider?: string | null
+      externalProviderSessionId?: string | null
+      externalProviderTurnId?: string | null
+      observedAtMs?: number | null
       emphasis?: TranscriptEntry["emphasis"]
       historyEntryIndex?: number
       historyFragmentStart?: number
@@ -175,6 +185,11 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
             if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
           }
           if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
+          if (options.source !== undefined) candidate.source = options.source
+          if (options.externalProvider !== undefined) candidate.externalProvider = options.externalProvider
+          if (options.externalProviderSessionId !== undefined) candidate.externalProviderSessionId = options.externalProviderSessionId
+          if (options.externalProviderTurnId !== undefined) candidate.externalProviderTurnId = options.externalProviderTurnId
+          if (options.observedAtMs !== undefined) candidate.observedAtMs = options.observedAtMs
           if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
           if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
           if (options.historyFragmentEnd !== undefined) candidate.historyFragmentEnd = options.historyFragmentEnd
@@ -196,6 +211,11 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
       nextEntry.mergeKey = options.mergeKey
     }
     if (options.sourceText !== undefined) nextEntry.sourceText = options.sourceText
+    if (options.source !== undefined) nextEntry.source = options.source
+    if (options.externalProvider !== undefined) nextEntry.externalProvider = options.externalProvider
+    if (options.externalProviderSessionId !== undefined) nextEntry.externalProviderSessionId = options.externalProviderSessionId
+    if (options.externalProviderTurnId !== undefined) nextEntry.externalProviderTurnId = options.externalProviderTurnId
+    if (options.observedAtMs !== undefined) nextEntry.observedAtMs = options.observedAtMs
     if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
     if (options.historyEntryIndex !== undefined) nextEntry.historyEntryIndex = options.historyEntryIndex
     if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
@@ -219,17 +239,21 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
       historyTotalChars: pageEntry.total_chars,
     }
     if (currentTurnId > 0) options.turnId = currentTurnId
+    const observedOptions = externalProviderObservedOptions(pageEntry.entry)
     switch (pageEntry.entry.kind) {
       case "user_prompt":
         currentTurnId = Math.max(currentTurnId + 1, (pageEntry.entry_index ?? 0) + 1)
         appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), {
           ...options,
+          ...observedOptions,
+          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
           turnId: currentTurnId,
         })
         break
       case "provider_reasoning":
         appendTranscriptEntry("reasoning", pageEntry.entry.text, {
           ...options,
+          ...observedOptions,
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
         })
         break
@@ -254,6 +278,7 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
       case "provider_error":
         appendTranscriptEntry("error", pageEntry.entry.text, {
           ...options,
+          ...observedOptions,
           emphasis: "error",
         })
         break
@@ -266,11 +291,15 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
         }
         break
       case "notice":
-        appendTranscriptEntry("notice", pageEntry.entry.text, options)
+        appendTranscriptEntry("notice", pageEntry.entry.text, {
+          ...options,
+          ...observedOptions,
+        })
         break
       default:
         appendTranscriptEntry("assistant", pageEntry.entry.text, {
           ...options,
+          ...observedOptions,
           ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
         })
         break
@@ -278,6 +307,19 @@ export function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry
   }
 
   return markDeferredHistoryEntries(entries)
+}
+
+function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {
+  if (entry.source !== "external_provider_observed") {
+    return {}
+  }
+  return {
+    source: entry.source,
+    externalProvider: entry.external_provider ?? null,
+    externalProviderSessionId: entry.external_provider_session_id ?? null,
+    externalProviderTurnId: entry.external_provider_turn_id ?? null,
+    observedAtMs: entry.observed_at_ms ?? null,
+  }
 }
 
 export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {

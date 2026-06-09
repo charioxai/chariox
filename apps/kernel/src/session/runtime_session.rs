@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
+use crate::provider::ExternalProviderImportMetadata;
 
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -100,6 +101,8 @@ pub struct RuntimeSession {
     workflow_publications: Vec<WorkflowPublicationDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_links: Vec<WorkspaceLinkDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    external_provider_imports: Vec<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
 }
@@ -157,6 +160,7 @@ impl RuntimeSession {
             workflow_consoles: Vec::new(),
             workflow_publications: Vec::new(),
             workspace_links: Vec::new(),
+            external_provider_imports: Vec::new(),
             workspace_live_sync_mode: None,
         }
     }
@@ -521,6 +525,28 @@ impl RuntimeSession {
 
     pub fn workspace_links(&self) -> &[WorkspaceLinkDefinition] {
         &self.workspace_links
+    }
+
+    pub fn external_provider_imports(&self) -> &[ExternalProviderImportMetadata] {
+        &self.external_provider_imports
+    }
+
+    pub fn upsert_external_provider_import(&mut self, import: ExternalProviderImportMetadata) {
+        self.external_provider_imports.retain(|existing| {
+            existing.external_provider_session_id != import.external_provider_session_id
+                || existing.external_provider != import.external_provider
+                || existing.external_provider_session_provider_id
+                    != import.external_provider_session_provider_id
+        });
+        self.external_provider_imports.push(import);
+        self.external_provider_imports.sort_by(|left, right| {
+            left.imported_at_ms
+                .cmp(&right.imported_at_ms)
+                .then_with(|| {
+                    left.external_provider_session_id
+                        .cmp(&right.external_provider_session_id)
+                })
+        });
     }
 
     pub fn workspace_live_sync_mode(&self) -> Option<crate::config::WorkspaceLiveSyncMode> {

@@ -133,7 +133,7 @@ impl SessionHistoryEntry {
 
     pub fn external_provider_observed(
         session_id: &str,
-        provider_run_id: &str,
+        provider_run_id: Option<&str>,
         agent_id: &str,
         kind: SessionHistoryEntryKind,
         text: impl Into<String>,
@@ -145,7 +145,7 @@ impl SessionHistoryEntry {
         let observed_at_ms = observed_at_ms.unwrap_or_else(super::unix_epoch_ms);
         Self {
             session_id: session_id.to_string(),
-            provider_run_id: Some(provider_run_id.to_string()),
+            provider_run_id: provider_run_id.map(str::to_string),
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: None,
             kind,

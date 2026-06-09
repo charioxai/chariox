@@ -12,6 +12,7 @@ import { transcriptInlineCodeColor } from "./transcript-render-theme.js"
 
 export function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
   text.clear()
+  appendExternalProviderObservedLabel(text, entry)
   if (entry.role === "tool") {
     applyToolTranscriptTextContent(text, entry)
     return
@@ -21,6 +22,17 @@ export function applyTranscriptTextContent(text: TextRenderable, entry: Transcri
     return
   }
   appendTranscriptSpans(text, entry, entry.text)
+}
+
+function appendExternalProviderObservedLabel(text: TextRenderable, entry: TranscriptEntry) {
+  if (entry.source !== "external_provider_observed") {
+    return
+  }
+  const provider = entry.externalProvider?.trim() || "provider"
+  text.add(TextNodeRenderable.fromString(`[${provider} observed] `, {
+    fg: theme.secondary,
+    attributes: TextAttributes.BOLD,
+  }))
 }
 
 function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {

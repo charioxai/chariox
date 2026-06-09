@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
-use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderResumeState};
+use crate::provider::{
+    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata, ProviderResumeState,
+};
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +128,8 @@ pub struct AgentInstance {
     remote_execution: Option<RemoteAgentBinding>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_import: Option<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     extension_grants: Vec<ExtensionGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +186,7 @@ impl AgentInstance {
             worktree_id,
             remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
+            external_provider_import: None,
             extension_grants: Vec::new(),
             remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
@@ -273,6 +278,10 @@ impl AgentInstance {
 
     pub fn provider_resume_state(&self) -> &ProviderResumeState {
         &self.provider_resume_state
+    }
+
+    pub fn external_provider_import(&self) -> Option<&ExternalProviderImportMetadata> {
+        self.external_provider_import.as_ref()
     }
 
     pub fn extension_grants(&self) -> &[ExtensionGrant] {
@@ -380,6 +389,7 @@ impl AgentInstance {
         self.worktree_id = None;
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();
+        self.external_provider_import = None;
         self.extension_grants.clear();
         self.substitutes.clear();
         self.active_substitute_index = None;
@@ -463,6 +473,7 @@ impl AgentInstance {
         self.session_id = session_id.into();
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();
+        self.external_provider_import = None;
         self.remote_extension_manifest_sync = None;
         self.state = AgentState::Idle;
         self.is_processing = false;
@@ -473,6 +484,13 @@ impl AgentInstance {
 
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.provider_resume_state = resume_state;
+    }
+
+    pub fn set_external_provider_import(
+        &mut self,
+        import: Option<ExternalProviderImportMetadata>,
+    ) {
+        self.external_provider_import = import;
     }
 
     pub fn set_remote_execution(&mut self, remote_execution: Option<RemoteAgentBinding>) {

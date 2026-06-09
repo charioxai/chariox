@@ -97,6 +97,92 @@ impl ProviderResumeState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalProviderImportMode {
+    #[default]
+    ObservedHistory,
+    ResumeOnly,
+}
+
+impl ExternalProviderImportMode {
+    pub fn is_observed_history(&self) -> bool {
+        matches!(self, Self::ObservedHistory)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalProviderObservedCursor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_merge_key: Option<String>,
+}
+
+impl ExternalProviderObservedCursor {
+    pub fn new(
+        last_observed_turn_id: Option<String>,
+        last_observed_at_ms: Option<u64>,
+        last_observed_merge_key: Option<String>,
+    ) -> Self {
+        Self {
+            last_observed_turn_id,
+            last_observed_at_ms,
+            last_observed_merge_key,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.last_observed_turn_id.is_none()
+            && self.last_observed_at_ms.is_none()
+            && self.last_observed_merge_key.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalProviderImportMetadata {
+    pub external_provider_session_id: String,
+    pub external_provider: String,
+    pub external_provider_session_provider_id: String,
+    #[serde(default)]
+    pub import_mode: ExternalProviderImportMode,
+    #[serde(default, skip_serializing_if = "ExternalProviderObservedCursor::is_empty")]
+    pub observed_cursor: ExternalProviderObservedCursor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_ms: Option<u64>,
+    pub imported_at_ms: u64,
+}
+
+impl ExternalProviderImportMetadata {
+    pub fn observed_history(
+        external_provider_session_id: impl Into<String>,
+        external_provider: impl Into<String>,
+        external_provider_session_provider_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            external_provider_session_id: external_provider_session_id.into(),
+            external_provider: external_provider.into(),
+            external_provider_session_provider_id: external_provider_session_provider_id.into(),
+            import_mode: ExternalProviderImportMode::ObservedHistory,
+            observed_cursor: ExternalProviderObservedCursor::default(),
+            last_observed_turn_id: None,
+            last_observed_at_ms: None,
+            imported_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+
+    pub fn with_cursor(mut self, cursor: ExternalProviderObservedCursor) -> Self {
+        self.last_observed_turn_id = cursor.last_observed_turn_id.clone();
+        self.last_observed_at_ms = cursor.last_observed_at_ms;
+        self.observed_cursor = cursor;
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRequest {
     pub session_id: String,
@@ -136,6 +222,8 @@ pub struct LaunchProviderRequest {
     pub structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "ProviderClientInterface::is_arroba")]
     pub client_interface: ProviderClientInterface,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_import: Option<ExternalProviderImportMetadata>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -272,6 +360,7 @@ impl LaunchProviderRequest {
             resume_state: None,
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Arroba,
+            external_provider_import: None,
         }
     }
 
@@ -373,6 +462,14 @@ impl LaunchProviderRequest {
 
     pub fn with_client_interface(mut self, client_interface: ProviderClientInterface) -> Self {
         self.client_interface = client_interface;
+        self
+    }
+
+    pub fn with_external_provider_import(
+        mut self,
+        import: ExternalProviderImportMetadata,
+    ) -> Self {
+        self.external_provider_import = Some(import);
         self
     }
 }

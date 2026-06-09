@@ -223,6 +223,20 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn upsert_external_provider_import(
+        &mut self,
+        session_id: &str,
+        import: crate::provider::ExternalProviderImportMetadata,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(
+            session_id,
+            "upsert external provider import metadata",
+        )?;
+        session.upsert_external_provider_import(import);
+        session.touch();
+        Ok(session.clone())
+    }
+
     pub fn record_workflow_node_thinking_trace_for_node_run(
         &mut self,
         session_id: &str,
