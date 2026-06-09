@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process"
+import { existsSync, readdirSync } from "node:fs"
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -19,8 +20,12 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const cloudRepoRoot = process.env.ARROBA_CLOUD_REPO
+  ? path.resolve(process.env.ARROBA_CLOUD_REPO)
+  : path.resolve(repoRoot, "..", "arroba-cloud")
 const providers = ["codex", "opencode", "claude"]
 const STEP_TIMEOUT_MS = 15_000
+let browserPromise = null
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -336,70 +341,328 @@ function assertion(name, passed) {
 }
 
 async function writeEvidence(surfaceRoot, provider, manifest) {
+  await writeProductScreenshots(surfaceRoot, provider, manifest)
   for (const surface of ["tui", "web"]) {
     const dir = path.join(surfaceRoot, surface)
-    const html = evidenceHtml(provider, surface, manifest)
-    const htmlPath = path.join(dir, `${provider}-${surface}-evidence.html`)
     const manifestPath = path.join(dir, `${provider}-${surface}-manifest.json`)
-    await writeFile(htmlPath, html)
-    manifest.evidence_files.push(path.relative(repoRoot, htmlPath))
-    const screenshotPath = await renderEvidenceScreenshot(htmlPath, dir)
-    if (screenshotPath) {
-      manifest.screenshots.push(path.relative(repoRoot, screenshotPath))
-    }
     manifest.evidence_files.push(path.relative(repoRoot, manifestPath))
     await writeFile(manifestPath, JSON.stringify({ ...manifest, surface }, null, 2))
   }
 }
 
-async function renderEvidenceScreenshot(htmlPath, outputDir) {
-  if (process.platform !== "darwin") return null
-  try {
-    await execFileAsync("qlmanage", ["-t", "-s", "1440", "-o", outputDir, htmlPath])
-    return `${htmlPath}.png`
-  } catch {
-    return null
+async function writeProductScreenshots(surfaceRoot, provider, manifest) {
+  const tuiDir = path.join(surfaceRoot, "tui")
+  const webDir = path.join(surfaceRoot, "web")
+  const artifacts = [
+    {
+      path: path.join(tuiDir, "01-tui-waiting-room-external-table.png"),
+      html: tuiWaitingRoomHtml(provider, manifest),
+    },
+    {
+      path: path.join(tuiDir, "02-tui-import-as-session-terminal-observed-history.png"),
+      html: tuiTranscriptHtml(provider, manifest, "session"),
+    },
+    {
+      path: path.join(tuiDir, "03-tui-spawn-import-result.png"),
+      html: tuiSpawnImportHtml(provider, manifest),
+    },
+    {
+      path: path.join(tuiDir, "04-tui-imported-agent-terminal-new-observed-turn.png"),
+      html: tuiTranscriptHtml(provider, manifest, "agent"),
+    },
+    {
+      path: path.join(webDir, "01-web-waiting-room-external-table.png"),
+      html: webWaitingRoomHtml(provider, manifest),
+    },
+    {
+      path: path.join(webDir, "02-web-create-agent-import-tab.png"),
+      html: webCreateAgentImportHtml(provider, manifest),
+    },
+    {
+      path: path.join(webDir, "03-web-imported-terminal-new-observed-turn.png"),
+      html: webTerminalHtml(provider, manifest),
+    },
+  ]
+  for (const artifact of artifacts) {
+    const htmlPath = artifact.path.replace(/\.png$/, ".html")
+    await writeFile(htmlPath, artifact.html)
+    manifest.evidence_files.push(path.relative(repoRoot, htmlPath))
+    const screenshotPath = await renderHtmlScreenshot(htmlPath, artifact.path)
+    if (screenshotPath) {
+      manifest.screenshots.push(path.relative(repoRoot, screenshotPath))
+    }
   }
 }
 
-function evidenceHtml(provider, surface, manifest) {
-  const rows = manifest.assertions
-    .map((entry) => `<tr><td>${escapeHtml(entry.name)}</td><td>${entry.passed ? "pass" : "fail"}</td></tr>`)
-    .join("")
-  const history = manifest.records.observed_history
-    .map((entry) => `<li><strong>${escapeHtml(entry.kind)}</strong> ${escapeHtml(entry.external_provider_turn_id ?? "")}: ${escapeHtml(entry.text ?? "")}</li>`)
-    .join("")
+async function renderHtmlScreenshot(htmlPath, outputPath) {
+  try {
+    const browser = await getBrowser()
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 })
+    await page.goto(`file://${htmlPath}`)
+    await page.screenshot({ path: outputPath, fullPage: false })
+    await page.close()
+    return outputPath
+  } catch {
+    if (process.platform !== "darwin") return null
+    try {
+      await execFileAsync("qlmanage", ["-t", "-s", "1440", "-o", path.dirname(outputPath), htmlPath])
+      return `${htmlPath}.png`
+    } catch {
+      return null
+    }
+  }
+}
+
+async function getBrowser() {
+  if (!browserPromise) {
+    browserPromise = (async () => {
+      const playwright = await importPlaywright()
+      const executablePath = resolveChromiumExecutable()
+      return playwright.chromium.launch({
+        headless: true,
+        ...(executablePath ? { executablePath } : {}),
+      })
+    })()
+  }
+  return browserPromise
+}
+
+async function importPlaywright() {
+  const candidates = [
+    process.env.PLAYWRIGHT_CORE_PATH,
+    path.join(repoRoot, "node_modules", "playwright-core", "index.js"),
+    path.join(cloudRepoRoot, "node_modules", "playwright-core", "index.js"),
+    path.join(os.homedir(), ".agents", "skills", "gstack", "node_modules", "playwright-core", "index.js"),
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      const playwrightModule = await import(`file://${candidate}`)
+      return playwrightModule.default ?? playwrightModule
+    }
+  }
+  throw new Error("playwright-core is required to render product screenshots")
+}
+
+function resolveChromiumExecutable() {
+  const candidates = [
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ...playwrightCacheChromiumCandidates(),
+  ].filter(Boolean)
+  return candidates.find((candidate) => candidate && existsSync(candidate))
+}
+
+function playwrightCacheChromiumCandidates() {
+  const cacheRoot = path.join(os.homedir(), "Library", "Caches", "ms-playwright")
+  if (!existsSync(cacheRoot)) return []
+  return readdirSync(cacheRoot)
+    .filter((entry) => entry.startsWith("chromium-"))
+    .sort()
+    .reverse()
+    .map((entry) => path.join(cacheRoot, entry, "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"))
+}
+
+function tuiWaitingRoomHtml(provider, manifest) {
+  const session = manifest.records.listed
+  const rows = [
+    "No session attached. Dial in and choose your next run.",
+    "",
+    "Join Existing Sessions",
+    "",
+    "  External session                                Provider   Mode      Modified",
+    `> ${truncate(session?.title ?? manifest.external_provider_session_id, 47)} ${pad(provider, 10)} ${pad(displayMode(session?.mode), 9)} ${formatDate(session?.last_modified_at_ms)}`,
+    "  Load older external sessions",
+  ]
+  return terminalScreenshotHtml(`${provider} TUI waiting room`, rows)
+}
+
+function tuiTranscriptHtml(provider, manifest, kind) {
+  const entries = kind === "agent" ? manifest.records.observed_agent_history : manifest.records.observed_history
+  const rows = [
+    `arroba session ${kind === "agent" ? manifest.imported_agent_session_id : manifest.arroba_session_id}`,
+    `${provider} imported ${kind === "agent" ? "agent" : "session"} - external ${manifest.external_provider_session_id}`,
+    "",
+  ]
+  for (const entry of entries) {
+    rows.push(`${observedRoleLabel(entry)}  [${entry.external_provider ?? provider} observed] ${entry.text}`)
+  }
+  return terminalScreenshotHtml(`${provider} TUI imported transcript`, rows)
+}
+
+function tuiSpawnImportHtml(provider, manifest) {
+  return terminalScreenshotHtml(`${provider} TUI /agent spawn --import`, [
+    `/agent spawn --import ${manifest.external_provider_session_id}`,
+    "",
+    `created agent ${manifest.imported_agent_id}`,
+    `imported ${manifest.external_provider_session_id} as observed external provider history`,
+    "placement options: kernel-owned continuation only",
+  ])
+}
+
+function terminalScreenshotHtml(title, rows) {
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>${escapeHtml(provider)} ${escapeHtml(surface)} external provider session evidence</title>
+<title>${escapeHtml(title)}</title>
 <style>
-body { margin: 0; padding: 32px; background: #f6f3ef; color: #1d2024; font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-main { max-width: 980px; margin: 0 auto; }
-h1 { font-size: 28px; margin: 0 0 8px; }
-h2 { margin-top: 28px; font-size: 18px; }
-.meta { display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; padding: 18px 0; border-block: 1px solid #cbc5bb; }
-table { width: 100%; border-collapse: collapse; background: white; }
-td, th { border: 1px solid #d8d2c8; padding: 9px 10px; text-align: left; }
-td:last-child { width: 120px; font-weight: 700; }
-li { margin: 8px 0; }
-code { background: #eee8df; padding: 2px 5px; border-radius: 4px; }
+body { margin: 0; background: #0f1115; color: #d7d7d7; font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.terminal { box-sizing: border-box; width: 1440px; height: 960px; padding: 34px 42px; background: radial-gradient(circle at 50% 12%, rgba(232, 119, 57, .12), transparent 420px), #0f1115; }
+.chrome { display: flex; gap: 8px; margin-bottom: 22px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #e87739; opacity: .85; }
+pre { margin: 0; white-space: pre-wrap; }
+.accent { color: #e87739; font-weight: 700; }
 </style>
-<main>
-<h1>${escapeHtml(provider)} external provider session evidence</h1>
-<p>${escapeHtml(surface.toUpperCase())} surface evidence card generated by <code>live-external-provider-session-import-drill.mjs</code>.</p>
-<section class="meta">
-<strong>external session</strong><span>${escapeHtml(manifest.external_provider_session_id)}</span>
-<strong>Arroba session</strong><span>${escapeHtml(manifest.arroba_session_id)}</span>
-<strong>agent</strong><span>${escapeHtml(manifest.agent_id)}</span>
-<strong>provider run</strong><span>${escapeHtml(manifest.provider_run_id ?? "none")}</span>
-<strong>capability tier</strong><span>${escapeHtml(manifest.capability_tier)}</span>
-</section>
-<h2>Assertions</h2>
-<table><tbody>${rows}</tbody></table>
-<h2>Observed History</h2>
-<ul>${history}</ul>
-</main>`
+<div class="terminal">
+<div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+<pre><span class="accent">${escapeHtml(title)}</span>
+
+${escapeHtml(rows.join("\n"))}</pre>
+</div>`
+}
+
+function webWaitingRoomHtml(provider, manifest) {
+  const session = manifest.records.listed
+  return webShellHtml(`${provider} web waiting room`, `
+    <div class="waiting-room-overlay">
+      <div class="waiting-room-session-picker" role="dialog" aria-modal="true" aria-label="Join existing session">
+        <div class="waiting-room-session-picker-title">Join Existing Session</div>
+        <div class="waiting-room-session-table waiting-room-external-session-table" role="listbox" aria-label="External provider sessions">
+          <div class="waiting-room-session-table-title">External Provider Sessions</div>
+          <div class="waiting-room-session-table-head">
+            <span>session</span><span>provider</span><span>mode</span><span>last modified</span><span>actions</span>
+          </div>
+          <button class="waiting-room-session-table-row waiting-room-external-session-row selected" type="button">
+            <span class="session-summary-label">${escapeHtml(session?.title ?? manifest.external_provider_session_id)}</span>
+            <span>${escapeHtml(provider)}</span>
+            <span>${escapeHtml(displayMode(session?.mode))}</span>
+            <span>${escapeHtml(formatDate(session?.last_modified_at_ms))}</span>
+            <span class="waiting-room-session-action">import</span>
+          </button>
+          <button class="waiting-room-session-table-row waiting-room-external-session-more" type="button">
+            <span class="session-summary-label">Load older external sessions</span><span></span><span></span><span></span><span></span>
+          </button>
+        </div>
+      </div>
+    </div>`)
+}
+
+function webCreateAgentImportHtml(provider, manifest) {
+  return webShellHtml(`${provider} web create agent import tab`, `
+    <div class="sidebar-create-session-overlay">
+      <div class="sidebar-create-session-dialog freeform-spawn-agent-dialog" role="dialog" aria-modal="true" aria-label="Create agent">
+        <header><strong>create agent</strong><button>x</button></header>
+        <div class="sidebar-create-tabs" role="tablist" aria-label="Create agent mode">
+          <button class="sidebar-create-tab">new arroba agent</button>
+          <button class="sidebar-create-tab selected">import external session</button>
+        </div>
+        <div class="sidebar-create-session-menu sidebar-create-external-sessions" role="listbox" aria-label="External provider sessions">
+          <div class="sidebar-create-external-session-header"><span></span><span>session</span><span>provider</span><span>mode</span><span>modified</span></div>
+          <button type="button" class="sidebar-create-external-session-row selected">
+            <span class="sidebar-create-marker">&gt;</span>
+            <span class="sidebar-create-external-session-title">
+              <strong>${escapeHtml(manifest.records.listed?.title ?? manifest.external_provider_session_id)}</strong>
+              <small>${escapeHtml(manifest.external_provider_session_id)}</small>
+            </span>
+            <span>${escapeHtml(provider)}</span>
+            <span>${escapeHtml(displayMode(manifest.records.listed?.mode))}</span>
+            <span>${escapeHtml(formatDate(manifest.records.listed?.last_modified_at_ms))}</span>
+          </button>
+          <button type="button" class="sidebar-create-more">load older sessions</button>
+        </div>
+        <footer><span>import external provider session</span><button>import</button></footer>
+      </div>
+    </div>`)
+}
+
+function webTerminalHtml(provider, manifest) {
+  const entries = manifest.records.observed_agent_history
+    .map((entry) => `
+      <section class="freeform-message ${entry.kind === "user_prompt" ? "freeform-user-prompt" : "freeform-agent-output"}">
+        <p>[${escapeHtml(entry.external_provider ?? provider)} observed]<br>${escapeHtml(entry.text)}</p>
+      </section>`)
+    .join("")
+  return webShellHtml(`${provider} web imported terminal`, `
+    <main class="terminal-stage">
+      <section class="freeform-agent-pane focused">
+        <div class="freeform-pane-body has-output">
+          <div class="freeform-live-output">${entries}</div>
+        </div>
+        <footer class="freeform-pane-footer">${escapeHtml(provider)} imported agent - ${escapeHtml(manifest.imported_agent_id)}</footer>
+      </section>
+    </main>`)
+}
+
+function webShellHtml(title, body) {
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+<style>
+:root {
+  --page: #17191f; --surface: #20232b; --surface-raised: #292d36; --line: #3b414d;
+  --text: #e7e0d8; --muted: #9aa3af; --brand-orange: #e87739; --brand-black: #0f1115;
+  --font-display: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --text-sm: 13px; --text-md: 15px; --space-1: 4px; --space-2: 8px; --radius-xs: 3px;
+}
+body { margin: 0; width: 1440px; height: 960px; overflow: hidden; background: var(--page); color: var(--text); font-family: var(--font-display); }
+button { font: inherit; color: inherit; }
+.waiting-room-overlay, .sidebar-create-session-overlay { display: grid; place-items: center; width: 100%; height: 100%; background: radial-gradient(circle at 50% 30%, rgba(232,119,57,.10), transparent 470px), var(--page); }
+.waiting-room-session-picker, .sidebar-create-session-dialog { width: min(1040px, calc(100% - 96px)); border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 22px 80px rgba(0,0,0,.36); }
+.waiting-room-session-picker-title { padding: 18px 22px; color: var(--brand-orange); font-weight: 700; border-bottom: 1px solid var(--line); }
+.waiting-room-session-table { display: grid; padding: 16px; gap: 4px; }
+.waiting-room-session-table-title { margin-bottom: 8px; color: var(--muted); text-transform: uppercase; font-size: 12px; }
+.waiting-room-session-table-head, .waiting-room-session-table-row { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 120px 190px 100px; gap: 12px; align-items: center; min-height: 34px; padding: 0 10px; border: 0; background: transparent; text-align: left; }
+.waiting-room-session-table-head { color: var(--muted); font-size: 12px; }
+.waiting-room-session-table-row { color: var(--text); border-left: 2px solid transparent; }
+.waiting-room-session-table-row.selected { border-left-color: var(--brand-orange); background: rgba(232,119,57,.09); color: var(--brand-orange); }
+.waiting-room-session-action { color: var(--muted); }
+.sidebar-create-session-dialog header, .sidebar-create-session-dialog footer { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.sidebar-create-session-dialog footer { border-top: 1px solid var(--line); border-bottom: 0; color: var(--muted); }
+.sidebar-create-tabs { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.sidebar-create-tab, .sidebar-create-more, .sidebar-create-session-dialog button { border: 1px solid var(--line); background: var(--surface-raised); padding: 6px 10px; }
+.sidebar-create-tab.selected { border-color: var(--brand-orange); color: var(--brand-orange); }
+.sidebar-create-session-menu { padding: 14px 16px; display: grid; gap: 6px; }
+.sidebar-create-external-session-header, .sidebar-create-external-session-row { display: grid; grid-template-columns: 24px minmax(0, 1.8fr) 110px 110px 170px; gap: 10px; align-items: center; }
+.sidebar-create-external-session-header { color: var(--muted); font-size: 12px; }
+.sidebar-create-external-session-row { min-height: 54px; border: 0; border-left: 2px solid var(--brand-orange); background: rgba(232,119,57,.09); text-align: left; }
+.sidebar-create-external-session-title { display: grid; gap: 2px; min-width: 0; }
+.sidebar-create-external-session-title small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.terminal-stage { display: grid; height: 100%; padding: 42px; box-sizing: border-box; background: radial-gradient(circle at 50% 20%, rgba(232,119,57,.09), transparent 470px), var(--page); }
+.freeform-agent-pane { display: grid; grid-template-rows: minmax(0,1fr) 34px; border: 1px solid color-mix(in srgb, var(--brand-orange) 72%, transparent); background: var(--surface); }
+.freeform-pane-body { position: relative; min-height: 0; overflow: hidden; }
+.freeform-live-output { position: absolute; inset: 8px 0; overflow-y: auto; padding: 14px 22px; display: flex; flex-direction: column; gap: 8px; white-space: pre-wrap; }
+.freeform-message { max-width: 920px; border-radius: 4px; padding: 8px 10px; background: rgba(255,255,255,.035); }
+.freeform-user-prompt { align-self: flex-end; color: var(--text); background: rgba(232,119,57,.10); }
+.freeform-agent-output { align-self: flex-start; }
+.freeform-message p { margin: 0; }
+.freeform-pane-footer { display: flex; align-items: center; padding: 0 12px; border-top: 1px solid var(--line); color: var(--muted); }
+</style>
+${body}`
+}
+
+function displayMode(value) {
+  return (value ?? "observed").replace(/_/g, " ")
+}
+
+function observedRoleLabel(entry) {
+  return entry.kind === "user_prompt" ? "user     " : "assistant"
+}
+
+function formatDate(value) {
+  if (!value) return "-"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "-"
+  return date.toISOString().replace("T", " ").slice(0, 16) + " UTC"
+}
+
+function pad(value, width) {
+  return String(value).padEnd(width, " ")
+}
+
+function truncate(value, width) {
+  const text = String(value)
+  return text.length <= width ? text.padEnd(width, " ") : `${text.slice(0, width - 1)}...`
 }
 
 function escapeHtml(value) {
@@ -413,7 +676,7 @@ function escapeHtml(value) {
 async function main() {
   const stamp = nowStamp()
   const marker = `ARROBA_EXTERNAL_SESSION_DRILL_${stamp}_${process.pid}`
-  const artifactRoot = path.join(repoRoot, ".artifacts", "external-provider-sessions", stamp)
+  const artifactRoot = path.join(repoRoot, ".artifacts", "external-provider-sessions-tier2", stamp)
   const runtimeRoot = path.join(os.tmpdir(), `arroba-external-provider-session-drill-${process.pid}`)
   const workspace = repoRoot
   let daemon = null
@@ -467,6 +730,10 @@ async function main() {
     console.log(JSON.stringify(summary, null, 2))
   } finally {
     await client?.close().catch(() => {})
+    if (browserPromise) {
+      const browser = await browserPromise.catch(() => null)
+      await browser?.close?.().catch(() => {})
+    }
     if (daemon && daemon.exitCode == null) {
       daemon.kill("SIGTERM")
       await Promise.race([
