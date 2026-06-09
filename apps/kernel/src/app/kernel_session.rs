@@ -310,9 +310,22 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
         let session =
             SessionStateOwner::new(self.app.session_state_store()).create_session(request)?;
-        let agent_request = CreateAgentRequest::new(session.id(), "default")
+        let defaults = session.agent_defaults();
+        let mut agent_request = CreateAgentRequest::new(session.id(), &defaults.provider)
             .with_owner_user_id(session.owner_user_id().to_string())
             .with_worktree(session.worktree_id());
+        if let Some(model) = defaults.model.as_deref() {
+            agent_request = agent_request.with_model(model.to_string());
+        }
+        if let Some(effort) = defaults.effort.as_deref() {
+            agent_request = agent_request.with_effort(effort.to_string());
+        }
+        if let Some(execution_mode) = defaults.execution_mode {
+            agent_request = agent_request.with_execution_mode_override(execution_mode);
+        }
+        if let Some(permission_level) = defaults.permission_level {
+            agent_request = agent_request.with_permission_level_override(permission_level);
+        }
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
         let agent = self.app.agents.create_agent(agent_request, &mut sessions)?;

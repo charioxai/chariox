@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{
-    ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    WatchExternalProviderSessionStatusRequest,
+    ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
+    ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, WatchExternalProviderSessionStatusRequest,
 };
+use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
+use crate::session::{CreateSessionRequest, RuntimeSession, SessionAgentDefaults};
 
 pub(crate) async fn execute_external_provider_session_request(
     app: &Arc<Mutex<DaemonApp>>,
@@ -50,15 +54,365 @@ pub(crate) async fn execute_external_provider_session_request(
         LocalDaemonRequest::WatchExternalProviderSessionStatus(request) => {
             Ok(watch_status_response(&store, request))
         }
-        LocalDaemonRequest::ImportExternalProviderSession(_)
-        | LocalDaemonRequest::ImportExternalProviderAgent(_) => Err(DaemonError::LocalTransport {
-            operation: "import external provider session",
-            message: "external provider session index is not initialized".to_string(),
-        }),
+        LocalDaemonRequest::ImportExternalProviderSession(request) => {
+            let mut app = app.lock().await;
+            import_external_provider_session(&mut app, &store, request)
+        }
+        LocalDaemonRequest::ImportExternalProviderAgent(request) => {
+            let mut app = app.lock().await;
+            import_external_provider_agent(&mut app, &store, request)
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "external provider session request",
             message: "unsupported external provider session request".to_string(),
         }),
+    }
+}
+
+fn import_external_provider_session(
+    app: &mut DaemonApp,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    request: ImportExternalProviderSessionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    let provider = request
+        .provider
+        .unwrap_or_else(|| external.provider.clone());
+    let model = request
+        .model
+        .unwrap_or_else(|| default_external_provider_model(&provider).to_string());
+    let mut defaults = SessionAgentDefaults::new(provider.clone()).with_model(model.clone());
+    if let Some(effort) = request.effort.clone() {
+        defaults = defaults.with_effort(effort);
+    }
+    let session_alias = request
+        .alias
+        .clone()
+        .or_else(|| external.title.clone())
+        .unwrap_or_else(|| external.provider_session_id.clone());
+    let worktree_id = request
+        .worktree_id
+        .clone()
+        .or_else(|| external.worktree_path.clone())
+        .unwrap_or_else(|| format!("external-{}", external.provider_session_id));
+    let workspace_id = external
+        .worktree_path
+        .clone()
+        .unwrap_or_else(|| worktree_id.clone());
+    let (session, mut agent) = crate::app::KernelSessionService::new(app).create_session(
+        CreateSessionRequest::new(workspace_id, worktree_id)
+            .with_alias(session_alias.clone())
+            .with_agent_defaults(defaults),
+    )?;
+    agent = app
+        .agents
+        .alias_agent(agent.id(), Some(session_alias))
+        .unwrap_or(agent);
+    app.durable_state_store().append_event(
+        "agent.updated",
+        Some(agent.id().to_string()),
+        serde_json::json!({
+            "agent": &agent,
+        }),
+    )?;
+    let provider_run = launch_imported_external_provider(
+        app,
+        &session,
+        &agent,
+        &external,
+        &provider,
+        &model,
+        request.effort,
+    )?;
+    store.mark_imported(&external.external_session_id, session.id(), agent.id());
+    Ok(LocalDaemonResponse::ExternalProviderSessionImported {
+        session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
+        agent,
+        provider_run: Some(provider_run),
+    })
+}
+
+fn import_external_provider_agent(
+    app: &mut DaemonApp,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    request: ImportExternalProviderAgentRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    let session = app.sessions().get_session(&request.session_id)?;
+    let provider = request
+        .provider
+        .unwrap_or_else(|| external.provider.clone());
+    let model = request
+        .model
+        .unwrap_or_else(|| default_external_provider_model(&provider).to_string());
+    let alias = request
+        .alias
+        .clone()
+        .or_else(|| external.title.clone())
+        .unwrap_or_else(|| external.provider_session_id.clone());
+    let mut create_request = CreateAgentRequest::new(session.id(), provider.clone())
+        .with_alias(alias)
+        .with_model(model.clone())
+        .with_owner_user_id(session.owner_user_id().to_string());
+    if let Some(effort) = request.effort.clone() {
+        create_request = create_request.with_effort(effort);
+    }
+    if let Some(worktree_path) = external.worktree_path.as_deref() {
+        create_request = create_request.with_worktree(worktree_path.to_string());
+    }
+    let agent = crate::app::KernelSessionService::new(app).spawn_agent(create_request)?;
+    if request.focus.unwrap_or(true) {
+        crate::app::KernelSessionService::new(app).focus_agent(session.id(), agent.id())?;
+    }
+    let provider_run = launch_imported_external_provider(
+        app,
+        &session,
+        &agent,
+        &external,
+        &provider,
+        &model,
+        request.effort,
+    )?;
+    store.mark_imported(&external.external_session_id, session.id(), agent.id());
+    Ok(LocalDaemonResponse::ExternalProviderAgentImported {
+        session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
+        agent,
+        provider_run: Some(provider_run),
+    })
+}
+
+fn external_session_or_refresh(
+    _app: &DaemonApp,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    external_session_id: &str,
+) -> Result<ExternalProviderSessionRecord, DaemonError> {
+    if let Some(session) = store.get(external_session_id) {
+        return Ok(session);
+    }
+    let provider = external_session_id
+        .split_once(':')
+        .map(|(provider, _)| provider);
+    for session in crate::app::discover_external_provider_sessions(provider) {
+        store.upsert(session);
+    }
+    store
+        .get(external_session_id)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "import external provider session",
+            message: format!("external provider session `{external_session_id}` was not found"),
+        })
+}
+
+fn launch_imported_external_provider(
+    app: &mut DaemonApp,
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    external: &ExternalProviderSessionRecord,
+    provider: &str,
+    model: &str,
+    effort: Option<String>,
+) -> Result<RuntimeProviderRun, DaemonError> {
+    let mut request =
+        LaunchProviderRequest::new(session.id(), provider, provider, "default", model)
+            .with_agent_id(agent.id())
+            .with_owner_user_id(agent.owner_user_id().to_string())
+            .with_resume_state(resume_state_for_external_session(
+                provider,
+                &external.provider_session_id,
+            ));
+    if let Some(effort) = effort {
+        request = request.with_variant(Some(effort));
+    }
+    if let Some(worktree_path) = agent.worktree_id().or(external.worktree_path.as_deref()) {
+        request = request.with_working_directory(std::path::PathBuf::from(worktree_path));
+    }
+    app.launch_provider(request)
+}
+
+fn resume_state_for_external_session(
+    provider: &str,
+    provider_session_id: &str,
+) -> ProviderResumeState {
+    match provider {
+        "codex" => ProviderResumeState::from_codex_thread_id(provider_session_id),
+        "opencode" => ProviderResumeState::from_opencode_session_id(provider_session_id),
+        "claude" => ProviderResumeState::from_claude_session_id(provider_session_id),
+        _ => ProviderResumeState::default(),
+    }
+}
+
+fn default_external_provider_model(provider: &str) -> &'static str {
+    match provider {
+        "codex" => "gpt-5.5",
+        "claude" => "claude-sonnet-4-6",
+        _ => "default",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use crate::local::{
+        ExternalProviderSessionCapabilities, ExternalProviderSessionMode,
+        ImportExternalProviderAgentRequest, ImportExternalProviderSessionRequest,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn import_external_provider_session_creates_session_agent_and_run() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let store = {
+                let app = app.lock().await;
+                app.external_provider_session_index_store()
+            };
+            store.upsert(record("dev-stub", "external-1", "/tmp/external-one"));
+
+            let response = execute_external_provider_session_request(
+                &app,
+                LocalDaemonRequest::ImportExternalProviderSession(
+                    ImportExternalProviderSessionRequest {
+                        external_session_id: "dev-stub:external-1".to_string(),
+                        alias: Some("Imported external one".to_string()),
+                        provider: Some("dev-stub".to_string()),
+                        model: Some("default".to_string()),
+                        effort: None,
+                        worktree_id: None,
+                    },
+                ),
+            )
+            .await
+            .expect("import should succeed");
+
+            let LocalDaemonResponse::ExternalProviderSessionImported {
+                session,
+                agent,
+                provider_run,
+            } = response
+            else {
+                panic!("unexpected response")
+            };
+            assert_eq!(session.alias(), Some("imported_external_one"));
+            assert_eq!(session.worktree_id(), "/tmp/external-one");
+            assert_eq!(agent.provider(), "dev-stub");
+            assert_eq!(agent.alias(), Some("Imported external one"));
+            let provider_run = provider_run.expect("provider run should launch");
+            assert_eq!(provider_run.session_id(), session.id());
+            assert_eq!(provider_run.agent_instance_id(), Some(agent.id()));
+            assert_eq!(provider_run.adapter_key(), "dev-stub");
+            assert!(
+                store
+                    .get("dev-stub:external-1")
+                    .expect("record should remain indexed")
+                    .already_imported
+            );
+        });
+    }
+
+    #[test]
+    fn import_external_provider_agent_adds_agent_to_existing_session() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let (session_id, store) = {
+                let mut app = app.lock().await;
+                let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .expect("session should create");
+                let store = app.external_provider_session_index_store();
+                (session.id().to_string(), store)
+            };
+            store.upsert(record("dev-stub", "external-2", "/tmp/external-two"));
+
+            let response = execute_external_provider_session_request(
+                &app,
+                LocalDaemonRequest::ImportExternalProviderAgent(
+                    ImportExternalProviderAgentRequest {
+                        session_id: session_id.clone(),
+                        external_session_id: "dev-stub:external-2".to_string(),
+                        alias: Some("Imported agent".to_string()),
+                        provider: Some("dev-stub".to_string()),
+                        model: Some("default".to_string()),
+                        effort: None,
+                        focus: Some(true),
+                    },
+                ),
+            )
+            .await
+            .expect("import should succeed");
+
+            let LocalDaemonResponse::ExternalProviderAgentImported {
+                session,
+                agent,
+                provider_run,
+            } = response
+            else {
+                panic!("unexpected response")
+            };
+            assert_eq!(session.id(), session_id);
+            assert_eq!(session.focused_agent_id(), Some(agent.id()));
+            assert_eq!(agent.provider(), "dev-stub");
+            assert_eq!(agent.alias(), Some("Imported agent"));
+            assert_eq!(agent.worktree_id(), Some("/tmp/external-two"));
+            assert_eq!(
+                provider_run
+                    .expect("provider run should launch")
+                    .agent_instance_id(),
+                Some(agent.id())
+            );
+        });
+    }
+
+    #[test]
+    fn resume_state_maps_known_external_providers() {
+        assert_eq!(
+            resume_state_for_external_session("codex", "thread-1").codex_thread_id(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            resume_state_for_external_session("opencode", "session-1").opencode_session_id(),
+            Some("session-1")
+        );
+        assert_eq!(
+            resume_state_for_external_session("claude", "session-2").claude_session_id(),
+            Some("session-2")
+        );
+        assert!(resume_state_for_external_session("dev-stub", "session-3").is_empty());
+    }
+
+    fn record(
+        provider: &str,
+        provider_session_id: &str,
+        worktree_path: &str,
+    ) -> ExternalProviderSessionRecord {
+        ExternalProviderSessionRecord {
+            external_session_id: format!("{provider}:{provider_session_id}"),
+            provider: provider.to_string(),
+            provider_session_id: provider_session_id.to_string(),
+            title: Some(provider_session_id.to_string()),
+            title_source: Some("test".to_string()),
+            first_prompt_preview: Some("test prompt".to_string()),
+            created_at_ms: None,
+            last_modified_at_ms: 10,
+            worktree_path: Some(worktree_path.to_string()),
+            account_profile: None,
+            running_state: None,
+            capabilities: ExternalProviderSessionCapabilities {
+                can_resume: true,
+                can_read_history: true,
+                ..ExternalProviderSessionCapabilities::default()
+            },
+            mode: ExternalProviderSessionMode::Observed,
+            already_imported: false,
+            imported_session_ids: Vec::new(),
+            imported_agent_ids: Vec::new(),
+        }
     }
 }
 
