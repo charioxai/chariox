@@ -8,6 +8,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `87e560bf9`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --only local-single,local-collab` passed. The run covered single-user and collab remote workers invoking home-owned script, MCP, and connector tools through the relay, plus home-side revoke enforcement for stale projected tools.
 
+### Current-head Workspace Live Sync scope validation
+
+- Revalidated local Codex Workspace Live Sync permission gating on current OSS `main` HEAD `2e5b53f63`: `node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --only local-permission-codex` passed. The run proved synced-root writes still require Arroba Workspace Live Sync permission/tooling while a separate outside Git repo remains provider-native and writable.
+
 ## 2026-06-05
 
 ### Web terminal output identity hardening
