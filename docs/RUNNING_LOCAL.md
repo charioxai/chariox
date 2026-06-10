@@ -489,7 +489,7 @@ account_profile = "default"
 workspace_live_sync = "off"
 ```
 
-Use `managed` to enforce Arroba runtime/MCP writes for protected roots, or `tracked` to allow provider-native writes and sync them at turn end. Session commands can switch the current session:
+Use `managed` to enforce Arroba runtime/MCP writes for protected roots, or `tracked` to allow provider-native writes and sync them at turn end. Session commands switch the current attached session only:
 
 ```text
 /workspace sync off
@@ -498,9 +498,17 @@ Use `managed` to enforce Arroba runtime/MCP writes for protected roots, or `trac
 /workspace sync status
 ```
 
+Set the default for new sessions without changing the attached session:
+
+```text
+/workspace sync default off
+/workspace sync default managed
+/workspace sync default tracked
+```
+
 Workspace Live Sync protects and syncs only the selected worktree Git root plus explicitly attached workspace-link roots. Sibling and unrelated repositories outside those roots stay writable and unsynced. Workspace Live Sync uses `.arrobaignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Arroba state are always excluded.
 
-You can inspect or modify the Workspace Live Sync policy through the CLI:
+You can inspect or modify the same default policy through the lower-level config commands:
 
 ```text
 /config show
