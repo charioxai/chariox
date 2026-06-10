@@ -24,13 +24,23 @@ import type {
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type McpApp = {
-  post: (path: string, handler: (request: { body?: unknown }, reply: McpReply) => unknown) => unknown
-  options: (path: string, handler: (_request: unknown, reply: McpReply) => unknown) => unknown
+  post: unknown
+  options: unknown
 }
+
+type McpPostHandler = (request: { body?: unknown }, reply: McpReply) => unknown
+type McpOptionsHandler = (_request: unknown, reply: McpReply) => unknown
 
 type McpReply = {
   code: (code: number) => McpReply
   headers: (headers: Record<string, string>) => McpReply
+  hijack?: () => void
+  raw?: Partial<{
+    destroyed?: boolean
+    writeHead: (statusCode: number, headers?: Record<string, string>) => void
+    write: (chunk: string) => void
+    end: (chunk?: string) => void
+  }>
 }
 
 type JsonRpcRequest = {
@@ -45,7 +55,7 @@ const MCP_PROTOCOL_VERSION = "2025-03-26"
 export const PUBLICATION_MCP_PATH = "/mcp"
 
 export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPublicationConfig, deps: GatewayDeps) {
-  app.options(PUBLICATION_MCP_PATH, async (_request, reply) => {
+  registerMcpOptions(app, PUBLICATION_MCP_PATH, async (_request: unknown, reply: McpReply) => {
     if (!isMcpPublication(publication)) {
       reply.code(404)
       return { error: "not found" }
@@ -53,7 +63,7 @@ export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPu
     reply.code(204).headers(mcpCorsHeaders())
     return null
   })
-  app.post(PUBLICATION_MCP_PATH, async (request, reply) => {
+  registerMcpPost(app, PUBLICATION_MCP_PATH, async (request: { body?: unknown }, reply: McpReply) => {
     if (!isMcpPublication(publication)) {
       reply.code(404)
       return { error: "not found" }
@@ -73,12 +83,22 @@ export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPu
       if (rpc.method === "resources/list") return jsonRpcResult(rpc.id, { resources: [] })
       if (rpc.method === "resources/templates/list") return jsonRpcResult(rpc.id, { resourceTemplates: [] })
       if (rpc.method === "prompts/list") return jsonRpcResult(rpc.id, { prompts: [] })
-      if (rpc.method === "tools/call") return await toolsCallResponse(rpc, publication, deps)
+      if (rpc.method === "tools/call") return await streamedToolsCallResponse(reply, rpc, publication, deps)
       return jsonRpcError(rpc.id, -32601, "method not found")
     } catch (error) {
       return jsonRpcError(rpc.id, -32000, error instanceof Error ? error.message : String(error))
     }
   })
+}
+
+function registerMcpPost(app: McpApp, path: string, handler: McpPostHandler) {
+  const post = app.post as (path: string, handler: McpPostHandler) => unknown
+  return post.call(app, path, handler)
+}
+
+function registerMcpOptions(app: McpApp, path: string, handler: McpOptionsHandler) {
+  const options = app.options as (path: string, handler: McpOptionsHandler) => unknown
+  return options.call(app, path, handler)
 }
 
 export function isMcpPublication(publication: WorkflowPublicationConfig) {
@@ -120,6 +140,34 @@ function toolsListResponse(request: JsonRpcRequest, publication: WorkflowPublica
   })
 }
 
+async function streamedToolsCallResponse(
+  reply: McpReply,
+  request: JsonRpcRequest,
+  publication: WorkflowPublicationConfig,
+  deps: GatewayDeps,
+) {
+  const raw = reply.raw
+  if (!reply.hijack || !raw?.writeHead || !raw.write || !raw.end) return await toolsCallResponse(request, publication, deps)
+  reply.hijack()
+  raw.writeHead(200, {
+    ...mcpCorsHeaders(),
+    "content-type": "application/json; charset=utf-8",
+  })
+  const heartbeat = setInterval(() => {
+    if (!raw.destroyed) raw.write?.(" \n")
+  }, mcpKeepaliveMs(publication))
+  try {
+    const result = await toolsCallResponse(request, publication, deps)
+    raw.end(`${JSON.stringify(result)}\n`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    raw.end(`${JSON.stringify(jsonRpcError(request.id, -32000, message))}\n`)
+  } finally {
+    clearInterval(heartbeat)
+  }
+  return undefined
+}
+
 async function toolsCallResponse(
   request: JsonRpcRequest,
   publication: WorkflowPublicationConfig,
@@ -144,6 +192,11 @@ async function toolsCallResponse(
     ? result
     : await resolveQueuedOrRunningResult(publication, invocation.request_id, result)
   return jsonRpcResult(request.id, workflowResultToMcpToolResult(finalResult, publication))
+}
+
+function mcpKeepaliveMs(publication: WorkflowPublicationConfig) {
+  const configured = (publication as { readonly mcp_keepalive_ms?: unknown }).mcp_keepalive_ms
+  return typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : 15_000
 }
 
 async function resolveQueuedOrRunningResult(

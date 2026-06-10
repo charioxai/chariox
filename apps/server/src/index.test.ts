@@ -1690,6 +1690,46 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
   }
 })
 
+test("mcp tools/call streams JSON whitespace keepalives before slow final output", async () => {
+  const { app } = buildServer({
+    ...baseConfig,
+    publication_id: "pub-mcp",
+    transport: "mcp",
+    mcp_keepalive_ms: 5,
+  } as WorkflowPublicationConfig, {
+    invokeWorkflow: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      return {
+        accepted: true,
+        workflow_run: {
+          id: "run-mcp",
+          status: "Completed",
+          final_output: { message: "mcp done" },
+        },
+      }
+    },
+  })
+
+  try {
+    const called = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      payload: {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "invoke_pub_mcp", arguments: { prompt: "ship" } },
+      },
+    })
+
+    assert.equal(called.statusCode, 200)
+    assert.match(called.body, /^\s+\{/)
+    assert.deepEqual(JSON.parse(called.body).result.content, [{ type: "text", text: "mcp done" }])
+  } finally {
+    await app.close()
+  }
+})
+
 test("mcp accepts browser preflight for JSON-RPC tool calls", async () => {
   const { app } = buildServer({
     ...baseConfig,
