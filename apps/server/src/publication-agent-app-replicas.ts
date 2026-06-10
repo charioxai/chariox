@@ -1,3 +1,7 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import process from "node:process"
+
 import type {
   WorkflowPublicationConfig,
 } from "./publication-types.js"
@@ -8,6 +12,7 @@ type ReplicaPoolState = {
   busyCounts: Map<string, number>
   pending: PendingReplicaDispatch[]
   invocationLeases: Map<string, TrackedReplicaLease>
+  stateFile?: string
 }
 
 const replicaPools = new Map<string, ReplicaPoolState>()
@@ -39,6 +44,10 @@ export type AgentAppReplicaStatus = {
   readonly activeReplicaCount: number
   readonly readyReplicaCount: number
   readonly queueDepth: number
+}
+
+export function clearAgentAppReplicaPoolsForTests(): void {
+  replicaPools.clear()
 }
 
 export function agentAppCallerSession(
@@ -79,7 +88,7 @@ export function acquireAgentAppReplica(
       release: () => {},
     }
   }
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   if (publication.agent_app.replicas.per_caller_ordering !== false) {
     const existing = pool.callerSessions.get(callerKey)
     if (existing && sessions.includes(existing)) {
@@ -90,6 +99,7 @@ export function acquireAgentAppReplica(
   if (!sessionId) return null
   if (publication.agent_app.replicas.per_caller_ordering !== false) {
     pool.callerSessions.set(callerKey, sessionId)
+    persistReplicaPool(publication, pool)
   }
   return leaseReplica(publication, sessionId, pool)
 }
@@ -99,7 +109,7 @@ export function enqueueAgentAppReplicaDispatch(
   callerKey: string,
   dispatch: (lease: AgentAppReplicaLease) => Promise<void>,
 ): boolean {
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   const maxQueueDepth = publication.agent_app?.replicas?.max_queue_depth ?? 100
   if (pool.pending.length >= maxQueueDepth) return false
   pool.pending.push({ publication, callerKey, dispatch })
@@ -113,7 +123,7 @@ export function trackAgentAppReplicaInvocation(
   lease: AgentAppReplicaLease,
 ): void {
   if (!requestId) return
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   const tracked: TrackedReplicaLease = {
     release: lease.release,
   }
@@ -132,7 +142,7 @@ export function releaseAgentAppReplicaInvocation(
   requestId: string | null | undefined,
 ): void {
   if (!requestId) return
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   const tracked = pool.invocationLeases.get(requestId)
   if (!tracked) return
   pool.invocationLeases.delete(requestId)
@@ -142,7 +152,7 @@ export function releaseAgentAppReplicaInvocation(
 
 export function agentAppReplicaStatus(publication: WorkflowPublicationConfig): AgentAppReplicaStatus {
   const sessions = normalizedReplicaSessions(publication)
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   const activeReplicaCount = sessions.filter((sessionId) => (pool.busyCounts.get(sessionId) ?? 0) > 0).length
   return {
     totalReplicaCount: sessions.length,
@@ -159,15 +169,17 @@ function normalizedReplicaSessions(publication: WorkflowPublicationConfig): stri
   return [...new Set(sessions.filter(Boolean))]
 }
 
-function replicaPool(publicationId: string): ReplicaPoolState {
+function replicaPool(publication: WorkflowPublicationConfig): ReplicaPoolState {
+  const publicationId = publication.publication_id
   const existing = replicaPools.get(publicationId)
   if (existing) return existing
-  const created: ReplicaPoolState = {
+  const created: ReplicaPoolState = loadPersistedReplicaPool(publication) ?? {
     nextIndex: 0,
     callerSessions: new Map(),
     busyCounts: new Map(),
     pending: [],
     invocationLeases: new Map(),
+    ...optionalStateFile(publication),
   }
   replicaPools.set(publicationId, created)
   return created
@@ -208,7 +220,7 @@ function leaseReplica(
 }
 
 function drainReplicaPool(publication: WorkflowPublicationConfig): void {
-  const pool = replicaPool(publication.publication_id)
+  const pool = replicaPool(publication)
   while (pool.pending.length > 0) {
     const pending = pool.pending[0]
     if (!pending) return
@@ -217,6 +229,69 @@ function drainReplicaPool(publication: WorkflowPublicationConfig): void {
     pool.pending.shift()
     void pending.dispatch(lease).catch(() => lease.release())
   }
+}
+
+type PersistedReplicaPool = {
+  readonly schema_version: 1
+  readonly next_index?: number
+  readonly caller_sessions?: Record<string, string>
+}
+
+function loadPersistedReplicaPool(publication: WorkflowPublicationConfig): ReplicaPoolState | null {
+  const stateFile = stateFileForPublication(publication)
+  if (!stateFile || !existsSync(stateFile)) return null
+  try {
+    const persisted = JSON.parse(readFileSync(stateFile, "utf8")) as PersistedReplicaPool
+    if (persisted.schema_version !== 1) return null
+    return {
+      nextIndex: typeof persisted.next_index === "number" && Number.isInteger(persisted.next_index) && persisted.next_index >= 0
+        ? persisted.next_index
+        : 0,
+      callerSessions: new Map(Object.entries(persisted.caller_sessions ?? {})),
+      busyCounts: new Map(),
+      pending: [],
+      invocationLeases: new Map(),
+      stateFile,
+    }
+  } catch {
+    return {
+      nextIndex: 0,
+      callerSessions: new Map(),
+      busyCounts: new Map(),
+      pending: [],
+      invocationLeases: new Map(),
+      stateFile,
+    }
+  }
+}
+
+function persistReplicaPool(publication: WorkflowPublicationConfig, pool: ReplicaPoolState): void {
+  if (!pool.stateFile) return
+  const persisted: PersistedReplicaPool = {
+    schema_version: 1,
+    next_index: pool.nextIndex,
+    caller_sessions: Object.fromEntries(pool.callerSessions.entries()),
+  }
+  mkdirSync(dirname(pool.stateFile), { recursive: true })
+  const temporary = `${pool.stateFile}.${process.pid}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(persisted, null, 2)}\n`, "utf8")
+  renameSync(temporary, pool.stateFile)
+}
+
+function optionalStateFile(publication: WorkflowPublicationConfig): { readonly stateFile?: string } {
+  const stateFile = stateFileForPublication(publication)
+  return stateFile ? { stateFile } : {}
+}
+
+function stateFileForPublication(publication: WorkflowPublicationConfig): string | null {
+  const root = process.env.ARROBA_PUBLICATION_RUNTIME_STATE_DIR
+    || (publication.package_root ? join(publication.package_root, ".arroba-publication-runtime") : null)
+  if (!root) return null
+  return join(root, "agent-app", safeStateSegment(publication.publication_id), "replicas.json")
+}
+
+function safeStateSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, "_") || "publication"
 }
 
 function firstHeader(value: string | string[] | undefined): string | null {

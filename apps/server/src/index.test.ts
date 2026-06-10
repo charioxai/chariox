@@ -24,7 +24,11 @@ import {
   publicationForAgentAppInvocation,
   rememberAgentAppInvocationRoute,
 } from "./publication-agent-app-effects.js"
-import { releaseAgentAppReplicaInvocation } from "./publication-agent-app-replicas.js"
+import {
+  acquireAgentAppReplica,
+  clearAgentAppReplicaPoolsForTests,
+  releaseAgentAppReplicaInvocation,
+} from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import {
   collectPublicationTraceEvents,
@@ -2317,6 +2321,44 @@ test("agent app replica selection preserves caller affinity across hidden sessio
     assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2", "replica-session-1"])
   } finally {
     await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app replica caller affinity survives gateway restart with runtime storage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-state-"))
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-replica-state",
+    package_root: root,
+    replica_session_ids: ["replica-session-1", "replica-session-2"],
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      replicas: { count: 2, per_caller_ordering: true },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+      }],
+    },
+  }
+
+  try {
+    const first = acquireAgentAppReplica(publication, "caller-a")
+    assert.equal(first?.publication.session_id, "replica-session-1")
+    first?.release()
+    const second = acquireAgentAppReplica(publication, "caller-b")
+    assert.equal(second?.publication.session_id, "replica-session-2")
+    second?.release()
+
+    clearAgentAppReplicaPoolsForTests()
+    const restored = acquireAgentAppReplica(publication, "caller-a")
+    assert.equal(restored?.publication.session_id, "replica-session-1")
+    restored?.release()
+  } finally {
+    clearAgentAppReplicaPoolsForTests()
     await rm(root, { recursive: true, force: true })
   }
 })
