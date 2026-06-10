@@ -185,12 +185,10 @@ fn handle_claude_tool_uses(
         return Ok(());
     };
     let mut tool_results = Vec::new();
-    for block in content.iter().filter(|block| {
-        block
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            == Some("tool_use")
-    }) {
+    for block in content
+        .iter()
+        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+    {
         let name = block
             .get("name")
             .and_then(serde_json::Value::as_str)
@@ -215,13 +213,12 @@ fn handle_claude_tool_uses(
             "input": block.get("input").cloned().unwrap_or(serde_json::Value::Null),
             "id": block.get("id").cloned().unwrap_or(serde_json::Value::Null),
         });
-        let bytes = serde_json::to_vec(&payload).map_err(|error| {
-            DaemonError::ProviderProtocol {
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
                 operation: "claude_tool_use_serialize",
                 message: error.to_string(),
-            }
-        })?;
+            })?;
         batch.chunks.push(super::ProviderPromptChunk {
             kind: TerminalOutputKind::ProviderTool,
             merge_key: None,

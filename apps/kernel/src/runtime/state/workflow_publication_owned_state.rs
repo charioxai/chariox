@@ -647,10 +647,15 @@ fn collect_agent_app_asset_files(
             message: format!("failed to read agent app asset entry: {error}"),
         })?;
         let path = entry.path();
-        let metadata = entry.metadata().map_err(|error| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!("failed to stat agent app asset `{}`: {error}", path.display()),
-        })?;
+        let metadata = entry
+            .metadata()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "failed to stat agent app asset `{}`: {error}",
+                    path.display()
+                ),
+            })?;
         if metadata.is_dir() {
             collect_agent_app_asset_files(root, &path, files)?;
             continue;
@@ -658,17 +663,27 @@ fn collect_agent_app_asset_files(
         if !metadata.is_file() {
             continue;
         }
-        let relative = path.strip_prefix(root).map_err(|error| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!("failed to relativize agent app asset `{}`: {error}", path.display()),
-        })?;
-        let relative = relative.to_str().ok_or_else(|| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!("agent app asset path is not UTF-8: {}", path.display()),
-        })?;
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "failed to relativize agent app asset `{}`: {error}",
+                    path.display()
+                ),
+            })?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!("agent app asset path is not UTF-8: {}", path.display()),
+            })?;
         let content = std::fs::read(&path).map_err(|error| DaemonError::LocalTransport {
             operation: "export workflow publication package",
-            message: format!("failed to read agent app asset `{}`: {error}", path.display()),
+            message: format!(
+                "failed to read agent app asset `{}`: {error}",
+                path.display()
+            ),
         })?;
         files.push(package_file_bytes(
             format!("app/{}", relative.replace(std::path::MAIN_SEPARATOR, "/")),

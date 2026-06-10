@@ -2,8 +2,8 @@ use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
 use super::capability_registry::{
-    connector_registry, mcp_registry_for_workspace, script_registry_for_workspace,
-    skill_registry_for_workspace,
+    connector_registry, environment_registry_for_workspace, mcp_registry_for_workspace,
+    script_registry_for_workspace, skill_registry_for_workspace,
 };
 
 impl KernelRuntimeState {
@@ -64,25 +64,9 @@ impl KernelRuntimeState {
                         None,
                     ));
                 }
-                if agent.remote_execution().is_some()
-                    && !agent.has_extension_grant(crate::extension::ExtensionKind::Mcp, &args.name)
-                {
-                    let mut checked = agent.clone();
-                    checked.grant_mcp(args.name.clone());
-                    self.ensure_remote_mcp_availability_for_agent(&checked)
-                        .await?;
-                }
-                let granted_agent = self.owned.grant_agent_mcp(
-                    agent.id(),
-                    args.name.clone(),
-                    agent.owner_user_id(),
-                )?;
-                self.append_agent_durable_event(
-                    "agent.mcp_granted",
-                    &granted_agent,
-                    Some(&args.name),
-                )
-                .await?;
+                let granted_agent = self
+                    .grant_agent_mcp(agent.id(), args.name.clone(), agent.owner_user_id())
+                    .await?;
                 let (source_attachment_id, previous_prompt) = self
                     .owned
                     .session_store
@@ -141,17 +125,9 @@ impl KernelRuntimeState {
                         "body": body
                     });
                 }
-                let granted_agent = self.owned.grant_agent_skill(
-                    agent.id(),
-                    args.name.clone(),
-                    agent.owner_user_id(),
-                )?;
-                self.append_agent_durable_event(
-                    "agent.skill_granted",
-                    &granted_agent,
-                    Some(&args.name),
-                )
-                .await?;
+                let granted_agent = self
+                    .grant_agent_skill(agent.id(), args.name.clone(), agent.owner_user_id())
+                    .await?;
                 (granted_agent, "now", false)
             }
             "script" => {
@@ -176,17 +152,29 @@ impl KernelRuntimeState {
                         None,
                     ));
                 }
-                let granted_agent = self.owned.grant_agent_extension(
-                    agent.id(),
-                    crate::extension::ExtensionGrant::script(args.name.clone(), environment),
-                    agent.owner_user_id(),
-                )?;
-                self.append_agent_durable_event(
-                    "agent.extension_granted",
-                    &granted_agent,
-                    Some(&format!("script:{}", args.name)),
-                )
-                .await?;
+                let environment_registry =
+                    environment_registry_for_workspace(session.workspace_id());
+                if environment_registry.get(&environment)?.is_none() {
+                    return Ok((
+                        crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": format!("environment `{environment}` is not registered"),
+                                "kind": "script",
+                                "name": args.name,
+                                "environment": environment,
+                            }),
+                        },
+                        None,
+                    ));
+                }
+                let granted_agent = self
+                    .grant_agent_extension(
+                        agent.id(),
+                        crate::extension::ExtensionGrant::script(args.name.clone(), environment),
+                        agent.owner_user_id(),
+                    )
+                    .await?;
                 (granted_agent, "now", false)
             }
             "connector" => {
@@ -205,21 +193,20 @@ impl KernelRuntimeState {
                     ));
                 }
                 let max_safety = crate::connector::ConnectorSafety::parse(args.allow.as_deref())?;
-                let granted_agent = self.owned.grant_agent_extension(
-                    agent.id(),
-                    crate::extension::ExtensionGrant::connector(
-                        args.name.clone(),
-                        args.credential.clone(),
-                        max_safety.as_str(),
-                    ),
-                    agent.owner_user_id(),
-                )?;
-                self.append_agent_durable_event(
-                    "agent.extension_granted",
-                    &granted_agent,
-                    Some(&format!("connector:{}", args.name)),
-                )
-                .await?;
+                if let Some(credential) = args.credential.as_deref() {
+                    crate::runtime::capability_registry::ensure_credential_exists(credential)?;
+                }
+                let granted_agent = self
+                    .grant_agent_extension(
+                        agent.id(),
+                        crate::extension::ExtensionGrant::connector(
+                            args.name.clone(),
+                            args.credential.clone(),
+                            max_safety.as_str(),
+                        ),
+                        agent.owner_user_id(),
+                    )
+                    .await?;
                 (granted_agent, "now", false)
             }
             _ => {
@@ -245,7 +232,7 @@ impl KernelRuntimeState {
             "note": match effective_when {
                 "after_provider_reload" => "Arroba will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
-                "now" => "The skill grant is persisted and the returned SKILL.md body can be followed immediately in this turn.",
+                "now" => "The extension grant is persisted and available immediately in this turn.",
                 _ => "The extension grant is persisted."
             }
         });

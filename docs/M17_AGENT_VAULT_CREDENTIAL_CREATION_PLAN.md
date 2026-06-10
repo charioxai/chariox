@@ -223,8 +223,10 @@ For remote agents:
 
 - Home/user kernel owns home vault credential creation.
 - Home secrets are not copied to worker kernels.
-- Worker agents use home-owned credentials only through existing home-owned
-  execution/proxy paths.
+- Worker agents use home-owned credentials through home-authorized credential
+  proxy paths. Browser and PTY injections receive only one-operation secret
+  material after the worker validates the local target and home validates the
+  leased-agent binding and credential policy.
 - If the active worker kernel is genuinely the user's local authority for that
   session, it may create credentials in its own local vault.
 

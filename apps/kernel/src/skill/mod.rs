@@ -126,7 +126,18 @@ impl ArrobaSkillRegistry {
                 ),
             });
         }
-        copy_directory(source, &destination)?;
+        let temp_dir = prepare_skill_directory_from_source(root, source, "skill.install")?;
+        fs::rename(&temp_dir, &destination).map_err(|error| {
+            let _ = fs::remove_dir_all(&temp_dir);
+            DaemonError::LocalTransport {
+                operation: "skill.install",
+                message: format!(
+                    "failed to publish skill `{}` at `{}`: {error}",
+                    metadata.name,
+                    destination.display()
+                ),
+            }
+        })?;
         let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
         Ok((installed, destination))
     }
@@ -166,15 +177,18 @@ impl ArrobaSkillRegistry {
                 });
             }
         }
-        fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.update",
-            message: format!(
-                "failed to replace skill `{}` at `{}`: {error}",
-                metadata.name,
-                destination.display()
-            ),
-        })?;
-        copy_directory(source, &destination)?;
+        let root = destination
+            .parent()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "skill.update",
+                message: format!(
+                    "failed to resolve parent registry for skill `{}` at `{}`",
+                    metadata.name,
+                    destination.display()
+                ),
+            })?;
+        let temp_dir = prepare_skill_directory_from_source(root, source, "skill.update")?;
+        publish_prepared_skill_directory("skill.update", &temp_dir, &destination, &metadata.name)?;
         let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
         Ok((installed, destination))
     }
@@ -217,17 +231,13 @@ impl ArrobaSkillRegistry {
                 });
             }
         }
-        if destination.exists() {
-            fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
-                operation: "skill.upsert.path",
-                message: format!(
-                    "failed to replace skill `{}` at `{}`: {error}",
-                    metadata.name,
-                    destination.display()
-                ),
-            })?;
-        }
-        copy_directory(source, &destination)?;
+        let temp_dir = prepare_skill_directory_from_source(root, source, "skill.upsert.path")?;
+        publish_prepared_skill_directory(
+            "skill.upsert.path",
+            &temp_dir,
+            &destination,
+            &metadata.name,
+        )?;
         let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
         Ok((installed, destination))
     }
@@ -273,24 +283,7 @@ impl ArrobaSkillRegistry {
         })?;
         let metadata = parse_skill_metadata(&temp_dir.join("SKILL.md"))?;
         let destination = root.join(&metadata.name);
-        if destination.exists() {
-            fs::remove_dir_all(&destination).map_err(|error| DaemonError::LocalTransport {
-                operation: "skill.upsert",
-                message: format!(
-                    "failed to replace skill `{}` at `{}`: {error}",
-                    metadata.name,
-                    destination.display()
-                ),
-            })?;
-        }
-        fs::rename(&temp_dir, &destination).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.upsert",
-            message: format!(
-                "failed to publish skill `{}` at `{}`: {error}",
-                metadata.name,
-                destination.display()
-            ),
-        })?;
+        publish_prepared_skill_directory("skill.upsert", &temp_dir, &destination, &metadata.name)?;
         let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
         Ok((installed, destination))
     }
@@ -1017,6 +1010,95 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+fn prepare_skill_directory_from_source(
+    root: &Path,
+    source: &Path,
+    operation: &'static str,
+) -> Result<PathBuf, DaemonError> {
+    let temp_dir = unique_skill_temp_dir(root, operation);
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to remove stale skill temp dir `{}`: {error}",
+                temp_dir.display()
+            ),
+        })?;
+    }
+    if let Err(error) = copy_directory(source, &temp_dir) {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(error);
+    }
+    let _ = parse_skill_metadata(&temp_dir.join("SKILL.md")).map_err(|error| {
+        let _ = fs::remove_dir_all(&temp_dir);
+        error
+    })?;
+    Ok(temp_dir)
+}
+
+fn publish_prepared_skill_directory(
+    operation: &'static str,
+    temp_dir: &Path,
+    destination: &Path,
+    skill_name: &str,
+) -> Result<(), DaemonError> {
+    let backup_dir = destination.with_file_name(format!(
+        ".skill-backup-{}-{}-{}",
+        skill_name,
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let had_existing = destination.exists();
+    if backup_dir.exists() {
+        fs::remove_dir_all(&backup_dir).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to remove stale skill backup `{}`: {error}",
+                backup_dir.display()
+            ),
+        })?;
+    }
+    if had_existing {
+        fs::rename(destination, &backup_dir).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to stage replacement for skill `{skill_name}` at `{}`: {error}",
+                destination.display()
+            ),
+        })?;
+    }
+    match fs::rename(temp_dir, destination) {
+        Ok(()) => {
+            if had_existing {
+                let _ = fs::remove_dir_all(&backup_dir);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = fs::rename(&backup_dir, destination);
+            }
+            let _ = fs::remove_dir_all(temp_dir);
+            Err(DaemonError::LocalTransport {
+                operation,
+                message: format!(
+                    "failed to publish skill `{skill_name}` at `{}`: {error}",
+                    destination.display()
+                ),
+            })
+        }
+    }
+}
+
+fn unique_skill_temp_dir(root: &Path, operation: &str) -> PathBuf {
+    let label = operation.replace(['.', ':'], "-");
+    root.join(format!(
+        ".skill-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ))
+}
+
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), DaemonError> {
     fs::create_dir_all(destination).map_err(|error| DaemonError::LocalTransport {
         operation: "skill.install",
@@ -1384,6 +1466,43 @@ mod tests {
         assert_eq!(removed_path, registry_root.join("browser-qa"));
         assert_eq!(registry.get("browser-qa").unwrap(), None);
         assert!(!removed_path.exists());
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(registry_root);
+    }
+
+    #[test]
+    fn upsert_from_path_replaces_existing_skill_directory_with_assets() {
+        let source_root = temp_root("upsert-path-source");
+        let registry_root = temp_root("upsert-path-registry");
+        let original_dir = source_root.join("original");
+        let updated_dir = source_root.join("updated");
+        fs::create_dir_all(&original_dir).unwrap();
+        fs::write(
+            original_dir.join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: Old QA\n---\nOld body.\n",
+        )
+        .unwrap();
+        fs::write(original_dir.join("old.txt"), "old").unwrap();
+        fs::create_dir_all(updated_dir.join("assets")).unwrap();
+        fs::write(
+            updated_dir.join("SKILL.md"),
+            "---\nname: browser-qa\ndescription: New QA\n---\nNew body.\n",
+        )
+        .unwrap();
+        fs::write(updated_dir.join("assets").join("prompt.txt"), "new prompt").unwrap();
+
+        let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+        registry.upsert_from_path(&original_dir).unwrap();
+        let (updated, destination) = registry.upsert_from_path(&updated_dir).unwrap();
+
+        assert_eq!(updated.description, "New QA");
+        assert_eq!(destination, registry_root.join("browser-qa"));
+        assert!(!destination.join("old.txt").exists());
+        assert_eq!(
+            fs::read_to_string(destination.join("assets").join("prompt.txt")).unwrap(),
+            "new prompt"
+        );
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(registry_root);

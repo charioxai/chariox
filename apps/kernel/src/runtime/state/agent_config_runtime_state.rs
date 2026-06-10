@@ -581,9 +581,6 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         grant: &crate::extension::ExtensionGrant,
     ) -> Result<(), DaemonError> {
-        if agent.remote_execution().is_none() {
-            return Ok(());
-        }
         let mut payload = self.home_extension_agent_audit_payload(agent, Some(caller_user_id));
         payload.insert(
             "grant".to_string(),
@@ -611,9 +608,6 @@ impl KernelRuntimeState {
         extension_kind: crate::extension::ExtensionKind,
         name: &str,
     ) -> Result<(), DaemonError> {
-        if agent.remote_execution().is_none() {
-            return Ok(());
-        }
         let mut payload = self.home_extension_agent_audit_payload(agent, Some(caller_user_id));
         payload.insert(
             "grant".to_string(),
@@ -715,6 +709,7 @@ impl KernelRuntimeState {
                     || event.kind.starts_with("agent.extension")
                     || event.kind.starts_with("agent.mcp_")
                     || event.kind.starts_with("agent.skill_")
+                    || event.kind.starts_with("extension.registration.")
             })
             .collect())
     }

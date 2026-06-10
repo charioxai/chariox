@@ -136,4 +136,43 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_machine_id: Some(lease.machine_id.clone()),
         })
     }
+
+    pub(crate) fn leased_extension_invocation_context_for_runtime_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Option<RemoteExtensionInvocationContext> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return self.leased_extension_invocation_context_for_provider_run(provider_run.id());
+        };
+        let leased_agent = self
+            .app
+            .leased_agents
+            .values()
+            .find(|leased_agent| {
+                leased_agent.backing_session_id == provider_run.session_id()
+                    && leased_agent.backing_agent_id == agent_id
+            })
+            .or_else(|| {
+                self.app.leased_agents.values().find(|leased_agent| {
+                    self.app
+                        .providers
+                        .get_run_for_agent(
+                            &leased_agent.backing_session_id,
+                            &leased_agent.backing_agent_id,
+                        )
+                        .map(|run| run.id() == provider_run.id())
+                        .unwrap_or(false)
+                })
+            })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        Some(RemoteExtensionInvocationContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_provider_run_id: provider_run.id().to_string(),
+            worker_kernel_id: Some(lease.worker_kernel_id.clone()),
+            worker_machine_id: Some(lease.machine_id.clone()),
+        })
+    }
 }

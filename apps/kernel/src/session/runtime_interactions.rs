@@ -76,7 +76,10 @@ pub struct RuntimeInteractionCustomChoice {
     min_length: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_length: Option<usize>,
-    #[serde(default, skip_serializing_if = "runtime_interaction_input_kind_is_text")]
+    #[serde(
+        default,
+        skip_serializing_if = "runtime_interaction_input_kind_is_text"
+    )]
     input_kind: RuntimeInteractionInputKind,
 }
 

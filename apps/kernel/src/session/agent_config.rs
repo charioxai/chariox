@@ -82,6 +82,13 @@ pub fn effective_agent_user_authority(
     }
 }
 
+pub fn effective_agent_extension_registration_authority(
+    session: &RuntimeSession,
+    agent: Option<&AgentInstance>,
+) -> EffectiveAgentUserAuthority {
+    effective_agent_user_authority(session, agent)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::agent::{AgentInstance, GridPosition};

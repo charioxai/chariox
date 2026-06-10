@@ -59,7 +59,8 @@ impl KernelRuntimeState {
                         "authority": if remote_home_proxy { "home" } else { "worker" },
                         "definition_origin": active_definition_origin,
                         "execution_location": active_execution_location,
-                        "effective_when_requested": "next_provider_launch"
+                        "effective_when_requested": "after_provider_reload",
+                        "ready_state": if granted { "granted" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -84,7 +85,8 @@ impl KernelRuntimeState {
                         "authority": if remote_home_proxy { "home" } else { "worker" },
                         "definition_origin": if remote_home_proxy { "projected_snapshot" } else { "worker" },
                         "execution_location": "none",
-                        "effective_when_requested": "now"
+                        "effective_when_requested": "now",
+                        "ready_state": if granted { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -110,7 +112,8 @@ impl KernelRuntimeState {
                         "authority": if remote_home_proxy { "home" } else { "worker" },
                         "definition_origin": active_definition_origin,
                         "execution_location": active_execution_location,
-                        "effective_when_requested": "current_or_next_turn"
+                        "effective_when_requested": "now",
+                        "ready_state": if granted { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -159,7 +162,8 @@ impl KernelRuntimeState {
                         "execution_location": active_execution_location,
                         "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
                         "operations": operations,
-                        "effective_when_requested": "current_or_next_turn"
+                        "effective_when_requested": "now",
+                        "ready_state": if grant.is_some() { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()

@@ -86,6 +86,7 @@ struct KernelRuntimeOwnedState {
     remote_home_extension_inflight:
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
+    slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +99,13 @@ struct RemoteHomeExtensionInflightInvocation {
 struct RemoteExtensionInvocationState {
     invocation_id: String,
     result: Option<serde_json::Value>,
+}
+
+struct SlicePrivateRelayConnector {
+    relay_url: String,
+    state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    task: std::thread::JoinHandle<()>,
 }
 
 mod agent_config_owned_state;
@@ -322,6 +330,7 @@ impl KernelRuntimeState {
                 )),
                 remote_home_extension_inflight: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
+                slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
             },
         }
     }

@@ -46,7 +46,8 @@ async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_sessi
         .runtime_mcp_auth_token()
         .expect("provider run should expose runtime MCP auth token")
         .to_string();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let mcp_name = format!("m16-runtime-mcp-{}", crate::session::unix_epoch_ms());
 
     let registration = router
@@ -131,6 +132,208 @@ async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_sessi
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+    let list = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL,
+            serde_json::json!({ "kind": "mcp" }),
+        )
+        .await
+        .expect("list_extensions should return MCP readiness metadata");
+    let listed_mcp = list
+        .payload
+        .pointer("/extensions/mcps")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|mcps| {
+            mcps.iter().find(|mcp| {
+                mcp.get("name").and_then(serde_json::Value::as_str) == Some(mcp_name.as_str())
+            })
+        })
+        .expect("registered MCP should be listed");
+    assert_eq!(
+        listed_mcp
+            .get("effective_when_requested")
+            .and_then(serde_json::Value::as_str),
+        Some("after_provider_reload")
+    );
+    let audit_events = router
+        .runtime_state
+        .list_home_extension_audit_events(agent.id(), DEFAULT_LOCAL_USER_ID, 20)
+        .expect("extension audit events should load");
+    assert!(audit_events.iter().any(|event| {
+        event.kind == "extension.registration.created"
+            && event
+                .payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("mcp")
+            && event
+                .payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                == Some(mcp_name.as_str())
+    }));
+    assert!(audit_events.iter().any(|event| {
+        event.kind == "home_extension.grant.created"
+            && event
+                .payload
+                .pointer("/grant/kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("mcp")
+            && event
+                .payload
+                .pointer("/grant/name")
+                .and_then(serde_json::Value::as_str)
+                == Some(mcp_name.as_str())
+    }));
+    let _ = std::fs::remove_file(expected_path);
+}
+
+#[tokio::test]
+async fn runtime_connector_request_rejects_missing_credential_before_grant() {
+    let env = TestCapabilityEnv::new("connector-missing-credential");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let provider_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "m16-model",
+    );
+    let auth_token = provider_run
+        .runtime_mcp_auth_token()
+        .expect("provider run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let connector_name = format!("m16-connector-{}", crate::session::unix_epoch_ms());
+    let connector_root = crate::connector::ArrobaConnectorRegistry::user_root()
+        .expect("HOME should resolve connector registry root");
+    std::fs::create_dir_all(&connector_root).expect("connector registry root should be created");
+    let connector_path = connector_root.join(format!("{connector_name}.yaml"));
+    std::fs::write(
+        &connector_path,
+        format!(
+            r#"
+kind: connector
+name: {connector_name}
+description: M16 connector
+adapter: missing-adapter
+operations:
+  - name: lookup
+    description: Lookup
+    safety: read
+    input_schema:
+      type: object
+    config: {{}}
+"#
+        ),
+    )
+    .expect("connector definition should be written");
+
+    let result = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+            serde_json::json!({
+                "kind": "connector",
+                "name": connector_name,
+                "credential": "missing-runtime-credential"
+            }),
+        )
+        .await
+        .expect_err("missing credential should fail before connector grant is persisted");
+
+    assert!(result
+        .to_string()
+        .contains("credential `missing-runtime-credential` is not registered"));
+    let agent_after = app
+        .lock()
+        .await
+        .agents
+        .get_agent(agent.id())
+        .expect("agent should still exist");
+    assert!(!agent_after
+        .has_extension_grant(crate::extension::ExtensionKind::Connector, &connector_name));
+    let _ = std::fs::remove_file(connector_path);
+}
+
+#[tokio::test]
+async fn register_mcp_can_grant_to_current_agent_in_one_runtime_call() {
+    let env = TestCapabilityEnv::new("register-grant-mcp");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let provider_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "m16-model",
+    );
+    let auth_token = provider_run
+        .runtime_mcp_auth_token()
+        .expect("provider run should expose runtime MCP auth token")
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let mcp_name = format!("m16-register-grant-mcp-{}", crate::session::unix_epoch_ms());
+
+    let registration = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::REGISTER_MCP_TOOL,
+            serde_json::json!({
+                "grant_to_current_agent": true,
+                "config": {
+                    "name": mcp_name,
+                    "transport": {
+                        "type": "stdio",
+                        "command": "/bin/echo",
+                        "args": ["m16-register-grant"]
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("register_mcp should support one-call registration and grant");
+
+    assert!(registration.ok);
+    assert_eq!(
+        registration
+            .payload
+            .get("granted")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        registration
+            .payload
+            .pointer("/grant/effective")
+            .and_then(serde_json::Value::as_str),
+        Some("after_provider_reload")
+    );
+    let expected_path = crate::mcp::ArrobaMcpRegistry::user_root()
+        .expect("HOME should resolve MCP registry root")
+        .join(format!("{mcp_name}.json"));
     let _ = std::fs::remove_file(expected_path);
 }
 

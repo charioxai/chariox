@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::app::{DaemonApp, provider_runtime};
+use crate::app::{provider_runtime, DaemonApp};
 use crate::error::DaemonError;
 
 impl DaemonApp {

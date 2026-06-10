@@ -22,6 +22,7 @@ mod remote_extension_control_plane;
 mod script;
 mod skill_package_response;
 mod slice;
+mod worker_home_credential_client;
 mod worker_home_extension_client;
 mod workflow_authenticated;
 mod workflow_forwarding;
@@ -206,6 +207,16 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
                     | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
             ) {
+                if let Some(result) = self
+                    .try_dispatch_remote_home_credential_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return self
                     .dispatch_credential_runtime_tool_call(
                         &provider_runs[0],

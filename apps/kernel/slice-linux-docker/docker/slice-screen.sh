@@ -62,6 +62,28 @@ process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
 }
 
+running_novnc_port() {
+  pgrep -af "websockify.*127\\.0\\.0\\.1:$VNC_PORT" \
+    | grep -v defunct \
+    | awk '{
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^0\.0\.0\.0:[0-9]+$/) {
+            sub(/^0\.0\.0\.0:/, "", $i)
+            print $i
+            exit
+          }
+        }
+      }' \
+    | head -n 1
+}
+
+novnc_running() {
+  if process_running "websockify.*$NOVNC_PORT"; then
+    return 0
+  fi
+  [[ -n "$(running_novnc_port)" ]]
+}
+
 clear_chromium_profile_locks() {
   if [[ -d "$CHROME_PROFILE" ]]; then
     find "$CHROME_PROFILE" -maxdepth 1 \
@@ -81,8 +103,22 @@ screen_missing_components() {
   if ! process_running "x11vnc.*$DISPLAY_ID"; then
     missing+=("x11vnc")
   fi
-  if ! process_running "websockify.*$NOVNC_PORT"; then
+  if ! novnc_running; then
     missing+=("novnc")
+  fi
+  if ! process_running "chromium.*$CHROME_PROFILE"; then
+    missing+=("chromium")
+  fi
+  printf '%s\n' "${missing[@]}"
+}
+
+tool_blocking_missing_components() {
+  local missing=()
+  if ! xdpyinfo -display "$DISPLAY_ID" >/dev/null 2>&1; then
+    missing+=("display")
+  fi
+  if ! process_running "Xvfb $DISPLAY_ID"; then
+    missing+=("xvfb")
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
@@ -97,7 +133,7 @@ join_by_comma() {
 
 require_screen_available() {
   local missing
-  missing="$(screen_missing_components)"
+  missing="$(tool_blocking_missing_components)"
   if [[ -z "$missing" ]]; then
     return 0
   fi
@@ -150,7 +186,13 @@ status() {
   printf 'mode=%s\n' "$DISPLAY_MODE"
   if [[ -z "$missing" ]]; then
     printf 'available=true\n'
-    printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$NOVNC_PORT" "$NOVNC_PORT"
+    local viewer_port="$NOVNC_PORT"
+    local discovered_port
+    discovered_port="$(running_novnc_port)"
+    if [[ -n "$discovered_port" ]]; then
+      viewer_port="$discovered_port"
+    fi
+    printf 'viewer=http://127.0.0.1:%s/vnc.html?host=127.0.0.1&port=%s&autoconnect=true&resize=scale\n' "$viewer_port" "$viewer_port"
     pgrep -af "Xvfb $DISPLAY_ID|openbox|x11vnc|websockify|chromium.*$CHROME_PROFILE" | grep -v defunct || true
     return 0
   fi

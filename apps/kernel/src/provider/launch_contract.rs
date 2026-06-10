@@ -148,7 +148,10 @@ pub struct ExternalProviderImportMetadata {
     pub external_provider_session_provider_id: String,
     #[serde(default)]
     pub import_mode: ExternalProviderImportMode,
-    #[serde(default, skip_serializing_if = "ExternalProviderObservedCursor::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "ExternalProviderObservedCursor::is_empty"
+    )]
     pub observed_cursor: ExternalProviderObservedCursor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_observed_turn_id: Option<String>,
@@ -465,10 +468,7 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_external_provider_import(
-        mut self,
-        import: ExternalProviderImportMetadata,
-    ) -> Self {
+    pub fn with_external_provider_import(mut self, import: ExternalProviderImportMetadata) -> Self {
         self.external_provider_import = Some(import);
         self
     }

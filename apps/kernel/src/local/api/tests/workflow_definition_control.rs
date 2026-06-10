@@ -1,9 +1,9 @@
 use super::*;
-use base64::Engine;
 use crate::local::{
     CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest,
     RegisterWorkflowPublicationEndpointRequest,
 };
+use base64::Engine;
 
 #[test]
 fn local_request_api_exports_agent_app_publication_package() {
@@ -107,10 +107,12 @@ fn local_request_api_exports_agent_app_publication_package() {
         "arroba-agent-app-assets-{}",
         crate::session::unix_epoch_ms()
     ));
-    std::fs::create_dir_all(assets_root.join("assets"))
-        .expect("asset directory should be created");
-    std::fs::write(assets_root.join("index.html"), "<!doctype html><main>shop</main>")
-        .expect("index asset should write");
+    std::fs::create_dir_all(assets_root.join("assets")).expect("asset directory should be created");
+    std::fs::write(
+        assets_root.join("index.html"),
+        "<!doctype html><main>shop</main>",
+    )
+    .expect("index asset should write");
     std::fs::write(assets_root.join("assets/catalog.json"), "{\"items\":[]}")
         .expect("nested asset should write");
 
@@ -178,10 +180,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     std::fs::remove_dir_all(assets_root).expect("asset directory should clean up");
 }
 
-fn package_text_file(
-    files: &[crate::local::WorkflowPublicationPackageFile],
-    path: &str,
-) -> String {
+fn package_text_file(files: &[crate::local::WorkflowPublicationPackageFile], path: &str) -> String {
     let file = files
         .iter()
         .find(|file| file.path == path)

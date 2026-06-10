@@ -1,6 +1,6 @@
 use crate::error::DaemonError;
 
-use super::{SliceScreenCommandOutput, slice_tool_payload};
+use super::{slice_tool_payload, SliceScreenCommandOutput};
 
 pub(super) fn slice_browser_tool_result(
     slice_id: &str,

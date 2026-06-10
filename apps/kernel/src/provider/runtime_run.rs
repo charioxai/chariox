@@ -378,10 +378,7 @@ impl RuntimeProviderRun {
         self.external_provider_import.as_ref()
     }
 
-    pub fn set_external_provider_import(
-        &mut self,
-        import: Option<ExternalProviderImportMetadata>,
-    ) {
+    pub fn set_external_provider_import(&mut self, import: Option<ExternalProviderImportMetadata>) {
         self.external_provider_import = import;
     }
 

@@ -24,7 +24,10 @@ pub(super) fn append_runtime_mcp_overrides(
         "mcp_servers.arroba.startup_timeout_sec".to_string(),
         json!(90),
     );
-    overrides.insert("mcp_servers.arroba.tool_timeout_sec".to_string(), json!(300));
+    overrides.insert(
+        "mcp_servers.arroba.tool_timeout_sec".to_string(),
+        json!(300),
+    );
 }
 
 pub(super) fn append_codex_mcp_overrides(

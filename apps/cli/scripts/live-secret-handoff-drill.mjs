@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -45,8 +45,6 @@ async function run(command, args, options = {}) {
 
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
-  if (exists) return binary
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
@@ -207,23 +205,41 @@ async function pumpTerminalContains(client, requests, sessionId, attachmentId, e
   return false
 }
 
-async function writeConfig(configRoot, verifierHost, credentialId, tokenEnv, terminalId, terminalEnv) {
+async function writeConfig(configRoot) {
   await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
   await writeFile(path.join(configRoot, 'arroba', 'config.toml'), [
     'version = 1',
     '',
-    '[[credentials]]',
-    `id = "${credentialId}"`,
-    `source = { type = "env", name = "${tokenEnv}" }`,
-    `allowed_hosts = ["${verifierHost}"]`,
-    'allowed_uses = ["http"]',
-    'injection = { kind = "header", name = "authorization", value = "Bearer ${secret}" }',
+  ].join('\n'), 'utf8')
+}
+
+async function writeCredentialRegistry(homeDir, verifierHost, credentialId, tokenEnv, terminalId, terminalEnv) {
+  const credentialsDir = path.join(homeDir, '.arroba', 'credentials')
+  await mkdir(credentialsDir, { recursive: true })
+  await writeFile(path.join(credentialsDir, `${credentialId}.yaml`), [
+    `id: ${credentialId}`,
+    'source:',
+    '  type: env',
+    `  name: ${tokenEnv}`,
+    'allowed_hosts:',
+    `  - ${verifierHost}`,
+    'allowed_uses:',
+    '  - http',
+    'injection:',
+    '  kind: header',
+    '  name: authorization',
+    '  value: Bearer ${secret}',
     '',
-    '[[credentials]]',
-    `id = "${terminalId}"`,
-    `source = { type = "env", name = "${terminalEnv}" }`,
-    'allowed_uses = ["pty"]',
-    'injection = { kind = "pty" }',
+  ].join('\n'), 'utf8')
+  await writeFile(path.join(credentialsDir, `${terminalId}.yaml`), [
+    `id: ${terminalId}`,
+    'source:',
+    '  type: env',
+    `  name: ${terminalEnv}`,
+    'allowed_uses:',
+    '  - pty',
+    'injection:',
+    '  kind: pty',
     '',
   ].join('\n'), 'utf8')
 }
@@ -279,8 +295,10 @@ async function main() {
 
     localVerifier = await startVerifierServer(localToken)
     workerVerifier = await startVerifierServer(workerToken)
-    await writeConfig(localConfig, localVerifier.host, 'local-api', localTokenEnv, 'local-terminal', localTerminalEnv)
-    await writeConfig(workerConfig, workerVerifier.host, 'worker-api', workerTokenEnv, 'worker-terminal', workerTerminalEnv)
+    await writeConfig(localConfig)
+    await writeConfig(workerConfig)
+    await writeCredentialRegistry(localHome, localVerifier.host, 'local-api', localTokenEnv, 'local-terminal', localTerminalEnv)
+    await writeCredentialRegistry(workerHome, workerVerifier.host, 'worker-api', workerTokenEnv, 'worker-terminal', workerTerminalEnv)
 
     localDaemon = spawn(kernelBinary, [], {
       cwd: repoRoot,

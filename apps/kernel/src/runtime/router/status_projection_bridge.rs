@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::runtime::daemon_health_projection::{
-    DaemonHealthProjectionInput, build_daemon_health_projection,
+    build_daemon_health_projection, DaemonHealthProjectionInput,
 };
 use crate::runtime::projection::DaemonHealthProjection;
 use crate::runtime::waiting_room_control::waiting_room_inventory_version;

@@ -20,6 +20,7 @@ import {
   registerCloudPublicationDeploymentBackend,
 } from "./publication-cloud-deployment.js"
 import {
+  clearAgentAppEffectStoresForTests,
   publicationForAgentAppInvocation,
   rememberAgentAppInvocationRoute,
 } from "./publication-agent-app-effects.js"
@@ -2483,6 +2484,158 @@ test("agent app persistent patch effects are shared when explicitly enabled", as
     assert.equal(patched.body, "<!doctype html><main>patched banner</main>")
   } finally {
     await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app session overlay effects survive gateway restart with runtime storage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-session-restart-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-session-restart",
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/add/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+        manipulation: {
+          level: "state_and_overlay",
+          scope: "session",
+          allowed_paths: ["/generated/**"],
+        },
+      }],
+    },
+  }
+  const deps = {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-session-overlay",
+        status: "Completed",
+        final_output: {
+          message: JSON.stringify({
+            kind: "response",
+            response: { mode: "serve", entry: "/generated/checkout.html" },
+            effects: {
+              overlay: [{
+                path: "/generated/checkout.html",
+                mime_type: "text/html; charset=utf-8",
+                content: "<!doctype html><main>session checkout</main>",
+              }],
+            },
+          }),
+        },
+      },
+    }),
+  }
+  const firstServer = buildServer(publication, deps)
+
+  try {
+    const invoke = await firstServer.app.inject({
+      method: "GET",
+      url: "/add/apples",
+      headers: { accept: "text/html" },
+    })
+    assert.equal(invoke.statusCode, 200)
+    const cookie = firstSetCookieValue(invoke.headers["set-cookie"])
+    await firstServer.app.close()
+    clearAgentAppEffectStoresForTests()
+
+    const restarted = buildServer(publication, deps)
+    try {
+      const checkout = await restarted.app.inject({
+        method: "GET",
+        url: "/generated/checkout.html",
+        headers: { cookie },
+      })
+      assert.equal(checkout.statusCode, 200)
+      assert.equal(checkout.body, "<!doctype html><main>session checkout</main>")
+    } finally {
+      await restarted.app.close()
+    }
+  } finally {
+    await firstServer.app.close().catch(() => {})
+    clearAgentAppEffectStoresForTests()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app persistent patch effects survive gateway restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-persistent-restart-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-persistent-restart",
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      persistent_patch: { enabled: true },
+      routes: [{
+        path: "/admin/*",
+        hook_id: "pub-test-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "admin",
+        manipulation: {
+          level: "persistent_patch",
+          scope: "persistent",
+          allowed_paths: ["/generated/**"],
+        },
+      }],
+    },
+  }
+  const deps = {
+    invokeWorkflow: async () => ({
+      accepted: true,
+      workflow_run: {
+        id: "run-persistent-patch",
+        status: "Completed",
+        final_output: {
+          message: JSON.stringify({
+            kind: "response",
+            response: { mode: "serve", entry: "/generated/banner.html" },
+            effects: {
+              persistent_patch: [{
+                path: "/generated/banner.html",
+                mime_type: "text/html; charset=utf-8",
+                content: "<!doctype html><main>persistent banner</main>",
+              }],
+            },
+          }),
+        },
+      },
+    }),
+  }
+  const firstServer = buildServer(publication, deps)
+
+  try {
+    const invoke = await firstServer.app.inject({ method: "GET", url: "/admin/banner", headers: { accept: "text/html" } })
+    assert.equal(invoke.statusCode, 200)
+    await firstServer.app.close()
+    clearAgentAppEffectStoresForTests()
+
+    const restarted = buildServer(publication, deps)
+    try {
+      const patched = await restarted.app.inject({ method: "GET", url: "/generated/banner.html" })
+      assert.equal(patched.statusCode, 200)
+      assert.equal(patched.body, "<!doctype html><main>persistent banner</main>")
+    } finally {
+      await restarted.app.close()
+    }
+  } finally {
+    await firstServer.app.close().catch(() => {})
+    clearAgentAppEffectStoresForTests()
     await rm(root, { recursive: true, force: true })
   }
 })

@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -910,11 +910,9 @@ mod tests {
             .prune_events_before(i64::MAX as u64, false)
             .expect("archived events should prune");
         assert_eq!(deleted, 1);
-        assert!(
-            !store
-                .has_session_events("session-1")
-                .expect("session event presence should load")
-        );
+        assert!(!store
+            .has_session_events("session-1")
+            .expect("session event presence should load"));
         assert!(
             store
                 .legacy_fallback_disabled("session-1")

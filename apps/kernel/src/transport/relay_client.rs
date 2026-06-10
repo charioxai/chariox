@@ -52,8 +52,11 @@ use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::handle_incoming_envelope;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
-pub use peer_client::send_peer_request_via_temporary_connection;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
+pub use peer_client::{
+    send_peer_request_via_temporary_connection,
+    send_peer_request_via_temporary_connection_with_timeout,
+};
 use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;
 pub(crate) use remote_inventory::refresh_remote_inventory_projection;
@@ -69,7 +72,7 @@ use subscriptions::{
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::RelayDisplayTunnelTarget;
-pub use connector::run_daemon_relay_connector;
+pub use connector::{run_daemon_relay_connector, run_daemon_relay_connector_with_static_relay};
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;

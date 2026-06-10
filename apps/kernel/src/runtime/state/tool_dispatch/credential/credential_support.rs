@@ -40,6 +40,34 @@ impl KernelRuntimeState {
                 .to_string(),
         })
     }
+
+    pub(super) fn ensure_agent_can_manage_user_vault_for_agent(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let config = self.owned.config_projection.snapshot().user_config;
+        match config.credential_vault.agent_management {
+            crate::config::CredentialVaultAgentManagementPolicy::Allow => {}
+            crate::config::CredentialVaultAgentManagementPolicy::Deny => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "agent_vault_management_policy",
+                    message: "agent vault credential creation is disabled by user config"
+                        .to_string(),
+                });
+            }
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let authority = crate::session::effective_agent_user_authority(&session, Some(agent));
+        if authority.is_full() {
+            return Ok(());
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "agent_vault_management_policy",
+            message: "agent vault credential creation requires full agent user authority"
+                .to_string(),
+        })
+    }
 }
 
 pub(super) fn credential_from_runtime_input(
@@ -73,8 +101,24 @@ pub(super) fn credential_from_runtime_input(
 }
 
 pub(super) fn stamp_runtime_credential_metadata(
-    mut credential: crate::config::UserCredentialConfig,
+    credential: crate::config::UserCredentialConfig,
     provider_run: &crate::provider::RuntimeProviderRun,
+) -> crate::config::UserCredentialConfig {
+    stamp_runtime_credential_metadata_for_agent(
+        credential,
+        provider_run.agent_instance_id(),
+        provider_run.session_id(),
+        provider_run.provider(),
+        Some(provider_run.id()),
+    )
+}
+
+pub(super) fn stamp_runtime_credential_metadata_for_agent(
+    mut credential: crate::config::UserCredentialConfig,
+    agent_id: Option<&str>,
+    session_id: &str,
+    provider: &str,
+    provider_run_id: Option<&str>,
 ) -> crate::config::UserCredentialConfig {
     let now_ms = crate::session::unix_epoch_ms();
     let vault_key = match &credential.source {
@@ -84,10 +128,10 @@ pub(super) fn stamp_runtime_credential_metadata(
     };
     credential.metadata = Some(crate::config::UserCredentialMetadataConfig {
         created_by_kind: Some("agent".to_string()),
-        created_by_id: provider_run.agent_instance_id().map(ToOwned::to_owned),
-        session_id: Some(provider_run.session_id().to_string()),
-        provider: Some(provider_run.provider().to_string()),
-        provider_run_id: Some(provider_run.id().to_string()),
+        created_by_id: agent_id.map(ToOwned::to_owned),
+        session_id: Some(session_id.to_string()),
+        provider: Some(provider.to_string()),
+        provider_run_id: provider_run_id.map(ToOwned::to_owned),
         vault_key,
         created_at_ms: Some(now_ms),
         updated_at_ms: Some(now_ms),

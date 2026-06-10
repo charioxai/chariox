@@ -85,6 +85,40 @@ async function evaluate(send, source, args = {}) {
 
 async function typeIntoBrowser(text, options = {}) {
   await withSocket(async (send) => {
+    if (options.useNativeInput) {
+      const focusResult = await evaluate(send, `
+        const selector = __arrobaArgs.selector;
+        const active = selector
+          ? document.querySelector(selector)
+          : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
+            ? document.activeElement
+            : null;
+        if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+        if (active.disabled || active.readOnly) return { ok: false, error: "target_not_editable" };
+        active.focus();
+        return { ok: true };
+      `, { selector: options.selector ?? null });
+      if (!focusResult?.ok) {
+        throw new Error(focusResult?.error ?? "browser_focus_failed");
+      }
+      await send("Input.insertText", { text });
+      const verified = await evaluate(send, `
+        const selector = __arrobaArgs.selector;
+        const active = selector
+          ? document.querySelector(selector)
+          : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
+            ? document.activeElement
+            : null;
+        if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+        const value = "value" in active ? active.value : active.textContent;
+        return { ok: String(value || "").length >= __arrobaArgs.minLength };
+      `, { selector: options.selector ?? null, minLength: text.length });
+      if (!verified?.ok) {
+        throw new Error(verified?.error ?? "browser_type_not_applied");
+      }
+      return;
+    }
+
     const result = await evaluate(send, `
           const text = __arrobaArgs.text;
           const selector = __arrobaArgs.selector;
@@ -110,14 +144,15 @@ async function typeIntoBrowser(text, options = {}) {
             return { ok: true };
           }
           if ("value" in active) {
+            const expectedLength = (__arrobaArgs.append ? active.value.length : 0) + text.length;
             active.value = __arrobaArgs.append ? active.value + text : text;
             active.dispatchEvent(new Event("input", { bubbles: true }));
             active.dispatchEvent(new Event("change", { bubbles: true }));
-            return { ok: true };
+            return { ok: true, selector: selector || null, filled: String(active.value || "").length >= expectedLength };
           }
           active.textContent = __arrobaArgs.append ? (active.textContent || "") + text : text;
           active.dispatchEvent(new Event("input", { bubbles: true }));
-          return { ok: true };
+          return { ok: true, selector: selector || null, filled: String(active.textContent || "").length >= text.length };
     `, {
       text,
       selector: options.selector ?? null,
@@ -126,6 +161,38 @@ async function typeIntoBrowser(text, options = {}) {
     });
     if (!result?.ok) {
       throw new Error(result?.error ?? "browser_type_failed");
+    }
+    if (!result.filled) {
+      const focusResult = await evaluate(send, `
+        const selector = __arrobaArgs.selector;
+        const active = selector
+          ? document.querySelector(selector)
+          : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
+            ? document.activeElement
+            : null;
+        if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+        if (active.disabled || active.readOnly) return { ok: false, error: "target_not_editable" };
+        active.focus();
+        return { ok: true };
+      `, { selector: options.selector ?? null });
+      if (!focusResult?.ok) {
+        throw new Error(focusResult?.error ?? "browser_focus_failed");
+      }
+      await send("Input.insertText", { text });
+      const verified = await evaluate(send, `
+        const selector = __arrobaArgs.selector;
+        const active = selector
+          ? document.querySelector(selector)
+          : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
+            ? document.activeElement
+            : null;
+        if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+        const value = "value" in active ? active.value : active.textContent;
+        return { ok: String(value || "").length >= __arrobaArgs.minLength };
+      `, { selector: options.selector ?? null, minLength: text.length });
+      if (!verified?.ok) {
+        throw new Error(verified?.error ?? "browser_type_not_applied");
+      }
     }
   });
 }
@@ -165,6 +232,13 @@ function browserDomScript() {
       return "";
     };
     const roleFor = (element) => element.getAttribute("role") || "";
+    const summaryTextFor = (element) => {
+      const type = String(element.getAttribute("type") || "").toLowerCase();
+      if (type === "password") {
+        return (element.getAttribute("placeholder") || element.getAttribute("aria-label") || "Password").trim().slice(0, 200);
+      }
+      return (element.innerText || element.value || element.getAttribute("aria-label") || "").trim().slice(0, 200);
+    };
     const summarize = (element, kind) => ({
       kind,
       selector: selectorFor(element),
@@ -176,7 +250,7 @@ function browserDomScript() {
       role: roleFor(element),
       label: labelFor(element),
       placeholder: element.getAttribute("placeholder") || "",
-      text: (element.innerText || element.value || element.getAttribute("aria-label") || "").trim().slice(0, 200),
+      text: summaryTextFor(element),
       disabled: Boolean(element.disabled),
       readOnly: Boolean(element.readOnly),
     });
@@ -272,7 +346,7 @@ if (command === "click") {
 } else if (command === "type-stdin") {
   await typeIntoBrowser(await readStdin(), { allowFallback: true });
 } else if (command === "secret-paste-stdin") {
-  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, append: true, allowFallback: false });
+  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, useNativeInput: true, append: true, allowFallback: false });
 } else if (command === "key") {
   const key = args[0];
   await withSocket(async (send) => {

@@ -194,14 +194,15 @@ impl KernelRuntimeState {
                                 .await;
                         });
                     }
-                    let resolution = resolution_rx.await.map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_credential_secret",
-                            message: format!(
+                    let resolution =
+                        resolution_rx
+                            .await
+                            .map_err(|error| DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_credential_secret",
+                                message: format!(
                                 "credential secret interaction dropped before resolution: {error}"
                             ),
-                        }
-                    })?;
+                            })?;
                     crate::provider::ProviderNativeInteractionResolution {
                         status: resolution.status.to_string(),
                         choice_id: resolution.choice_id,
@@ -499,5 +500,351 @@ impl KernelRuntimeState {
                 message: format!("unknown credential runtime tool `{tool_name}`"),
             }),
         }
+    }
+
+    pub(crate) async fn dispatch_forwarded_home_credential_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let agent = self.authorize_home_credential_context(&context)?;
+        match tool_name.as_str() {
+            crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
+                let service = self.home_runtime_secret_service()?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "credentials": service.list_handles()
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL => {
+                self.ensure_agent_can_manage_user_vault_for_agent(
+                    &context.home_session_id,
+                    &agent,
+                )?;
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_create_generated_credential",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let generator = args.generator.unwrap_or(
+                    crate::transport::runtime_tools::GeneratedCredentialSecretGeneratorArgs {
+                        kind: "password".to_string(),
+                        length: 32,
+                        symbols: true,
+                        avoid_ambiguous: false,
+                    },
+                );
+                let secret = generate_credential_secret(&generator)?;
+                let service = self.home_runtime_secret_service()?;
+                let credential = stamp_runtime_credential_metadata_for_agent(
+                    credential_from_runtime_input(args.credential)?,
+                    Some(agent.id()),
+                    &context.home_session_id,
+                    agent.primary_provider(),
+                    Some(&context.worker_provider_run_id),
+                );
+                let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+                let result = service.upsert_vault_backed_credential_with_secret(
+                    &registry,
+                    credential,
+                    &secret,
+                    args.overwrite,
+                )?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "credential_id": result.credential_id,
+                        "vault_key": result.vault_key,
+                        "stored": result.stored,
+                        "generated": true,
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL => {
+                let service = self.home_runtime_secret_service()?;
+                self.dispatch_forwarded_home_request_credential_secret(
+                    &context, &agent, service, arguments,
+                )
+                .await
+            }
+            crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
+                let service = self.home_runtime_secret_service()?;
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_http_request_with_credential",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let request = crate::secret::CredentialHttpRequest {
+                    credential_id: args.credential_id,
+                    method: args.method,
+                    url: args.url,
+                    headers: args.headers,
+                    body_text: args.body_text,
+                    body_json: args.body_json,
+                    timeout_ms: args.timeout_ms,
+                    max_response_bytes: args.max_response_bytes,
+                };
+                let response = tokio::task::spawn_blocking(move || {
+                    service.http_request_with_credential(request)
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_http_request_with_credential",
+                    message: error.to_string(),
+                })??;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::to_value(response).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_http_request_with_credential",
+                            message: error.to_string(),
+                        }
+                    })?,
+                })
+            }
+            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
+                Err(DaemonError::LocalTransport {
+                    operation: "home credential proxy",
+                    message:
+                        "send_secret_to_terminal must resolve the secret on home and inject on the worker"
+                            .to_string(),
+                })
+            }
+            crate::transport::runtime_tools::REQUEST_POPUP_TOOL => Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "request_popup is not a credential vault operation".to_string(),
+            }),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: format!("unknown credential runtime tool `{tool_name}`"),
+            }),
+        }
+    }
+
+    pub(crate) async fn resolve_forwarded_home_credential_secret(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        credential_id: String,
+        injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
+    ) -> Result<(String, String), DaemonError> {
+        let _agent = self.authorize_home_credential_context(&context)?;
+        let service = self.home_runtime_secret_service()?;
+        let secret_input = match injection {
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                target_url,
+            } => service.browser_secret_input_for_target_url(&credential_id, &target_url)?,
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
+                service.terminal_secret_input(&credential_id)?
+            }
+        };
+        Ok((credential_id, secret_input))
+    }
+
+    async fn dispatch_forwarded_home_request_credential_secret(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        agent: &crate::agent::AgentInstance,
+        service: crate::secret::RuntimeSecretService,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.ensure_agent_can_manage_user_vault_for_agent(&context.home_session_id, agent)?;
+        let args = serde_json::from_value::<
+            crate::transport::runtime_tools::RequestCredentialSecretArgs,
+        >(arguments)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_request_credential_secret",
+            message: format!("invalid tool arguments: {error}"),
+        })?;
+        let credential = stamp_runtime_credential_metadata_for_agent(
+            credential_from_runtime_input(args.credential)?,
+            Some(agent.id()),
+            &context.home_session_id,
+            agent.primary_provider(),
+            Some(&context.worker_provider_run_id),
+        );
+        let vault_key = match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+            crate::config::UserCredentialSourceConfig::Env { .. }
+            | crate::config::UserCredentialSourceConfig::File { .. } => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_credential_secret",
+                    message: "runtime-created credentials must use a vault source".to_string(),
+                });
+            }
+        };
+        if let Some(max_length) = args.prompt.max_length {
+            if max_length < args.prompt.min_length.unwrap_or(1) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_credential_secret",
+                    message: "prompt max_length must be greater than or equal to min_length"
+                        .to_string(),
+                });
+            }
+        }
+        let interaction = crate::session::RuntimeInteraction::new(
+            format!(
+                "credential-secret-{}-{}",
+                agent.id(),
+                crate::session::unix_epoch_ms()
+            ),
+            agent.id(),
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Critical,
+            args.prompt.title.clone(),
+            args.prompt.message.clone(),
+            vec![crate::session::RuntimeInteractionChoice::new(
+                "cancel",
+                "Cancel",
+                "cancel",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+            )],
+            Some(crate::session::RuntimeInteractionCustomChoice::secret(
+                "secret",
+                "Secret",
+                args.prompt.placeholder.clone(),
+                args.prompt.min_length,
+                args.prompt.max_length,
+            )),
+            args.prompt.timeout_sec,
+            Some("cancel".to_string()),
+        );
+        let interaction_id = interaction.id().to_string();
+        let timeout_sec = interaction.timeout_sec();
+        let resolution_rx = self
+            .create_runtime_interaction(&context.home_session_id, interaction)
+            .await?;
+        if let Some(timeout_sec) = timeout_sec {
+            let state = self.clone();
+            let timeout_session_id = context.home_session_id.clone();
+            let timeout_interaction_id = interaction_id;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
+                let _ = state
+                    .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
+                    .await;
+            });
+        }
+        let resolution = resolution_rx
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "runtime_tool_request_credential_secret",
+                message: format!(
+                    "credential secret interaction dropped before resolution: {error}"
+                ),
+            })?;
+        if resolution.status.to_string() == "timed_out" {
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "credential_id": credential.id,
+                    "vault_key": vault_key,
+                    "status": "timed_out",
+                }),
+            });
+        }
+        if resolution.choice_id.as_deref() != Some("secret") {
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "credential_id": credential.id,
+                    "vault_key": vault_key,
+                    "status": "cancelled",
+                }),
+            });
+        }
+        let secret = resolution
+            .reply
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_request_credential_secret",
+                message: "credential secret interaction resolved without a secret".to_string(),
+            })?;
+        let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+        let result = service.upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential,
+            &secret,
+            args.overwrite,
+        )?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "credential_id": result.credential_id,
+                "vault_key": result.vault_key,
+                "status": "stored",
+            }),
+        })
+    }
+
+    fn authorize_home_credential_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        if config.daemon_id != context.home_kernel_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "credential request was sent to the wrong home kernel".to_string(),
+            });
+        }
+        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+        if agent.session_id() != context.home_session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "agent does not belong to credential request session".to_string(),
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "agent is not remote-backed".to_string(),
+            });
+        };
+        if remote_execution.leased_agent_id != context.leased_agent_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "leased agent does not match home agent binding".to_string(),
+            });
+        }
+        if context.worker_kernel_id.as_deref() != Some(remote_execution.worker_kernel_id.as_str()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "worker kernel does not match home agent binding".to_string(),
+            });
+        }
+        if context.worker_machine_id.as_deref() != Some(remote_execution.worker_machine_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "worker machine does not match home agent binding".to_string(),
+            });
+        }
+        if remote_execution.active_worker_provider_run_id.as_deref()
+            != Some(context.worker_provider_run_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "home credential proxy",
+                message: "worker provider run does not match active remote agent binding"
+                    .to_string(),
+            });
+        }
+        Ok(agent)
+    }
+
+    fn home_runtime_secret_service(
+        &self,
+    ) -> Result<crate::secret::RuntimeSecretService, DaemonError> {
+        let user_config = self.owned.config_projection.snapshot().user_config;
+        let credentials = crate::credential::load_user_credentials()?;
+        crate::secret::RuntimeSecretService::with_vault_config(
+            credentials,
+            &user_config.credential_vault,
+        )
     }
 }

@@ -200,7 +200,7 @@ pub(super) async fn publish_offline_and_set_disconnected(
     set_disconnected(state).await;
 }
 
-async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
+pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
     let pending_peer = {
         let mut guard = state.write().await;
         guard.connected = false;

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use arroba_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::{Handle, Runtime, RuntimeFlavor};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -58,7 +58,21 @@ impl DaemonApp {
         F: std::future::Future<Output = Result<T, DaemonError>>,
     {
         if let Ok(handle) = Handle::try_current() {
-            tokio::task::block_in_place(|| handle.block_on(future))
+            match handle.runtime_flavor() {
+                RuntimeFlavor::MultiThread => {
+                    tokio::task::block_in_place(|| handle.block_on(future))
+                }
+                RuntimeFlavor::CurrentThread => Err(DaemonError::LocalTransport {
+                    operation: "block relay future",
+                    message: "cannot block on a relay future from a current-thread tokio runtime"
+                        .to_string(),
+                }),
+                _ => Err(DaemonError::LocalTransport {
+                    operation: "block relay future",
+                    message: "unsupported tokio runtime flavor for blocking relay future"
+                        .to_string(),
+                }),
+            }
         } else {
             Runtime::new()
                 .map_err(|error| DaemonError::LocalTransport {
@@ -67,5 +81,31 @@ impl DaemonApp {
                 })?
                 .block_on(future)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_on_relay_future_does_not_panic_on_current_thread_runtime() {
+        let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("test daemon app should bootstrap");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime should build");
+
+        let result = runtime
+            .block_on(async { app.block_on_relay_future(async { Ok::<_, DaemonError>(()) }) });
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::LocalTransport {
+                operation: "block relay future",
+                ..
+            })
+        ));
     }
 }

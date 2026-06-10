@@ -25,8 +25,8 @@ mod workspace_links;
 
 pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_mode,
-    effective_agent_permission_level, effective_agent_user_authority,
-    EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
+    effective_agent_extension_registration_authority, effective_agent_permission_level,
+    effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use service::{
@@ -44,12 +44,12 @@ pub use types::{
     RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment, SchedulerState,
     SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
-    WorkflowCanvasLayout,
-    WorkflowCanvasLayoutPatch, WorkflowCanvasPoint, WorkflowCompletionSnapshot, WorkflowConsole,
-    WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEdgeEndpointSide,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
-    WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition,
-    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOutputPayload,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEdgeEndpointSide, WorkflowEndpointDefinition,
+    WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode,
+    WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,

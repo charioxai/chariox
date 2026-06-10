@@ -1618,6 +1618,66 @@ async fn forwarded_home_script_invocation_uses_shared_timeout_policy() {
 }
 
 #[tokio::test]
+async fn forwarded_home_credential_secret_rejects_stale_worker_provider_run() {
+    let config = DaemonConfig::for_tests();
+    let home_kernel_id = config.daemon_id.clone();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-home-credential-stale",
+            "worktree-home-credential-stale",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent = spawn_test_agent(&mut app, &session_id, "remote-credential-stale", "dev-stub");
+    app.agents()
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("provider-run-current".to_string()),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("agent should be remote-backed");
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+        home_kernel_id,
+        home_session_id: session_id,
+        home_agent_id: agent.id().to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_provider_run_id: "provider-run-stale".to_string(),
+        worker_kernel_id: Some("worker-kernel".to_string()),
+        worker_machine_id: Some("worker-machine".to_string()),
+    };
+
+    let denied = router
+        .runtime_state
+        .resolve_forwarded_home_credential_secret(
+            context,
+            "gmail-password".to_string(),
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                target_url: "https://accounts.google.com/signin".to_string(),
+            },
+        )
+        .await
+        .expect_err("stale worker provider run should be denied");
+    assert!(
+        denied
+            .to_string()
+            .contains("worker provider run does not match active remote agent binding"),
+        "unexpected denial: {denied}"
+    );
+}
+
+#[tokio::test]
 async fn home_extension_invocation_cancellation_is_authorized_and_audited() {
     let config = DaemonConfig::for_tests();
     let home_kernel_id = config.daemon_id.clone();

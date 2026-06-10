@@ -167,7 +167,7 @@ Remote-agent note:
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
-- home-owned active extensions for remote agents preserve that authority split: the home kernel owns grant/revoke policy, reconstructs the current tool definition before every forwarded invocation, executes scripts/connectors/MCP proxy calls on the home machine, keeps credentials local to home, and records durable audit events. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
+- home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, keeps credentials local to home, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for local browser/PTY targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
 
 ### 3.3.1 Internal Kernel Subsystems
 
@@ -452,6 +452,12 @@ The public URL is represented as `public_base_url`. In staging this may be a
 path under the Hetzner publication ingress host; later product DNS may map the
 same contract to `https://<slug>.arroba.run/`. Callers should not need to know
 whether the backend is local-runtime ingress or a hosted container.
+
+Agent Apps generalize workflow publication from "workflow returns HTML or data"
+to "selected app routes are mediated by workflow endpoints." The concept covers
+base app assets, route wrapping, workflow-produced response effects, overlays,
+app actions, endpoint manipulation policy, replica pools, and external web/mobile
+integration. See `docs/AGENT_APPS_CONCEPT.md`.
 
 Cloud-hosted published workflows should behave as independent web apps. Callers
 do not need Arroba accounts unless the owner configures Arroba-managed access.
