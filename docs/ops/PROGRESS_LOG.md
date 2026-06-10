@@ -11,6 +11,7 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Current-head Workspace Live Sync scope validation
 
 - Revalidated local Codex Workspace Live Sync permission gating on current OSS `main` HEAD `2e5b53f63`: `node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --only local-permission-codex` passed. The run proved synced-root writes still require Arroba Workspace Live Sync permission/tooling while a separate outside Git repo remains provider-native and writable.
+- Revalidated same-host remote Codex Workspace Live Sync permission gating on current OSS `main` HEAD `24645c1c8`: `node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-remote --only remote-permission-codex` passed. The run covered local relay, home kernel, worker kernel, remote agent leasing, synced-root Workspace Live Sync permission, and provider-native writes to a separate outside Git repo.
 
 ## 2026-06-05
 
