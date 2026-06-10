@@ -402,9 +402,59 @@ test("GET /health returns an ok status payload", async () => {
     const response = await app.inject({ method: "GET", url: "/health" })
 
     assert.equal(response.statusCode, 200)
-    assert.deepEqual(response.json(), { status: "ok" })
+    assert.deepEqual(response.json(), {
+      status: "ok",
+      package: { materialized: true, package_root: null, missing_files: [] },
+      provider_readiness: [],
+    })
   } finally {
     await app.close()
+  }
+})
+
+test("GET /health reports package materialization and provider readiness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-health-"))
+  await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
+  await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+    schema_version: 1,
+    source_session: { id: "source-session-1" },
+    workflow: { id: "workflow-1", nodes: [] },
+    endpoint: { id: "endpoint-1" },
+    agents: [{ id: "agent-1", provider: "codex", model: "gpt-5.2" }],
+  }))
+  await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+    getProviderReadiness: async () => [{
+      provider: "codex",
+      status: "provider_ready",
+      ready: true,
+      cli: { available: true, command: "codex", version: "codex 1.0.0" },
+      auth: { status: "provider_ready", account_profile: "codex@example.test" },
+    }],
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json(), {
+      status: "ok",
+      package: { materialized: true, package_root: root, missing_files: [] },
+      provider_readiness: [{
+        provider: "codex",
+        status: "provider_ready",
+        ready: true,
+        cli: { available: true, command: "codex", version: "codex 1.0.0" },
+        auth: { status: "provider_ready", account_profile: "codex@example.test" },
+      }],
+    })
+  } finally {
+    await app.close()
+    await rm(root, { recursive: true, force: true })
   }
 })
 
@@ -440,6 +490,8 @@ test("GET publication status reports runtime binding", async () => {
       mode: "async",
       route: "/invoke",
       methods: ["POST"],
+      package: { materialized: true, package_root: null, missing_files: [] },
+      provider_readiness: [],
     })
   } finally {
     await app.close()
@@ -510,6 +562,8 @@ test("GET publication status includes runtime watchdog and latest output details
       mode: "sync",
       route: "/*",
       methods: ["GET", "POST"],
+      package: { materialized: true, package_root: null, missing_files: [] },
+      provider_readiness: [],
       runtime: { reachable: true },
       watchdog_count: 1,
       watchdogs: [{

@@ -9,6 +9,7 @@ import type { WorkflowWatchdogDefinition } from "@arroba/kernel-client/kernel-ty
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import { publicationHealthDetails } from "./publication-provider-readiness.js"
 import type {
   GatewayDeps,
   WorkflowPublicationConfig,
@@ -19,7 +20,10 @@ export async function publicationStatusPayload(
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
 ) {
-  const base = basePublicationStatusPayload(publication)
+  const base = {
+    ...basePublicationStatusPayload(publication),
+    ...await publicationHealthDetails(publication, deps),
+  }
   if (deps.getPublicationStatusDetails) {
     return {
       ...base,

@@ -46,6 +46,7 @@ import {
 } from "./publication-mcp.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import { publicationHealthDetails } from "./publication-provider-readiness.js"
 import { publicationStatusPayload } from "./publication-status.js"
 import { installPublicationViewerRoutes } from "./publication-viewer.js"
 import type {
@@ -90,7 +91,10 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
 
   app.get("/health", async () => {
     logger.debug("handled health request")
-    return { status: "ok" }
+    return {
+      status: "ok",
+      ...await publicationHealthDetails(publication, deps),
+    }
   })
 
   app.get("/.well-known/arroba/publication/status", async () => publicationStatusPayload(publication, deps))

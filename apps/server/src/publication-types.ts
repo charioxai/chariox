@@ -200,6 +200,34 @@ export type WorkflowPublicationRequirements = {
   credentials?: PublicationCredentialRequirement[]
 }
 
+export type PublicationPackageMaterializationStatus = {
+  materialized: boolean
+  package_root: string | null
+  missing_files: string[]
+}
+
+export type PublicationProviderReadinessStatus =
+  | "provider_ready"
+  | "provider_cli_missing"
+  | "provider_auth_expired"
+  | "provider_auth_unknown"
+
+export type PublicationProviderReadiness = {
+  provider: string
+  status: PublicationProviderReadinessStatus
+  ready: boolean
+  cli: {
+    available: boolean
+    command: string
+    version?: string | null
+  }
+  auth: {
+    status: "provider_ready" | "provider_auth_expired" | "provider_auth_unknown"
+    account_profile?: string | null
+  }
+  error?: string | null
+}
+
 export type NormalizedInvocation = {
   publication_id: string
   request_id: string
@@ -287,6 +315,7 @@ export type WorkflowInvocationResult = {
 export type GatewayDeps = {
   invokeWorkflow?: (invocation: NormalizedInvocation) => Promise<WorkflowInvocationResult>
   getPublicationStatusDetails?: (publication: WorkflowPublicationConfig) => Promise<Record<string, unknown>>
+  getProviderReadiness?: (publication: WorkflowPublicationConfig) => Promise<readonly PublicationProviderReadiness[]>
 }
 
 export type PublicationInvocationOptions = {
