@@ -2,6 +2,12 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-06-11
+
+### Current-head local remote home-extension validation
+
+- Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `05a9bdee6`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs` passed. The matrix ran `local-single` and `local-collab`, covering single-user and scoped-relay collaboration remote workers invoking home-owned script, MCP, and connector tools through the worker projection path, plus home-side revoke enforcement for stale projected tools.
+
 ## 2026-06-10
 
 ### Current-head local remote home-extension validation
