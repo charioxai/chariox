@@ -1,15 +1,20 @@
 import { spawn } from "node:child_process"
 import path from "node:path"
 import { waitForTcpPort } from "./drill-runtime-helpers.mjs"
-import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from "./native-tui-remote-execution.mjs"
+import {
+  assertHetznerArrobaBinaries,
+  remoteEnvCommand,
+  runHetznerCommand,
+  shellQuote,
+  sshArgs,
+} from "./native-tui-remote-execution.mjs"
 
 export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
   remoteRoot,
   workerWorktree,
 }) {
+  await assertHetznerArrobaBinaries(options)
   await runHetznerCommand(options, [
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel"))}`,
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay"))}`,
     `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)}`,
   ].join("; "))
 }

@@ -25,12 +25,36 @@ export function remoteEnvCommand(env, command) {
   return `cd ${shellQuote(env.ARROBA_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
 }
 
+export async function assertHetznerArrobaBinaries(options) {
+  const kernelBinary = path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel")
+  const relayBinary = path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay")
+  const message = [
+    `Hetzner Arroba checkout is not ready at ${options.hetznerRepo}.`,
+    `Expected executable binaries: ${kernelBinary} and ${relayBinary}.`,
+    "Prepare the worker with:",
+    `  git clone https://github.com/mgutierrez09/arroba.git ${options.hetznerRepo}`,
+    `  cd ${options.hetznerRepo}`,
+    "  git checkout main && git reset --hard origin/main",
+    "  export PATH=/root/.cargo/bin:$PATH",
+    "  rustup toolchain install stable --profile minimal",
+    "  cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel",
+    "  cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay",
+  ].join("\n")
+  await runHetznerCommand(options, [
+    `repo=${shellQuote(options.hetznerRepo)}`,
+    "missing=",
+    'test -d "$repo/.git" || missing="$missing repo"',
+    `test -x ${shellQuote(kernelBinary)} || missing="$missing kernel"`,
+    `test -x ${shellQuote(relayBinary)} || missing="$missing relay"`,
+    `if test -n "$missing"; then printf '%s\n' ${shellQuote(message)} >&2; exit 17; fi`,
+  ].join("; "))
+}
+
 export async function prepareHetznerWorktree(options, localWorktree) {
   const parent = path.posix.dirname(localWorktree)
+  await assertHetznerArrobaBinaries(options)
   await execFileAsync("ssh", sshArgs(options, [
     "set -e",
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel"))}`,
-    `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay"))}`,
     `mkdir -p ${shellQuote(parent)}`,
     `git -C ${shellQuote(options.hetznerRepo)} worktree remove --force ${shellQuote(localWorktree)} 2>/dev/null || rm -rf ${shellQuote(localWorktree)}`,
     `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,

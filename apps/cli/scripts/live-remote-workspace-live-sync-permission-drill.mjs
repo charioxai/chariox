@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
-import { remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import { assertHetznerArrobaBinaries, remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -175,13 +175,7 @@ async function resolveBinary(binaryPath, manifestPath, binName) {
 }
 
 async function assertHetznerBinaries(options) {
-  await runHetznerCommand(
-    options,
-    [
-      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/kernel/target/debug/arroba-kernel'))}`,
-      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
-    ].join(' && '),
-  )
+  await assertHetznerArrobaBinaries(options)
 }
 
 function localCodexAuthPath() {
