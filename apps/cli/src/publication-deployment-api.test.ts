@@ -7,6 +7,7 @@ import test from "node:test"
 import {
   createPublicationDeploymentFromPackage,
   readPublicationPackageMetadata,
+  reuploadPublicationDeploymentPackage,
 } from "./publication-deployment-api.js"
 import type { RelayCloudProfile } from "./preferences.js"
 
@@ -76,6 +77,41 @@ test("publication deployment API creates, uploads, and starts hosted deployments
     })
     assert.equal((calls[1]?.body as Record<string, unknown>).packageUri, `file://${root}`)
     assert.match(String((calls[1]?.body as Record<string, unknown>).packageDigest), /^sha256:/)
+  } finally {
+    globalThis.fetch = previousFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication deployment API reuploads package archives", async () => {
+  const root = await publicationPackageFixture()
+  const previousFetch = globalThis.fetch
+  const calls: Array<{ readonly url: string; readonly method: string; readonly body: unknown }> = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input)
+    const method = init?.method ?? "GET"
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : null
+    calls.push({ url, method, body })
+    if (url.endsWith("/publication-deployments/deployment-1/package")) {
+      return jsonResponse({ deployment: deploymentPayload({ id: "deployment-1", status: "package_uploaded", packageUri: body.packageUri }) })
+    }
+    return jsonResponse({ error: { message: `unexpected ${url}` } }, 404)
+  }) as typeof fetch
+
+  try {
+    const deployment = await reuploadPublicationDeploymentPackage({
+      profile: profile(),
+      deploymentId: "deployment-1",
+      packagePath: root,
+    })
+
+    assert.equal(deployment.id, "deployment-1")
+    assert.deepEqual(calls.map((call) => [call.method, new URL(call.url).pathname]), [
+      ["POST", "/publication-deployments/deployment-1/package"],
+    ])
+    assert.equal((calls[0]?.body as Record<string, unknown>).packageUri, `file://${root}`)
+    assert.match(String((calls[0]?.body as Record<string, unknown>).packageDigest), /^sha256:/)
+    assert.equal(typeof (calls[0]?.body as Record<string, unknown>).packageArchiveBase64, "string")
   } finally {
     globalThis.fetch = previousFetch
     await rm(root, { recursive: true, force: true })

@@ -25,6 +25,10 @@ export interface PublicationDeploymentSummary {
   readonly packageVersion?: number | null
   readonly credentialProfile?: string | null
   readonly lastError?: string | null
+  readonly health?: string | null
+  readonly queueDepth?: number | null
+  readonly activeReplicaCount?: number | null
+  readonly readyReplicaCount?: number | null
 }
 
 export interface PublicationPackageMetadata {
@@ -67,23 +71,55 @@ export async function createPublicationDeploymentFromPackage(input: {
   })
   const digest = await publicationPackageDigest(metadata.packageRoot)
   const packageArchiveBase64 = await publicationPackageArchiveBase64(metadata.packageRoot)
-  const uploaded = await postJson<{ readonly deployment: PublicationDeploymentSummary }>(
-    input.profile,
-    `/publication-deployments/${encodeURIComponent(created.deployment.id)}/package`,
-    {
-      accountId: input.profile.accountId,
-      packageDigest: digest,
-      packageVersion: metadata.packageVersion,
-      packageUri: metadata.packageUri,
-      packageArchiveBase64,
-    },
-  )
+  const uploaded = await uploadPublicationDeploymentPackage({
+    profile: input.profile,
+    deploymentId: created.deployment.id,
+    metadata,
+    digest,
+    packageArchiveBase64,
+  })
   if (input.start || input.mode === "hosted_container") {
     await postJson(input.profile, `/publication-deployments/${encodeURIComponent(uploaded.deployment.id)}/start`, {
       accountId: input.profile.accountId,
     })
   }
   return uploaded.deployment
+}
+
+export async function reuploadPublicationDeploymentPackage(input: {
+  readonly profile: RelayCloudProfile
+  readonly deploymentId: string
+  readonly packagePath: string
+}): Promise<PublicationDeploymentSummary> {
+  const metadata = await readPublicationPackageMetadata(input.packagePath)
+  const uploaded = await uploadPublicationDeploymentPackage({
+    profile: input.profile,
+    deploymentId: input.deploymentId,
+    metadata,
+    digest: await publicationPackageDigest(metadata.packageRoot),
+    packageArchiveBase64: await publicationPackageArchiveBase64(metadata.packageRoot),
+  })
+  return uploaded.deployment
+}
+
+async function uploadPublicationDeploymentPackage(input: {
+  readonly profile: RelayCloudProfile
+  readonly deploymentId: string
+  readonly metadata: PublicationPackageMetadata
+  readonly digest: string
+  readonly packageArchiveBase64: string
+}): Promise<{ readonly deployment: PublicationDeploymentSummary }> {
+  return postJson<{ readonly deployment: PublicationDeploymentSummary }>(
+    input.profile,
+    `/publication-deployments/${encodeURIComponent(input.deploymentId)}/package`,
+    {
+      accountId: input.profile.accountId,
+      packageDigest: input.digest,
+      packageVersion: input.metadata.packageVersion,
+      packageUri: input.metadata.packageUri,
+      packageArchiveBase64: input.packageArchiveBase64,
+    },
+  )
 }
 
 export async function listPublicationDeployments(profile: RelayCloudProfile): Promise<readonly PublicationDeploymentSummary[]> {

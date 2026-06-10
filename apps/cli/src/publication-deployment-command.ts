@@ -4,6 +4,7 @@ import {
   getPublicationDeployment,
   listPublicationDeploymentLogs,
   listPublicationDeployments,
+  reuploadPublicationDeploymentPackage,
   type PublicationDeploymentMode,
 } from "./publication-deployment-api.js"
 import {
@@ -59,7 +60,7 @@ async function runDeploymentsCommand(
     return
   }
   const deploymentId = argv[1]
-  if (!deploymentId) throw new Error("usage: arroba publication deployments show|logs|stop|restart <deployment-id>")
+  if (!deploymentId) throw new Error("usage: arroba publication deployments show|logs|stop|restart <deployment-id>; reupload <deployment-id> <package-dir|publication.json>")
   if (command === "show") {
     process.stdout.write(JSON.stringify(await getPublicationDeployment(profile, deploymentId), null, 2) + "\n")
     return
@@ -76,7 +77,14 @@ async function runDeploymentsCommand(
     process.stdout.write(`${command} requested for ${deploymentId}\n`)
     return
   }
-  throw new Error("usage: arroba publication deployments list|show|logs|stop|restart")
+  if (command === "reupload") {
+    const packagePath = argv[2]
+    if (!packagePath) throw new Error("usage: arroba publication deployments reupload <deployment-id> <package-dir|publication.json>")
+    const deployment = await reuploadPublicationDeploymentPackage({ profile, deploymentId, packagePath })
+    process.stdout.write(`package reuploaded for ${deployment.id}\nstatus ${deployment.status}\n`)
+    return
+  }
+  throw new Error("usage: arroba publication deployments list|show|logs|stop|restart|reupload")
 }
 
 function parseDeployOptions(argv: readonly string[]): {
