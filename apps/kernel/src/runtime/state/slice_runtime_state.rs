@@ -106,6 +106,10 @@ impl KernelRuntimeState {
         for agent_id in &slice.agent_ids {
             let agent = self.owned.agent_store.get_agent(agent_id)?;
             let session = self.owned.session_store.get_session(agent.session_id())?;
+            if agent.is_processing() || agent.state() == crate::agent::AgentState::Working {
+                busy_agents.push(agent.id().to_string());
+                continue;
+            }
             if self
                 .owned
                 .prompt_state_owner
@@ -123,13 +127,9 @@ impl KernelRuntimeState {
                     self.owned
                         .provider_run_projection
                         .get_for_agent(session.id(), agent.id())
-                });
+            });
             let manifest = if let Some(run) = projected_run {
-                if matches!(
-                    run.state(),
-                    crate::provider::ProviderRunState::Starting
-                        | crate::provider::ProviderRunState::Running
-                ) {
+                if run.state() == crate::provider::ProviderRunState::Starting {
                     busy_agents.push(agent.id().to_string());
                     continue;
                 }
