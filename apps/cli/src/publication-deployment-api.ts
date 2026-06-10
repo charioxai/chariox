@@ -25,7 +25,9 @@ export interface PublicationDeploymentSummary {
   readonly packageVersion?: number | null
   readonly credentialProfile?: string | null
   readonly lastError?: string | null
+  readonly lastErrorCode?: string | null
   readonly health?: string | null
+  readonly healthCheckedAt?: string | null
   readonly queueDepth?: number | null
   readonly activeReplicaCount?: number | null
   readonly readyReplicaCount?: number | null

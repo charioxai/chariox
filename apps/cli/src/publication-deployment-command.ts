@@ -6,6 +6,7 @@ import {
   listPublicationDeployments,
   reuploadPublicationDeploymentPackage,
   type PublicationDeploymentMode,
+  type PublicationDeploymentSummary,
 } from "./publication-deployment-api.js"
 import {
   loadPreferences,
@@ -31,13 +32,10 @@ export async function runPublicationDeploymentCommand(argv: readonly string[]): 
       ...(options.credentialProfile !== undefined ? { credentialProfile: options.credentialProfile } : {}),
       ...(options.start !== undefined ? { start: options.start } : {}),
     })
-    process.stdout.write([
-      `deployment ${deployment.id}`,
-      `mode ${deployment.mode}`,
-      `status ${deployment.status}`,
-      `url ${deployment.publicBaseUrl}`,
-      options.mode === "local_runtime" ? `serve arroba serve ${packagePath} <port> --cloud-deployment ${deployment.id}` : null,
-    ].filter(Boolean).join("\n") + "\n")
+    process.stdout.write(formatPublicationDeploymentDeployOutput(deployment, {
+      packagePath,
+      includeServeInstruction: options.mode === "local_runtime",
+    }) + "\n")
     return true
   }
   if (command === "deployments") {
@@ -55,7 +53,7 @@ async function runDeploymentsCommand(
   if (command === "list") {
     const deployments = await listPublicationDeployments(profile)
     for (const deployment of deployments) {
-      process.stdout.write(`${deployment.id}\t${deployment.mode}\t${deployment.status}\t${deployment.publicBaseUrl}\n`)
+      process.stdout.write(formatPublicationDeploymentListRow(deployment) + "\n")
     }
     return
   }
@@ -81,10 +79,74 @@ async function runDeploymentsCommand(
     const packagePath = argv[2]
     if (!packagePath) throw new Error("usage: arroba publication deployments reupload <deployment-id> <package-dir|publication.json>")
     const deployment = await reuploadPublicationDeploymentPackage({ profile, deploymentId, packagePath })
-    process.stdout.write(`package reuploaded for ${deployment.id}\nstatus ${deployment.status}\n`)
+    process.stdout.write([
+      `package reuploaded for ${deployment.id}`,
+      ...formatPublicationDeploymentSummary(deployment),
+    ].join("\n") + "\n")
     return
   }
   throw new Error("usage: arroba publication deployments list|show|logs|stop|restart|reupload")
+}
+
+export function formatPublicationDeploymentListRow(deployment: PublicationDeploymentSummary): string {
+  return [
+    deployment.id,
+    deployment.mode,
+    deployment.status,
+    deployment.health ?? "health_unknown",
+    deployment.transport,
+    replicaSummary(deployment),
+    queueSummary(deployment),
+    deployment.publicBaseUrl,
+    errorSummary(deployment),
+  ].join("\t")
+}
+
+export function formatPublicationDeploymentSummary(deployment: PublicationDeploymentSummary): string[] {
+  return [
+    `deployment ${deployment.id}`,
+    `mode ${deployment.mode}`,
+    `status ${deployment.status}`,
+    deployment.health ? `health ${deployment.health}` : null,
+    `transport ${deployment.transport}`,
+    `url ${deployment.publicBaseUrl}`,
+    deployment.credentialProfile ? `credential_profile ${deployment.credentialProfile}` : null,
+    `replicas ${replicaSummary(deployment)}`,
+    `queue ${queueSummary(deployment)}`,
+    deployment.lastErrorCode ? `last_error_code ${deployment.lastErrorCode}` : null,
+    deployment.lastError ? `last_error ${deployment.lastError}` : null,
+  ].filter((line): line is string => Boolean(line))
+}
+
+export function formatPublicationDeploymentDeployOutput(
+  deployment: PublicationDeploymentSummary,
+  options: { readonly packagePath: string; readonly includeServeInstruction?: boolean },
+): string {
+  return [
+    ...formatPublicationDeploymentSummary(deployment),
+    publicDeploymentWarning(),
+    options.includeServeInstruction ? `serve arroba serve ${options.packagePath} <port> --cloud-deployment ${deployment.id}` : null,
+  ].filter(Boolean).join("\n")
+}
+
+function publicDeploymentWarning(): string {
+  return "warning public_unmanaged_access anyone with the generated URL can invoke this deployment; put external auth in front when access should be restricted"
+}
+
+function replicaSummary(deployment: PublicationDeploymentSummary): string {
+  const ready = typeof deployment.readyReplicaCount === "number" ? deployment.readyReplicaCount : null
+  const active = typeof deployment.activeReplicaCount === "number" ? deployment.activeReplicaCount : null
+  if (ready === null && active === null) return "unknown"
+  return `${ready ?? "?"} ready/${active ?? "?"} active`
+}
+
+function queueSummary(deployment: PublicationDeploymentSummary): string {
+  return typeof deployment.queueDepth === "number" ? String(deployment.queueDepth) : "unknown"
+}
+
+function errorSummary(deployment: PublicationDeploymentSummary): string {
+  if (deployment.lastErrorCode && deployment.lastError) return `${deployment.lastErrorCode}: ${deployment.lastError}`
+  return deployment.lastErrorCode ?? deployment.lastError ?? ""
 }
 
 function parseDeployOptions(argv: readonly string[]): {
