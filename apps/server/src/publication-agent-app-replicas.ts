@@ -34,6 +34,13 @@ export type AgentAppReplicaLease = {
   release: () => void
 }
 
+export type AgentAppReplicaStatus = {
+  readonly totalReplicaCount: number
+  readonly activeReplicaCount: number
+  readonly readyReplicaCount: number
+  readonly queueDepth: number
+}
+
 export function agentAppCallerSession(
   headers: Record<string, string | string[] | undefined>,
   createSessionId: () => string,
@@ -131,6 +138,18 @@ export function releaseAgentAppReplicaInvocation(
   pool.invocationLeases.delete(requestId)
   if (tracked.timeout) clearTimeout(tracked.timeout)
   tracked.release()
+}
+
+export function agentAppReplicaStatus(publication: WorkflowPublicationConfig): AgentAppReplicaStatus {
+  const sessions = normalizedReplicaSessions(publication)
+  const pool = replicaPool(publication.publication_id)
+  const activeReplicaCount = sessions.filter((sessionId) => (pool.busyCounts.get(sessionId) ?? 0) > 0).length
+  return {
+    totalReplicaCount: sessions.length,
+    activeReplicaCount,
+    readyReplicaCount: Math.max(0, sessions.length - activeReplicaCount),
+    queueDepth: pool.pending.length,
+  }
 }
 
 function normalizedReplicaSessions(publication: WorkflowPublicationConfig): string[] {

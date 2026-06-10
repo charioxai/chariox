@@ -2325,6 +2325,17 @@ test("agent app replica scheduler queues different callers until a replica is id
     assert.equal(queued.statusCode, 200)
     assert.match(queued.body, /agent_app_pool_queued/)
     assert.deepEqual(invocations.map((invocation) => invocation.replica), ["replica-session-1", "replica-session-2"])
+    const saturatedStatus = await app.inject({ method: "GET", url: "/.well-known/arroba/agent-app/status" })
+    assert.equal(saturatedStatus.statusCode, 200)
+    assert.deepEqual(saturatedStatus.json(), {
+      publication_id: "pub-replica-queue",
+      replicas: {
+        totalReplicaCount: 2,
+        activeReplicaCount: 2,
+        readyReplicaCount: 0,
+        queueDepth: 1,
+      },
+    })
 
     releaseAgentAppReplicaInvocation(publication, invocations[0]?.requestId)
     await waitForCondition(
@@ -2333,6 +2344,17 @@ test("agent app replica scheduler queues different callers until a replica is id
     )
     assert.equal(invocations[2]?.caller, "caller-c")
     assert.equal(invocations[2]?.replica, "replica-session-1")
+    const drainedStatus = await app.inject({ method: "GET", url: "/.well-known/arroba/agent-app/status" })
+    assert.equal(drainedStatus.statusCode, 200)
+    assert.deepEqual(drainedStatus.json(), {
+      publication_id: "pub-replica-queue",
+      replicas: {
+        totalReplicaCount: 2,
+        activeReplicaCount: 2,
+        readyReplicaCount: 0,
+        queueDepth: 0,
+      },
+    })
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })

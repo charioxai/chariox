@@ -14,6 +14,7 @@ import {
 import {
   agentAppCallerKey,
   agentAppCallerSession,
+  agentAppReplicaStatus,
   acquireAgentAppReplica,
   enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
@@ -92,6 +93,10 @@ export function installAgentAppRoutes(
     url: AGENT_APP_AUDIT_PATH,
     handler: async (request, reply) => appendAgentAppAuditLog(request, reply),
   })
+  app.get("/.well-known/arroba/agent-app/status", async () => ({
+    publication_id: publication.publication_id,
+    replicas: agentAppReplicaStatus(publication),
+  }))
   app.get("/*", async (request, reply) => serveAgentAppAsset(request, reply, publication))
 }
 
