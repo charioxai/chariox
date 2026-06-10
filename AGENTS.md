@@ -64,3 +64,7 @@ Do not merge protocol shape changes without the version bump and test update.
 ## Provider-Native Permission Visibility
 
 Native provider permission prompts are surfaced to the user out-of-band through Arroba runtime interactions. Do not infer that no approval prompt appeared just because a shell/tool result lacks `approval requested` or `approved` metadata. The result visible to the agent normally contains only the provider tool execution outcome, such as stdout/stderr, exit code, and status after the user has already answered the prompt.
+
+## Claude Credential Transfer For Linux Runners
+
+Claude Code on macOS may keep the live login credential in Keychain under `Claude Code-credentials`, while Linux runners and containers expect it at `~/.claude/.credentials.json`. For hosted drills, export that Keychain item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
