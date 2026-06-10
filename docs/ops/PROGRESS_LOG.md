@@ -8,6 +8,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Revalidated the local self-hosted relay remote home-extension matrix on current OSS `main` HEAD `05a9bdee6`: `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs` passed. The matrix ran `local-single` and `local-collab`, covering single-user and scoped-relay collaboration remote workers invoking home-owned script, MCP, and connector tools through the worker projection path, plus home-side revoke enforcement for stale projected tools.
 
+### Current-head local slice lifecycle validation
+
+- Revalidated local Docker slice lifecycle on current OSS `main` HEAD `66f4515ba`: `pnpm --filter @arroba/cli run slice:lifecycle-drill` passed. The run covered headed slice creation, worker-kernel discovery, noVNC endpoint readiness, Codex/OpenCode/Claude provider-auth summary extraction, Codex device-login startup inside the slice, provider-auth removal and alias slash-command UX, waiting-room idle slice deletion, independent provider accounts across slices, wrong-worktree rejection for sessions and agents, multi-session/multi-agent reuse of one slice, active-agent delete blocking, and cleanup of the drill-owned containers and artifact root.
+
 ## 2026-06-10
 
 ### Current-head local remote home-extension validation
