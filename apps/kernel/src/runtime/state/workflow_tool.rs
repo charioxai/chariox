@@ -253,9 +253,32 @@ impl KernelRuntimeOwnedState {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("POST")
             .to_ascii_uppercase();
+        let allow_external = transport
+            .get("allow_external")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let timeout_ms = transport
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(30_000)
+            .clamp(1_000, 60_000);
+        let max_response_bytes = transport
+            .get("max_response_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1_048_576)
+            .clamp(1_024, 8_388_608);
         let started = std::time::Instant::now();
-        let response = match call_agent_app_http_action(url, &method, &args.input, &action_context)
-        {
+        let response = match call_agent_app_http_action(
+            url,
+            &method,
+            &args.input,
+            &action_context,
+            AgentAppHttpActionOptions {
+                allow_external,
+                timeout_ms,
+                max_response_bytes,
+            },
+        ) {
             Ok(response) => {
                 send_agent_app_action_audit(
                     &action_context,
@@ -503,6 +526,7 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+#[derive(Debug)]
 struct AgentAppHttpActionResponse {
     status: u16,
     content_type: String,
@@ -514,6 +538,12 @@ struct AgentAppHttpActionContext {
     session: Option<String>,
     invocation_request_id: Option<String>,
     audit: Option<AgentAppActionAuditContext>,
+}
+
+struct AgentAppHttpActionOptions {
+    allow_external: bool,
+    timeout_ms: u64,
+    max_response_bytes: u64,
 }
 
 struct AgentAppActionAuditContext {
@@ -533,9 +563,11 @@ fn call_agent_app_http_action(
     method: &str,
     input: &serde_json::Value,
     context: &AgentAppHttpActionContext,
+    options: AgentAppHttpActionOptions,
 ) -> Result<AgentAppHttpActionResponse, String> {
+    validate_agent_app_action_url(url, options.allow_external)?;
     let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_millis(options.timeout_ms))
         .build();
     let input_json = serde_json::to_string(input).map_err(|error| error.to_string())?;
     let mut request = match method {
@@ -565,7 +597,7 @@ fn call_agent_app_http_action(
     };
     let status = response.status();
     let content_type = response.content_type().to_string();
-    let text = response.into_string().map_err(|error| error.to_string())?;
+    let text = read_limited_response_body(response, options.max_response_bytes)?;
     let body = if content_type.contains("application/json") {
         serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
     } else {
@@ -576,6 +608,46 @@ fn call_agent_app_http_action(
         content_type,
         body,
     })
+}
+
+fn validate_agent_app_action_url(url: &str, allow_external: bool) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|error| format!("invalid action URL: {error}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("unsupported action URL scheme `{other}`")),
+    }
+    if allow_external {
+        return Ok(());
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err("action URL is missing a host".to_string());
+    };
+    if host.eq_ignore_ascii_case("localhost")
+        || host == "::1"
+        || host.starts_with("127.")
+    {
+        return Ok(());
+    }
+    Err("external action URLs require transport.allow_external=true".to_string())
+}
+
+fn read_limited_response_body(
+    response: ureq::Response,
+    max_response_bytes: u64,
+) -> Result<String, String> {
+    use std::io::Read as _;
+
+    let mut reader = response.into_reader().take(max_response_bytes.saturating_add(1));
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > max_response_bytes {
+        return Err(format!(
+            "agent app action response exceeded {max_response_bytes} bytes"
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
 fn send_agent_app_action_audit(
@@ -658,6 +730,11 @@ mod tests {
                 invocation_request_id: Some("invocation-a".to_string()),
                 audit: None,
             },
+            AgentAppHttpActionOptions {
+                allow_external: false,
+                timeout_ms: 30_000,
+                max_response_bytes: 1_048_576,
+            },
         )
         .expect("action response");
 
@@ -666,6 +743,68 @@ mod tests {
         assert!(captured.contains("x-arroba-agent-app-action-id: cart.add"));
         assert!(captured.contains("x-arroba-agent-app-session: session-a"));
         assert!(captured.contains("x-arroba-publication-invocation: invocation-a"));
+        handle.join().expect("action server thread");
+    }
+
+    #[test]
+    fn agent_app_http_action_rejects_external_urls_by_default() {
+        let error = call_agent_app_http_action(
+            "https://example.com/cart/add",
+            "POST",
+            &serde_json::json!({"sku": "banana"}),
+            &AgentAppHttpActionContext {
+                action_id: "cart.add".to_string(),
+                session: None,
+                invocation_request_id: None,
+                audit: None,
+            },
+            AgentAppHttpActionOptions {
+                allow_external: false,
+                timeout_ms: 1_000,
+                max_response_bytes: 1_048_576,
+            },
+        )
+        .expect_err("external URL should be rejected before network I/O");
+
+        assert!(error.contains("allow_external=true"));
+    }
+
+    #[test]
+    fn agent_app_http_action_rejects_oversized_responses() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind action server");
+        let address = listener.local_addr().expect("action server address");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept action request");
+            let _ = read_http_request(&mut stream);
+            let body = "x".repeat(128);
+            stream
+                .write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                ).as_bytes())
+                .expect("write response");
+        });
+
+        let error = call_agent_app_http_action(
+            &format!("http://{address}/cart/add"),
+            "POST",
+            &serde_json::json!({"sku": "banana"}),
+            &AgentAppHttpActionContext {
+                action_id: "cart.add".to_string(),
+                session: None,
+                invocation_request_id: None,
+                audit: None,
+            },
+            AgentAppHttpActionOptions {
+                allow_external: false,
+                timeout_ms: 30_000,
+                max_response_bytes: 32,
+            },
+        )
+        .expect_err("oversized response should be rejected");
+
+        assert!(error.contains("exceeded 32 bytes"));
         handle.join().expect("action server thread");
     }
 
