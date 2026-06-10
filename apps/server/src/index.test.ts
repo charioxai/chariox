@@ -94,6 +94,49 @@ test("publication gateway registers local runtime backend with Cloud deployment"
   })
 })
 
+test("publication gateway includes Agent App replica status in local runtime backend", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  const registered = await registerCloudPublicationDeploymentBackend({
+    deploymentId: "deployment-agent-app",
+    publication: {
+      ...baseConfig,
+      publication_id: "pub-agent-app-local",
+      replica_session_ids: ["replica-session-1", "replica-session-2"],
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "app", index: "index.html" },
+        replicas: { count: 2, per_caller_ordering: true },
+        routes: [{
+          path: "/add/*",
+          hook_id: "pub-test-hook",
+          prompt_source: "path_tail",
+          response: "streaming_shell",
+        }],
+      },
+    },
+    localUrl: "http://127.0.0.1:4567/",
+    now: () => 1_700_000_000_000,
+    profile: {
+      apiUrl: "https://cloud.example.test/",
+      accountId: "account-1",
+    },
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return new Response(JSON.stringify({ deployment: { id: "deployment-agent-app" } }), { status: 200 })
+    },
+  })
+
+  assert.equal(registered, true)
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)).backendTarget, {
+    kind: "local_runtime",
+    url: "http://127.0.0.1:4567/",
+    updated_at_ms: 1_700_000_000_000,
+    queueDepth: 0,
+    activeReplicaCount: 0,
+    readyReplicaCount: 2,
+  })
+})
+
 test("publication gateway can mark Cloud local runtime backend unavailable", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const registered = await registerCloudPublicationDeploymentBackend({

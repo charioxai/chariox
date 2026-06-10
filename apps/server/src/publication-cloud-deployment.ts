@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
+import { agentAppReplicaStatus } from "./publication-agent-app-replicas.js"
 import type { WorkflowPublicationConfig } from "./publication-types.js"
 
 export interface PublicationCloudProfile {
@@ -61,11 +62,7 @@ export async function registerCloudPublicationDeploymentBackend(
         runtimeSessionId: input.publication.session_id,
         ...(input.lastError ? { lastError: input.lastError } : {}),
         ...(status === "ready" ? {
-          backendTarget: {
-            kind: "local_runtime",
-            url: input.localUrl,
-            updated_at_ms: input.now?.() ?? Date.now(),
-          },
+          backendTarget: localRuntimeBackendTarget(input.publication, input.localUrl!, input.now?.() ?? Date.now()),
         } : {}),
       }),
     },
@@ -74,6 +71,22 @@ export async function registerCloudPublicationDeploymentBackend(
     throw new Error(`Cloud publication backend registration failed with HTTP ${response.status}: ${await response.text()}`)
   }
   return true
+}
+
+function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, localUrl: string, updatedAtMs: number): Record<string, unknown> {
+  const base = {
+    kind: "local_runtime",
+    url: localUrl,
+    updated_at_ms: updatedAtMs,
+  }
+  if (publication.agent_app?.enabled !== true) return base
+  const status = agentAppReplicaStatus(publication)
+  return {
+    ...base,
+    queueDepth: status.queueDepth,
+    activeReplicaCount: status.activeReplicaCount,
+    readyReplicaCount: status.readyReplicaCount,
+  }
 }
 
 export async function appendCloudPublicationDeploymentLogs(
