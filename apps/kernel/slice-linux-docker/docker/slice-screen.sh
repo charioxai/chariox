@@ -447,6 +447,11 @@ PY
 
 open_url() {
   require_screen_available
+  if node "$ROOT/browser-cdp.mjs" navigate "$1" >/dev/null 2>&1; then
+    sleep 1
+    focus_chromium
+    return 0
+  fi
   chromium --user-data-dir="$CHROME_PROFILE" --no-sandbox --password-store=basic --new-window "$1" >/dev/null 2>&1 &
   sleep 1
   focus_chromium

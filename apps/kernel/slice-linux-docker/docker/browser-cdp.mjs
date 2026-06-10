@@ -82,6 +82,12 @@ async function closeBrowser() {
   }
 }
 
+async function navigate(url) {
+  await withSocket(async (send) => {
+    await send("Page.navigate", { url });
+  });
+}
+
 function evaluateExpression(source, args = {}) {
   return `
     (() => {
@@ -401,7 +407,9 @@ if (command === "click") {
   process.stdout.write(JSON.stringify({ ok: true, selector }));
 } else if (command === "close-browser") {
   await closeBrowser();
+} else if (command === "navigate") {
+  await navigate(args[0]);
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser | navigate <url>");
   process.exit(2);
 }
