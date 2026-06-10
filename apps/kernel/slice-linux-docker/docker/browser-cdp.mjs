@@ -65,6 +65,23 @@ async function withSocket(callback) {
   }
 }
 
+async function closeBrowser() {
+  try {
+    await withSocket(async (send) => {
+      await send("Browser.close");
+    });
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    if (
+      !message.includes("WebSocket") &&
+      !message.includes("terminated") &&
+      !message.includes("closed")
+    ) {
+      throw error;
+    }
+  }
+}
+
 function evaluateExpression(source, args = {}) {
   return `
     (() => {
@@ -382,7 +399,9 @@ if (command === "click") {
   const selector = args[0] || null;
   await submitSelector(selector);
   process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "close-browser") {
+  await closeBrowser();
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector]");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser");
   process.exit(2);
 }

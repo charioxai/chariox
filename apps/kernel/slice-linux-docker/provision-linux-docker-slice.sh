@@ -160,6 +160,22 @@ restore_saved_home_volume() {
     bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf '/arroba-state/$archive_name'; chown -R slice:slice /home-dst"
 }
 
+machine_id_hex() {
+  printf '%s' "$SLICE_MACHINE_ID" | sha256sum | awk '{ print substr($1, 1, 32) }'
+}
+
+configure_stable_machine_identity() {
+  local machine_id
+  machine_id="$(machine_id_hex)"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "
+    set -euo pipefail
+    printf '%s\n' '$machine_id' > /etc/machine-id
+    mkdir -p /var/lib/dbus
+    printf '%s\n' '$machine_id' > /var/lib/dbus/machine-id
+    chmod 0444 /etc/machine-id /var/lib/dbus/machine-id
+  " || log "stable machine-id refresh unavailable; continuing"
+}
+
 wait_for_container_running() {
   local attempts="${1:-6}"
   local delay_seconds="${2:-5}"
@@ -317,6 +333,7 @@ ensure_container() {
   if [[ "$created_container" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
       || log "home directory ownership refresh unavailable; continuing"
+    configure_stable_machine_identity
     run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
       || log "runtime script overlay refresh unavailable; continuing"
     run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
@@ -325,6 +342,8 @@ ensure_container() {
       || log "browser CDP helper overlay refresh unavailable; continuing"
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs \
       || log "script permission refresh unavailable; continuing"
+  else
+    configure_stable_machine_identity
   fi
 }
 
