@@ -536,7 +536,7 @@ function unwrap(value, variant) {
 function listen(server) {
   return new Promise((resolve, reject) => {
     server.once("error", reject)
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, "0.0.0.0", () => {
       const address = server.address()
       resolve(address.port)
     })
