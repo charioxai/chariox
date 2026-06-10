@@ -279,6 +279,53 @@ impl KernelRuntimeState {
                     payload,
                 });
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserWaitForTextArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_wait_for_text",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let output = run_slice_screen_command(vec![
+                    "browser-wait-text".to_string(),
+                    args.text,
+                    browser_timeout_arg(args.timeout_ms),
+                ])
+                .await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserWaitForSelectorArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_wait_for_selector",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let output = run_slice_screen_command(vec![
+                    "browser-wait-selector".to_string(),
+                    args.selector,
+                    browser_timeout_arg(args.timeout_ms),
+                ])
+                .await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
+            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_IDLE_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserWaitForIdleArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_wait_for_idle",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let output = run_slice_screen_command(vec![
+                    "browser-wait-idle".to_string(),
+                    browser_timeout_arg(args.timeout_ms),
+                ])
+                .await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
             _ => {
                 return Err(DaemonError::LocalTransport {
                     operation: "dispatch_slice_runtime_tool_call",
@@ -497,6 +544,10 @@ fn required_string(
             operation,
             message: format!("missing required `{field}`"),
         })
+}
+
+fn browser_timeout_arg(timeout_ms: Option<u64>) -> String {
+    timeout_ms.unwrap_or(10_000).clamp(100, 60_000).to_string()
 }
 
 #[cfg(test)]

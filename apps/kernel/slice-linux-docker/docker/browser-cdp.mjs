@@ -484,6 +484,65 @@ async function submitSelector(selector) {
   });
 }
 
+async function waitForPredicate(label, timeoutMs, predicateSource, args = {}) {
+  const timeout = Math.max(100, Math.min(Number(timeoutMs) || 10000, 60000));
+  const started = Date.now();
+  let lastResult = null;
+  while (Date.now() - started <= timeout) {
+    lastResult = await withSocket(async (send) => evaluate(send, predicateSource, args));
+    if (lastResult?.ok) {
+      return {
+        ok: true,
+        waited_ms: Date.now() - started,
+        ...lastResult,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return {
+    ok: false,
+    error: "timeout",
+    wait: label,
+    timeout_ms: timeout,
+    waited_ms: Date.now() - started,
+    last: lastResult,
+  };
+}
+
+async function waitForText(text, timeoutMs) {
+  return await waitForPredicate("text", timeoutMs, `
+    const text = String(__arrobaArgs.text || "");
+    const body = document.body?.innerText || "";
+    return { ok: body.includes(text), text, readyState: document.readyState };
+  `, { text });
+}
+
+async function waitForSelector(selector, timeoutMs) {
+  return await waitForPredicate("selector", timeoutMs, `
+    const selector = String(__arrobaArgs.selector || "");
+    const element = selector ? document.querySelector(selector) : null;
+    if (!element) return { ok: false, selector, reason: "missing" };
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      ok: style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0,
+      selector,
+      reason: "not_visible",
+    };
+  `, { selector });
+}
+
+async function waitForIdle(timeoutMs) {
+  return await waitForPredicate("idle", timeoutMs, `
+    return {
+      ok: document.readyState === "complete",
+      readyState: document.readyState,
+      url: location.href,
+      title: document.title,
+    };
+  `);
+}
+
 if (command === "click") {
   const x = Number(args[0]);
   const y = Number(args[1]);
@@ -536,6 +595,18 @@ if (command === "click") {
   const selector = args[0] || null;
   await submitSelector(selector);
   process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "wait-text") {
+  const result = await waitForText(args[0] || "", args[1]);
+  if (!result.ok) process.exitCode = 1;
+  process.stdout.write(JSON.stringify(result));
+} else if (command === "wait-selector") {
+  const result = await waitForSelector(args[0] || "", args[1]);
+  if (!result.ok) process.exitCode = 1;
+  process.stdout.write(JSON.stringify(result));
+} else if (command === "wait-idle") {
+  const result = await waitForIdle(args[0]);
+  if (!result.ok) process.exitCode = 1;
+  process.stdout.write(JSON.stringify(result));
 } else if (command === "close-browser") {
   await closeBrowser();
 } else if (command === "navigate") {

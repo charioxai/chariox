@@ -119,6 +119,18 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_IDLE_TOOL));
     }
 
     #[test]
@@ -199,6 +211,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("slice_browser_status"),
             Some(SLICE_BROWSER_STATUS_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__arroba__slice_browser_wait_for_text"),
+            Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_wait_for_idle"),
+            Some(SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
     }

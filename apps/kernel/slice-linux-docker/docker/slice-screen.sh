@@ -440,6 +440,21 @@ browser_text() {
   node "$ROOT/browser-cdp.mjs" text
 }
 
+browser_wait_text() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" wait-text "$1" "${2:-10000}"
+}
+
+browser_wait_selector() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" wait-selector "$1" "${2:-10000}"
+}
+
+browser_wait_idle() {
+  require_screen_available
+  node "$ROOT/browser-cdp.mjs" wait-idle "${1:-10000}"
+}
+
 ocr() {
   require_screen_available
   local image="${1:-/tmp/arroba-slice-screenshot.png}"
@@ -547,12 +562,15 @@ case "${1:-status}" in
   browser-click|browser_click) shift; browser_click "$@" ;;
   browser-submit|browser_submit) shift; browser_submit "$@" ;;
   browser-text|browser_text) browser_text ;;
+  browser-wait-text|browser_wait_text) shift; browser_wait_text "$@" ;;
+  browser-wait-selector|browser_wait_selector) shift; browser_wait_selector "$@" ;;
+  browser-wait-idle|browser_wait_idle) shift; browser_wait_idle "$@" ;;
   ocr) shift; ocr "$@" ;;
   find-text|find_text) shift; find_text "$@" ;;
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

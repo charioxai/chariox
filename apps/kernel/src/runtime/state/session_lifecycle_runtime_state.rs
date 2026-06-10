@@ -13,6 +13,13 @@ impl KernelRuntimeState {
                 message: "use either kernel_ref or slice_ref, not both".to_string(),
             });
         }
+        let mut request = request;
+        if let Some(slice_ref) = slice_ref.as_deref() {
+            let slice = self.resolve_slice(slice_ref)?;
+            request = codex_linux_slice_live_sync_request(request, &slice)?;
+            self.wait_for_slice_worker_ready(slice_ref, session_request_provider(&request))
+                .await?;
+        }
         let response = if let Some(slice_ref) = slice_ref.as_deref() {
             {
                 let slice_ref = slice_ref.to_string();
@@ -108,6 +115,48 @@ impl KernelRuntimeState {
             }),
         );
         Ok(LocalDaemonResponse::SessionCreated { session, agent })
+    }
+
+    async fn wait_for_slice_worker_ready(
+        &self,
+        slice_ref: &str,
+        provider: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        const ATTEMPTS: usize = 40;
+        const DELAY_MS: u64 = 250;
+        for attempt in 0..ATTEMPTS {
+            let slice = self.resolve_slice(slice_ref)?;
+            if slice_worker_ready(&slice, provider) {
+                return Ok(());
+            }
+            if attempt == 0 {
+                crate::logging::info_with_fields(
+                    "daemon.kernel_session",
+                    "slice worker warming up",
+                    serde_json::json!({
+                        "slice_ref": slice_ref,
+                        "provider": provider,
+                        "worker_kernel_id": slice.worker_kernel_id,
+                        "providers": slice.providers,
+                    }),
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS)).await;
+        }
+        let slice = self.resolve_slice(slice_ref)?;
+        Err(DaemonError::LocalTransport {
+            operation: "session.create",
+            message: format!(
+                "slice worker warming up timed out for `{}`; worker={}, providers={}",
+                slice.name,
+                slice.worker_kernel_id.as_deref().unwrap_or("missing"),
+                if slice.providers.is_empty() {
+                    "missing".to_string()
+                } else {
+                    slice.providers.join(",")
+                }
+            ),
+        })
     }
 
     async fn create_sliced_session_response(
@@ -411,5 +460,154 @@ impl KernelRuntimeState {
             deleted_sessions.push(session);
         }
         Ok(deleted_sessions)
+    }
+}
+
+fn codex_linux_slice_live_sync_request(
+    mut request: crate::session::CreateSessionRequest,
+    slice: &crate::slice::SliceRecord,
+) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+    if !is_codex_linux_local_docker_slice_session(&request, slice) {
+        return Ok(request);
+    }
+    if request.workspace_live_sync_mode == Some(crate::config::WorkspaceLiveSyncMode::Managed) {
+        return Err(DaemonError::LocalTransport {
+            operation: "session.create",
+            message: "Codex Linux slice sessions do not support managed workspace live sync yet; use tracked live sync for this slice".to_string(),
+        });
+    }
+    if request.workspace_live_sync_mode.is_none() {
+        request.workspace_live_sync_mode = Some(crate::config::WorkspaceLiveSyncMode::Tracked);
+    }
+    Ok(request)
+}
+
+fn is_codex_linux_local_docker_slice_session(
+    request: &crate::session::CreateSessionRequest,
+    slice: &crate::slice::SliceRecord,
+) -> bool {
+    slice.backend == crate::slice::SliceBackendKind::LocalDocker
+        && slice.os.eq_ignore_ascii_case("linux")
+        && request
+            .agent_defaults
+            .as_ref()
+            .map(|defaults| defaults.provider.as_str())
+            .is_some_and(|provider| provider == "codex")
+}
+
+fn session_request_provider(request: &crate::session::CreateSessionRequest) -> Option<&str> {
+    request
+        .agent_defaults
+        .as_ref()
+        .map(|defaults| defaults.provider.as_str())
+        .filter(|provider| !provider.trim().is_empty() && *provider != "default")
+}
+
+fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>) -> bool {
+    if slice.worker_kernel_id.as_deref().is_none_or(str::is_empty) {
+        return false;
+    }
+    let Some(provider) = provider else {
+        return true;
+    };
+    slice
+        .providers
+        .iter()
+        .any(|candidate| candidate == provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_linux_slice_sessions_default_to_tracked_live_sync() {
+        let request = crate::session::CreateSessionRequest::new("workspace", "worktree")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex"))
+            .with_slice_ref("linux-slice");
+
+        let adjusted = codex_linux_slice_live_sync_request(request, &slice("linux"))
+            .expect("codex linux slice should be adjusted");
+
+        assert_eq!(
+            adjusted.workspace_live_sync_mode,
+            Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+        );
+    }
+
+    #[test]
+    fn codex_linux_slice_sessions_reject_explicit_managed_live_sync() {
+        let request = crate::session::CreateSessionRequest::new("workspace", "worktree")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex"))
+            .with_slice_ref("linux-slice")
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Managed);
+
+        let error = codex_linux_slice_live_sync_request(request, &slice("linux"))
+            .expect_err("managed codex linux slice should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("do not support managed workspace live sync"));
+    }
+
+    #[test]
+    fn non_codex_linux_slice_sessions_keep_requested_live_sync() {
+        let request = crate::session::CreateSessionRequest::new("workspace", "worktree")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode"))
+            .with_slice_ref("linux-slice");
+
+        let adjusted = codex_linux_slice_live_sync_request(request, &slice("linux"))
+            .expect("non-codex slice should not be adjusted");
+
+        assert_eq!(adjusted.workspace_live_sync_mode, None);
+    }
+
+    #[test]
+    fn slice_worker_readiness_requires_worker_presence_and_requested_provider() {
+        let mut ready = slice("linux");
+        assert!(slice_worker_ready(&ready, Some("codex")));
+        assert!(slice_worker_ready(&ready, None));
+
+        ready.worker_kernel_id = None;
+        assert!(!slice_worker_ready(&ready, Some("codex")));
+
+        ready.worker_kernel_id = Some("kernel-worker".to_string());
+        assert!(!slice_worker_ready(&ready, Some("opencode")));
+    }
+
+    fn slice(os: &str) -> crate::slice::SliceRecord {
+        crate::slice::SliceRecord {
+            id: "slice-1".to_string(),
+            name: "linux-slice".to_string(),
+            owner_kernel_id: "kernel-home".to_string(),
+            owner_machine_id: "machine-home".to_string(),
+            session_id: None,
+            session_ids: Vec::new(),
+            agent_ids: Vec::new(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: os.to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headed,
+            status: crate::slice::SliceStatus::Running,
+            last_operation: None,
+            last_operation_status: None,
+            last_error: None,
+            last_operation_at_ms: None,
+            workspace_id: Some("workspace".to_string()),
+            worktree_id: Some("worktree".to_string()),
+            workspace_mount: None,
+            worker_kernel_ref: "slice:linux-slice".to_string(),
+            worker_kernel_id: Some("kernel-worker".to_string()),
+            worker_machine_id: Some("machine-worker".to_string()),
+            relay_endpoint: None,
+            local_docker_ports: None,
+            providers: vec!["codex".to_string()],
+            provider_auth: Vec::new(),
+            saved_state_ref: None,
+            saved_state_status: None,
+            saved_state_updated_at_ms: None,
+            display_endpoint: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
     }
 }

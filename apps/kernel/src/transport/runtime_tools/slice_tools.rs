@@ -165,6 +165,43 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_TEXT_TOOL.to_string(),
+            description: "Wait until the slice browser document body contains text, keeping browser automation inside the runtime MCP instead of shell sleeps.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL.to_string(),
+            description: "Wait until a selector exists and is visible in the slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["selector"],
+                "properties": {
+                    "selector": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_IDLE_TOOL.to_string(),
+            description: "Wait until the slice browser reports a complete document ready state.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
     ];
     let aliases = canonical
         .iter()
@@ -190,6 +227,9 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
         SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
         SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_IDLE_TOOL => SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS,
         _ => return None,
     };
     let mut spec = spec.clone();
@@ -269,6 +309,27 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_slice_browser_text"
         | "mcp__arroba__slice_browser_text"
         | "mcp__arroba__arroba_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
+        SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+        | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS
+        | "arroba_slice_browser_wait_for_text"
+        | "mcp__arroba__slice_browser_wait_for_text"
+        | "mcp__arroba__arroba_slice_browser_wait_for_text" => {
+            Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
+        }
+        SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+        | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS
+        | "arroba_slice_browser_wait_for_selector"
+        | "mcp__arroba__slice_browser_wait_for_selector"
+        | "mcp__arroba__arroba_slice_browser_wait_for_selector" => {
+            Some(SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL)
+        }
+        SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+        | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS
+        | "arroba_slice_browser_wait_for_idle"
+        | "mcp__arroba__slice_browser_wait_for_idle"
+        | "mcp__arroba__arroba_slice_browser_wait_for_idle" => {
+            Some(SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
+        }
         _ => None,
     }
 }

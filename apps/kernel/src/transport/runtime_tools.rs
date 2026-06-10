@@ -73,6 +73,12 @@ pub const SLICE_BROWSER_SUBMIT_TOOL: &str = "arroba.slice_browser_submit";
 pub const SLICE_BROWSER_SUBMIT_TOOL_ALIAS: &str = "slice_browser_submit";
 pub const SLICE_BROWSER_TEXT_TOOL: &str = "arroba.slice_browser_text";
 pub const SLICE_BROWSER_TEXT_TOOL_ALIAS: &str = "slice_browser_text";
+pub const SLICE_BROWSER_WAIT_FOR_TEXT_TOOL: &str = "arroba.slice_browser_wait_for_text";
+pub const SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS: &str = "slice_browser_wait_for_text";
+pub const SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL: &str = "arroba.slice_browser_wait_for_selector";
+pub const SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS: &str = "slice_browser_wait_for_selector";
+pub const SLICE_BROWSER_WAIT_FOR_IDLE_TOOL: &str = "arroba.slice_browser_wait_for_idle";
+pub const SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS: &str = "slice_browser_wait_for_idle";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -459,6 +465,26 @@ pub struct SliceBrowserSubmitArgs {
     pub selector: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserWaitForTextArgs {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserWaitForSelectorArgs {
+    pub selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserWaitForIdleArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 fn default_append_newline() -> bool {
