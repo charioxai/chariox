@@ -149,15 +149,19 @@ container_running() {
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local archive_dir archive_name
-  archive_dir="$(dirname "$SLICE_SAVED_HOME_ARCHIVE")"
-  archive_name="$(basename "$SLICE_SAVED_HOME_ARCHIVE")"
+  local helper
+  helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
-  run_with_timeout 120 docker run --rm --user root \
+  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+  run_with_timeout 60 docker create --name "$helper" --user root \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
-    -v "$archive_dir:/arroba-state:ro" \
     "$SLICE_IMAGE" \
-    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf '/arroba-state/$archive_name'; chown -R slice:slice /home-dst"
+    sleep infinity >/dev/null
+  run_with_timeout 60 docker start "$helper" >/dev/null
+  run_with_timeout 120 docker cp "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
+  run_with_timeout 120 docker exec -u root "$helper" \
+    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
+  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
 }
 
 machine_id_hex() {

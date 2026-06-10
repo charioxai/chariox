@@ -967,54 +967,139 @@ fn archive_local_docker_home_volume(
     archive_path: &Path,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    let archive_dir = archive_path
-        .parent()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation,
-            message: format!("archive path `{}` has no parent", archive_path.display()),
-        })?;
-    let archive_name = archive_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation,
-            message: format!("archive path `{}` has no file name", archive_path.display()),
-        })?;
     let volume = format!("{}-home", local_docker_container_name(record));
-    let output = Command::new("docker")
+    let helper = format!(
+        "{}-home-archive-{}",
+        local_docker_container_name(record),
+        crate::session::unix_epoch_ms()
+    );
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &helper])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let result = archive_local_docker_home_volume_with_helper(
+        &helper,
+        &volume,
+        &options.docker_image,
+        archive_path,
+        operation,
+    );
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &helper])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    result?;
+    let size = file_size(archive_path).unwrap_or(0);
+    if size > 0 {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "home volume archive `{}` was not created or is empty",
+                archive_path.display()
+            ),
+        })
+    }
+}
+
+fn archive_local_docker_home_volume_with_helper(
+    helper: &str,
+    volume: &str,
+    image: &str,
+    archive_path: &Path,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let status = Command::new("docker")
         .args([
-            "run",
-            "--rm",
+            "create",
+            "--name",
+            helper,
             "--user",
             "root",
             "-v",
             &format!("{volume}:/home-src:ro"),
-            "-v",
-            &format!("{}:/arroba-state", archive_dir.display()),
-            &options.docker_image,
+            image,
+            "sleep",
+            "infinity",
+        ])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to create home archive helper `{helper}`: {error}"),
+        })?;
+    if !status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("docker create home archive helper `{helper}` failed with {status}"),
+        });
+    }
+    let status = Command::new("docker")
+        .args(["start", helper])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to start home archive helper `{helper}`: {error}"),
+        })?;
+    if !status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("docker start home archive helper `{helper}` failed with {status}"),
+        });
+    }
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "root",
+            helper,
             "bash",
             "-lc",
-            &format!(
-                "set -euo pipefail; cd /home-src; tar --zstd -cf /arroba-state/{archive_name} ."
-            ),
+            "set -euo pipefail; cd /home-src; tar --zstd -cf /tmp/home.tar.zst .",
         ])
         .output()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!("failed to archive slice home volume `{volume}`: {error}"),
         })?;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "home volume archive failed with status {}: {}{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
     }
-    Err(DaemonError::LocalTransport {
-        operation,
-        message: format!(
-            "home volume archive failed with status {}: {}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-    })
+    let status = Command::new("docker")
+        .args([
+            "cp",
+            &format!("{helper}:/tmp/home.tar.zst"),
+            &archive_path.display().to_string(),
+        ])
+        .status()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to copy home archive from helper `{helper}` to `{}`: {error}",
+                archive_path.display()
+            ),
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "docker cp home archive from helper `{helper}` to `{}` failed with {status}",
+                archive_path.display()
+            ),
+        })
+    }
 }
 
 fn active_state_id(record: &SliceRecord) -> String {
