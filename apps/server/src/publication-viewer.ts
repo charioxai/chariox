@@ -82,6 +82,7 @@ export function publicationViewerPage(
       "    <header class=\"pane-header\">",
       "      <h1>Workflow Run</h1>",
       "      <p id=\"status\">Ready</p>",
+      "      <p id=\"queue-status\" hidden></p>",
       "    </header>",
       "    <form id=\"invoke-form\" class=\"invoke-form\">",
       "      <textarea name=\"prompt\" rows=\"7\" autofocus></textarea>",
@@ -122,6 +123,7 @@ function viewerScript() {
 const viewerConfig = window.__arrobaPublicationViewerConfig || {};
 const formEl = document.querySelector('#invoke-form');
 const statusEl = document.querySelector('#status');
+const queueStatusEl = document.querySelector('#queue-status');
 const outputEl = document.querySelector('#output');
 const htmlOutputEl = document.querySelector('#html-output');
 const traceStatusEl = document.querySelector('#trace-status');
@@ -132,7 +134,7 @@ if (!viewerConfig.showForm && formEl) formEl.hidden = true;
 renderRun(viewerConfig.initialResult?.workflow_run);
 for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
-if (!viewerConfig.eventsUrl && viewerConfig.initialResult?.queued) statusEl.textContent = 'Queued';
+if (viewerConfig.initialResult?.queued) renderQueueStatus(viewerConfig.initialResult.response || viewerConfig.initialResult);
 
 formEl?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -256,6 +258,7 @@ function resetForInvocation() {
   traceFeedEl.innerHTML = '';
   traceStatusEl.textContent = 'No exposed traces';
   statusEl.textContent = 'Queued';
+  renderQueueStatus(null);
 }
 
 function subscribeHumanHttpEvents(path) {
@@ -303,7 +306,7 @@ function parseEventData(event) {
 }
 
 function applyPublicationEvent(type, payload) {
-  if (type === 'queued') statusEl.textContent = 'Queued';
+  if (type === 'queued') renderQueueStatus(payload);
   if (type === 'started') renderRun(payload.workflow_run);
   if (type === 'status') renderRun(payload.workflow_run);
   if (type === 'partial') renderPartialOutput(payload.message || '');
@@ -319,7 +322,25 @@ function applyPublicationEvent(type, payload) {
 function renderRun(run) {
   if (!run) return;
   statusEl.textContent = run.status || 'accepted';
+  if (queueStatusEl) {
+    queueStatusEl.hidden = true;
+    queueStatusEl.textContent = '';
+  }
   if (run.final_output) renderFinalOutput(run.final_output.message);
+}
+
+function renderQueueStatus(payload) {
+  statusEl.textContent = 'Queued';
+  if (!queueStatusEl) return;
+  const position = payload?.queue_position ?? payload?.position ?? payload?.queued_prompt?.position ?? payload?.response?.queued_prompt?.position;
+  const id = payload?.invocation_id ?? payload?.queued_prompt?.id ?? payload?.response?.queued_prompt?.id;
+  const queue = payload?.queue_ref ?? payload?.queued_prompt?.queue_ref ?? payload?.response?.queued_prompt?.queue_ref;
+  const details = [];
+  if (typeof position === 'number') details.push('position ' + position);
+  if (queue) details.push('queue ' + queue);
+  if (id) details.push('id ' + id);
+  queueStatusEl.hidden = details.length === 0;
+  queueStatusEl.textContent = details.length ? 'Queued: ' + details.join(' / ') : '';
 }
 
 function renderPartialOutput(message) {
@@ -483,7 +504,7 @@ function htmlDocument(title: string, body: string) {
     "    .pane-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 14px; }",
     "    h1, h2 { margin: 0; font-size: 18px; line-height: 1.2; letter-spacing: 0; }",
     "    h2 { font-size: 14px; text-transform: uppercase; color: #4d564b; }",
-    "    #status, #trace-status { margin: 0; color: #586069; font-size: 13px; }",
+    "    #status, #trace-status, #queue-status { margin: 0; color: #586069; font-size: 13px; }",
     "    .invoke-form { border: 1px solid #d0d0c8; background: #fafbf8; border-radius: 8px; padding: 14px; margin-bottom: 16px; }",
     "    textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #bbb; border-radius: 6px; font: inherit; resize: vertical; background: #fff; }",
     "    .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }",

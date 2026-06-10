@@ -2874,6 +2874,8 @@ test("human HTTP queued browser GET opens an invocation SSE subscription", async
     assert.equal(response.statusCode, 200)
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /\/\.well-known\/arroba\/publication\/invocations\//)
+    assert.match(response.body, /id="queue-status"/)
+    assert.match(response.body, /renderQueueStatus/)
   } finally {
     await app.close()
   }
