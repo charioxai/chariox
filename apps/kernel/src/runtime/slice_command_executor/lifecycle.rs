@@ -16,6 +16,11 @@ use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget}
 use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summaries};
+use crate::runtime::cloud_api_client::issue_cloud_runtime_token;
+use crate::runtime::cloud_relay_control::{
+    cloud_relay_profile_has_runtime_credentials, cloud_runtime_token_subject,
+    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+};
 
 const DISPLAY_TUNNEL_TTL_MS: u64 = 60_000;
 
@@ -297,7 +302,7 @@ pub(super) async fn execute_start_slice_request(
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
-    let relay = local_docker_slice_relay(config_projection, &initial_record);
+    let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
         crate::slice::SliceRelayEndpoint {
@@ -912,17 +917,39 @@ async fn discover_started_slice_worker(
     }))
 }
 
-fn local_docker_slice_relay(
+async fn local_docker_slice_relay(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
-) -> crate::slice::LocalDockerSliceRelay {
-    let config = config_projection.snapshot();
+) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError> {
+    let mut config = config_projection.snapshot();
+    let mut hosted_relay_token = None;
     if let (Some(relay_url), Some(relay_token)) =
         (config.relay_url.clone(), config.relay_token.clone())
     {
         if configured_relay_is_container_reachable(&relay_url) {
+            hosted_relay_token =
+                Some(hosted_cloud_slice_relay_token(&mut config, relay_token).await?);
+        }
+    }
+    Ok(local_docker_slice_relay_for_config(
+        &config,
+        slice,
+        hosted_relay_token,
+    ))
+}
+
+fn local_docker_slice_relay_for_config(
+    config: &crate::config::DaemonConfig,
+    slice: &crate::slice::SliceRecord,
+    hosted_relay_token: Option<String>,
+) -> crate::slice::LocalDockerSliceRelay {
+    if let (Some(relay_url), Some(relay_token)) =
+        (config.relay_url.clone(), config.relay_token.clone())
+    {
+        if configured_relay_is_container_reachable(&relay_url) {
+            let relay_token = hosted_relay_token.unwrap_or(relay_token);
             let cloud_relay_config_json =
-                hosted_cloud_relay_config_json(&config, &relay_url, &relay_token);
+                hosted_cloud_relay_config_json(config, &relay_url, &relay_token);
             return crate::slice::LocalDockerSliceRelay {
                 relay_url: relay_url.clone(),
                 container_relay_url: Some(relay_url),
@@ -932,6 +959,34 @@ fn local_docker_slice_relay(
         }
     }
     crate::slice::local_docker_private_relay(slice)
+}
+
+async fn hosted_cloud_slice_relay_token(
+    config: &mut crate::config::DaemonConfig,
+    fallback_relay_token: String,
+) -> Result<String, DaemonError> {
+    let Some(profile) = config.cloud_relay.clone() else {
+        return Ok(fallback_relay_token);
+    };
+    if !cloud_relay_profile_has_runtime_credentials(&profile) {
+        return Ok(fallback_relay_token);
+    }
+    let token_subject = cloud_runtime_token_subject(config, &profile);
+    let issued = issue_cloud_runtime_token(
+        &profile,
+        &token_subject.subject,
+        token_subject.subject_kind,
+        None,
+        None,
+        token_subject.machine_id,
+        None,
+    )
+    .await?;
+    if let Some(profile) = config.cloud_relay.as_mut() {
+        profile.token_expires_at_ms =
+            Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
+    }
+    Ok(issued.token)
 }
 
 fn hosted_cloud_relay_config_json(
@@ -1043,7 +1098,8 @@ mod tests {
         config.relay_token = Some("shared-token".to_string());
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+        let config = projection.snapshot();
+        let relay = local_docker_slice_relay_for_config(&config, &slice(Vec::new()), None);
 
         assert_eq!(relay.relay_url, "wss://relay.example.test");
         assert_eq!(
@@ -1062,14 +1118,19 @@ mod tests {
         config.cloud_relay = Some(cloud_profile());
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+        let config = projection.snapshot();
+        let relay = local_docker_slice_relay_for_config(
+            &config,
+            &slice(Vec::new()),
+            Some("fresh-worker-token".to_string()),
+        );
 
         let profile_json = relay
             .cloud_relay_config_json
             .expect("hosted cloud relay should pass refreshable config");
         let payload: serde_json::Value = serde_json::from_str(&profile_json).unwrap();
         assert_eq!(payload["relay_url"], "wss://relay.example.test");
-        assert_eq!(payload["relay_token"], "shared-token");
+        assert_eq!(payload["relay_token"], "fresh-worker-token");
         assert_eq!(
             payload["cloud_relay"]["machine_credential"],
             "machine-secret"
@@ -1083,7 +1144,8 @@ mod tests {
         config.relay_token = Some("self-host-token".to_string());
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+        let config = projection.snapshot();
+        let relay = local_docker_slice_relay_for_config(&config, &slice(Vec::new()), None);
 
         assert_eq!(relay.relay_url, "ws://relay.lan:49100");
         assert_eq!(
@@ -1101,7 +1163,8 @@ mod tests {
         config.relay_token = Some("local-token".to_string());
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+        let config = projection.snapshot();
+        let relay = local_docker_slice_relay_for_config(&config, &slice(Vec::new()), None);
 
         assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
         assert_eq!(relay.container_relay_url, None);
@@ -1116,7 +1179,8 @@ mod tests {
         config.relay_token = None;
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let relay = local_docker_slice_relay(&projection, &slice(Vec::new()));
+        let config = projection.snapshot();
+        let relay = local_docker_slice_relay_for_config(&config, &slice(Vec::new()), None);
 
         assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
         assert_eq!(relay.container_relay_url, None);
