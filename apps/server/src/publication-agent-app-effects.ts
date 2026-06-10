@@ -199,12 +199,13 @@ function storeForPublication(publication: WorkflowPublicationConfig): AgentAppEf
   const key = publication.publication_id
   const existing = effectStores.get(key)
   if (existing) return existing
+  const stateFile = stateFileForPublication(publication)
   const created: AgentAppEffectStore = loadPersistedStore(publication) ?? {
     invocationOverlays: new Map(),
     sessionOverlays: new Map(),
     persistentPatches: new Map(),
     invocationRoutes: new Map(),
-    stateFile: stateFileForPublication(publication) ?? undefined,
+    ...(stateFile ? { stateFile } : {}),
   }
   effectStores.set(key, created)
   return created
