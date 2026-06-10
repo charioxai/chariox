@@ -47,6 +47,7 @@ function parseArgs(argv) {
     spawnDaemon: true,
     machineRef: null,
     historyDir: null,
+    providerHistoryDirs: [],
     keepArtifactsOnFailure: false,
     positiveOnly: false,
     mode: 'managed',
@@ -75,6 +76,7 @@ function parseArgs(argv) {
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
     else if (arg === '--machine-ref') options.machineRef = argv[++i]
     else if (arg === '--history-dir') options.historyDir = argv[++i]
+    else if (arg === '--provider-history-dir') options.providerHistoryDirs.push(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--positive-only') options.positiveOnly = true
     else if (arg === '--mode') {
@@ -123,6 +125,7 @@ function printHelp() {
     '  --no-spawn-daemon',
     '  --machine-ref MACHINE_ID_OR_ALIAS (spawn agents on a remote worker machine)',
     '  --history-dir PATH (session history dir when using --no-spawn-daemon)',
+    '  --provider-history-dir PATH (additional provider-event history dir; repeatable for remote workers)',
     '  --keep-artifacts-on-failure',
     '  --positive-only (stop after the managed read/write/edit/patch/move/delete smoke)',
     '  --mode off|managed|tracked',
@@ -620,13 +623,10 @@ async function waitForPromptPhase({
   })
 }
 
-async function historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs }) {
+async function historyProviderOutputMarkerGroups({ historyDir, providerHistoryDirs, markerGroups, sinceMs }) {
   const remaining = markerGroups.map((markers) => [...markers])
   const outputByKey = new Map()
-  const files = (await readdir(historyDir).catch(() => []))
-    .filter((file) => file.endsWith('.jsonl'))
-    .map((file) => path.join(historyDir, file))
-    .sort()
+  const files = (await managedHistoryFiles(managedHistoryDirs(historyDir, providerHistoryDirs))).sort()
 
   for (const file of files) {
     const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
@@ -654,13 +654,13 @@ async function pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId }
   await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
 }
 
-async function waitForHistoryOutputMarkers({ historyDir, markerGroups, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+async function waitForHistoryOutputMarkers({ historyDir, providerHistoryDirs, markerGroups, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
   let missing = markerGroups
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     await throwIfProviderError({ historyDir, sinceMs })
-    missing = await historyProviderOutputMarkerGroups({ historyDir, markerGroups, sinceMs })
+    missing = await historyProviderOutputMarkerGroups({ historyDir, providerHistoryDirs, markerGroups, sinceMs })
     if (missing.length === 0) return
     await sleep(pollMs)
   }
@@ -835,9 +835,24 @@ function parseManagedToolOutput(rawOutput) {
   return parsed
 }
 
-async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+function managedHistoryDirs(historyDir, providerHistoryDirs = []) {
+  return [...new Set([historyDir, ...providerHistoryDirs].filter(Boolean))]
+}
+
+async function managedHistoryFiles(historyDirs) {
+  const nested = await Promise.all(historyDirs.map(async (dir) => {
+    const files = await readdir(dir).catch(() => [])
+    return files
+      .filter((file) => file.endsWith('.jsonl'))
+      .map((file) => path.join(dir, file))
+  }))
+  return nested.flat()
+}
+
+async function waitForManagedReadSnapshot({ historyDir, providerHistoryDirs, artifactPath, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const snapshots = await waitForManagedReadSnapshots({
     historyDir,
+    providerHistoryDirs,
     artifactPath,
     count: 1,
     sinceMs: 0,
@@ -850,14 +865,13 @@ async function waitForManagedReadSnapshot({ historyDir, artifactPath, timeoutMs,
   return snapshots[0]
 }
 
-async function waitForManagedReadSnapshots({ historyDir, artifactPath, count, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+async function waitForManagedReadSnapshots({ historyDir, providerHistoryDirs, artifactPath, count, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
+  const historyDirs = managedHistoryDirs(historyDir, providerHistoryDirs)
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     const snapshots = []
-    const files = (await readdir(historyDir).catch(() => []))
-      .filter((file) => file.endsWith('.jsonl'))
-      .map((file) => path.join(historyDir, file))
+    const files = await managedHistoryFiles(historyDirs)
     for (const file of files) {
       const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
       for (const line of lines) {
@@ -899,9 +913,10 @@ async function waitForManagedReadSnapshots({ historyDir, artifactPath, count, si
   throw new Error(`timed out waiting for ${count} managed read snapshots for ${artifactPath}`)
 }
 
-async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+async function waitForManagedEditResult({ historyDir, providerHistoryDirs, artifactPath, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const results = await waitForManagedEditResults({
     historyDir,
+    providerHistoryDirs,
     artifactPath,
     sinceMs,
     count: 1,
@@ -914,14 +929,13 @@ async function waitForManagedEditResult({ historyDir, artifactPath, sinceMs, tim
   return results[0]
 }
 
-async function waitForManagedEditResults({ historyDir, artifactPath, sinceMs, count, timeoutMs, pollMs, client, sessionId, attachmentId }) {
+async function waitForManagedEditResults({ historyDir, providerHistoryDirs, artifactPath, sinceMs, count, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
+  const historyDirs = managedHistoryDirs(historyDir, providerHistoryDirs)
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     const results = []
-    const files = (await readdir(historyDir).catch(() => []))
-      .filter((file) => file.endsWith('.jsonl'))
-      .map((file) => path.join(historyDir, file))
+    const files = await managedHistoryFiles(historyDirs)
     for (const file of files) {
       const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
       for (const line of lines) {
@@ -968,6 +982,7 @@ async function runLiveCollisionAndExternalChecks({
   workspace,
   outputsDir,
   historyDir,
+  providerHistoryDirs,
   timeoutMs,
   pollMs,
   getSessionStateRequest,
@@ -1008,6 +1023,7 @@ async function runLiveCollisionAndExternalChecks({
     }
     const overlapReadSnapshots = await waitForManagedReadSnapshots({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-overlap.txt`,
       sinceMs: overlapSameAreaReadStartedAt,
       count: machineRef ? 1 : 2,
@@ -1038,6 +1054,7 @@ async function runLiveCollisionAndExternalChecks({
     }
     const overlapEditResults = await waitForManagedEditResults({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-overlap.txt`,
       sinceMs: overlapSameAreaEditStartedAt,
       // Remote lease histories can mirror one side of a cross-provider collision
@@ -1105,6 +1122,7 @@ async function runLiveCollisionAndExternalChecks({
     ].join('\n'), []))
     const nonOverlapRead = await waitForManagedReadSnapshot({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-external-nonoverlap.txt`,
       timeoutMs,
       pollMs,
@@ -1114,6 +1132,7 @@ async function runLiveCollisionAndExternalChecks({
     })
     await waitForHistoryOutputMarkers({
       historyDir,
+      providerHistoryDirs,
       markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_READ_DONE`]],
       sinceMs: nonOverlapReadStartedAt,
       timeoutMs,
@@ -1148,6 +1167,7 @@ async function runLiveCollisionAndExternalChecks({
     ].join('\n'), []))
     const nonOverlapEdit = await waitForManagedEditResult({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-external-nonoverlap.txt`,
       sinceMs: nonOverlapEditStartedAt,
       timeoutMs,
@@ -1158,6 +1178,7 @@ async function runLiveCollisionAndExternalChecks({
     })
     await waitForHistoryOutputMarkers({
       historyDir,
+      providerHistoryDirs,
       markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_EDIT_DONE`]],
       sinceMs: nonOverlapEditStartedAt,
       timeoutMs,
@@ -1191,6 +1212,7 @@ async function runLiveCollisionAndExternalChecks({
     ].join('\n'), []))
     const overlapRead = await waitForManagedReadSnapshot({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-external-overlap.txt`,
       timeoutMs,
       pollMs,
@@ -1200,6 +1222,7 @@ async function runLiveCollisionAndExternalChecks({
     })
     await waitForHistoryOutputMarkers({
       historyDir,
+      providerHistoryDirs,
       markerGroups: [[`${provider.toUpperCase()}_EXTERNAL_OVERLAP_READ_DONE`]],
       sinceMs: overlapReadStartedAt,
       timeoutMs,
@@ -1234,6 +1257,7 @@ async function runLiveCollisionAndExternalChecks({
     ].join('\n'), []))
     const overlapEdit = await waitForManagedEditResult({
       historyDir,
+      providerHistoryDirs,
       artifactPath: `outputs/${provider}-external-overlap.txt`,
       sinceMs: overlapEditStartedAt,
       timeoutMs,
@@ -1244,6 +1268,7 @@ async function runLiveCollisionAndExternalChecks({
     })
     await waitForHistoryOutputMarkers({
       historyDir,
+      providerHistoryDirs,
       markerGroups: [[
         `${provider.toUpperCase()}_EXTERNAL_OVERLAP_BLOCKED`,
         `${provider.toUpperCase()}_EXTERNAL_OVERLAP_UNEXPECTED_APPLIED`,
@@ -2823,6 +2848,7 @@ async function main() {
       workspace,
       outputsDir,
       historyDir,
+      providerHistoryDirs: options.providerHistoryDirs,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       getSessionStateRequest,

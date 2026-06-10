@@ -247,6 +247,12 @@ pub enum RelayPeerRequest {
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
+    DrainLeasedRuntimeProjection {
+        leased_agent_id: String,
+        provider_run_id: String,
+        #[serde(default)]
+        pump_output: bool,
+    },
     CompleteLeasedPrompt {
         leased_agent_id: String,
     },
@@ -366,6 +372,10 @@ pub enum RelayPeerResponse {
     LeasedPromptSubmitted {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
+    },
+    LeasedRuntimeProjectionDrained {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event: Option<RelayPeerEvent>,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,

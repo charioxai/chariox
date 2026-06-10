@@ -1,6 +1,34 @@
 #![allow(unused_imports)]
 use super::support::*;
 
+#[test]
+fn drain_leased_runtime_projection_protocol_shape_is_stable() {
+    let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
+        leased_agent_id: "leased-agent-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        pump_output: true,
+    };
+    let request_json = serde_json::to_value(&request).expect("request should serialize");
+    assert_eq!(
+        request_json,
+        serde_json::json!({
+            "kind": "drain_leased_runtime_projection",
+            "leased_agent_id": "leased-agent-1",
+            "provider_run_id": "provider-run-1",
+            "pump_output": true,
+        })
+    );
+
+    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
+    let response_json = serde_json::to_value(&response).expect("response should serialize");
+    assert_eq!(
+        response_json,
+        serde_json::json!({
+            "kind": "leased_runtime_projection_drained",
+        })
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let _relay_test_guard = relay_client_test_guard().await;

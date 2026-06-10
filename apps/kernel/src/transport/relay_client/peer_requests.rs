@@ -302,6 +302,30 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::DrainLeasedRuntimeProjection {
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+        } => {
+            let drained = router
+                .relay_drain_leased_runtime_projection(
+                    &leased_agent_id,
+                    &provider_run_id,
+                    pump_output,
+                )
+                .await;
+            match drained {
+                Ok(event) => RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: event.map(|(_target_daemon_id, event)| event),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
             let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
             match completion {

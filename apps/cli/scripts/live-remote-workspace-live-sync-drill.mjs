@@ -546,6 +546,7 @@ async function main() {
       '--no-spawn-daemon',
       '--machine-ref', workerMachineId,
       '--history-dir', homeHistoryDir,
+      ...(options.hetznerWorker ? [] : ['--provider-history-dir', workerHistoryDir]),
       '--providers', options.providers.join(','),
       '--model', options.model,
       ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
