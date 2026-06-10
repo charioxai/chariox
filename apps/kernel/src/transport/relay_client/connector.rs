@@ -34,6 +34,26 @@ struct StaticRelayConfig {
     relay_token: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingRelayConfigDisposition {
+    LocalIdle,
+    CloudUnavailable,
+}
+
+fn should_refresh_cloud_relay(config: &crate::config::DaemonConfig) -> bool {
+    config.cloud_relay.is_some()
+}
+
+fn missing_relay_config_disposition(
+    config: &crate::config::DaemonConfig,
+) -> MissingRelayConfigDisposition {
+    if config.cloud_relay.is_some() {
+        MissingRelayConfigDisposition::CloudUnavailable
+    } else {
+        MissingRelayConfigDisposition::LocalIdle
+    }
+}
+
 async fn disconnect_relay(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -78,6 +98,7 @@ async fn run_daemon_relay_connector_inner(
         }
     };
     let command_sequence = Arc::new(AtomicU64::new(1));
+    let mut missing_relay_config_reported = false;
 
     loop {
         if *shutdown.borrow() {
@@ -92,26 +113,29 @@ async fn run_daemon_relay_connector_inner(
         }
 
         if static_relay.is_none() {
-            let cloud_refresh_started = Instant::now();
-            match router.ensure_cloud_relay_connection().await {
-                Ok(()) => {
-                    crate::logging::info_with_fields(
-                        "daemon.startup",
-                        "cloud relay profile hydrated",
-                        serde_json::json!({
-                            "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
-                        }),
-                    );
-                }
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "failed to refresh cloud relay token",
-                        serde_json::json!({
-                            "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
-                            "error": error.to_string(),
-                        }),
-                    );
+            let config = router.relay_config_snapshot();
+            if should_refresh_cloud_relay(&config) {
+                let cloud_refresh_started = Instant::now();
+                match router.ensure_cloud_relay_connection().await {
+                    Ok(()) => {
+                        crate::logging::info_with_fields(
+                            "daemon.startup",
+                            "cloud relay profile hydrated",
+                            serde_json::json!({
+                                "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.relay_client",
+                            "failed to refresh cloud relay token",
+                            serde_json::json!({
+                                "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
                 }
             }
         }
@@ -132,8 +156,32 @@ async fn run_daemon_relay_connector_inner(
                         Duration::from_millis(config.relay_heartbeat_ms),
                     ),
                     _ => {
-                        disconnect_relay(&router, &state, "relay configuration unavailable", true)
-                            .await;
+                        if !missing_relay_config_reported {
+                            match missing_relay_config_disposition(&config) {
+                                MissingRelayConfigDisposition::CloudUnavailable => {
+                                    disconnect_relay(
+                                        &router,
+                                        &state,
+                                        "relay configuration unavailable",
+                                        true,
+                                    )
+                                    .await;
+                                }
+                                MissingRelayConfigDisposition::LocalIdle => {
+                                    crate::logging::info_with_fields(
+                                        "daemon.relay_client",
+                                        "relay connector idle",
+                                        serde_json::json!({
+                                            "reason": "relay configuration unavailable",
+                                        }),
+                                    );
+                                    super::connection_state::set_disconnected(&state).await;
+                                }
+                            }
+                            missing_relay_config_reported = true;
+                        } else {
+                            super::connection_state::set_disconnected(&state).await;
+                        }
                         let wait = sleep(Duration::from_secs(1));
                         tokio::pin!(wait);
                         tokio::select! {
@@ -156,6 +204,7 @@ async fn run_daemon_relay_connector_inner(
                 }
             }
         };
+        missing_relay_config_reported = false;
 
         crate::logging::info_with_fields(
             "daemon.relay_client",
@@ -495,5 +544,50 @@ async fn run_daemon_relay_connector_inner(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_relay_config_without_cloud_profile_is_local_idle() {
+        let config = crate::config::DaemonConfig::for_tests();
+
+        assert!(!should_refresh_cloud_relay(&config));
+        assert_eq!(
+            missing_relay_config_disposition(&config),
+            MissingRelayConfigDisposition::LocalIdle
+        );
+    }
+
+    #[test]
+    fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "user@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-1".to_string(),
+            account_slug: "account".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "wss://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: None,
+            client_alias: None,
+            machine_id: None,
+            machine_alias: None,
+            machine_credential: Some("machine-credential".to_string()),
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: None,
+        });
+
+        assert!(should_refresh_cloud_relay(&config));
+        assert_eq!(
+            missing_relay_config_disposition(&config),
+            MissingRelayConfigDisposition::CloudUnavailable
+        );
     }
 }
