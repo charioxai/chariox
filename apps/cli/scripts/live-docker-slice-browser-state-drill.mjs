@@ -53,12 +53,19 @@ try {
 }
 
 async function run() {
+  log("checking Docker")
   await assertDockerReady()
+  log("writing disposable config")
   await seedConfig()
+  log("starting local webmail fixture")
   fixture = await startFixture()
   fixturePort = fixture.port
+  await assertFixtureAlive()
+  log(`fixture listening on ${fixturePort}`)
 
+  log("building kernel")
   const kernel = await buildKernel()
+  log("starting disposable kernel")
   start("kernel", kernel, [], {
     env: {
       ...process.env,
@@ -81,6 +88,7 @@ async function run() {
   ])
   const [{ LocalIpcClient }, importedRequests] = imported
   requests = importedRequests
+  log(`waiting for kernel ${kernelUrl}`)
   client = await waitFor(async () => {
     const candidate = new LocalIpcClient(kernelUrl)
     try {
@@ -92,6 +100,7 @@ async function run() {
     }
   }, 60_000, "kernel did not accept local connections")
 
+  log(`creating slice ${sliceName}`)
   slice = unwrap(await client.send(requests.createSliceRequest({
     name: sliceName,
     backend: "local_docker",
@@ -99,27 +108,39 @@ async function run() {
     workspaceMount: repoRoot,
     workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
+  log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  log("slice is running")
 
   await writeFile(path.join(artifactDir, "container-before-save.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("initial")
+  log("installing program marker")
   await installProgramMarker()
+  log("running local browser state phase")
   await runLocalBrowserStatePhase("before")
+  log("running first webmail phase")
   await runWebmailPhase("first", markers.firstSubject)
   await screenshot("01-before-save")
 
+  log("saving slice state")
   const saved = unwrap(await client.send(requests.saveSliceStateRequest(slice.id, "shutdown")), "SliceStateSaved")
   assert.ok(saved.state?.id, "save-state should create a saved state record")
   await writeFile(path.join(artifactDir, "save-state-response.json"), JSON.stringify(saved, null, 2))
+  log("removing container and home volume to force saved-state restore")
   await removeContainerAndHomeVolume()
 
+  log("starting restored slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  log("restored slice is running")
   await writeFile(path.join(artifactDir, "container-after-restore.inspect.json"), await dockerText(["inspect", containerName]))
   await inspectState("restored")
+  log("verifying program marker")
   await verifyProgramMarker()
+  log("verifying local browser state after restore")
   await verifyLocalBrowserStateAfterRestore()
+  log("running second webmail phase after restore")
   await runWebmailPhase("second", markers.secondSubject, { expectAuthenticated: true })
   await screenshot("02-after-restore-second-send")
 
@@ -322,12 +343,14 @@ function html(title, body) {
 }
 
 async function runLocalBrowserStatePhase(label) {
+  await assertFixtureAlive()
   await sliceScreen(["open-url", fixtureUrl("/state")])
   await waitForBrowserText("M20_STATE_SEEDED", 30_000, `${label} state seed did not complete`)
   await screenshot(`state-seeded-${label}`)
 }
 
 async function verifyLocalBrowserStateAfterRestore() {
+  await assertFixtureAlive()
   await sliceScreen(["open-url", fixtureUrl("/state-check")])
   const text = await waitForBrowserText(markers.stateIndexedDb, 30_000, "browser persisted state not visible after restore")
   assert.match(text, new RegExp(escapeRegExp(markers.stateCookie)), "cookie marker should persist")
@@ -337,6 +360,7 @@ async function verifyLocalBrowserStateAfterRestore() {
 }
 
 async function runWebmailPhase(label, subject, options = {}) {
+  await assertFixtureAlive()
   await sliceScreen(["open-url", fixtureUrl(options.expectAuthenticated ? "/mail/inbox" : "/mail/login")])
   const pageText = await waitForBrowserText(options.expectAuthenticated ? "M20_WEBMAIL_INBOX" : "M20 webmail login", 30_000, `${label} webmail did not open`)
   if (options.expectAuthenticated) {
@@ -403,6 +427,13 @@ async function waitForSliceRunning(sliceRef) {
     const current = unwrap(await client.send(requests.getSliceRequest(sliceRef)), "Slice").slice
     return current.status === "running" ? current : false
   }, 240_000, `slice ${sliceRef} did not become running`)
+}
+
+async function assertFixtureAlive() {
+  const response = await fetch(`http://127.0.0.1:${fixturePort}/mail/login`, {
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.ok(response.ok, `fixture health returned HTTP ${response.status}`)
 }
 
 async function removeContainerAndHomeVolume() {
@@ -522,6 +553,10 @@ async function writeManifest(ok, error = null) {
     markers,
     screenshots,
   }, null, 2))
+}
+
+function log(message) {
+  console.log(`[m20-docker-state] ${message}`)
 }
 
 function fixtureUrl(pathname) {
