@@ -52,6 +52,35 @@ export async function stopRemoteHomeExtensionHetznerRelay(options, remoteRoot) {
   ].join(" ")).catch(() => {})
 }
 
+export async function stopRemoteHomeExtensionHetznerWorker(options, {
+  remoteRoot,
+  workerDaemonId,
+}) {
+  const pidFile = path.posix.join(remoteRoot, "worker.pid")
+  await runHetznerCommand(options, [
+    "stop_owned_pid() {",
+    "  pid=\"$1\";",
+    "  test -n \"$pid\" || return 0;",
+    "  test -r \"/proc/$pid/environ\" || return 0;",
+    `  env_text=$(tr '\\0' '\\n' < "/proc/$pid/environ" 2>/dev/null || true);`,
+    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`ARROBA_DAEMON_ID=${workerDaemonId}`)} || return 0;`,
+    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`ARROBA_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)} || return 0;`,
+    "  kill \"$pid\" 2>/dev/null || true;",
+    "  for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || return 0; sleep 0.2; done;",
+    "  kill -9 \"$pid\" 2>/dev/null || true;",
+    "};",
+    `if test -f ${shellQuote(pidFile)}; then`,
+    `  stop_owned_pid "$(cat ${shellQuote(pidFile)} 2>/dev/null || true)";`,
+    `  rm -f ${shellQuote(pidFile)};`,
+    "fi;",
+    "for env_file in /proc/[0-9]*/environ; do",
+    "  test -r \"$env_file\" || continue;",
+    "  pid=${env_file#/proc/}; pid=${pid%/environ};",
+    "  stop_owned_pid \"$pid\";",
+    "done",
+  ].join(" ")).catch(() => {})
+}
+
 export async function removeRemoteHomeExtensionHetznerRoot(options, remoteRoot) {
   await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRoot)}`).catch(() => {})
 }
@@ -109,8 +138,10 @@ export function spawnRemoteHomeExtensionHetznerWorker({
   workerKernelPort,
   workerMcpPort,
 }) {
+  const workerPidFile = path.posix.join(remoteRoot, "worker.pid")
   return spawn("ssh", sshArgs(options, remoteEnvCommand({
     ARROBA_REMOTE_REPO: options.hetznerRepo,
+    ARROBA_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     PATH: "/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     HOME: path.posix.join(remoteRoot, "worker-home"),
     CODEX_HOME: "/root/.codex",
@@ -131,7 +162,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
     ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
     ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, "worker-capabilities"),
-  }, `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+  }, `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && echo $$ > ${shellQuote(workerPidFile)} && exec ./apps/kernel/target/debug/arroba-kernel`)), {
     stdio: ["ignore", "ignore", "inherit"],
   })
 }

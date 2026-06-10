@@ -13,6 +13,7 @@ import {
   spawnRemoteHomeExtensionHetznerWorker,
   startRemoteHomeExtensionHetznerRelay,
   stopRemoteHomeExtensionHetznerRelay,
+  stopRemoteHomeExtensionHetznerWorker,
 } from './lib/remote-home-extension-hetzner-helpers.mjs'
 import { createRemoteHomeExtensionRelayTokenFactory } from './lib/remote-home-extension-relay-helpers.mjs'
 import { waitForDaemon, waitForRelayTarget, waitForRemoteMachine } from './lib/remote-home-extension-session-helpers.mjs'
@@ -455,6 +456,7 @@ async function main() {
     await terminateChild(relayTunnel)
     await terminateChild(relay)
     if (options.hetznerWorker) {
+      await stopRemoteHomeExtensionHetznerWorker(options, { remoteRoot, workerDaemonId })
       await stopRemoteHomeExtensionHetznerRelay(options, remoteRoot)
       await removeRemoteHomeExtensionHetznerRoot(options, remoteRoot)
     }
