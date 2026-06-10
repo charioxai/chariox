@@ -126,7 +126,7 @@ fn proxy_display_request(
     request: &RelayDisplayTunnelOpenRequest,
 ) -> Result<(), RelayError> {
     if display_request_is_optional_package_probe(request) {
-        return send_no_content_response_to_proxy(outgoing_tx, request);
+        return send_package_probe_response_to_proxy(outgoing_tx, request);
     }
     let url = local_display_url(target, &request.path)?;
     let mut builder = ureq::request(&request.method, url.as_str());
@@ -174,7 +174,7 @@ fn display_request_is_optional_package_probe(request: &RelayDisplayTunnelOpenReq
             .ends_with("/package.json")
 }
 
-fn send_no_content_response_to_proxy(
+fn send_package_probe_response_to_proxy(
     outgoing_tx: &RelayOutgoingSender,
     request: &RelayDisplayTunnelOpenRequest,
 ) -> Result<(), RelayError> {
@@ -183,12 +183,16 @@ fn send_no_content_response_to_proxy(
         RelayEnvelope::DaemonDisplayTunnelResponseStart {
             response: RelayDisplayTunnelResponseStart {
                 stream_id: request.stream_id.clone(),
-                status: 204,
-                headers: Vec::new(),
+                status: 200,
+                headers: vec![RelayDisplayTunnelHeader {
+                    name: "content-type".to_string(),
+                    value: "application/json".to_string(),
+                }],
             },
         },
     )
-    .map_err(|error| relay_error("display_proxy_start_send_failed", &error.to_string(), true))
+    .map_err(|error| relay_error("display_proxy_start_send_failed", &error.to_string(), true))?;
+    send_display_chunk(outgoing_tx, &request.stream_id, b"{}", None)
 }
 
 fn method_uses_empty_body(method: &str) -> bool {
@@ -730,7 +734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn display_http_proxy_answers_optional_package_probe_without_local_404() {
+    async fn display_http_proxy_answers_optional_package_probe_with_valid_json() {
         let mut state = RelayClientState::default();
         state.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: "display-1".to_string(),
@@ -760,10 +764,26 @@ mod tests {
         {
             Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response }) => {
                 assert_eq!(response.stream_id, "stream-1");
-                assert_eq!(response.status, 204);
-                assert!(response.headers.is_empty());
+                assert_eq!(response.status, 200);
+                assert_eq!(response.headers[0].name, "content-type");
+                assert_eq!(response.headers[0].value, "application/json");
             }
             other => panic!("unexpected display response start: {other:?}"),
+        }
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("display body should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk }) => {
+                assert_eq!(
+                    BASE64_STANDARD
+                        .decode(chunk.data)
+                        .expect("display chunk should decode"),
+                    b"{}"
+                );
+            }
+            other => panic!("unexpected display body: {other:?}"),
         }
 
         match timeout(Duration::from_secs(2), outgoing_rx.recv())
