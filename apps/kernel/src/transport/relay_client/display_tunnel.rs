@@ -2,8 +2,8 @@
 
 use super::*;
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
 use tokio::sync::mpsc;
@@ -125,6 +125,9 @@ fn proxy_display_request(
     target: &RelayDisplayTunnelTarget,
     request: &RelayDisplayTunnelOpenRequest,
 ) -> Result<(), RelayError> {
+    if display_request_is_optional_package_probe(request) {
+        return send_no_content_response_to_proxy(outgoing_tx, request);
+    }
     let url = local_display_url(target, &request.path)?;
     let mut builder = ureq::request(&request.method, url.as_str());
     for header in request
@@ -159,6 +162,33 @@ fn proxy_display_request(
             true,
         )),
     }
+}
+
+fn display_request_is_optional_package_probe(request: &RelayDisplayTunnelOpenRequest) -> bool {
+    request.method.eq_ignore_ascii_case("GET")
+        && request
+            .path
+            .split_once('?')
+            .map(|(path, _)| path)
+            .unwrap_or(request.path.as_str())
+            .ends_with("/package.json")
+}
+
+fn send_no_content_response_to_proxy(
+    outgoing_tx: &RelayOutgoingSender,
+    request: &RelayDisplayTunnelOpenRequest,
+) -> Result<(), RelayError> {
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: request.stream_id.clone(),
+                status: 204,
+                headers: Vec::new(),
+            },
+        },
+    )
+    .map_err(|error| relay_error("display_proxy_start_send_failed", &error.to_string(), true))
 }
 
 fn method_uses_empty_body(method: &str) -> bool {
@@ -428,7 +458,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tokio::net::TcpListener;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[test]
     fn local_display_url_rewrites_relay_display_path_to_local_origin() {
@@ -697,5 +727,54 @@ mod tests {
         assert!(body.contains("event: queued"), "{body}");
         assert!(body.contains("event: final"), "{body}");
         local_task.join().expect("local http task should finish");
+    }
+
+    #[tokio::test]
+    async fn display_http_proxy_answers_optional_package_probe_without_local_404() {
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: "display-1".to_string(),
+            slice_id: "slice-1".to_string(),
+            local_base_url: "http://127.0.0.1:1".to_string(),
+            expires_at_ms: u64::MAX,
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "stream-1".to_string(),
+            tunnel_id: "display-1".to_string(),
+            method: "GET".to_string(),
+            path: "/display/display-1/package.json".to_string(),
+            headers: Vec::new(),
+            body_base64: None,
+        };
+        tokio::spawn(handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            request,
+        ));
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("response start should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelResponseStart { response }) => {
+                assert_eq!(response.stream_id, "stream-1");
+                assert_eq!(response.status, 204);
+                assert!(response.headers.is_empty());
+            }
+            other => panic!("unexpected display response start: {other:?}"),
+        }
+
+        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            .await
+            .expect("display close should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelClose { stream_id, error }) => {
+                assert_eq!(stream_id, "stream-1");
+                assert_eq!(error, None);
+            }
+            other => panic!("unexpected display close: {other:?}"),
+        }
     }
 }
