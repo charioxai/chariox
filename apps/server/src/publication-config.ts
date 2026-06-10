@@ -19,6 +19,7 @@ import {
   resolvePublicationProviderModelBindings,
   type ProviderModelBindingPrompt,
 } from "./publication-bindings.js"
+import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import { validatePublicationRequirements } from "./publication-requirements.js"
 import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import type {
@@ -89,6 +90,7 @@ export async function loadPublicationPackageConfig(
     options.hookId,
     root,
   )
+  validateAgentAppConfig(config.agent_app, { packageRoot: root })
   if (!options.materialize) return config
   const requirements = await loadPublicationRequirements(root)
   const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
@@ -214,7 +216,10 @@ export function publicationConfigFromPackage(
     mode: hook.mode === "async" ? "async" : "sync",
   }
   if (packageRoot) config.package_root = packageRoot
-  if (publicationPackage.agent_app?.enabled) config.agent_app = publicationPackage.agent_app
+  if (publicationPackage.agent_app?.enabled) {
+    validateAgentAppConfig(publicationPackage.agent_app, { packageRoot })
+    config.agent_app = publicationPackage.agent_app
+  }
   if (hook.sync_timeout_ms != null) config.sync_timeout_ms = hook.sync_timeout_ms
   if (hook.poll_ms != null) config.poll_ms = hook.poll_ms
   if (traceExposure) {

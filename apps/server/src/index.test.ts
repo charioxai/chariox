@@ -823,6 +823,8 @@ test("gateway materializes Agent App replica sessions from package config", asyn
   const requests: Record<string, unknown>[] = []
   let materializeCount = 0
   try {
+    await mkdir(join(root, "app"), { recursive: true })
+    await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
       package_version: 2,
@@ -1877,6 +1879,63 @@ test("agent app gateway serves packaged app assets", async () => {
   }
 })
 
+test("agent app config validation rejects invalid launch config before serving", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-invalid-config-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
+  try {
+    assert.throws(() => buildServer({
+      ...baseConfig,
+      publication_id: "pub-invalid-route",
+      package_root: root,
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "app", index: "index.html" },
+        routes: [{ path: "add/*" }],
+      },
+    }), /route path must start with \//)
+
+    assert.throws(() => buildServer({
+      ...baseConfig,
+      publication_id: "pub-invalid-action",
+      package_root: root,
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "app", index: "index.html" },
+        routes: [{
+          path: "/add/*",
+          manipulation: { allowed_actions: ["missing-action"] },
+        }],
+      },
+    }), /unknown action missing-action/)
+
+    assert.throws(() => buildServer({
+      ...baseConfig,
+      publication_id: "pub-invalid-replicas",
+      package_root: root,
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "app", index: "index.html" },
+        replicas: { count: 0 },
+        routes: [{ path: "/add/*" }],
+      },
+    }), /replicas\.count/)
+
+    assert.throws(() => buildServer({
+      ...baseConfig,
+      publication_id: "pub-missing-assets",
+      package_root: root,
+      agent_app: {
+        enabled: true,
+        assets: { public_dir: "missing", index: "index.html" },
+        routes: [{ path: "/add/*" }],
+      },
+    }), /assets\.public_dir does not exist/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("agent app wrapped route invokes workflow with path-tail prompt and streams viewer shell", async () => {
   let seenInput: unknown = null
   let seenProof: Record<string, unknown> | null = null
@@ -2016,6 +2075,11 @@ test("agent app final response effects overlay generated files for serve mode", 
           allowed_actions: ["cart.search", "cart.add", "cart.checkout"],
         },
       }],
+      actions: {
+        "cart.search": { transport: { kind: "http", method: "POST", url: "http://127.0.0.1:1/cart/search" } },
+        "cart.add": { transport: { kind: "http", method: "POST", url: "http://127.0.0.1:1/cart/add" } },
+        "cart.checkout": { transport: { kind: "http", method: "POST", url: "http://127.0.0.1:1/cart/checkout" } },
+      },
     },
   }, {
     invokeWorkflow: async () => ({

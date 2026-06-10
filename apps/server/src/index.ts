@@ -15,6 +15,7 @@ import {
   installAgentAppRoutes,
   isAgentAppPublication,
 } from "./publication-agent-app.js"
+import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import {
   installApiSseJsonRoutes,
   isApiSseJsonPublication,
@@ -75,6 +76,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const processLogger = createProcessLogger("workflow-gateway")
   const logger = processLogger.child("gateway.http")
   const publication = config ?? defaultPublicationConfig()
+  validateAgentAppConfig(publication.agent_app, { packageRoot: publication.package_root })
   const httpsOptions = resolveHttpsOptions(publication.tls)
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
   const webSocketServer = installPublicationWebSocket(app, publication, deps)
