@@ -36,6 +36,15 @@ pub struct SliceRefRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceStateSaveRequest {
     pub slice_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SliceStateSaveMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceStateSaveMode {
+    RestartAgents,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

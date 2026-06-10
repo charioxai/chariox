@@ -474,8 +474,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getSliceDisplayEndpoint: async (sliceRef) => getSliceDisplayEndpoint(client, sliceRef),
     getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
     listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
-    saveSliceState: async (sliceRef) => {
-      const result = await saveSliceState(client, sliceRef)
+    saveSliceState: async (sliceRef, mode) => {
+      const result = await saveSliceState(client, sliceRef, mode)
       setSlicesState(await listSlices(client))
       return result
     },

@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::local::{
     CreateSliceBackupRequest, CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest,
     ListSlicesRequest, LocalDaemonResponse, SliceRefRequest, SliceStateResetRequest,
-    SliceStateSaveRequest, SliceStateStatusRequest,
+    SliceStateSaveMode, SliceStateSaveRequest, SliceStateStatusRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -77,10 +77,48 @@ pub(super) async fn execute_save_slice_state_request(
     config_projection: &DaemonConfigProjectionStore,
     request: SliceStateSaveRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
+    let operation_guard =
+        runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&slice, "state.save", "accepted", None, None)?;
-    if let Err(error) = ensure_slice_has_no_active_agents(&slice, "slice.state.save") {
+    let slice = runtime_state.reconcile_slice_agent_attachments(&slice)?;
+    let mode = match (request.mode, slice.agent_ids.is_empty()) {
+        (Some(mode), _) => mode,
+        (None, true) => SliceStateSaveMode::Shutdown,
+        (None, false) => {
+            let error = DaemonError::LocalTransport {
+                operation: "slice.state.save",
+                message: "slice save-state requires --restart-agents or --shutdown when agents are attached".to_string(),
+            };
+            let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "state.save",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    let relaunch_manifests = match runtime_state.slice_agent_relaunch_manifests(&slice) {
+        Ok(manifests) => manifests,
+        Err(error) => {
+            let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &slice,
+                "state.save",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    if let Err(error) = runtime_state
+        .park_slice_agent_provider_runs(&relaunch_manifests)
+        .await
+    {
         let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
         let _ = runtime_state.record_slice_audit_event(
             &slice,
@@ -91,9 +129,10 @@ pub(super) async fn execute_save_slice_state_request(
         );
         return Err(error);
     }
+    let stopping_slice = runtime_state.mark_slice_stopping(&request.slice_ref)?;
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
-    let task_slice = slice.clone();
+    let task_slice = stopping_slice.clone();
     let save_result = tokio::task::spawn_blocking(move || {
         crate::slice::save_local_docker_slice_state(&task_slice, &docker_options)
     })
@@ -116,9 +155,48 @@ pub(super) async fn execute_save_slice_state_request(
             return Err(error);
         }
     };
-    let slice = runtime_state.save_slice_state_record(&request.slice_ref, state.clone())?;
-    runtime_state.record_slice_audit_event(&slice, "state.save", "completed", None, None)?;
-    Ok(LocalDaemonResponse::SliceStateSaved { slice, state })
+    let stopped_slice = runtime_state.mark_slice_stopped(&request.slice_ref)?;
+    runtime_state
+        .stop_slice_private_relay_home_connection(&stopped_slice.id)
+        .await;
+    let saved_slice = runtime_state.save_slice_state_record(&request.slice_ref, state.clone())?;
+    runtime_state.record_slice_audit_event(&saved_slice, "state.save", "completed", None, None)?;
+    drop(operation_guard);
+
+    if mode == SliceStateSaveMode::RestartAgents {
+        let started = execute_start_slice_request(
+            runtime_state,
+            config_projection,
+            SliceRefRequest {
+                slice_ref: saved_slice.id.clone(),
+            },
+        )
+        .await?;
+        let LocalDaemonResponse::SliceStarted {
+            slice: started_slice,
+        } = started
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.state.save",
+                message: "slice restart returned an unexpected response".to_string(),
+            });
+        };
+        if !relaunch_manifests.is_empty() {
+            let worker = relay_presence_from_started_slice(&started_slice)?;
+            runtime_state
+                .rebind_and_relaunch_slice_agents(relaunch_manifests, &worker)
+                .await?;
+        }
+        Ok(LocalDaemonResponse::SliceStateSaved {
+            slice: started_slice,
+            state,
+        })
+    } else {
+        Ok(LocalDaemonResponse::SliceStateSaved {
+            slice: saved_slice,
+            state,
+        })
+    }
 }
 
 pub(super) async fn execute_get_slice_state_status_request(
@@ -774,6 +852,37 @@ fn ensure_slice_has_no_active_agents(
             slice.name,
             slice.agent_ids.len()
         ),
+    })
+}
+
+fn relay_presence_from_started_slice(
+    slice: &crate::slice::SliceRecord,
+) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+    let Some(worker_kernel_id) = slice.worker_kernel_id.clone() else {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message: format!("started slice `{}` has no worker kernel id", slice.name),
+        });
+    };
+    let Some(worker_machine_id) = slice.worker_machine_id.clone() else {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message: format!("started slice `{}` has no worker machine id", slice.name),
+        });
+    };
+    Ok(arroba_relay::protocol::RelayKernelPresence {
+        kernel_id: worker_kernel_id,
+        machine_id: worker_machine_id,
+        machine_alias: None,
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: slice.providers.clone(),
+        provider_accounts: Vec::new(),
+        capabilities: Vec::new(),
+        accepting_remote_leases: true,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: String::new(),
     })
 }
 

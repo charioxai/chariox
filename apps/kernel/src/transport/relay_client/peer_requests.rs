@@ -565,24 +565,6 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::InvokeHomeSliceStateTool {
-            context,
-            tool_name,
-            arguments,
-        } => {
-            let handled = router
-                .dispatch_forwarded_home_slice_state_tool_call(context, tool_name, arguments)
-                .await;
-            match handled {
-                Ok(result) => RelayPeerResponse::HomeSliceStateToolHandled { result },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
         RelayPeerRequest::ResolveHomeCredentialSecret {
             context,
             credential_id,

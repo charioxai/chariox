@@ -142,8 +142,10 @@ export async function executeSliceCommand(
     }
     case "save-state":
     case "save": {
-      const sliceRef = first ?? await focusedAgentSliceRef(context, deps)
-      const response = await deps.client.send(saveSliceStateRequest(sliceRef))
+      const parsed = parseSliceSaveStateArgs([first, ...rest].filter((value): value is string => Boolean(value)))
+      if (parsed.error) return { ok: false, message: parsed.error }
+      const sliceRef = parsed.sliceRef ?? await focusedAgentSliceRef(context, deps)
+      const response = await deps.client.send(saveSliceStateRequest(sliceRef, parsed.mode))
       const payload = expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
       return { ok: true, message: formatSliceStateSaved(payload.slice, payload.state), data: payload }
     }
@@ -267,6 +269,37 @@ export async function executeSliceCommand(
     }
     default:
       return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
+  }
+}
+
+function parseSliceSaveStateArgs(args: readonly string[]): {
+  sliceRef?: string
+  mode?: "restart_agents" | "shutdown"
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let mode: "restart_agents" | "shutdown" | undefined
+  for (const arg of args) {
+    if (arg === "save-state" || arg === "save") continue
+    if (arg === "--restart-agents") {
+      mode = "restart_agents"
+      continue
+    }
+    if (arg === "--shutdown") {
+      mode = "shutdown"
+      continue
+    }
+    if (arg.startsWith("--")) {
+      return { error: `unknown slice save-state option ${arg}` }
+    }
+    if (sliceRef) {
+      return { error: "usage: /slice save-state [slice-ref] --restart-agents|--shutdown" }
+    }
+    sliceRef = arg
+  }
+  return {
+    ...(sliceRef === undefined ? {} : { sliceRef }),
+    ...(mode === undefined ? {} : { mode }),
   }
 }
 

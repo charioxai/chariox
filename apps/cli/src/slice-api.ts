@@ -134,8 +134,9 @@ export async function listSliceAudit(
 export async function saveSliceState(
   client: LocalIpcClient,
   sliceRef: string,
+  mode?: "restart_agents" | "shutdown" | null,
 ): Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }> {
-  const response = await client.send<Record<string, unknown>>(saveSliceStateRequest(sliceRef))
+  const response = await client.send<Record<string, unknown>>(saveSliceStateRequest(sliceRef, mode))
   return expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
 }
 

@@ -73,10 +73,6 @@ pub const SLICE_BROWSER_SUBMIT_TOOL: &str = "arroba.slice_browser_submit";
 pub const SLICE_BROWSER_SUBMIT_TOOL_ALIAS: &str = "slice_browser_submit";
 pub const SLICE_BROWSER_TEXT_TOOL: &str = "arroba.slice_browser_text";
 pub const SLICE_BROWSER_TEXT_TOOL_ALIAS: &str = "slice_browser_text";
-pub const SAVE_SLICE_STATE_TOOL: &str = "arroba.save_slice_state";
-pub const SAVE_SLICE_STATE_TOOL_ALIAS: &str = "save_slice_state";
-pub const CREATE_SLICE_BACKUP_TOOL: &str = "arroba.create_slice_backup";
-pub const CREATE_SLICE_BACKUP_TOOL_ALIAS: &str = "create_slice_backup";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -246,20 +242,6 @@ pub struct QueryRecallArgs {
     pub before_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct SaveSliceStateArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slice_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct CreateSliceBackupArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slice_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

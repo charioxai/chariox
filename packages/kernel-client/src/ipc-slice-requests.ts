@@ -107,8 +107,10 @@ export function listSliceAuditRequest(sliceRef: string, limit?: number | null) {
   }
 }
 
-export function saveSliceStateRequest(sliceRef: string) {
-  return { SaveSliceState: { slice_ref: sliceRef } }
+export type SliceStateSaveMode = "restart_agents" | "shutdown"
+
+export function saveSliceStateRequest(sliceRef: string, mode?: SliceStateSaveMode | null) {
+  return { SaveSliceState: { slice_ref: sliceRef, ...(mode == null ? {} : { mode }) } }
 }
 
 export function getSliceStateStatusRequest(sliceRef: string) {

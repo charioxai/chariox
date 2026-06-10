@@ -54,7 +54,7 @@ export type SliceCommandHandlerDeps = {
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
   listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
-  saveSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
+  saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
   getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
   resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
   createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
@@ -104,7 +104,7 @@ export async function handleSliceSlashCommand(
     return
   }
   if (subcommand === "save-state" || subcommand === "save") {
-    await saveSliceState(deps, args[0])
+    await saveSliceState(deps, args)
     return
   }
   if (subcommand === "reset-state") {
@@ -143,7 +143,7 @@ export async function handleSliceSlashCommand(
     await setSliceAuthAlias(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -393,21 +393,59 @@ async function showSliceState(deps: SliceCommandHandlerDeps, args: string[]): Pr
   }
 }
 
-async function saveSliceState(deps: SliceCommandHandlerDeps, sliceRef: string | undefined): Promise<void> {
+async function saveSliceState(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
   if (!deps.saveSliceState) {
     deps.flashFooter("slice save-state is unavailable in this build", "error")
     return
   }
+  const { sliceRef, mode, error } = parseSliceSaveStateArgs(args)
+  if (error) {
+    deps.flashFooter(error, "error")
+    return
+  }
   const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
-  if (await rejectSliceLifecycleWithAttachedAgents(deps, "save-state", resolvedRef)) {
+  const slice = await loadSliceForLifecycleGuard(deps, resolvedRef)
+  const attachedAgents = attachedAgentRefs(slice)
+  if (attachedAgents.length > 0 && !mode) {
+    deps.flashFooter("usage: /slice save-state [slice-ref] --restart-agents|--shutdown", "error")
     return
   }
   try {
-    const payload = await deps.saveSliceState(resolvedRef)
+    const payload = await deps.saveSliceState(resolvedRef, mode)
     deps.appendNotice(formatSliceStateSaved(payload.slice, payload.state))
     deps.flashFooter(`saved slice state ${formatSliceLabel(payload.slice)}`, "info")
   } catch (error) {
     deps.flashFooter(error instanceof Error ? error.message : "slice save-state failed", "error")
+  }
+}
+
+function parseSliceSaveStateArgs(args: string[]): {
+  sliceRef?: string
+  mode?: "restart_agents" | "shutdown"
+  error?: string
+} {
+  let sliceRef: string | undefined
+  let mode: "restart_agents" | "shutdown" | undefined
+  for (const arg of args) {
+    if (arg === "--restart-agents") {
+      mode = "restart_agents"
+      continue
+    }
+    if (arg === "--shutdown") {
+      mode = "shutdown"
+      continue
+    }
+    if (arg.startsWith("--")) {
+      return { error: `unknown slice save-state option ${arg}` }
+    }
+    if (sliceRef) {
+      return { error: "usage: /slice save-state [slice-ref] --restart-agents|--shutdown" }
+    }
+    sliceRef = arg
+  }
+  return {
+    ...(sliceRef === undefined ? {} : { sliceRef }),
+    ...(mode === undefined ? {} : { mode }),
   }
 }
 

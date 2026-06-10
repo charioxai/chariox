@@ -309,11 +309,6 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
-    InvokeHomeSliceStateTool {
-        context: RemoteExtensionInvocationContext,
-        tool_name: String,
-        arguments: serde_json::Value,
-    },
     ResolveHomeCredentialSecret {
         context: RemoteExtensionInvocationContext,
         credential_id: String,
@@ -422,9 +417,6 @@ pub enum RelayPeerResponse {
         cancelled: bool,
     },
     HomeCredentialToolHandled {
-        result: crate::transport::runtime_tools::RuntimeToolResult,
-    },
-    HomeSliceStateToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
     HomeCredentialSecretResolved {

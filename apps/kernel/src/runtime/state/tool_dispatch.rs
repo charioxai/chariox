@@ -241,8 +241,6 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL
                     | crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL
                     | crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL
-                    | crate::transport::runtime_tools::SAVE_SLICE_STATE_TOOL
-                    | crate::transport::runtime_tools::CREATE_SLICE_BACKUP_TOOL
             ) {
                 return self
                     .dispatch_slice_runtime_tool_call(

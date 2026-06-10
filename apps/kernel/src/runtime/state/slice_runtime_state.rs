@@ -1,5 +1,20 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub(crate) struct SliceAgentRelaunchManifest {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) owner_user_id: String,
+    pub(crate) adapter_key: String,
+    pub(crate) provider: String,
+    pub(crate) account_profile: String,
+    pub(crate) model: String,
+    pub(crate) variant: Option<String>,
+    pub(crate) structured_endpoint: Option<String>,
+    pub(crate) provider_session_id: Option<String>,
+    pub(crate) existing_provider_run_id: Option<String>,
+}
+
 impl KernelRuntimeState {
     pub(crate) fn list_slices(&self) -> Vec<crate::slice::SliceRecord> {
         self.owned.slice_store.list()
@@ -42,6 +57,204 @@ impl KernelRuntimeState {
         slice_ref: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         self.owned.slice_store.resolve(slice_ref)
+    }
+
+    pub(crate) fn reconcile_slice_agent_attachments(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        let mut current = slice.clone();
+        for agent_id in slice.agent_ids.clone() {
+            let detach = match self.owned.agent_store.get_agent(&agent_id) {
+                Ok(agent) => {
+                    let remote = agent.remote_execution();
+                    let matches_slice = remote.is_some_and(|remote| {
+                        slice.worker_kernel_id.as_deref() == Some(remote.worker_kernel_id.as_str())
+                            || slice.worker_kernel_ref == remote.worker_kernel_id
+                    });
+                    !matches_slice
+                        || self
+                            .owned
+                            .session_store
+                            .get_session(agent.session_id())
+                            .is_err()
+                }
+                Err(_) => true,
+            };
+            if detach {
+                current = self.owned.slice_store.detach_agent(
+                    &current.id,
+                    &agent_id,
+                    crate::session::unix_epoch_ms(),
+                )?;
+                self.owned.durable_state_store.append_event(
+                    "slice.updated",
+                    Some(current.id.clone()),
+                    serde_json::json!({ "slice": &current }),
+                )?;
+            }
+        }
+        Ok(current)
+    }
+
+    pub(crate) fn slice_agent_relaunch_manifests(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<Vec<SliceAgentRelaunchManifest>, DaemonError> {
+        let mut busy_agents = Vec::new();
+        let mut manifests = Vec::new();
+        for agent_id in &slice.agent_ids {
+            let agent = self.owned.agent_store.get_agent(agent_id)?;
+            let session = self.owned.session_store.get_session(agent.session_id())?;
+            if self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id())
+                .is_some()
+            {
+                busy_agents.push(agent.id().to_string());
+                continue;
+            }
+            let projected_run = self
+                .owned
+                .provider_store
+                .get_run_for_agent(session.id(), agent.id())
+                .or_else(|| {
+                    self.owned
+                        .provider_run_projection
+                        .get_for_agent(session.id(), agent.id())
+                });
+            let manifest = if let Some(run) = projected_run {
+                if matches!(
+                    run.state(),
+                    crate::provider::ProviderRunState::Starting
+                        | crate::provider::ProviderRunState::Running
+                ) {
+                    busy_agents.push(agent.id().to_string());
+                    continue;
+                }
+                SliceAgentRelaunchManifest {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                    adapter_key: run.adapter_key().to_string(),
+                    provider: run.provider().to_string(),
+                    account_profile: run.account_profile().to_string(),
+                    model: run.model().to_string(),
+                    variant: run.variant().map(str::to_string),
+                    structured_endpoint: run.structured_endpoint().map(str::to_string),
+                    provider_session_id: run
+                        .provider_session_id()
+                        .or_else(|| run.resume_state().opencode_session_id())
+                        .or_else(|| run.resume_state().codex_thread_id())
+                        .or_else(|| run.resume_state().claude_session_id())
+                        .map(str::to_string),
+                    existing_provider_run_id: Some(run.id().to_string()),
+                }
+            } else {
+                SliceAgentRelaunchManifest {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                    adapter_key: agent.provider().to_string(),
+                    provider: agent.provider().to_string(),
+                    account_profile: "default".to_string(),
+                    model: agent.model().unwrap_or("default").to_string(),
+                    variant: None,
+                    structured_endpoint: None,
+                    provider_session_id: None,
+                    existing_provider_run_id: None,
+                }
+            };
+            manifests.push(manifest);
+        }
+        if !busy_agents.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.state.save",
+                message: format!(
+                    "cannot save slice while agents are running; wait for them to finish or stop them: {}",
+                    busy_agents.join(",")
+                ),
+            });
+        }
+        Ok(manifests)
+    }
+
+    pub(crate) async fn park_slice_agent_provider_runs(
+        &self,
+        manifests: &[SliceAgentRelaunchManifest],
+    ) -> Result<(), DaemonError> {
+        for manifest in manifests {
+            if let Some(run_id) = manifest.existing_provider_run_id.as_deref() {
+                if let Ok(run) = self.owned.provider_store.get_run(run_id) {
+                    if run.state() != crate::provider::ProviderRunState::Ended {
+                        if let Ok(outcome) = self
+                            .owned
+                            .provider_store
+                            .terminate_run_provider_only(&manifest.session_id, run_id)
+                        {
+                            self.owned.clear_active_provider_run_session_pointer(
+                                &manifest.session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.owned
+                                .provider_run_projection
+                                .update(outcome.into_run());
+                        }
+                    }
+                    let remove_run_id = run_id.to_string();
+                    let (_, process_key) = self
+                        .with_app_side_effect(|app| {
+                            crate::app::ProviderLaunchProcessRuntime::new(app)
+                                .remove_run(&remove_run_id)
+                        })
+                        .await
+                        .unwrap_or((false, None));
+                    self.owned
+                        .remove_provider_process_tracking_for_run(run_id, process_key);
+                }
+            }
+            let _ = self
+                .owned
+                .agent_store
+                .set_remote_execution_active_worker_provider_run_id(&manifest.agent_id, None)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn rebind_and_relaunch_slice_agents(
+        &self,
+        manifests: Vec<SliceAgentRelaunchManifest>,
+        worker: &arroba_relay::protocol::RelayKernelPresence,
+    ) -> Result<(), DaemonError> {
+        for manifest in manifests {
+            let agent_id = manifest.agent_id.clone();
+            let worker = worker.clone();
+            let rebound = self
+                .with_app_side_effect(move |app| {
+                    app.refresh_remote_agent_binding_to_worker_kernel(&agent_id, &worker)
+                })
+                .await?;
+            self.append_agent_durable_event("agent.remote_binding_refreshed", &rebound, None)
+                .await?;
+
+            let request = crate::local::LaunchProviderRunRequest {
+                session_id: manifest.session_id.clone(),
+                agent_id: Some(manifest.agent_id.clone()),
+                adapter_key: manifest.adapter_key.clone(),
+                provider: manifest.provider.clone(),
+                account_profile: manifest.account_profile.clone(),
+                model: manifest.model.clone(),
+                variant: manifest.variant.clone(),
+                structured_endpoint: manifest.structured_endpoint.clone(),
+                provider_session_id: manifest.provider_session_id.clone(),
+                native_tui: true,
+            };
+            let _ = self
+                .launch_remote_native_provider_run(&request, &manifest.owner_user_id)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(crate) fn begin_slice_operation(
