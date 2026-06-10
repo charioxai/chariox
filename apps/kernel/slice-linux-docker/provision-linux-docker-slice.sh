@@ -284,6 +284,7 @@ ensure_container() {
       -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT"
       -v "$SLICE_HOME_VOLUME:/home/slice"
       -v "$SLICE_WORKSPACE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
+      --add-host "host.docker.internal:host-gateway"
     )
     if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
       docker_create_args+=(--security-opt seccomp=unconfined)
