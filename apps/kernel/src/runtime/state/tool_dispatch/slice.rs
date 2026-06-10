@@ -171,16 +171,15 @@ impl KernelRuntimeState {
                         )?
                     }
                 };
-                let mut command_args = vec!["secret-paste-stdin".to_string()];
+                let mut command_args = vec![if args.submit {
+                    "secret-paste-submit-stdin".to_string()
+                } else {
+                    "secret-paste-stdin".to_string()
+                }];
                 if let Some(selector) = selector.clone() {
                     command_args.push(selector);
                 }
-                let mut output = run_slice_screen_command_with_stdin(command_args, secret).await?;
-                if output.success && args.submit {
-                    output =
-                        run_slice_screen_command(vec!["key".to_string(), "Return".to_string()])
-                            .await?;
-                }
+                let output = run_slice_screen_command_with_stdin(command_args, secret).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
                 payload["credential_id"] = serde_json::Value::String(args.credential_id.clone());
                 payload["submitted"] = serde_json::Value::Bool(args.submit && output.success);

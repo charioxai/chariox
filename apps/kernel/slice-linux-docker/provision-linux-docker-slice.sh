@@ -180,6 +180,30 @@ configure_stable_machine_identity() {
   " || log "stable machine-id refresh unavailable; continuing"
 }
 
+configure_chromium_browser_policy() {
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "
+    set -euo pipefail
+    for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
+      mkdir -p \"\$dir\"
+      cat > \"\$dir/arroba-slice.json\" <<'JSON'
+{\"BrowserSignin\":0}
+JSON
+      chmod 0644 \"\$dir/arroba-slice.json\"
+    done
+  " || log "Chromium browser policy refresh unavailable; continuing"
+}
+
+refresh_slice_support_files() {
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
+    || log "runtime script overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
+    || log "screen script overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/arroba-slice/browser-cdp.mjs" \
+    || log "browser CDP helper overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs \
+    || log "script permission refresh unavailable; continuing"
+}
+
 wait_for_container_running() {
   local attempts="${1:-6}"
   local delay_seconds="${2:-5}"
@@ -338,18 +362,10 @@ ensure_container() {
   if [[ "$created_container" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
       || log "home directory ownership refresh unavailable; continuing"
-    configure_stable_machine_identity
-    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
-      || log "runtime script overlay refresh unavailable; continuing"
-    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
-      || log "screen script overlay refresh unavailable; continuing"
-    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/arroba-slice/browser-cdp.mjs" \
-      || log "browser CDP helper overlay refresh unavailable; continuing"
-    run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs \
-      || log "script permission refresh unavailable; continuing"
-  else
-    configure_stable_machine_identity
   fi
+  configure_stable_machine_identity
+  configure_chromium_browser_policy
+  refresh_slice_support_files
 }
 
 exec_slice_with_timeout() {

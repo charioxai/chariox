@@ -111,18 +111,103 @@ async function typeIntoBrowser(text, options = {}) {
     if (options.useNativeInput) {
       const focusResult = await evaluate(send, `
         const selector = __arrobaArgs.selector;
-        const active = selector
+        const target = selector
           ? document.querySelector(selector)
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
             ? document.activeElement
             : null;
-        if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
-        if (active.disabled || active.readOnly) return { ok: false, error: "target_not_editable" };
-        active.focus();
-        return { ok: true };
+        if (!target) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
+        if (target.disabled || target.readOnly) return { ok: false, error: "target_not_editable" };
+        if (!selector) {
+          target.focus();
+          return { ok: true };
+        }
+        target.scrollIntoView({ block: "center", inline: "center" });
+        const rect = target.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: "target_not_visible" };
+        return {
+          ok: true,
+          click: true,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
       `, { selector: options.selector ?? null });
       if (!focusResult?.ok) {
         throw new Error(focusResult?.error ?? "browser_focus_failed");
+      }
+      if (focusResult.click) {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: focusResult.x,
+          y: focusResult.y,
+        });
+        await send("Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x: focusResult.x,
+          y: focusResult.y,
+          button: "left",
+          clickCount: 1,
+        });
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: focusResult.x,
+          y: focusResult.y,
+          button: "left",
+          clickCount: 1,
+        });
+        await send("Runtime.evaluate", {
+          expression: "new Promise((resolve) => setTimeout(resolve, 250))",
+          awaitPromise: true,
+          returnByValue: true,
+        });
+      }
+      if (options.append !== true) {
+        await send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Control",
+          code: "ControlLeft",
+          windowsVirtualKeyCode: 17,
+          nativeVirtualKeyCode: 17,
+          modifiers: 2,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "a",
+          code: "KeyA",
+          windowsVirtualKeyCode: 65,
+          nativeVirtualKeyCode: 65,
+          modifiers: 2,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "a",
+          code: "KeyA",
+          windowsVirtualKeyCode: 65,
+          nativeVirtualKeyCode: 65,
+          modifiers: 2,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Control",
+          code: "ControlLeft",
+          windowsVirtualKeyCode: 17,
+          nativeVirtualKeyCode: 17,
+          modifiers: 0,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Backspace",
+          code: "Backspace",
+          windowsVirtualKeyCode: 8,
+          nativeVirtualKeyCode: 8,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Backspace",
+          code: "Backspace",
+          windowsVirtualKeyCode: 8,
+          nativeVirtualKeyCode: 8,
+        });
       }
       await send("Input.insertText", { text });
       const verified = await evaluate(send, `
@@ -134,10 +219,31 @@ async function typeIntoBrowser(text, options = {}) {
             : null;
         if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
         const value = "value" in active ? active.value : active.textContent;
-        return { ok: String(value || "").length >= __arrobaArgs.minLength };
-      `, { selector: options.selector ?? null, minLength: text.length });
+        const current = String(value || "");
+        return {
+          ok: __arrobaArgs.append
+            ? current.length >= __arrobaArgs.minLength
+            : current === __arrobaArgs.text,
+        };
+      `, { selector: options.selector ?? null, minLength: text.length, text, append: options.append === true });
       if (!verified?.ok) {
         throw new Error(verified?.error ?? "browser_type_not_applied");
+      }
+      if (options.submit === true) {
+        await send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
+        await send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
       }
       return;
     }
@@ -332,11 +438,34 @@ async function clickSelector(selector) {
       const element = document.querySelector(__arrobaArgs.selector);
       if (!element) return { ok: false, error: "target_not_found" };
       element.scrollIntoView({ block: "center", inline: "center" });
-      element.focus?.();
-      element.click();
-      return { ok: true };
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: "target_not_visible" };
+      return {
+        ok: true,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
     `, { selector });
     if (!result?.ok) throw new Error(result?.error ?? "browser_click_failed");
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: result.x,
+      y: result.y,
+    });
+    await send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: result.x,
+      y: result.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: result.x,
+      y: result.y,
+      button: "left",
+      clickCount: 1,
+    });
   });
 }
 
@@ -369,7 +498,9 @@ if (command === "click") {
 } else if (command === "type-stdin") {
   await typeIntoBrowser(await readStdin(), { allowFallback: true });
 } else if (command === "secret-paste-stdin") {
-  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, useNativeInput: true, append: true, allowFallback: false });
+  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, useNativeInput: true, append: false, allowFallback: false });
+} else if (command === "secret-paste-submit-stdin") {
+  await typeIntoBrowser(await readStdin(), { selector: args[0] || null, useNativeInput: true, append: false, submit: true, allowFallback: false });
 } else if (command === "key") {
   const key = args[0];
   await withSocket(async (send) => {
@@ -410,6 +541,6 @@ if (command === "click") {
 } else if (command === "navigate") {
   await navigate(args[0]);
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser | navigate <url>");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | secret-paste-submit-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser | navigate <url>");
   process.exit(2);
 }

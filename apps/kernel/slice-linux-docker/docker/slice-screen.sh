@@ -62,6 +62,25 @@ process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
 }
 
+stop_process_pattern() {
+  local pattern="$1"
+  local attempt
+  pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 30); do
+    if ! process_running "$pattern"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  pkill -KILL -f "$pattern" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 20); do
+    if ! process_running "$pattern"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
 running_novnc_port() {
   pgrep -af "websockify.*127\\.0\\.0\\.1:$VNC_PORT" \
     | grep -v defunct \
@@ -90,6 +109,33 @@ clear_chromium_profile_locks() {
       \( -name 'Singleton*' -o -name 'LOCK' -o -name 'lockfile' \) \
       -exec rm -rf {} + >/dev/null 2>&1 || true
   fi
+}
+
+configure_chromium_profile_preferences() {
+  python3 - "$CHROME_PROFILE" <<'PY' >/dev/null 2>&1 || true
+import json
+import os
+import sys
+
+profile = sys.argv[1]
+default_dir = os.path.join(profile, "Default")
+os.makedirs(default_dir, exist_ok=True)
+path = os.path.join(default_dir, "Preferences")
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        prefs = json.load(handle)
+except Exception:
+    prefs = {}
+
+signin = prefs.setdefault("signin", {})
+signin["allowed"] = False
+prefs.setdefault("sync", {})["requested"] = False
+
+tmp = f"{path}.tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(prefs, handle, separators=(",", ":"))
+os.replace(tmp, path)
+PY
 }
 
 screen_missing_components() {
@@ -142,13 +188,19 @@ require_screen_available() {
 }
 
 start_desktop() {
-  pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
-  pkill -f "openbox.*$DISPLAY_ID" >/dev/null 2>&1 || true
-  pkill -f "x11vnc.*$DISPLAY_ID" >/dev/null 2>&1 || true
-  pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
-  pkill -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
-  pkill -f "/usr/lib/chromium/chromium" >/dev/null 2>&1 || true
+  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+    stop_desktop || true
+  fi
+  stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
+  stop_process_pattern "websockify.*$NOVNC_PORT"
+  stop_process_pattern "x11vnc.*$DISPLAY_ID"
+  stop_process_pattern "x11vnc.*$VNC_PORT"
+  stop_process_pattern "openbox"
+  stop_process_pattern "chromium.*$CHROME_PROFILE"
+  stop_process_pattern "/usr/lib/chromium/chromium"
+  stop_process_pattern "Xvfb $DISPLAY_ID"
   clear_chromium_profile_locks
+  configure_chromium_profile_preferences
   rm -f "/tmp/.X${DISPLAY_ID#:}-lock" "/tmp/.X11-unix/X${DISPLAY_ID#:}"
 
   nohup Xvfb "$DISPLAY_ID" -screen 0 "$SCREEN_GEOMETRY" -ac +extension RANDR +extension XTEST >"$LOGS/xvfb.log" 2>&1 &
@@ -164,6 +216,7 @@ start_desktop() {
     --password-store=basic \
     --no-first-run \
     --no-default-browser-check \
+    --disable-sync \
     --disable-dev-shm-usage \
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
@@ -222,11 +275,14 @@ stop_desktop() {
     fi
     sleep 0.1
   done
-  pkill -KILL -f "chromium.*$CHROME_PROFILE" >/dev/null 2>&1 || true
-  pkill -f "Xvfb $DISPLAY_ID" >/dev/null 2>&1 || true
-  pkill -f "openbox" >/dev/null 2>&1 || true
-  pkill -f "x11vnc.*$DISPLAY_ID" >/dev/null 2>&1 || true
-  pkill -f "websockify.*$NOVNC_PORT" >/dev/null 2>&1 || true
+  stop_process_pattern "chromium.*$CHROME_PROFILE"
+  stop_process_pattern "/usr/lib/chromium/chromium"
+  stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
+  stop_process_pattern "websockify.*$NOVNC_PORT"
+  stop_process_pattern "x11vnc.*$DISPLAY_ID"
+  stop_process_pattern "x11vnc.*$VNC_PORT"
+  stop_process_pattern "openbox"
+  stop_process_pattern "Xvfb $DISPLAY_ID"
   clear_chromium_profile_locks
 }
 
@@ -338,6 +394,16 @@ secret_paste_stdin() {
     return
   fi
   node "$ROOT/browser-cdp.mjs" secret-paste-stdin
+}
+
+secret_paste_submit_stdin() {
+  require_screen_available
+  local selector="${1:-}"
+  if [[ -n "$selector" ]]; then
+    node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin "$selector"
+    return
+  fi
+  node "$ROOT/browser-cdp.mjs" secret-paste-submit-stdin
 }
 
 browser_status() {
@@ -474,6 +540,7 @@ case "${1:-status}" in
   clipboard-clear|clipboard_clear) clipboard_clear ;;
   paste-stdin|paste_stdin) paste_stdin ;;
   secret-paste-stdin|secret_paste_stdin) shift; secret_paste_stdin "$@" ;;
+  secret-paste-submit-stdin|secret_paste_submit_stdin) shift; secret_paste_submit_stdin "$@" ;;
   browser-status|browser_status) browser_status ;;
   browser-find|browser_find) shift; browser_find "$@" ;;
   browser-fill|browser_fill) shift; browser_fill "$@" ;;
@@ -485,7 +552,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|ocr|find-text|open-url
 EOF
     exit 2
     ;;
