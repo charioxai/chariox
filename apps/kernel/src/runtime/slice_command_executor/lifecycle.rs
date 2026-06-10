@@ -952,6 +952,16 @@ fn local_docker_slice_relay_for_config(
             let relay_token = hosted_relay_token.unwrap_or(relay_token);
             let cloud_relay_config_json =
                 hosted_cloud_relay_config_json(config, &relay_url, &relay_token);
+            crate::logging::info_with_fields(
+                "daemon.slice",
+                "selected hosted relay for local docker slice",
+                serde_json::json!({
+                    "slice_id": slice.id,
+                    "relay_url": relay_url,
+                    "cloud_profile_present": config.cloud_relay.is_some(),
+                    "cloud_relay_config_present": cloud_relay_config_json.is_some(),
+                }),
+            );
             return crate::slice::LocalDockerSliceRelay {
                 relay_url: relay_url.clone(),
                 container_relay_url: Some(relay_url),

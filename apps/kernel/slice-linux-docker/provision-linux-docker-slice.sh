@@ -34,6 +34,7 @@ SLICE_NOVNC_PORT="${ARROBA_SLICE_NOVNC_PORT:-6080}"
 SLICE_RELAY_URL="${ARROBA_SLICE_RELAY_URL:-}"
 SLICE_RELAY_TOKEN="${ARROBA_SLICE_RELAY_TOKEN:-slice-local}"
 SLICE_CLOUD_RELAY_CONFIG_JSON="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
+SLICE_CLOUD_RELAY_CONFIG_HOST_PATH="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH:-}"
 SLICE_DAEMON_ALIAS="${ARROBA_SLICE_DAEMON_ALIAS:-slice:linux}"
 SLICE_MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
 SLICE_MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
@@ -372,9 +373,16 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
-  if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
+  if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" || -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
     local cloud_relay_config_path="/tmp/arroba-slice-state/cloud-relay-config.json"
-    run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/arroba-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
+    if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" && -f "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" ]]; then
+      run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /tmp/arroba-slice-state
+      run_with_timeout 30 docker cp "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" "$SLICE_NAME:$cloud_relay_config_path"
+      run_with_timeout 30 docker exec -u root "$SLICE_NAME" chown slice:slice "$cloud_relay_config_path"
+      run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 600 "$cloud_relay_config_path"
+    else
+      run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/arroba-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
+    fi
     relay_env_args+=(-e ARROBA_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
   fi
   relay_env_args+=(-e ARROBA_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")

@@ -259,7 +259,7 @@ pub fn run_local_docker_slice_action(
         LocalDockerSliceAction::Stop => "stop",
         LocalDockerSliceAction::Destroy => "destroy",
     });
-    configure_local_docker_slice_command(&mut command, record, relay, options);
+    configure_local_docker_slice_command(&mut command, record, relay, options)?;
     if let Some(provider) = provider {
         command.env("ARROBA_SLICE_AUTH_PROVIDER", provider);
     }
@@ -349,7 +349,7 @@ pub fn start_local_docker_slice_provider_login(
     command
         .arg("start-provider-login")
         .env("ARROBA_SLICE_LOGIN_PROVIDER", provider);
-    configure_local_docker_slice_command(&mut command, record, None, options);
+    configure_local_docker_slice_command(&mut command, record, None, options)?;
     let output = command
         .output()
         .map_err(|error| DaemonError::LocalTransport {
@@ -536,7 +536,7 @@ fn configure_local_docker_slice_command(
     record: &SliceRecord,
     relay: Option<LocalDockerSliceRelay>,
     options: &LocalDockerSliceOptions,
-) {
+) -> Result<(), DaemonError> {
     let ports = LocalDockerSlicePorts::for_record(record);
     command
         .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
@@ -604,6 +604,12 @@ fn configure_local_docker_slice_command(
             ..
         } = relay;
         if let Some(cloud_relay_config_json) = cloud_relay_config_json {
+            let host_config_path =
+                write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
+            command.env(
+                "ARROBA_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
+                host_config_path,
+            );
             command.env(
                 "ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON",
                 cloud_relay_config_json,
@@ -620,6 +626,31 @@ fn configure_local_docker_slice_command(
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
         command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
     }
+    Ok(())
+}
+
+fn write_cloud_relay_config_file(
+    record: &SliceRecord,
+    options: &LocalDockerSliceOptions,
+    config_json: &str,
+) -> Result<PathBuf, DaemonError> {
+    let dir = options.root.join("runtime").join(&record.id);
+    std::fs::create_dir_all(&dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: format!(
+            "failed to create slice runtime config dir {}: {error}",
+            dir.display()
+        ),
+    })?;
+    let path = dir.join("cloud-relay-config.json");
+    std::fs::write(&path, config_json).map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: format!(
+            "failed to write slice cloud relay config {}: {error}",
+            path.display()
+        ),
+    })?;
+    Ok(path)
 }
 
 fn compact_login_message(output: &str) -> String {
@@ -1357,7 +1388,7 @@ mod tests {
         let options = test_options();
         let mut command = Command::new("slice-provisioner");
 
-        configure_local_docker_slice_command(&mut command, &record, None, &options);
+        configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
 
         let provider_bind_host = command
             .get_envs()
@@ -1396,7 +1427,7 @@ mod tests {
         let options = test_options();
         let mut command = Command::new("slice-provisioner");
 
-        configure_local_docker_slice_command(&mut command, &record, None, &options);
+        configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
 
         let envs: std::collections::BTreeMap<_, _> = command
             .get_envs()
@@ -1418,7 +1449,7 @@ mod tests {
         };
         let mut command = Command::new("slice-provisioner");
 
-        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options);
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
 
         let envs: std::collections::BTreeMap<_, _> = command
             .get_envs()
@@ -1443,7 +1474,7 @@ mod tests {
         };
         let mut command = Command::new("slice-provisioner");
 
-        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options);
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
 
         let envs: std::collections::BTreeMap<_, _> = command
             .get_envs()
