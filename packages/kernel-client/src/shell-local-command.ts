@@ -20,7 +20,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "credential list|show|register|upsert-json|set|delete",
           "mcp list|show|install|update|uninstall|import|grant|revoke|grants",
           "skill list|show|install|update|uninstall|import|grant|revoke|grants",
-          "workspace sync status|targets|conflicts|ignore|off|managed|tracked|link",
+          "workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link",
           "workspace link create|list|show|attach|detach",
           "workflow list|new|show|run|runs|cancel|resume|node|edge|endpoint",
           "recall search|semantic-search",

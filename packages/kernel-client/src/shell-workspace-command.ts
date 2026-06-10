@@ -12,6 +12,7 @@ import {
   getWorkspaceLiveSyncStatusRequest,
   listWorkspaceLinksRequest,
   setWorkspaceLiveSyncModeRequest,
+  setUserConfigValueRequest,
   showWorkspaceLinkRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
@@ -22,6 +23,7 @@ import {
   formatWorkspaceLinks,
 } from "./shell-workspace-format.js"
 import {
+  formatWorkspaceLiveSyncDefaultModeChangeMessage,
   formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
 } from "./workspace-live-sync-mode.js"
@@ -42,7 +44,7 @@ export async function executeWorkspaceCommand(
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link or workspace link create|list|show|attach|detach" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link or workspace link create|list|show|attach|detach" }
   }
   const sessionId = context.sessionId
   if (!sessionId) {
@@ -122,6 +124,18 @@ async function executeWorkspaceSyncCommand(
   context: ShellContext,
   deps: ShellWorkspaceCommandDeps,
 ): Promise<ShellCommandResult> {
+  if (action === "default") {
+    const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
+    if (!mode || args.length !== 1) {
+      return { ok: false, message: "usage: workspace sync default off|managed|tracked" }
+    }
+    const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
+    return {
+      ok: true,
+      message: formatWorkspaceLiveSyncDefaultModeChangeMessage(mode),
+      data: response,
+    }
+  }
   const sessionId = context.sessionId
   if (!sessionId) {
     return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
@@ -223,9 +237,9 @@ async function executeWorkspaceSyncCommand(
     }
   }
   if (args.length > 0) {
-    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link" }
+    return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link" }
   }
-  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|link" }
+  return { ok: false, message: "usage: workspace sync status|targets|conflicts|ignore|off|managed|tracked|default|link" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -920,6 +920,7 @@ test("executeShellCommand creates a new slice on an explicit worker kernel", asy
       worker_kernel_ref: "worker-1",
       display_url: null,
       provider_auth: [],
+      from_saved_state: null,
     },
   })
   assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })
@@ -1006,6 +1007,7 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
       worker_kernel_ref: null,
       display_url: null,
       provider_auth: [],
+      from_saved_state: null,
     },
   })
   assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })

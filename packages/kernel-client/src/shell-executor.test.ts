@@ -40,7 +40,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
-  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|link/)
+  assert.match(result.message ?? "", /workspace sync status\|targets\|conflicts\|ignore\|off\|managed\|tracked\|default\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
   assert.match(result.message ?? "", /slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label/)
 })
@@ -1085,6 +1085,7 @@ test("executeShellCommand creates and starts a headless slice for a new session"
       worker_kernel_ref: null,
       display_url: null,
       provider_auth: [],
+      from_saved_state: null,
     },
   })
   assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })
@@ -1243,6 +1244,7 @@ test("executeShellCommand creates manually managed slices scoped to the current 
       worker_kernel_ref: null,
       display_url: null,
       provider_auth: [],
+      from_saved_state: null,
     },
   }])
   assert.deepEqual(result.bindings, { sl: "slice-manual" })
@@ -2101,6 +2103,25 @@ test("executeShellCommand manages workspace links", async () => {
         if ("SetWorkspaceLiveSyncMode" in request) {
           return { WorkspaceLiveSyncModeUpdated: { session } }
         }
+        if ("SetUserConfigValue" in request) {
+          return {
+            UserConfigUpdated: {
+              config: { version: 1, providers: { workspace_live_sync: "tracked" } },
+              path: "/tmp/config.toml",
+              effects: {
+                provider_reload: {
+                  path: "providers.workspace_live_sync",
+                  message: "workspace live sync policy updated; provider reloads: 0 reloaded, 0 deferred, 0 unaffected",
+                  reloaded_count: 0,
+                  deferred_count: 0,
+                  unaffected_count: 0,
+                  skipped_count: 0,
+                  details: [],
+                },
+              },
+            },
+          }
+        }
         throw new Error("unexpected request")
       },
     },
@@ -2121,10 +2142,12 @@ test("executeShellCommand manages workspace links", async () => {
   const directOffResult = await executeShellCommand(parseShellCommand("workspace sync off"), context, { client: fake.client })
   const directManagedResult = await executeShellCommand(parseShellCommand("workspace sync managed"), context, { client: fake.client })
   const disableResult = await executeShellCommand(parseShellCommand("workspace sync disable"), context, { client: fake.client })
+  const defaultResult = await executeShellCommand(parseShellCommand("workspace sync default tracked"), context, { client: fake.client })
   const syncLinkResult = await executeShellCommand(parseShellCommand("workspace sync link shared-repo"), context, { client: fake.client })
   const legacyModeOnResult = await executeShellCommand(parseShellCommand("workspace sync mode on"), context, { client: fake.client })
   const legacyModeOffResult = await executeShellCommand(parseShellCommand("workspace sync mode off"), context, { client: fake.client })
   const legacyEnableOnResult = await executeShellCommand(parseShellCommand("workspace sync enable on"), context, { client: fake.client })
+  const legacyDefaultOnResult = await executeShellCommand(parseShellCommand("workspace sync default on"), context, { client: fake.client })
   const detachResult = await executeShellCommand(parseShellCommand("workspace link detach shared-repo"), context, { client: fake.client })
   const invalidResourceResult = await executeShellCommand(parseShellCommand("workspace unknown"), context, { client: fake.client })
 
@@ -2153,10 +2176,12 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(directOffResult.message ?? "", /disabled; other repositories remain unrestricted/)
   assert.match(directManagedResult.message ?? "", /current session workspace live sync set to managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(disableResult.message ?? "", /disabled; other repositories remain unrestricted/)
+  assert.match(defaultResult.message ?? "", /default workspace live sync for new sessions set to tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(syncLinkResult.message ?? "", /live sync mode is unchanged; choose `workspace sync managed` or `workspace sync tracked` to start syncing this session/)
   assert.match(legacyModeOnResult.message ?? "", /usage: workspace sync mode off\|managed\|tracked/)
   assert.match(legacyModeOffResult.message ?? "", /disabled; other repositories remain unrestricted/)
   assert.match(legacyEnableOnResult.message ?? "", /usage: workspace sync enable \[managed\|tracked\]/)
+  assert.match(legacyDefaultOnResult.message ?? "", /usage: workspace sync default off\|managed\|tracked/)
   assert.match(detachResult.message ?? "", /detached 1 workspace link attachment/)
   assert.match(invalidResourceResult.message ?? "", /workspace sync .*link/)
   assert.deepEqual(requests, [
@@ -2174,8 +2199,37 @@ test("executeShellCommand manages workspace links", async () => {
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "managed" } },
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "tracked" } },
     { AttachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo", branch: null, repo_fingerprint: null } },
     { SetWorkspaceLiveSyncMode: { session_id: "session-1", mode: "unrestricted" } },
     { DetachWorkspaceLink: { session_id: "session-1", link_ref: "shared-repo", repo_root: "/repo" } },
+  ])
+})
+
+test("executeShellCommand changes workspace live sync default without a current session", async () => {
+  const requests: Record<string, unknown>[] = []
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("workspace sync default managed"), context, {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("SetUserConfigValue" in request) {
+          return {
+            UserConfigUpdated: {
+              config: { version: 1, providers: { workspace_live_sync: "managed" } },
+              path: "/tmp/config.toml",
+              effects: {},
+            },
+          }
+        }
+        throw new Error("unexpected request")
+      },
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /default workspace live sync for new sessions set to managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
+  assert.deepEqual(requests, [
+    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
   ])
 })
