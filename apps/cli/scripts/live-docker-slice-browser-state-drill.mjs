@@ -205,7 +205,7 @@ async function startFixture() {
       const sid = `sid-${process.pid}-${Date.now()}`
       sessions.set(sid, email)
       send(302, "", {
-        "set-cookie": `m20_session=${sid}; Path=/; HttpOnly; SameSite=Lax`,
+        "set-cookie": `m20_session=${sid}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax`,
         location: "/mail/inbox",
       })
       return
@@ -259,7 +259,7 @@ function statePage() {
     <p id="status">seeding</p>
     <script>
       const values = ${JSON.stringify(markers)};
-      document.cookie = "m20_state_cookie=" + encodeURIComponent(values.stateCookie) + "; Path=/; SameSite=Lax";
+      document.cookie = "m20_state_cookie=" + encodeURIComponent(values.stateCookie) + "; Path=/; Max-Age=86400; SameSite=Lax";
       localStorage.setItem("m20_state_local", values.stateLocalStorage);
       const request = indexedDB.open("m20_state_db", 1);
       request.onupgradeneeded = () => request.result.createObjectStore("state");
