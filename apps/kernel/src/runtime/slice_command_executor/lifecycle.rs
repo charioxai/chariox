@@ -17,6 +17,7 @@ use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summaries};
 use crate::runtime::cloud_api_client::issue_cloud_runtime_token;
+use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection;
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_runtime_token_subject,
     CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
@@ -302,6 +303,7 @@ pub(super) async fn execute_start_slice_request(
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
+    ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
