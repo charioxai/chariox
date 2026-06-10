@@ -138,6 +138,60 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
 }
 
 #[test]
+fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .expect("execution lease should be created");
+    let worktree = std::env::temp_dir().join(format!(
+        "arroba-shared-leased-agent-worktree-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "opencode",
+            Some("kimi2.5".to_string()),
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("first leased agent should be created");
+    let second = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "opencode",
+            Some("kimi2.5".to_string()),
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("second leased agent should reuse backing session");
+    assert_eq!(first.backing_session_id, second.backing_session_id);
+
+    let removed = RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&first.id)
+        .expect("first leased agent should be destroyed");
+    assert_eq!(removed.id, first.id);
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+    app.sessions()
+        .get_session(&second.backing_session_id)
+        .expect("shared backing session should remain for second lease");
+    app.agents
+        .get_agent(&second.backing_agent_id)
+        .expect("second backing agent should remain");
+}
+
+#[test]
 fn leased_agents_reject_missing_working_directory() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

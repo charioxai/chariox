@@ -240,6 +240,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
+        let backing_session_still_used = self
+            .app
+            .leased_agents
+            .values()
+            .any(|candidate| candidate.backing_session_id == agent.backing_session_id);
         let session_store = self.app.session_state_store();
         let _ = {
             let mut sessions = session_store.write();
@@ -253,11 +258,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .agents
                 .destroy_agent(&agent.backing_agent_id, &mut sessions)
         };
-        let _ = self.app.sessions.end_session(&agent.backing_session_id);
-        let _ = self.app.sessions.delete_session(&agent.backing_session_id);
-        self.app
-            .history_projection
-            .remove(&agent.backing_session_id);
+        if !backing_session_still_used {
+            let _ = self.app.sessions.end_session(&agent.backing_session_id);
+            let _ = self.app.sessions.delete_session(&agent.backing_session_id);
+            self.app
+                .history_projection
+                .remove(&agent.backing_session_id);
+        }
         Ok(agent)
     }
 

@@ -350,6 +350,11 @@ async function spawnWorkspaceLiveSyncPhaseAgents({
   return agents
 }
 
+async function destroyWorkspaceLiveSyncAgent({ client, destroyAgentRequest, sessionId, agent }) {
+  if (!destroyAgentRequest || !agent?.id) return
+  await client.send(destroyAgentRequest(sessionId, agent.id)).catch(() => {})
+}
+
 async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
@@ -987,6 +992,7 @@ async function runLiveCollisionAndExternalChecks({
   pollMs,
   getSessionStateRequest,
   spawnAgentRequest,
+  destroyAgentRequest,
   submitPromptRequest,
 }) {
   const checks = []
@@ -1068,6 +1074,32 @@ async function runLiveCollisionAndExternalChecks({
       sessionId: session.id,
       attachmentId: attachment.id,
     })
+    await waitForHistoryOutputMarkers({
+      historyDir,
+      providerHistoryDirs,
+      markerGroups: [
+        [
+          `${provider.toUpperCase()}_OVERLAP_A_DONE`,
+          `${provider.toUpperCase()}_OVERLAP_A_BLOCKED`,
+        ],
+        [
+          `${provider.toUpperCase()}_OVERLAP_B_DONE`,
+          `${provider.toUpperCase()}_OVERLAP_B_BLOCKED`,
+        ],
+      ],
+      sinceMs: overlapSameAreaEditStartedAt,
+      timeoutMs,
+      pollMs,
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+    })
+    await destroyWorkspaceLiveSyncAgent({
+      client,
+      destroyAgentRequest,
+      sessionId: session.id,
+      agent: collider,
+    })
     if (!machineRef) {
       const appliedCount = overlapEditResults.filter((result) => result?.applied === true).length
       const conflictCount = overlapEditResults.filter((result) => result?.applied === false && result?.reason?.kind === 'conflict').length
@@ -1091,30 +1123,13 @@ async function runLiveCollisionAndExternalChecks({
       expectedOneOf: Array.from(allowedOverlapContents),
     })
 
-    const spawnCheckAgent = async (suffix) => {
-      return unwrapVariant(
-        await client.send(workspaceLiveSyncSpawnAgentRequest(
-          spawnAgentRequest,
-          session.id,
-          provider,
-          `${provider}-workspace-live-sync-${suffix}`,
-          modelForProvider(provider),
-          workspace,
-          'low',
-          kernelRef,
-        )),
-        'AgentSpawned',
-      ).agent
-    }
-
     const nonOverlapPath = path.join(outputsDir, `${provider}-external-nonoverlap.txt`)
     const nonOverlapBase = 'header\nalpha\nTARGET\nomega\nfooter\n'
     const nonOverlapExternallyChanged = 'intro\nheader\nalpha\nTARGET\nomega\nfooter\noutro\n'
     const nonOverlapExpected = 'intro\nheader\nalpha\nREPLACED\nomega\nfooter\noutro\n'
     await writeFile(nonOverlapPath, nonOverlapBase, 'utf8')
-    const nonOverlapReadAgent = await spawnCheckAgent('external-nonoverlap-read')
     const nonOverlapReadStartedAt = Date.now()
-    await client.send(submitPromptRequest(session.id, attachment.id, nonOverlapReadAgent.id, [
+    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'This is a live Arroba workspace live sync external non-overlap drill.',
       'Use only Arroba workspace live sync.',
       `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","domain":"text"}.`,
@@ -1149,7 +1164,7 @@ async function runLiveCollisionAndExternalChecks({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
-        agentIds: [nonOverlapReadAgent.id],
+        agentIds: [agent.id],
         getSessionStateRequest,
         timeoutMs,
         pollMs,
@@ -1157,8 +1172,7 @@ async function runLiveCollisionAndExternalChecks({
     }
     await writeFile(nonOverlapPath, nonOverlapExternallyChanged, 'utf8')
     const nonOverlapEditStartedAt = Date.now()
-    const nonOverlapEditAgent = await spawnCheckAgent('external-nonoverlap-edit')
-    await client.send(submitPromptRequest(session.id, attachment.id, nonOverlapEditAgent.id, [
+    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'Continue the external non-overlap drill.',
       'Use only Arroba workspace live sync. Do not reread the artifact.',
       `Use this exact snapshot_id: ${nonOverlapRead.snapshot_id}`,
@@ -1202,9 +1216,8 @@ async function runLiveCollisionAndExternalChecks({
     const externalOverlapBase = 'one\nTARGET\nthree\n'
     const externalOverlapExpected = 'one\nEXTERNAL\nthree\n'
     await writeFile(overlapExternalPath, externalOverlapBase, 'utf8')
-    const overlapReadAgent = await spawnCheckAgent('external-overlap-read')
     const overlapReadStartedAt = Date.now()
-    await client.send(submitPromptRequest(session.id, attachment.id, overlapReadAgent.id, [
+    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'This is a live Arroba workspace live sync external overlap drill.',
       'Use only Arroba workspace live sync.',
       `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","domain":"text"}.`,
@@ -1239,7 +1252,7 @@ async function runLiveCollisionAndExternalChecks({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
-        agentIds: [overlapReadAgent.id],
+        agentIds: [agent.id],
         getSessionStateRequest,
         timeoutMs,
         pollMs,
@@ -1247,8 +1260,7 @@ async function runLiveCollisionAndExternalChecks({
     }
     await writeFile(overlapExternalPath, externalOverlapExpected, 'utf8')
     const overlapEditStartedAt = Date.now()
-    const overlapEditAgent = await spawnCheckAgent('external-overlap-edit')
-    await client.send(submitPromptRequest(session.id, attachment.id, overlapEditAgent.id, [
+    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'Continue the external overlap drill.',
       'Use only Arroba workspace live sync. Do not reread the artifact and do not retry if rejected.',
       `Use this exact snapshot_id: ${overlapRead.snapshot_id}`,
@@ -2066,6 +2078,7 @@ async function main() {
     attachWorkspaceLinkRequest,
     createWorkspaceLinkRequest,
     createSessionRequest,
+    destroyAgentRequest,
     endSessionRequest,
     getWorkspaceLiveSyncStatusRequest,
     getSessionStateRequest,
@@ -2692,6 +2705,17 @@ async function main() {
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
         })
+        await waitForHistoryOutputMarkers({
+          historyDir,
+          providerHistoryDirs: options.providerHistoryDirs,
+          markerGroups: [[`${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_DELETE_DONE`]],
+          sinceMs: completionSinceMs,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+        })
       }
     } else {
       const completionSinceMs = Date.now()
@@ -2737,16 +2761,7 @@ async function main() {
       }
     }
 
-    const negativeAgents = options.machineRef ? await spawnWorkspaceLiveSyncPhaseAgents({
-      client,
-      sessionId: session.id,
-      providers: options.providers,
-      modelForProvider: (provider) => modelForProvider(provider, options),
-      workspace,
-      kernelRef: workerKernelRef,
-      spawnAgentRequest,
-      aliasSuffix: 'negative',
-    }) : agents
+    const negativeAgents = options.machineRef ? deleteAgents : agents
 
     const negativePrompts = []
     for (const { provider, agent } of negativeAgents) {
@@ -2764,24 +2779,19 @@ async function main() {
       for (const { provider, agent, prompt } of negativePrompts) {
         const completionSinceMs = Date.now()
         await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
-        await waitForCompletionsAndFiles({
+        await waitForHistoryOutputMarkers({
+          historyDir,
+          providerHistoryDirs: options.providerHistoryDirs,
+          markerGroups: [[`${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED`]],
+          sinceMs: completionSinceMs,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
           client,
           sessionId: session.id,
           attachmentId: attachment.id,
-          events,
-          expectedCompletionCount: 1,
-          completionSinceMs,
-          requiredFiles: positiveFiles,
-          forbiddenFiles: directFiles,
-          timeoutMs: options.timeoutMs,
-          pollMs: options.pollMs,
-          historyDir,
-          providerErrorSinceMs: completionSinceMs,
         })
-        await waitForHistoryOutputMarkers({
-          historyDir,
-          markerGroups: [[`${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED`]],
-          sinceMs: completionSinceMs,
+        await waitForFilesAbsent({
+          filePaths: directFiles,
           timeoutMs: options.timeoutMs,
           pollMs: options.pollMs,
         })
@@ -2853,6 +2863,7 @@ async function main() {
       pollMs: options.pollMs,
       getSessionStateRequest,
       spawnAgentRequest,
+      destroyAgentRequest,
       submitPromptRequest,
     })
     await assertFilesAbsent(directFiles, 'final workspace live sync direct-write check')
