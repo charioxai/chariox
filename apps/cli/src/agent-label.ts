@@ -4,7 +4,7 @@ export function formatAgentLabel(agent: AgentInstance | null | undefined) {
   if (!agent) {
     return ""
   }
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${agent.role === "meta" ? " [meta]" : ""}`
 }
 
 export function formatAgentLocationLabel(

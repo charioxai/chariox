@@ -104,6 +104,13 @@ test("formatSplitPaneFooter prefers an override variant when idle", () => {
   )
 })
 
+test("formatSplitPaneFooter marks metaagents", () => {
+  assert.equal(
+    formatSplitPaneFooter({ ...primaryAgent, role: "meta" }, null, null),
+    "Planner • meta • OpenAI • GPT-5.4 • build • yolo",
+  )
+})
+
 test("formatSplitPaneFooterParts mirrors the prompt footer order with an agent prefix", () => {
   const parts = formatSplitPaneFooterParts(primaryAgent, null, null)
   assert.deepEqual(

@@ -89,7 +89,7 @@ test("buildCommandCenterItems explains slice spawn primitives", () => {
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/agent spawn ")?.description, "Spawn local, remote, or slice agents; use --slice off, new, new:headed, or an existing slice")
+  assert.equal(items.find((item) => item.value === "/agent spawn ")?.description, "Spawn local, remote, slice, or meta agents; use --meta or --slice off, new, new:headed, or an existing slice")
 })
 
 test("buildCommandCenterItems surfaces local provider catalog fallback in selection rows", () => {

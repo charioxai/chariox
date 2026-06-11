@@ -8,6 +8,7 @@ export type SplitPaneFooterMode = "idle" | "working" | "disconnected"
 export type SplitPaneFooterAgent = {
   id: string
   agent_ref: string
+  role?: "standard" | "meta" | string
   alias: string | null
   provider: string
   model: string | null
@@ -38,7 +39,7 @@ export type SplitPaneFooterPart = PromptMetaPart | {
   text: string
   tone: PromptMetaTone
 } | {
-  kind: "mode" | "permission" | "location"
+  kind: "mode" | "permission" | "location" | "role"
   text: string
   tone: PromptMetaTone
 }
@@ -139,6 +140,7 @@ export function formatSplitPaneFooterParts(
       text: aliasLabel,
       tone: toneForAgent(aliasLabel),
     },
+    ...(agent.role === "meta" ? [{ kind: "role" as const, text: "meta", tone: "accent" as const }] : []),
     ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
     ...(agent.location_label ? [{ kind: "location" as const, text: agent.location_label, tone: "accent" as const }] : []),
     ...(substitutePart ? [substitutePart] : []),

@@ -39,6 +39,7 @@ export type SpawnAgentOptions = {
   kernelRef?: string | undefined
   worktreePlacement?: Record<string, unknown> | undefined
   sliceRef?: string | undefined
+  metaagent?: boolean | undefined
 }
 
 export async function aliasAgent(
@@ -82,6 +83,7 @@ export async function spawnAgent(
       options.kernelRef,
       options.worktreePlacement,
       options.sliceRef,
+      options.metaagent ?? false,
     ),
   )
   const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")

@@ -26,6 +26,7 @@ export type PlacementParseResult = {
   sliceRef?: string | undefined
   sliceDisplayMode?: "headless" | "headed" | undefined
   externalSessionId?: string | undefined
+  metaagent?: boolean | undefined
   gitWorktree?: string | undefined
   branch?: string | undefined
   fromRef?: string | undefined
@@ -204,13 +205,19 @@ export function parsePlacementOptions(
 }
 
 export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
-  const parsed = parsePlacementOptions(args, "/agent spawn", true)
+  const metaagent = args.includes("--meta") || args.includes("--metaagent")
+  const spawnArgs = args.filter((arg) => arg !== "--meta" && arg !== "--metaagent")
+  const parsed = parsePlacementOptions(spawnArgs, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--external|--import <external-session-id>]"
+    error = "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--external|--import <external-session-id>]"
+  }
+  if (!error && metaagent && parsed.sliceRef) {
+    error = "metaagents cannot be launched in a slice"
   }
   return {
     ...parsed,
+    metaagent,
     error,
   }
 }

@@ -613,7 +613,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       ),
     setProviderRunState,
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
-    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef) => {
+    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, metaagent) => {
       const agent = await spawnAgentApi(
         client,
         sessionState().id,
@@ -626,6 +626,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
           kernelRef: machineRef,
           worktreePlacement,
           sliceRef,
+          metaagent,
         },
       )
       return {

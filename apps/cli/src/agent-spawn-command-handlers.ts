@@ -58,6 +58,7 @@ export type AgentSpawnCommandHandlerDeps = {
     machineRef?: string,
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
     sliceRef?: string,
+    metaagent?: boolean,
   ) => Promise<AgentSpawnPayload>
   importExternalProviderAgent?: (
     externalSessionId: string,
@@ -147,6 +148,7 @@ export async function handleAgentSpawnCommand(
       machineRef: sliceRef ? undefined : remoteRef,
       worktreePlacement: remoteGitPlacement,
       sliceRef,
+      metaagent: parsed.metaagent ?? false,
     })
     deps.flashFooter(formatSpawnedAgentFooter(payload.agent, {
       requestedAlias: alias,
@@ -322,7 +324,7 @@ function formatSpawnedAgentFooter(
       : "local"
   const worktree = options.resolvedWorktreeId || agent.worktree_id || null
   const parts = [
-    `spawned agent ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
+    `spawned ${agent.role === "meta" ? "metaagent" : "agent"} ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
     placement,
     worktree ? `worktree ${worktree}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,
@@ -341,6 +343,7 @@ async function spawnAndLaunchAgent(
     machineRef?: string | undefined
     worktreePlacement?: RemoteGitWorktreePlacement | undefined
     sliceRef?: string | undefined
+    metaagent?: boolean | undefined
   },
 ): Promise<AgentSpawnPayload> {
   const payload = await deps.spawnAgent(
@@ -352,6 +355,7 @@ async function spawnAndLaunchAgent(
     options.machineRef,
     options.worktreePlacement,
     options.sliceRef,
+    options.metaagent ?? false,
   )
   deps.applySessionState(payload.session)
   await deps.refreshAgentPanes(payload.session)

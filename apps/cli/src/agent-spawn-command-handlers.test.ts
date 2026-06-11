@@ -137,6 +137,60 @@ test("agent spawn command accepts --import as external provider session alias", 
   assert.deepEqual(calls, ["import:codex:thread-1"])
 })
 
+test("agent spawn command creates a metaagent with --meta", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+  let spawnedMetaagent: boolean | undefined
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => currentSession,
+      setSession: (nextSession) => { currentSession = nextSession },
+      calls,
+      flash: (message) => { flashedMessage = message },
+    }),
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => {
+      calls.push(`launch:${agentId}`)
+      return providerRun({ agent_instance_id: agentId })
+    },
+    spawnAgent: async (_provider, alias, _model, _effort, _worktreeId, _machineRef, _worktreePlacement, _sliceRef, metaagent) => {
+      spawnedMetaagent = metaagent
+      const nextAgent = agent({
+        id: "agent-meta",
+        agent_ref: "agent-meta",
+        alias: alias ?? null,
+        role: "meta",
+        provider: "codex",
+        model: "codex/gpt-5.4",
+        effort: "high",
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+  }, ["meta", "codex/gpt-5.4", "--meta"])
+
+  assert.equal(spawnedMetaagent, true)
+  assert.deepEqual(calls, ["launch:agent-meta", "run:run-1", "rebuild", "repaint"])
+  assert.equal(flashedMessage, "spawned metaagent agent-meta (meta) · local · worktree worktree-1")
+})
+
+test("agent spawn command rejects metaagents in slices", async () => {
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => session(),
+      flash: (message) => { flashedMessage = message },
+    }),
+    spawnAgent: async () => {
+      throw new Error("slice metaagent spawn should be rejected before the kernel request")
+    },
+  }, ["meta", "--meta", "--slice", "new"])
+
+  assert.equal(flashedMessage, "metaagents cannot be launched in a slice")
+})
+
 test("agent spawn command rejects external imports with placement options", async () => {
   let flashedMessage = ""
 
