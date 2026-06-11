@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn dispatch_forwarded_read(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
-    context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    _context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
     arguments: serde_json::Value,
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
@@ -26,7 +26,7 @@ pub(super) fn dispatch_forwarded_read(
             })?;
     let content = remote_workspace_live_sync_content_from_state(state, domain)?;
     let read = coordinator.read_artifact(crate::io::ArtifactReadRequest {
-        workspace_identity: context.worker_workspace_identity.clone(),
+        workspace_identity: workspace_context.identity.clone(),
         path: PathBuf::from(args.path),
         domain,
         content,

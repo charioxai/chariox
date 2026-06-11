@@ -33,15 +33,17 @@ impl KernelRuntimeState {
             &session,
             &home_root,
         );
-        if !workspace_live_sync_workspace_identities_match(
-            &home_identity,
-            &context.worker_workspace_identity,
-        ) {
+        let worker_identity = workspace_live_sync_identity_for_session_workspace_link(
+            context.worker_workspace_identity.clone(),
+            &session,
+            std::path::Path::new(&context.worker_worktree_path),
+        );
+        if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
             return Ok(remote_workspace_not_coordinated_result());
         }
         let workspace_context = WorkspaceLiveSyncWorkspaceContext {
             root: home_root,
-            identity: context.worker_workspace_identity.clone(),
+            identity: worker_identity,
             generation: 0,
             identity_changed: false,
             valid: true,
@@ -154,15 +156,17 @@ impl KernelRuntimeState {
             &session,
             &home_root,
         );
-        if !workspace_live_sync_workspace_identities_match(
-            &home_identity,
-            &context.worker_workspace_identity,
-        ) {
+        let worker_identity = workspace_live_sync_identity_for_session_workspace_link(
+            context.worker_workspace_identity.clone(),
+            &session,
+            std::path::Path::new(&context.worker_worktree_path),
+        );
+        if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
             return Ok(());
         }
         let workspace_context = WorkspaceLiveSyncWorkspaceContext {
             root: home_root,
-            identity: context.worker_workspace_identity.clone(),
+            identity: worker_identity,
             generation: 0,
             identity_changed: false,
             valid: true,

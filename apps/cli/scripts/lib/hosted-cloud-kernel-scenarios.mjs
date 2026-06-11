@@ -1,20 +1,29 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
-async function callRuntimeMcp(serverUrl, authToken, method, params = {}) {
-  const response = await fetch(serverUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}`, method, params }),
-  })
-  const json = await response.json()
-  if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
-  return json.result
+async function callRuntimeMcp(serverUrl, authToken, method, params = {}, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 60_000
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`runtime MCP ${method} timed out after ${timeoutMs}ms`)), timeoutMs)
+  try {
+    const response = await fetch(serverUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}`, method, params }),
+      signal: controller.signal,
+    })
+    const json = await response.json()
+    if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
+    return json.result
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {}) {
@@ -37,6 +46,145 @@ async function waitForRuntimeTool(serverUrl, authToken, name, present) {
     await sleep(250)
   }
   throw new Error(`tool ${name} did not become ${present ? "advertised" : "revoked"}: ${JSON.stringify(lastTools)}`)
+}
+
+async function runCommand(command, args, cwd) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.on("error", reject)
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+      reject(new Error(`${command} ${args.join(" ")} failed with code ${code} signal ${signal ?? "none"}: ${stderr || stdout}`))
+    })
+  })
+}
+
+async function initHostedLiveSyncWorktree(worktree, label) {
+  await mkdir(path.join(worktree, "outputs"), { recursive: true })
+  await mkdir(path.join(worktree, "ignored"), { recursive: true })
+  await writeFile(path.join(worktree, "seed.txt"), `${label}-seed\n`, "utf8")
+  await writeFile(path.join(worktree, ".arrobaignore"), "ignored/\n*.secret\n", "utf8")
+  await runCommand("git", ["init"], worktree)
+  await runCommand("git", ["config", "user.email", "hosted-workspace-live-sync@example.com"], worktree)
+  await runCommand("git", ["config", "user.name", "Hosted Workspace Live Sync Drill"], worktree)
+  await runCommand("git", ["add", "."], worktree)
+  await runCommand("git", ["commit", "-m", "seed hosted workspace live sync fixture"], worktree)
+}
+
+async function waitForFileContent(filePath, expected, timeoutMs, pollMs = 250) {
+  const deadline = Date.now() + timeoutMs
+  let lastContent = null
+  while (Date.now() < deadline) {
+    try {
+      lastContent = await readFile(filePath, "utf8")
+      if (lastContent === expected) return
+    } catch {
+      lastContent = null
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for ${filePath} content ${JSON.stringify(expected)}; last=${JSON.stringify(lastContent)}`)
+}
+
+async function prepareHostedWorkspaceLiveSyncFixture({
+  client,
+  requests,
+  session,
+  workspace,
+  workerWorkspace,
+  rootDir,
+  log,
+  unwrap,
+}) {
+  const targetWorkspace = path.join(rootDir, "hosted-live-sync-target")
+  await initHostedLiveSyncWorktree(workspace, "home")
+  await initHostedLiveSyncWorktree(workerWorkspace, "worker")
+  await initHostedLiveSyncWorktree(targetWorkspace, "target")
+  const canonicalWorkspace = await realpath(workspace)
+  const canonicalWorkerWorkspace = await realpath(workerWorkspace)
+  const canonicalTargetWorkspace = await realpath(targetWorkspace)
+  await client.send(requests.setWorkspaceLiveSyncModeRequest(session.id, "managed"))
+  const linkName = `hosted-managed-live-sync-${Date.now()}`
+  unwrap(await client.send(requests.createWorkspaceLinkRequest(session.id, linkName)), "WorkspaceLinkCreated")
+  await client.send(requests.attachWorkspaceLinkRequest(session.id, linkName, canonicalWorkspace))
+  await client.send(requests.attachWorkspaceLinkRequest(session.id, linkName, canonicalWorkerWorkspace))
+  await client.send(requests.attachWorkspaceLinkRequest(session.id, linkName, canonicalTargetWorkspace))
+  log("second-kernel-workspace-live-sync-prepared", {
+    sessionId: session.id,
+    mode: "managed",
+    linkName,
+    homeWorkspace: canonicalWorkspace,
+    sourceWorkspace: canonicalWorkerWorkspace,
+    targetWorkspace: canonicalTargetWorkspace,
+  })
+  return { linkName, targetWorkspace: canonicalTargetWorkspace }
+}
+
+async function assertHostedWorkspaceLiveSyncProxy({
+  client,
+  requests,
+  session,
+  launch,
+  workerWorkspace,
+  targetWorkspace,
+  pollTimeoutMs,
+  log,
+  unwrap,
+}) {
+  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
+    throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${JSON.stringify(launch)}`)
+  }
+  log("second-kernel-workspace-live-sync-tool-wait", { tool: "arroba.write_artifact" })
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "arroba.write_artifact", true)
+  const relativePath = "outputs/hosted-managed-live-sync.txt"
+  const expected = "HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_OK\n"
+  log("second-kernel-workspace-live-sync-write-start", { relativePath })
+  const write = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "arroba.write_artifact",
+    arguments: { path: relativePath, content_text: expected },
+  })
+  if (write.isError) throw new Error(`hosted workspace live sync write returned error: ${JSON.stringify(write)}`)
+  log("second-kernel-workspace-live-sync-write-returned", { relativePath })
+  await waitForFileContent(path.join(workerWorkspace, relativePath), expected, pollTimeoutMs)
+  await waitForFileContent(path.join(targetWorkspace, relativePath), expected, pollTimeoutMs)
+
+  log("second-kernel-workspace-live-sync-ignore-check", { path: "ignored/hosted-managed-live-sync.txt" })
+  const ignored = await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    name: "arroba.write_artifact",
+    arguments: { path: "ignored/hosted-managed-live-sync.txt", content_text: "SHOULD_NOT_WRITE\n" },
+  })
+  if (!JSON.stringify(ignored).includes("excluded from workspace live sync")) {
+    throw new Error(`ignored hosted workspace live sync write rejected with unexpected result: ${JSON.stringify(ignored)}`)
+  }
+  if (ignored.isError === false && ignored.structuredContent?.applied !== false) {
+    throw new Error(`ignored hosted workspace live sync write unexpectedly succeeded: ${JSON.stringify(ignored)}`)
+  }
+
+  const status = unwrap(
+    await client.send(requests.getWorkspaceLiveSyncStatusRequest(session.id)),
+    "WorkspaceLiveSyncStatus",
+  ).status
+  if (!(status.targets ?? []).some((target) => target.repo_root === targetWorkspace)) {
+    throw new Error(`hosted workspace live sync status did not include target ${targetWorkspace}: ${JSON.stringify(status)}`)
+  }
+  log("second-kernel-workspace-live-sync-pass", {
+    sessionId: session.id,
+    sourceWorkspace: workerWorkspace,
+    targetWorkspace,
+    mode: "managed",
+    relativePath,
+  })
 }
 
 async function createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort }) {
@@ -461,6 +609,7 @@ export async function runHostedSecondKernelAssertions({
   homeCapabilityRoot,
   homeOnlyMcpPort,
   collabExtensions = false,
+  workspaceLiveSync = false,
   homeDaemonAlias,
   homeClient,
   ownerProfile,
@@ -593,6 +742,19 @@ export async function runHostedSecondKernelAssertions({
     await homeClient.subscribeToKernelEvents(session.id, attachment.id)
     log("second-kernel-subscribe-ready", { sessionId: session.id, attachmentId: attachment.id })
 
+    const liveSyncFixture = workspaceLiveSync
+      ? await prepareHostedWorkspaceLiveSyncFixture({
+          client: homeClient,
+          requests,
+          session,
+          workspace,
+          workerWorkspace,
+          rootDir,
+          log,
+          unwrap,
+        })
+      : null
+
     log("second-kernel-spawn-agent-start", { workerDaemonId })
     const spawned = unwrap(
       await homeClient.send(requests.spawnAgentRequest(
@@ -629,6 +791,19 @@ export async function runHostedSecondKernelAssertions({
       )),
       "ProviderRunLaunched",
     ).provider_run
+    if (liveSyncFixture) {
+      await assertHostedWorkspaceLiveSyncProxy({
+        client: homeClient,
+        requests,
+        session,
+        launch,
+        workerWorkspace,
+        targetWorkspace: liveSyncFixture.targetWorkspace,
+        pollTimeoutMs,
+        log,
+        unwrap,
+      })
+    }
     await assertHostedHomeExtensionProxy({
       client: homeClient,
       requests,
@@ -672,10 +847,19 @@ export async function runHostedSecondKernelAssertions({
       "Reply with exactly HOSTED_SECOND_KERNEL_OK.",
       [],
     ))
-    const completed = unwrap(
-      await homeClient.send({ CompletePrompt: { session_id: session.id } }),
-      "PromptCompleted",
-    )
+    let completed = null
+    try {
+      completed = unwrap(
+        await homeClient.send({ CompletePrompt: { session_id: session.id } }),
+        "PromptCompleted",
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes("has no active prompt")) {
+        throw error
+      }
+      log("second-kernel-complete-prompt-already-settled", { sessionId: session.id })
+    }
     await waitForCompletion(eventLog, pollTimeoutMs, 0)
     if (ownsSession) {
       await homeClient.send(requests.endSessionRequest(session.id)).catch(() => {})
@@ -684,8 +868,9 @@ export async function runHostedSecondKernelAssertions({
       machineId: workerDaemonId,
       workerAlias,
       agentId: spawned.agent.id,
-      completedPromptId: completed.completion?.completed?.id ?? null,
+      completedPromptId: completed?.completion?.completed?.id ?? null,
       homeExtensions: ["script", "mcp", "connector"],
+      workspaceLiveSync,
     })
   } finally {
     await fixtures?.close?.().catch(() => {})

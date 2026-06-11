@@ -30,7 +30,7 @@ pub(super) fn dispatch_forwarded_apply_patch(
     let operations = parse_workspace_live_sync_apply_patch(&args.patch_text)?;
     apply_remote_workspace_live_sync_patch_operations(
         coordinator,
-        context.worker_workspace_identity.clone(),
+        workspace_context.identity.clone(),
         domain,
         operations,
         artifact_states,
@@ -59,7 +59,7 @@ pub(super) fn dispatch_forwarded_delete(
     if domain == crate::io::ArtifactDomainKind::TextDocument {
         apply_remote_workspace_live_sync_patch_operations(
             coordinator,
-            context.worker_workspace_identity.clone(),
+            workspace_context.identity.clone(),
             domain,
             vec![ManagedPatchOperation::Delete {
                 path: PathBuf::from(args.path),
@@ -71,7 +71,7 @@ pub(super) fn dispatch_forwarded_delete(
     } else {
         apply_remote_workspace_live_sync_whole_file_operations(
             coordinator,
-            context.worker_workspace_identity.clone(),
+            workspace_context.identity.clone(),
             domain,
             vec![WorkspaceLiveSyncWholeFileOperation::Delete {
                 path: PathBuf::from(args.path),
@@ -104,7 +104,7 @@ pub(super) fn dispatch_forwarded_move(
     if domain == crate::io::ArtifactDomainKind::TextDocument {
         apply_remote_workspace_live_sync_patch_operations(
             coordinator,
-            context.worker_workspace_identity.clone(),
+            workspace_context.identity.clone(),
             domain,
             vec![ManagedPatchOperation::Move {
                 from_path: PathBuf::from(args.from_path),
@@ -127,7 +127,7 @@ pub(super) fn dispatch_forwarded_move(
         }
         apply_remote_workspace_live_sync_whole_file_operations(
             coordinator,
-            context.worker_workspace_identity.clone(),
+            workspace_context.identity.clone(),
             domain,
             vec![WorkspaceLiveSyncWholeFileOperation::Move {
                 from_path: PathBuf::from(args.from_path),

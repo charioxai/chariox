@@ -258,4 +258,78 @@ mod tests {
             &worker_identity
         ));
     }
+
+    #[test]
+    fn workspace_link_identity_rewrites_worker_context_path_before_matching() {
+        let mut session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "/tmp/home-worktree",
+            "machine-home",
+            "kernel-home",
+        );
+        let link = crate::session::WorkspaceLinkDefinition::new(
+            "workspace-link-1",
+            "session-1",
+            "shared",
+            "local",
+        );
+        session.create_workspace_link(link);
+        let link = session
+            .workspace_link_mut("workspace-link-1")
+            .expect("link should exist");
+        link.attach(crate::session::WorkspaceLinkAttachment::new(
+            "workspace-link-1",
+            "local",
+            "machine-home",
+            "kernel-home",
+            "/tmp/home-worktree",
+            Some("main".to_string()),
+            Some("home-fingerprint".to_string()),
+        ));
+        link.attach(crate::session::WorkspaceLinkAttachment::new(
+            "workspace-link-1",
+            "local",
+            "machine-worker",
+            "kernel-worker",
+            "/tmp/worker-worktree",
+            Some("main".to_string()),
+            Some("worker-fingerprint".to_string()),
+        ));
+
+        let home_identity = workspace_live_sync_identity_for_session_workspace_link(
+            crate::io::WorkspaceIdentity {
+                vcs_provider: Some("git".to_string()),
+                repo_id: None,
+                repo_url: None,
+                branch: Some("main".to_string()),
+                head_commit: Some("home-commit".to_string()),
+                worktree_root_fingerprint: "home-fingerprint".to_string(),
+            },
+            &session,
+            Path::new("/tmp/home-worktree"),
+        );
+        let worker_identity = workspace_live_sync_identity_for_session_workspace_link(
+            crate::io::WorkspaceIdentity {
+                vcs_provider: Some("git".to_string()),
+                repo_id: None,
+                repo_url: None,
+                branch: Some("main".to_string()),
+                head_commit: Some("worker-commit".to_string()),
+                worktree_root_fingerprint: "worker-fingerprint".to_string(),
+            },
+            &session,
+            Path::new("/tmp/worker-worktree"),
+        );
+
+        assert_eq!(
+            worker_identity.repo_id.as_deref(),
+            Some("workspace_link:workspace-link-1")
+        );
+        assert!(workspace_live_sync_workspace_identities_match(
+            &home_identity,
+            &worker_identity
+        ));
+    }
 }

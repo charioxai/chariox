@@ -40,14 +40,14 @@ pub(super) fn dispatch_forwarded_edit(
     )?;
     let before = remote_workspace_live_sync_text_snapshot_from_state(state);
     coordinator.read_artifact(crate::io::ArtifactReadRequest {
-        workspace_identity: context.worker_workspace_identity.clone(),
+        workspace_identity: workspace_context.identity.clone(),
         path: path.clone(),
         domain,
         content: remote_workspace_live_sync_content_from_state(state, domain)?,
     });
     let reservation = match workspace_live_sync_try_reserve_ranges(
         coordinator,
-        &context.worker_workspace_identity,
+        &workspace_context.identity,
         &path,
         workspace_live_sync_reservation_ranges_for_operation(
             &operation,
@@ -63,7 +63,7 @@ pub(super) fn dispatch_forwarded_edit(
         }
     };
     let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
-        workspace_identity: context.worker_workspace_identity.clone(),
+        workspace_identity: workspace_context.identity.clone(),
         intent: crate::io::AgentEditIntent {
             path: path.clone(),
             snapshot_id: workspace_live_sync_snapshot_id_from_arg(args.snapshot_id.clone()),
@@ -126,14 +126,14 @@ pub(super) fn dispatch_forwarded_write(
     )?;
     let before = remote_workspace_live_sync_text_snapshot_from_state(state);
     coordinator.read_artifact(crate::io::ArtifactReadRequest {
-        workspace_identity: context.worker_workspace_identity.clone(),
+        workspace_identity: workspace_context.identity.clone(),
         path: path.clone(),
         domain,
         content: remote_workspace_live_sync_content_from_state(state, domain)?,
     });
     let reservation = match workspace_live_sync_try_reserve_ranges(
         coordinator,
-        &context.worker_workspace_identity,
+        &workspace_context.identity,
         &path,
         vec![crate::io::TextRange::new(0, usize::MAX)],
         remote_reservation_owner(context, tool_name),
@@ -145,7 +145,7 @@ pub(super) fn dispatch_forwarded_write(
         }
     };
     let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
-        workspace_identity: context.worker_workspace_identity.clone(),
+        workspace_identity: workspace_context.identity.clone(),
         intent: crate::io::AgentEditIntent {
             path: path.clone(),
             snapshot_id: workspace_live_sync_write_snapshot_id_from_arg(

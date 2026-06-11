@@ -19,6 +19,7 @@ const runSecondKernel = process.env.ARROBA_CLOUD_HOSTED_SECOND_KERNEL === "1"
 const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
 const runRemoteCliPairing = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
 const runTokenRotation = process.env.ARROBA_CLOUD_HOSTED_TOKEN_ROTATION === "1"
+const runWorkspaceLiveSync = process.env.ARROBA_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC === "1"
 const remoteCliPairingProvider = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
 const remoteCliPairingModel = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
 const remoteCliPairingEffort = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
@@ -28,6 +29,10 @@ const remoteCliRepo = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/a
 const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+if (runWorkspaceLiveSync && !runSecondKernel) {
+  throw new Error("ARROBA_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC=1 requires ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1")
+}
 
 function log(name, details = null) {
   if (details == null) console.log(`[hosted-cloud-relay-drill] ${name}`)
@@ -1035,6 +1040,7 @@ async function main() {
         homeCapabilityRoot,
         homeOnlyMcpPort: ports.homeOnlyMcpPort,
         collabExtensions: runMultiUser,
+        workspaceLiveSync: runWorkspaceLiveSync,
         homeDaemonAlias: daemonAlias,
         homeClient: localClient,
         ownerProfile: profileRef.current,
@@ -1104,6 +1110,7 @@ async function main() {
       remoteCliPairing: runRemoteCliPairing,
       secondKernel: runSecondKernel,
       tokenRotation: runTokenRotation,
+      workspaceLiveSync: runWorkspaceLiveSync,
     })
     passed = true
   } finally {
