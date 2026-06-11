@@ -30,22 +30,26 @@ impl CommandRouter {
                 message: format!("invalid tool arguments: {error}"),
             }
         })?;
-        let tokens = match tokenize_meta_command(&args.command) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                let result = meta_command_failure_result(&args.command, error);
-                self.audit_meta_run_command(
-                    Some(provider_run.id()),
-                    &session,
-                    &metaagent,
-                    &args.command,
-                    "invalid",
-                    result.payload.clone(),
-                )
-                .await;
-                return Ok(result);
-            }
-        };
+        let tokens =
+            match crate::runtime::metaagent_command_registry::tokenize_command(&args.command) {
+                Ok(tokens) => tokens,
+                Err(error) => {
+                    let result = meta_command_failure_result(
+                        &args.command,
+                        meta_command_error(error.message()),
+                    );
+                    self.audit_meta_run_command(
+                        Some(provider_run.id()),
+                        &session,
+                        &metaagent,
+                        &args.command,
+                        "invalid",
+                        result.payload.clone(),
+                    )
+                    .await;
+                    return Ok(result);
+                }
+            };
         match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
@@ -183,22 +187,26 @@ impl CommandRouter {
                 message: format!("invalid tool arguments: {error}"),
             }
         })?;
-        let tokens = match tokenize_meta_command(&args.command) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                let result = meta_command_failure_result(&args.command, error);
-                self.audit_meta_run_command(
-                    None,
-                    &session,
-                    &metaagent,
-                    &args.command,
-                    "invalid",
-                    result.payload.clone(),
-                )
-                .await;
-                return Ok(result);
-            }
-        };
+        let tokens =
+            match crate::runtime::metaagent_command_registry::tokenize_command(&args.command) {
+                Ok(tokens) => tokens,
+                Err(error) => {
+                    let result = meta_command_failure_result(
+                        &args.command,
+                        meta_command_error(error.message()),
+                    );
+                    self.audit_meta_run_command(
+                        None,
+                        &session,
+                        &metaagent,
+                        &args.command,
+                        "invalid",
+                        result.payload.clone(),
+                    )
+                    .await;
+                    return Ok(result);
+                }
+            };
         match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
@@ -885,53 +893,6 @@ fn single_ref_arg(usage: &'static str, args: &[String]) -> Result<String, Daemon
         return Err(meta_command_error(format!("usage: {usage} <ref>")));
     }
     Ok(reference.clone())
-}
-
-fn tokenize_meta_command(input: &str) -> Result<Vec<String>, DaemonError> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaping = false;
-    for ch in input.trim().chars() {
-        if escaping {
-            current.push(ch);
-            escaping = false;
-            continue;
-        }
-        if ch == '\\' && quote != Some('\'') {
-            escaping = true;
-            continue;
-        }
-        if let Some(active_quote) = quote {
-            if ch == active_quote {
-                quote = None;
-            } else {
-                current.push(ch);
-            }
-            continue;
-        }
-        if ch == '\'' || ch == '"' {
-            quote = Some(ch);
-            continue;
-        }
-        if ch.is_whitespace() {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-            continue;
-        }
-        current.push(ch);
-    }
-    if escaping {
-        current.push('\\');
-    }
-    if quote.is_some() {
-        return Err(meta_command_error("unterminated quote"));
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    Ok(tokens)
 }
 
 fn meta_kernel_command(

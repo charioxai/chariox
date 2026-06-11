@@ -187,6 +187,66 @@ pub(crate) enum MetaCommandExecutionPolicy {
     NotRouted { message: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaCommandParseError {
+    message: &'static str,
+}
+
+impl MetaCommandParseError {
+    pub(crate) fn message(&self) -> &'static str {
+        self.message
+    }
+}
+
+pub(crate) fn tokenize_command(input: &str) -> Result<Vec<String>, MetaCommandParseError> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaping = false;
+    for ch in input.trim().chars() {
+        if escaping {
+            current.push(ch);
+            escaping = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaping = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if escaping {
+        current.push('\\');
+    }
+    if quote.is_some() {
+        return Err(MetaCommandParseError {
+            message: "unterminated quote",
+        });
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
 pub(crate) fn search_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Value> {
     let query = args.query.map(|value| value.to_lowercase());
     let tag = args.tag.map(|value| value.to_lowercase());
@@ -246,6 +306,9 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
     } else {
         first.clone()
     };
+    if let Some(family_policy) = routed_family_policy(&first, tokens) {
+        return family_policy;
+    }
     let Some(command) = find_command(&normalized).or_else(|| find_command(tokens[0].as_str()))
     else {
         return MetaCommandExecutionPolicy::NotRouted {
@@ -255,9 +318,6 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
             ),
         };
     };
-    if let Some(family_policy) = routed_family_policy(&first, tokens) {
-        return family_policy;
-    }
     match command.policy {
         MetaCommandPolicy::Deny => MetaCommandExecutionPolicy::Denied {
             message: "metaagents cannot create, attach to, switch, or delete sessions",
@@ -333,6 +393,61 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
         _ => None,
     }
 }
+
+#[cfg(test)]
+const ROUTED_COMMAND_CASES: &[&str] = &[
+    "prompt agent-2 investigate",
+    "agent list",
+    "agent ls",
+    "agent spawn reviewer",
+    "agent focus reviewer",
+    "agent alias reviewer code-reviewer",
+    "agent name reviewer code-reviewer",
+    "agent delete code-reviewer",
+    "agent destroy code-reviewer",
+    "agent remove code-reviewer",
+    "workflow",
+    "workflow list",
+    "workflow ls",
+    "workflow new qa-flow",
+    "workflow create qa-flow",
+    "workflow run qa-flow default Run QA",
+    "workflow start qa-flow default Run QA",
+    "workflow runs qa-flow",
+    "workflow cancel run-1",
+    "workflow resume run-1",
+    "mcp list",
+    "mcp ls",
+    "mcp show playwright",
+    "mcp get playwright",
+    "mcp grant reviewer playwright",
+    "mcp revoke reviewer playwright",
+    "skill list",
+    "skill ls",
+    "skill show browser-qa",
+    "skill get browser-qa",
+    "skill grant reviewer browser-qa",
+    "skill revoke reviewer browser-qa",
+    "skills list",
+    "skills grant reviewer browser-qa",
+    "slice list",
+    "slice ls",
+    "slice show dev",
+    "slice get dev",
+    "slice start dev",
+    "slice stop dev",
+    "slice save dev",
+    "slice save-state dev",
+    "slice status dev",
+    "slice state-status dev",
+    "slice backup dev",
+    "credential list",
+    "credential ls",
+    "credential get credential-1",
+    "credential show credential-1",
+    "credentials list",
+    "credentials get credential-1",
+];
 
 fn command_matches_query(command: &MetaCommandDoc, query: &str) -> bool {
     command.name.contains(query)
@@ -412,10 +527,9 @@ mod tests {
                 .iter()
                 .filter(|example| !example.starts_with("arroba.meta."))
             {
-                let tokens = example
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>();
+                let tokens = tokenize_command(example).unwrap_or_else(|error| {
+                    panic!("documented example `{example}` should parse: {error:?}")
+                });
                 assert_eq!(
                     execution_policy(&tokens),
                     MetaCommandExecutionPolicy::Routed,
@@ -424,6 +538,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn routed_command_cases_match_execution_policy() {
+        for command in ROUTED_COMMAND_CASES {
+            let tokens = tokenize_command(command).unwrap_or_else(|error| {
+                panic!("routed command case `{command}` should parse: {error:?}")
+            });
+            assert_eq!(
+                execution_policy(&tokens),
+                MetaCommandExecutionPolicy::Routed,
+                "`{command}` should be routed by the metaagent command registry",
+            );
+        }
+    }
+
+    #[test]
+    fn tokenizer_preserves_quoted_prompt_text() {
+        assert_eq!(
+            tokenize_command(r#"prompt worker "please inspect the failing test""#)
+                .expect("double-quoted prompt should parse"),
+            vec!["prompt", "worker", "please inspect the failing test"],
+        );
+        assert_eq!(
+            tokenize_command(r#"prompt worker 'do not expand \slashes'"#)
+                .expect("single-quoted prompt should parse"),
+            vec!["prompt", "worker", r#"do not expand \slashes"#],
+        );
+        assert_eq!(
+            tokenize_command(r#"prompt worker escaped\ space"#)
+                .expect("escaped whitespace should parse"),
+            vec!["prompt", "worker", "escaped space"],
+        );
+    }
+
+    #[test]
+    fn tokenizer_rejects_unterminated_quotes() {
+        let error = tokenize_command(r#"prompt worker "unterminated"#)
+            .expect_err("unterminated quotes should fail");
+        assert_eq!(error.message(), "unterminated quote");
     }
 
     #[test]
