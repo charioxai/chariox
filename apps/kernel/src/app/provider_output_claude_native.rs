@@ -292,6 +292,10 @@ fn write_claude_native_marker(context_file: &str, value: &str) {
     let _ = fs::write(marker, value);
 }
 
+fn write_claude_headless_startup_wait_marker(context_file: &str) {
+    write_claude_native_marker(context_file, &format!("startup-wait:{}", unix_epoch_ms()));
+}
+
 fn append_claude_headless_debug(context_file: &str, label: &str, value: &str) {
     if std::env::var_os("ARROBA_CLAUDE_HEADLESS_DEBUG").is_none() {
         return;
@@ -526,10 +530,32 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
     let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\u{1b}' {
-            while let Some(next) = chars.next() {
-                if ('@'..='~').contains(&next) {
-                    break;
+            match chars.next() {
+                Some('[') => {
+                    while let Some(next) = chars.next() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
                 }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+        if ch.is_control() {
+            if !output.ends_with(' ') {
+                output.push(' ');
             }
             continue;
         }
@@ -542,6 +568,22 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
         }
     }
     output
+}
+
+fn claude_headless_composer_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    (normalized_lower.contains("try \"write a test for")
+        || compact.contains("try\"writeatestfor")
+        || normalized_lower.contains("bypass permissions on")
+        || compact.contains("bypasspermissionson"))
+        && !(claude_headless_workspace_trust_visible(&normalized)
+            || claude_headless_bypass_confirmation_visible(&normalized))
+}
+
+fn normalize_claude_visible_prompt_for_headless(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn extract_native_hidden_instructions(prompt: &str) -> String {
@@ -617,6 +659,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             context_file,
             provider_run,
         )?;
+        if provider_run.provider() == "claude-headless" {
+            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
+        }
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
@@ -714,6 +759,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     &event,
                 )?;
             }
+        }
+        if provider_run.provider() == "claude-headless" {
+            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
+        }
+        Ok(())
+    }
+
+    fn drain_known_headless_transcripts(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        context_file: &str,
+    ) -> Result<(), DaemonError> {
+        let paths = load_claude_transcript_cursor(context_file)
+            .files
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in paths {
+            self.drain_headless_transcript(session_id, provider_run_id, context_file, &path)?;
         }
         Ok(())
     }
@@ -830,6 +895,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let visible = claude_rendered_permission_visible(rendered);
         if provider_run.provider() == "claude-headless" && !rendered.is_empty() {
             append_claude_headless_debug(context_file, "pty", rendered);
+            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
         }
         if provider_run.provider() == "claude-headless" {
             let recent = update_claude_permission_recent(context_file, rendered);
@@ -837,7 +903,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 append_claude_headless_debug(context_file, "auto_confirm", "workspace_trust");
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-                write_claude_native_marker(context_file, "");
+                write_claude_headless_startup_wait_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
@@ -845,7 +911,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 append_claude_headless_debug(context_file, "auto_confirm", "bypass_permissions");
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
-                write_claude_native_marker(context_file, "");
+                write_claude_headless_startup_wait_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
@@ -1049,13 +1115,58 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
-        let marker = claude_native_marker(context_file);
+        let mut marker = claude_native_marker(context_file);
+        if let Some(started_at_ms) = marker
+            .as_deref()
+            .and_then(|value| value.strip_prefix("startup-wait:"))
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            if unix_epoch_ms().saturating_sub(started_at_ms) < 2_500 {
+                append_claude_headless_debug(context_file, "startup_wait", prompt.id());
+                return Ok(());
+            }
+            write_claude_native_marker(context_file, "");
+            marker = None;
+        }
         if provider_run.provider() == "claude-headless"
             && marker.is_none()
             && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
         {
             append_claude_headless_debug(context_file, "inject_wait", prompt.id());
             return Ok(());
+        }
+        if provider_run.provider() == "claude-headless" {
+            let recent = claude_permission_recent_file(context_file)
+                .and_then(|path| fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            if claude_headless_workspace_trust_visible(&recent) {
+                append_claude_headless_debug(
+                    context_file,
+                    "inject_auto_confirm",
+                    "workspace_trust",
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_headless_startup_wait_marker(context_file);
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
+            if claude_headless_bypass_confirmation_visible(&recent) {
+                append_claude_headless_debug(
+                    context_file,
+                    "inject_auto_confirm",
+                    "bypass_permissions",
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
+                write_claude_headless_startup_wait_marker(context_file);
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
+            if !claude_headless_composer_visible(&recent) {
+                append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id());
+                return Ok(());
+            }
         }
         if marker.as_deref() == Some(&format!("typed:{}", prompt.id())) {
             append_claude_headless_debug(context_file, "inject_enter", prompt.id());
@@ -1084,13 +1195,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .to_string();
         let visible = join_claude_context([native_attachment_suffix, visible]);
         if !visible.is_empty() {
-            append_claude_headless_debug(context_file, "inject_prompt", &visible);
+            let input = if provider_run.provider() == "claude-headless" {
+                normalize_claude_visible_prompt_for_headless(&visible)
+            } else {
+                visible.clone()
+            };
+            append_claude_headless_debug(context_file, "inject_prompt", &input);
             self.app
-                .write_provider_pty_input_for_runtime(provider_run_id, visible.as_bytes())?;
-            write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            self.app
-                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
+            if provider_run.provider() == "claude-headless" {
+                write_claude_native_marker(context_file, &format!("typed:{}", prompt.id()));
+            } else {
+                write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            }
         } else {
             append_claude_headless_debug(context_file, "inject_empty", prompt.id());
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
