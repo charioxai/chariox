@@ -256,6 +256,7 @@ fn local_request_api_spawns_and_focuses_agents() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("spawn should succeed")
     {

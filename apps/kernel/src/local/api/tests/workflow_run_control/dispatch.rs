@@ -26,6 +26,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("first workflow agent should spawn")
     {
@@ -46,6 +47,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("second workflow agent should spawn")
     {
@@ -639,6 +641,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("workflow agent should spawn")
     {

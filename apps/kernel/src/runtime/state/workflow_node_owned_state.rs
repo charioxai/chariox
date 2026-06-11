@@ -23,6 +23,12 @@ impl KernelRuntimeOwnedState {
                 agent_id: request.agent_id,
             });
         };
+        if agent.is_metaagent() {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow.node.add",
+                message: "metaagents cannot be added as workflow nodes".to_string(),
+            });
+        }
         let node = self.session_store.write().add_workflow_node_owned(
             &request.session_id,
             &request.workflow_ref,

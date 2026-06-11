@@ -198,6 +198,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("spawn should succeed")
     {
@@ -373,6 +374,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("spawn should succeed")
     {

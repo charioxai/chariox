@@ -1,5 +1,6 @@
 //! Agent-specific session-store request adapters.
 
+use crate::agent::AgentRole;
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
@@ -187,6 +188,11 @@ impl SessionRuntimeStore {
                 .unwrap_or_else(|| defaults.provider.clone()),
         )
         .with_owner_user_id(caller_user_id);
+        let create_request = if request.metaagent {
+            create_request.with_role(AgentRole::Meta)
+        } else {
+            create_request
+        };
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)
         } else {
@@ -223,6 +229,14 @@ impl SessionRuntimeStore {
                 .with_session_projection_action_result(Err(DaemonError::LocalTransport {
                     operation: "agent.spawn",
                     message: "use either kernel_ref or slice_ref, not both".to_string(),
+                }))
+                .await;
+        }
+        if request.metaagent && request.slice_ref.is_some() {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agent.spawn",
+                    message: "metaagents cannot be launched in slices".to_string(),
                 }))
                 .await;
         }

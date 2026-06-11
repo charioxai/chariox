@@ -396,6 +396,7 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("agent spawn should succeed")
     {

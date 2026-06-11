@@ -229,6 +229,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("second agent should spawn")
     {

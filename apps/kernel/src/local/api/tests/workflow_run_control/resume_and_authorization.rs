@@ -192,6 +192,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("agent spawn should succeed")
     {

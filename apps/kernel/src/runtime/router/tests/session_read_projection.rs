@@ -313,6 +313,7 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let spawn_command =
         KernelCommand::from_local_request("cmd-inspection-spawn", None, None, &spawn_request);

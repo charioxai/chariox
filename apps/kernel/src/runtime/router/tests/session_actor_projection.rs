@@ -441,6 +441,7 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let spawn_command =
         KernelCommand::from_local_request("cmd-spawn-projection", None, None, &spawn_request);

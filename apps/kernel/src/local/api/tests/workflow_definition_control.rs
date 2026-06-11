@@ -30,6 +30,7 @@ fn local_request_api_exports_agent_app_publication_package() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("workflow agent should spawn")
     {
@@ -180,6 +181,66 @@ fn local_request_api_exports_agent_app_publication_package() {
     std::fs::remove_dir_all(assets_root).expect("asset directory should clean up");
 }
 
+#[test]
+fn workflow_node_add_rejects_metaagents() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-meta-workflow", "worktree-meta-workflow"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let metaagent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("meta".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("default".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: true,
+        }))
+        .expect("metaagent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("graph".to_string()),
+        }))
+        .expect("workflow create should succeed")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let error = harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: metaagent.id().to_string(),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect_err("metaagent workflow node should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("metaagents cannot be added as workflow nodes"),
+        "unexpected error: {error}"
+    );
+}
+
 fn package_text_file(files: &[crate::local::WorkflowPublicationPackageFile], path: &str) -> String {
     let file = files
         .iter()
@@ -224,6 +285,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("workflow agent should spawn")
     {
@@ -328,6 +390,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("spawn should succeed")
     {
@@ -528,6 +591,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("source workflow agent should spawn")
     {

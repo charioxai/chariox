@@ -90,6 +90,7 @@ export interface AgentInstance {
   id: EntityId;
   agentRef: string;
   sessionId: EntityId;
+  role?: "standard" | "meta" | string;
   alias: string | null;
   provider: string;
   model: string | null;

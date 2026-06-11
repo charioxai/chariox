@@ -669,6 +669,7 @@ export type AgentInstance = {
   id: string
   agent_ref: string
   session_id: string
+  role?: "standard" | "meta" | string
   alias: string | null
   provider: string
   model: string | null

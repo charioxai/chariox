@@ -165,6 +165,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }),
     )
     .await;

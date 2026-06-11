@@ -26,6 +26,12 @@ pub struct SpawnAgentRequest {
     pub slice_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub metaagent: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

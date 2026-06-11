@@ -8,8 +8,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentRole,
+    AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition,
+    RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,19 @@ impl AgentService {
             }
         }
 
+        if request.role == AgentRole::Meta
+            && self
+                .store
+                .get_by_session(&request.session_id)
+                .into_iter()
+                .any(|agent| agent.owner_user_id() == request.owner_user_id && agent.is_metaagent())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.create",
+                message: "this user already has a metaagent in the session".to_string(),
+            });
+        }
+
         // Calculate position for new agent
         let position = self.calculate_position_for_new_agent(&request.session_id);
 
@@ -86,6 +100,7 @@ impl AgentService {
             position,
         );
         agent.set_owner_user_id(request.owner_user_id);
+        agent.set_role(request.role);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
         let agent_id = agent.id().to_string();

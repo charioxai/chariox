@@ -35,6 +35,7 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let command =
         KernelCommand::from_local_request("owned-local-agent-spawn", None, None, &request);
@@ -105,6 +106,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let command =
         KernelCommand::from_local_request("owned-default-agent-spawn", None, None, &request);
@@ -128,6 +130,124 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
     assert_eq!(
         agent.permission_level_override(),
         Some(AgentPermissionLevel::Required)
+    );
+}
+
+#[tokio::test]
+async fn local_spawn_agent_enforces_one_metaagent_per_user() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let first = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id: session_id.clone(),
+        alias: Some("meta".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some("worktree".to_string()),
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: true,
+    });
+    let command = KernelCommand::from_local_request("spawn-meta-1", None, None, &first);
+    let response = runtime
+        .dispatch_session_command(command, first)
+        .await
+        .expect("first metaagent spawn should succeed");
+    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+        panic!("unexpected response");
+    };
+    assert!(agent.is_metaagent());
+
+    let second = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id: session_id.clone(),
+        alias: Some("second-meta".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some("worktree".to_string()),
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: true,
+    });
+    let command = KernelCommand::from_local_request("spawn-meta-2", None, None, &second);
+    let error = runtime
+        .dispatch_session_command(command, second)
+        .await
+        .expect_err("second metaagent spawn should be rejected");
+    assert!(
+        error.to_string().contains("already has a metaagent"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn local_spawn_agent_rejects_metaagent_in_slice() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id,
+        alias: Some("slice-meta".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some("worktree".to_string()),
+        kernel_ref: None,
+        slice_ref: Some("slice-1".to_string()),
+        worktree_placement: None,
+        metaagent: true,
+    });
+    let command = KernelCommand::from_local_request("spawn-slice-meta", None, None, &request);
+    let error = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect_err("slice metaagent spawn should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("metaagents cannot be launched in slices"),
+        "unexpected error: {error}"
     );
 }
 

@@ -376,6 +376,7 @@ mod tests {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }
     }
 }

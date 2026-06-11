@@ -99,6 +99,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("worker agent should spawn")
     {
@@ -607,6 +608,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("spawn should succeed")
     {

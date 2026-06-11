@@ -124,6 +124,7 @@ impl LocalRouterTestHarness {
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
+                metaagent: false,
             }))
             .expect("workflow test agent should spawn")
         {

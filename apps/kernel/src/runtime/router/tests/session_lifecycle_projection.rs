@@ -101,6 +101,7 @@ async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let spawn_command =
         KernelCommand::from_local_request("cmd-agent-lifecycle-spawn", None, None, &spawn_request);
@@ -521,6 +522,7 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
         kernel_ref: None,
         slice_ref: Some("dev".to_string()),
         worktree_placement: None,
+        metaagent: false,
     });
     let command =
         KernelCommand::from_local_request("cmd-spawn-agent-wrong-slice", None, None, &request);

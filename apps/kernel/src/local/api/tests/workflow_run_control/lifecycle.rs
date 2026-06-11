@@ -26,6 +26,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             kernel_ref: None,
             slice_ref: None,
             worktree_placement: None,
+            metaagent: false,
         }))
         .expect("workflow agent should spawn")
     {

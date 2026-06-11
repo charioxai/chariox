@@ -251,6 +251,7 @@ async fn remote_owned_session_objects_record_caller_user() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let agent_one = match router
         .dispatch(
@@ -277,6 +278,7 @@ async fn remote_owned_session_objects_record_caller_user() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let agent_two = match router
         .dispatch(
@@ -606,6 +608,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
         kernel_ref: None,
         slice_ref: None,
         worktree_placement: None,
+        metaagent: false,
     });
     let user_two_agent = match router
         .dispatch(

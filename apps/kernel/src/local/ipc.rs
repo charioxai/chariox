@@ -834,6 +834,7 @@ mod tests {
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
+                metaagent: false,
             }))
             .expect("workflow agent should spawn")
         {
@@ -1059,6 +1060,7 @@ mod tests {
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
+                metaagent: false,
             }))
             .expect("first workflow agent should spawn")
         {
@@ -1079,6 +1081,7 @@ mod tests {
                 kernel_ref: None,
                 slice_ref: None,
                 worktree_placement: None,
+                metaagent: false,
             }))
             .expect("second workflow agent should spawn")
         {

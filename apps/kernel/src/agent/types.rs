@@ -35,6 +35,14 @@ pub enum AgentState {
     Error,
 }
 
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    #[default]
+    Standard,
+    Meta,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridPosition {
     pub row: u32,
@@ -106,6 +114,8 @@ pub struct AgentInstance {
     session_id: String,
     #[serde(default = "default_agent_owner_user_id")]
     owner_user_id: String,
+    #[serde(default)]
+    role: AgentRole,
     alias: Option<String>,
     provider: String,
     model: Option<String>,
@@ -173,6 +183,7 @@ impl AgentInstance {
             agent_ref: agent_ref.into(),
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            role: AgentRole::Standard,
             alias,
             provider: provider.into(),
             model,
@@ -216,6 +227,14 @@ impl AgentInstance {
 
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
+    }
+
+    pub fn role(&self) -> AgentRole {
+        self.role
+    }
+
+    pub fn is_metaagent(&self) -> bool {
+        self.role == AgentRole::Meta
     }
 
     pub fn alias(&self) -> Option<&str> {
@@ -418,6 +437,10 @@ impl AgentInstance {
 
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         self.owner_user_id = owner_user_id.into();
+    }
+
+    pub fn set_role(&mut self, role: AgentRole) {
+        self.role = role;
     }
 
     pub fn set_model(&mut self, model: Option<String>) {
@@ -624,6 +647,8 @@ pub struct CreateAgentRequest {
     pub session_id: String,
     #[serde(default = "default_agent_owner_user_id")]
     pub owner_user_id: String,
+    #[serde(default)]
+    pub role: AgentRole,
     pub alias: Option<String>,
     pub provider: String,
     pub model: Option<String>,
@@ -640,6 +665,7 @@ impl CreateAgentRequest {
         Self {
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
             model: None,
@@ -659,6 +685,11 @@ impl CreateAgentRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    pub fn with_role(mut self, role: AgentRole) -> Self {
+        self.role = role;
         self
     }
 

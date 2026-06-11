@@ -829,6 +829,7 @@ export type AgentInstance = {
   id: string
   agent_ref: string
   session_id: string
+  role?: "standard" | "meta" | string
   alias: string | null
   provider: string
   model: string | null
@@ -1352,7 +1353,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 130
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 131
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
