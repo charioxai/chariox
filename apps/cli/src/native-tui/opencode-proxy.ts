@@ -221,6 +221,9 @@ async function proxyToOpenCode(
     if (body.includes(hiddenInstructionsStart)) {
       debug("hidden_instructions_forwarded", { method, path: request.url ?? "/" })
     }
+    if (body.includes("\"system\"")) {
+      debug("system_context_forwarded", { method, path: request.url ?? "/" })
+    }
     if (body.includes("\"type\":\"file\"") || body.includes("\"type\": \"file\"")) {
       debug("attachments_forwarded", { method, path: request.url ?? "/" })
     }

@@ -11,7 +11,8 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
 } from "../dist/ipc-requests.js"
@@ -56,8 +57,30 @@ function unwrap(response, variant) {
   return response[variant]
 }
 
-function makePort() {
-  return 54500 + Math.floor(Math.random() * 4000)
+async function makePort() {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const port = 54500 + Math.floor(Math.random() * 3000)
+    if (
+      await portAvailable(port)
+      && await portAvailable(port + 1000)
+      && await portAvailable(port + 2000)
+      && await portAvailable(port + 2001)
+    ) {
+      return port
+    }
+  }
+  throw new Error("could not find free native prompt injection drill ports")
+}
+
+async function portAvailable(port) {
+  return await new Promise((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.once("listening", () => {
+      server.close(() => resolve(true))
+    })
+    server.listen(port, "127.0.0.1")
+  })
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
@@ -118,18 +141,35 @@ async function waitForNamedAgent(client, sessionId, alias) {
 
 async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, expected, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs
+  let lastOutput = ""
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
-    const output = page.entries
-      .map((row) => row.entry)
-      .filter((entry) => entry && entry.kind !== "user_prompt")
-      .map((entry) => entry.text ?? "")
-      .join("")
+    const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 6)), "SessionHistoryOutline")
+    const agent = outline.agents?.find((entry) => entry.agent_id === agentId) ?? null
+    const chunks = []
+    for (const turn of agent?.turns ?? []) {
+      for (const row of [...(turn.entries ?? []), ...(turn.summary ? [turn.summary] : [])]) {
+        const entry = row?.entry
+        if (entry && entry.kind !== "user_prompt") {
+          chunks.push(entry.text ?? "")
+        }
+      }
+      for (const blob of turn.blobs ?? []) {
+        const blobContent = unwrap(await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)), "SessionHistoryBlobContent")
+        for (const row of blobContent.entries ?? []) {
+          const entry = row?.entry
+          if (entry && entry.kind !== "user_prompt") {
+            chunks.push(entry.text ?? "")
+          }
+        }
+      }
+    }
+    const output = chunks.join("")
+    lastOutput = output
     if (output.includes(expected)) return output
     await sleep(1_000)
   }
-  throw new Error(`timed out waiting for history output ${expected}`)
+  throw new Error(`timed out waiting for history output ${expected}; last=${lastOutput.slice(-4000)}`)
 }
 
 async function waitForProxyHiddenForward(logFile, timeoutMs = 90_000) {
@@ -137,7 +177,11 @@ async function waitForProxyHiddenForward(logFile, timeoutMs = 90_000) {
   let text = ""
   while (Date.now() < deadline) {
     text = await readFile(logFile, "utf8").catch(() => "")
-    if (text.includes("hidden_instructions_forwarded")) return text
+    if (
+      text.includes("hidden_instructions_forwarded")
+      || text.includes("collaboration_mode_forwarded")
+      || text.includes("system_context_forwarded")
+    ) return text
     await sleep(250)
   }
   throw new Error(`timed out waiting for hidden instruction forwarding in ${logFile}\n${text.slice(-4000)}`)
@@ -189,7 +233,7 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
 
 async function runProvider(provider, options) {
   const root = path.join("/tmp", `arb-native-injection-${provider}-${process.pid}-${Date.now()}`)
-  const kernelPort = makePort()
+  const kernelPort = await makePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot

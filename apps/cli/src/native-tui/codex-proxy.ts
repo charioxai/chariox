@@ -96,6 +96,11 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
         method: typeof message === "object" && message && "method" in message ? (message as CodexJsonRpcMessage).method : null,
       })
     }
+    if (payload.includes("\"collaborationMode\"")) {
+      options.debug("collaboration_mode_forwarded", {
+        method: typeof message === "object" && message && "method" in message ? (message as CodexJsonRpcMessage).method : null,
+      })
+    }
     if (payload.includes("\"localImage\"") || payload.includes("\"image\"")) {
       options.debug("attachments_forwarded", {
         method: typeof message === "object" && message && "method" in message ? (message as CodexJsonRpcMessage).method : null,
