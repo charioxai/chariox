@@ -139,6 +139,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
   workerWorkspace,
   targetWorkspace,
   pollTimeoutMs,
+  label = "single",
   log,
   unwrap,
 }) {
@@ -147,22 +148,23 @@ async function assertHostedWorkspaceLiveSyncProxy({
   }
   log("second-kernel-workspace-live-sync-tool-wait", { tool: "arroba.write_artifact" })
   await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "arroba.write_artifact", true)
-  const relativePath = "outputs/hosted-managed-live-sync.txt"
-  const expected = "HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_OK\n"
-  log("second-kernel-workspace-live-sync-write-start", { relativePath })
+  const relativePath = `outputs/hosted-managed-live-sync-${label}.txt`
+  const expected = `HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_${label.toUpperCase()}_OK\n`
+  log("second-kernel-workspace-live-sync-write-start", { label, relativePath })
   const write = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
     name: "arroba.write_artifact",
     arguments: { path: relativePath, content_text: expected },
   })
   if (write.isError) throw new Error(`hosted workspace live sync write returned error: ${JSON.stringify(write)}`)
-  log("second-kernel-workspace-live-sync-write-returned", { relativePath })
+  log("second-kernel-workspace-live-sync-write-returned", { label, relativePath })
   await waitForFileContent(path.join(workerWorkspace, relativePath), expected, pollTimeoutMs)
   await waitForFileContent(path.join(targetWorkspace, relativePath), expected, pollTimeoutMs)
 
-  log("second-kernel-workspace-live-sync-ignore-check", { path: "ignored/hosted-managed-live-sync.txt" })
+  const ignoredPath = `ignored/hosted-managed-live-sync-${label}.txt`
+  log("second-kernel-workspace-live-sync-ignore-check", { label, path: ignoredPath })
   const ignored = await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
     name: "arroba.write_artifact",
-    arguments: { path: "ignored/hosted-managed-live-sync.txt", content_text: "SHOULD_NOT_WRITE\n" },
+    arguments: { path: ignoredPath, content_text: "SHOULD_NOT_WRITE\n" },
   })
   if (!JSON.stringify(ignored).includes("excluded from workspace live sync")) {
     throw new Error(`ignored hosted workspace live sync write rejected with unexpected result: ${JSON.stringify(ignored)}`)
@@ -180,6 +182,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
   }
   log("second-kernel-workspace-live-sync-pass", {
     sessionId: session.id,
+    label,
     sourceWorkspace: workerWorkspace,
     targetWorkspace,
     mode: "managed",
@@ -447,6 +450,7 @@ async function assertHostedCollaboratorHomeExtensions({
   homeDaemonAlias,
   workspace,
   workerWorkspace,
+  liveSyncFixture = null,
   session,
   workerDaemonId,
   env,
@@ -457,6 +461,7 @@ async function assertHostedCollaboratorHomeExtensions({
   unwrap,
   postJson,
   issueSessionScopedClientToken,
+  pollTimeoutMs,
   devBrowserCloudLogin,
   installSendRetry,
   expectReject,
@@ -571,6 +576,20 @@ async function assertHostedCollaboratorHomeExtensions({
     if (!deniedRequest.isError || !JSON.stringify(deniedRequest).includes("home-owned extensions for collaborator remote agents")) {
       throw new Error(`hosted extension collaborator request_extension returned unexpected result: ${JSON.stringify(deniedRequest)}`)
     }
+    if (liveSyncFixture) {
+      await assertHostedWorkspaceLiveSyncProxy({
+        client: ownerScopedClient,
+        requests,
+        session,
+        launch,
+        workerWorkspace,
+        targetWorkspace: liveSyncFixture.targetWorkspace,
+        pollTimeoutMs,
+        label: "collab",
+        log,
+        unwrap,
+      })
+    }
     await expectReject(
       peerRemoteClient.send(requests.revokeAgentExtensionRequest(agent.id, "mcp", "hosted_home_echo_mcp")),
       "hosted extension peer revoking home MCP",
@@ -591,6 +610,7 @@ async function assertHostedCollaboratorHomeExtensions({
       sessionId: session.id,
       agentId: agent.id,
       peerUserId: peerProfile.userId,
+      workspaceLiveSync: Boolean(liveSyncFixture),
     })
   } finally {
     await peerRemoteClient?.close().catch(() => {})
@@ -825,6 +845,7 @@ export async function runHostedSecondKernelAssertions({
         homeDaemonAlias,
         workspace,
         workerWorkspace,
+        liveSyncFixture,
         session,
         workerDaemonId,
         env,
@@ -835,6 +856,7 @@ export async function runHostedSecondKernelAssertions({
         unwrap,
         postJson,
         issueSessionScopedClientToken,
+        pollTimeoutMs,
         devBrowserCloudLogin,
         installSendRetry,
         expectReject,
