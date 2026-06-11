@@ -615,9 +615,8 @@ async function collectOpenCodeMidturnMessages(baseUrl, sessionId, { firstMessage
   }
 }
 
-async function runClaudeDrill(options, root) {
-  const provider = "claude"
-  const dir = path.join(root, "claude")
+async function runClaudeDrill(options, root, provider = "claude") {
+  const dir = path.join(root, provider)
   await mkdir(dir, { recursive: true })
   const logs = {
     stdout: path.join(dir, "claude.stdout.jsonl"),
@@ -751,6 +750,83 @@ async function runClaudeDrill(options, root) {
     if (stderr.trim()) {
       // Preserve stderr in artifacts; Claude may emit warnings even on successful turns.
     }
+  }
+}
+
+async function runClaudeHeadlessDrill(options, root) {
+  const provider = "claude-headless"
+  if (options.includeMidturnSteering) {
+    return {
+      provider,
+      status: "failed",
+      reason: "Claude headless midturn steering is not implemented in this drill yet",
+    }
+  }
+  const logs = {
+    stdout: path.join(root, "claude-headless-prompt-assembly.stdout.log"),
+    stderr: path.join(root, "claude-headless-prompt-assembly.stderr.log"),
+  }
+  const child = spawn("node", [
+    path.join(repoRoot, "apps/cli/scripts/live-prompt-assembly-drill.mjs"),
+    "--provider",
+    provider,
+    "--provider-model",
+    "claude-headless=sonnet",
+    "--timeout-ms",
+    String(options.timeoutMs),
+    "--poll-ms",
+    "1000",
+    "--keep-artifacts-on-failure",
+  ], {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", (chunk) => {
+    const text = chunk.toString("utf8")
+    stdout += text
+  })
+  child.stderr.on("data", (chunk) => {
+    const text = chunk.toString("utf8")
+    stderr += text
+  })
+  const exit = await new Promise((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }))
+    child.once("error", (error) => resolve({ code: null, signal: null, error }))
+  })
+  await writeFile(logs.stdout, stdout, "utf8")
+  await writeFile(logs.stderr, stderr, "utf8")
+  if (exit.error || exit.code !== 0) {
+    return {
+      provider,
+      status: "failed",
+      reason: exit.error?.message ?? `prompt assembly drill exited with ${exit.code ?? exit.signal}`,
+      stdout: stdout.slice(-2000),
+      stderr: stderr.slice(-2000),
+      logs,
+    }
+  }
+  let parsed = null
+  const jsonStart = stdout.lastIndexOf("\n{")
+  const rawJson = jsonStart >= 0 ? stdout.slice(jsonStart + 1) : stdout.slice(stdout.indexOf("{"))
+  try {
+    parsed = JSON.parse(rawJson)
+  } catch {}
+  const result = parsed?.results?.find((item) => item.provider === provider)
+  return {
+    provider,
+    status: result?.status === "ok" ? "ok" : "failed",
+    channel: "Arroba kernel Claude headless UserPromptSubmit additionalContext",
+    sessionId: result?.providerRunId ?? null,
+    perTurnContext: Boolean(result?.tokenSeenByModel),
+    hiddenTextVisibleInPromptBlob: Boolean(result?.hiddenTokenVisibleInUserPromptHistory),
+    hiddenTextVisibleInProviderHistoryApi: Boolean(result?.hiddenTokenVisibleInUserPromptHistory),
+    first: { matched: Boolean(result?.tokenSeenByModel), completed: result?.status === "ok" },
+    second: { matched: true, completed: true, note: "covered by prompt-assembly drill single-turn validation" },
+    midturnSteering: null,
+    logs,
   }
 }
 
@@ -1006,8 +1082,10 @@ async function main() {
         results.push(await runCodexDrill(options, root))
       } else if (provider === "opencode") {
         results.push(await runOpenCodeDrill(options, root))
-      } else if (provider === "claude") {
-        results.push(await runClaudeDrill(options, root))
+      } else if (provider === "claude" || provider === "claude-p") {
+        results.push(await runClaudeDrill(options, root, provider))
+      } else if (provider === "claude-headless") {
+        results.push(await runClaudeHeadlessDrill(options, root))
       } else {
         results.push({ provider, status: "skipped", reason: "no drill implemented for this provider" })
       }
