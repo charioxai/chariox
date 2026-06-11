@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_MAX_METAAGENT_EVENT_RECORDS_PER_METAAGENT: usize = 1_000;
+const DEFAULT_MAX_METAAGENT_EVENT_DETAIL_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MetaagentEventRecord {
     pub sequence: u64,
@@ -60,6 +63,21 @@ struct MetaagentEventState {
     subscriptions: BTreeMap<String, MetaagentEventSubscription>,
 }
 
+#[derive(Debug, Clone)]
+struct MetaagentEventStoreLimits {
+    max_records_per_metaagent: usize,
+    max_detail_bytes: usize,
+}
+
+impl Default for MetaagentEventStoreLimits {
+    fn default() -> Self {
+        Self {
+            max_records_per_metaagent: DEFAULT_MAX_METAAGENT_EVENT_RECORDS_PER_METAAGENT,
+            max_detail_bytes: DEFAULT_MAX_METAAGENT_EVENT_DETAIL_BYTES,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MetaagentEventSnapshot {
     pub records: Vec<MetaagentEventRecord>,
@@ -69,6 +87,7 @@ pub(crate) struct MetaagentEventSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct MetaagentEventStore {
     state: Arc<Mutex<MetaagentEventState>>,
+    limits: MetaagentEventStoreLimits,
 }
 
 fn default_metaagent_event_delivery_status() -> String {
@@ -76,6 +95,17 @@ fn default_metaagent_event_delivery_status() -> String {
 }
 
 impl MetaagentEventStore {
+    #[cfg(test)]
+    pub(crate) fn for_tests(max_records_per_metaagent: usize, max_detail_bytes: usize) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(MetaagentEventState::default())),
+            limits: MetaagentEventStoreLimits {
+                max_records_per_metaagent,
+                max_detail_bytes,
+            },
+        }
+    }
+
     pub(crate) fn record(&self, event: NewMetaagentEvent) -> MetaagentEventRecord {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
         state.next_sequence += 1;
@@ -94,7 +124,7 @@ impl MetaagentEventStore {
             title: event.title,
             summary: event.summary,
             preview,
-            detail: event.detail,
+            detail: compact_metaagent_event_detail(event.detail, self.limits.max_detail_bytes),
             created_at_ms,
             read_at_ms: None,
             ack_at_ms: None,
@@ -104,6 +134,7 @@ impl MetaagentEventStore {
             prompt_delivery_error: None,
         };
         state.records.insert(event_id, record.clone());
+        self.prune_metaagent_records_locked(&mut state, &record.metaagent_id);
         record
     }
 
@@ -324,19 +355,27 @@ impl MetaagentEventStore {
         state.records = snapshot
             .records
             .into_iter()
-            .map(|record| (record.event_id.clone(), record))
+            .map(|mut record| {
+                record.detail =
+                    compact_metaagent_event_detail(record.detail, self.limits.max_detail_bytes);
+                (record.event_id.clone(), record)
+            })
             .collect();
         state.subscriptions = snapshot
             .subscriptions
             .into_iter()
             .map(|subscription| (subscription.subscription_id.clone(), subscription))
             .collect();
+        self.prune_all_metaagent_records_locked(&mut state);
         Self::refresh_sequences(&mut state);
     }
 
-    pub(crate) fn restore_record(&self, record: MetaagentEventRecord) {
+    pub(crate) fn restore_record(&self, mut record: MetaagentEventRecord) {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
+        record.detail = compact_metaagent_event_detail(record.detail, self.limits.max_detail_bytes);
+        let metaagent_id = record.metaagent_id.clone();
         state.records.insert(record.event_id.clone(), record);
+        self.prune_metaagent_records_locked(&mut state, &metaagent_id);
         Self::refresh_sequences(&mut state);
     }
 
@@ -379,5 +418,154 @@ impl MetaagentEventStore {
             })
             .max()
             .unwrap_or_default();
+    }
+
+    fn prune_all_metaagent_records_locked(&self, state: &mut MetaagentEventState) {
+        let metaagent_ids = state
+            .records
+            .values()
+            .map(|record| record.metaagent_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for metaagent_id in metaagent_ids {
+            self.prune_metaagent_records_locked(state, &metaagent_id);
+        }
+    }
+
+    fn prune_metaagent_records_locked(&self, state: &mut MetaagentEventState, metaagent_id: &str) {
+        let max_records = self.limits.max_records_per_metaagent.max(1);
+        let mut record_ids = state
+            .records
+            .values()
+            .filter(|record| record.metaagent_id == metaagent_id)
+            .map(|record| (record.sequence, record.event_id.clone()))
+            .collect::<Vec<_>>();
+        if record_ids.len() <= max_records {
+            return;
+        }
+        record_ids.sort_by_key(|(sequence, _)| *sequence);
+        let prune_count = record_ids.len().saturating_sub(max_records);
+        for (_, event_id) in record_ids.into_iter().take(prune_count) {
+            state.records.remove(&event_id);
+        }
+    }
+}
+
+fn compact_metaagent_event_detail(
+    detail: serde_json::Value,
+    max_detail_bytes: usize,
+) -> serde_json::Value {
+    let max_detail_bytes = max_detail_bytes.max(1);
+    let Ok(encoded) = serde_json::to_vec(&detail) else {
+        return detail;
+    };
+    if encoded.len() <= max_detail_bytes {
+        return detail;
+    }
+    serde_json::json!({
+        "compacted": true,
+        "reason": "metaagent_event_detail_retention_limit",
+        "original_size_bytes": encoded.len(),
+        "max_detail_bytes": max_detail_bytes,
+        "message": "event detail exceeded the metaagent event retention limit; use related turn_overview or turn_blob records when available",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_compacts_oversized_detail_payloads() {
+        let store = MetaagentEventStore::for_tests(10, 64);
+        let record = store.record(new_event(
+            "meta-1",
+            serde_json::json!({
+                "turn_blob": "x".repeat(512),
+                "trace": ["large", "payload"],
+            }),
+        ));
+
+        assert_eq!(
+            record
+                .detail
+                .get("compacted")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            record
+                .detail
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some("metaagent_event_detail_retention_limit")
+        );
+        assert!(record
+            .detail
+            .get("original_size_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|bytes| bytes > 64));
+    }
+
+    #[test]
+    fn record_prunes_oldest_records_per_metaagent() {
+        let store = MetaagentEventStore::for_tests(2, 1024);
+        let first = store.record(new_event("meta-1", serde_json::json!({ "n": 1 })));
+        let second = store.record(new_event("meta-1", serde_json::json!({ "n": 2 })));
+        let third = store.record(new_event("meta-1", serde_json::json!({ "n": 3 })));
+        let peer = store.record(new_event("meta-2", serde_json::json!({ "n": 1 })));
+
+        let retained = store.list("meta-1", None, None, 10);
+        assert_eq!(
+            retained
+                .iter()
+                .map(|record| record.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![third.event_id.as_str(), second.event_id.as_str()]
+        );
+        assert!(store.read("meta-1", &first.event_id).is_none());
+        assert_eq!(
+            store
+                .read("meta-2", &peer.event_id)
+                .map(|record| record.event_id),
+            Some(peer.event_id)
+        );
+    }
+
+    #[test]
+    fn restore_applies_retention_limits_and_refreshes_sequence() {
+        let source = MetaagentEventStore::default();
+        let first = source.record(new_event("meta-1", serde_json::json!({ "n": 1 })));
+        let second = source.record(new_event("meta-1", serde_json::json!({ "n": 2 })));
+        let third = source.record(new_event("meta-1", serde_json::json!({ "n": 3 })));
+        let snapshot = source.snapshot();
+        let restored = MetaagentEventStore::for_tests(2, 64);
+
+        restored.restore_snapshot(snapshot);
+        let after_restore = restored.list("meta-1", None, None, 10);
+        assert_eq!(
+            after_restore
+                .iter()
+                .map(|record| record.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![third.event_id.as_str(), second.event_id.as_str()]
+        );
+        assert!(restored.read("meta-1", &first.event_id).is_none());
+
+        let next = restored.record(new_event("meta-1", serde_json::json!({ "n": 4 })));
+        assert_eq!(next.sequence, third.sequence + 1);
+    }
+
+    fn new_event(metaagent_id: &str, detail: serde_json::Value) -> NewMetaagentEvent {
+        NewMetaagentEvent {
+            session_id: "session-1".to_string(),
+            metaagent_id: metaagent_id.to_string(),
+            owner_user_id: "user-1".to_string(),
+            kind: "agent.turn.completed".to_string(),
+            source_agent_id: Some("agent-1".to_string()),
+            title: "Turn completed".to_string(),
+            summary: "agent completed a turn".to_string(),
+            detail,
+            injected_prompt_id: None,
+        }
     }
 }
