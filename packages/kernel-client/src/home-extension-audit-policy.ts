@@ -17,6 +17,9 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
   if (status === "timeout" || kind.includes(".timeout")) {
     return "split the tool work or increase the home extension timeout before retrying"
   }
+  if (status === "not_in_flight") {
+    return "no matching in-flight home extension call was found; if the provider turn still waits for this tool, refresh /kernel remote-runtime and retry cancellation from the current turn"
+  }
   if (status === "cancelled" || kind.includes(".cancel")) {
     return "retry only if the provider turn still needs this tool result"
   }

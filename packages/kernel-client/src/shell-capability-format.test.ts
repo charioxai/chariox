@@ -113,6 +113,9 @@ test("home extension audit policy handles terminal invocation outcomes", () => {
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.cancelled", {
     status: "cancelled",
   }), "retry only if the provider turn still needs this tool result")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.cancelled", {
+    status: "not_in_flight",
+  }), "no matching in-flight home extension call was found; if the provider turn still waits for this tool, refresh /kernel remote-runtime and retry cancellation from the current turn")
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.failed", {
     status: "failed",
   }), "inspect the home-side tool configuration and logs, then retry")
