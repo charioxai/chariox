@@ -122,6 +122,19 @@ impl<'a> ProviderPromptDispatcher<'a> {
         }
 
         let provider_prompt = join_hidden_context(hidden_system_context, prompt);
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            self.app.terminal.record_input(
+                session_id,
+                provider_run_id,
+                attachment_id,
+                provider_prompt.as_bytes(),
+            );
+            return self.app.process_claude_native_bridge_for_runtime(
+                session_id,
+                provider_run_id,
+                &provider_run,
+            );
+        }
         crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
             session_id,
             provider_run_id,

@@ -8,9 +8,9 @@ use crate::provider::{
 use crate::session::PromptAttachment;
 
 use super::super::{
-    claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
-    codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
-    opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
+    claude_runtime::{ClaudeRunSelection, ClaudeRuntimeBinding, initialize_claude_runtime},
+    codex_runtime::{CodexRuntimeBinding, initialize_codex_runtime},
+    opencode_binding::{OpenCodeRunSelection, OpenCodeRuntimeBinding, initialize_opencode_runtime},
 };
 use super::ProviderProcessService;
 
@@ -43,7 +43,10 @@ impl ProviderProcessService {
                 .map(ProviderRuntimeBinding::Codex)
                 .map(Some);
         }
-        if run.adapter_key() == "claude" && run.client_interface().is_arroba() {
+        if run.adapter_key() == "claude"
+            && run.client_interface().is_arroba()
+            && !crate::provider::provider_run_uses_claude_native_bridge(run)
+        {
             return initialize_claude_runtime(run)
                 .map(ProviderRuntimeBinding::Claude)
                 .map(Some);
@@ -91,7 +94,9 @@ impl ProviderProcessService {
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
         run.adapter_key() == "codex"
-            || (run.adapter_key() == "claude" && run.client_interface().is_arroba())
+            || (run.adapter_key() == "claude"
+                && run.client_interface().is_arroba()
+                && !crate::provider::provider_run_uses_claude_native_bridge(run))
             || run.adapter_key() == "opencode"
             || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
     }

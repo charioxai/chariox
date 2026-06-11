@@ -120,6 +120,19 @@ impl KernelRuntimeState {
             owned.note_prompt_started(&dispatch.provider_run_id);
             return Ok(());
         }
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            let provider_run = provider_run.clone();
+            self.with_app_side_effect(|app| {
+                app.process_claude_native_bridge_for_runtime(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &provider_run,
+                )
+            })
+            .await?;
+            owned.note_prompt_started(&dispatch.provider_run_id);
+            return Ok(());
+        }
         self.with_app_side_effect(|app| {
             app.write_provider_pty_input_for_runtime(
                 &dispatch.provider_run_id,

@@ -4,10 +4,10 @@ use std::time::Instant;
 
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
-use crate::provider::{
-    classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
-};
 use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
+use crate::provider::{
+    ProviderPromptSignalBatch, RuntimeProviderRun, classify_provider_terminal_failure_text,
+};
 use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
@@ -273,7 +273,7 @@ mod tests {
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
-    !run.client_interface().is_arroba()
+    crate::provider::provider_run_uses_claude_native_bridge(run)
         && matches!(
             run.state(),
             ProviderRunState::Starting | ProviderRunState::Running
@@ -339,7 +339,7 @@ impl<'a> ProviderOutputPump<'a> {
                 request.recipient_attachment_ids,
             );
         }
-        if provider_run.adapter_key() == "claude" && !provider_run.client_interface().is_arroba() {
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             self.context.process_claude_native_tui_bridge(
                 request.session_id,
                 request.provider_run_id,
@@ -359,7 +359,7 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
-        if provider_run.adapter_key() == "claude" && !provider_run.client_interface().is_arroba() {
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let rendered = chunks
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
@@ -1031,6 +1031,40 @@ impl<'a> ProviderOutputPumpContext<'a> {
             merge_key,
             recipient_attachment_ids,
             bytes,
+        )
+    }
+}
+
+impl DaemonApp {
+    pub(crate) fn process_claude_native_bridge_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let native_interaction_bridge = self.providers.native_interaction_bridge();
+        ProviderOutputClaudeNativeBridge::new(self).process(
+            session_id,
+            provider_run_id,
+            provider_run,
+            native_interaction_bridge,
+        )
+    }
+
+    pub(crate) fn process_claude_native_terminal_output_bridge_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        rendered: &str,
+    ) -> Result<(), DaemonError> {
+        let native_interaction_bridge = self.providers.native_interaction_bridge();
+        ProviderOutputClaudeNativeBridge::new(self).process_terminal_output(
+            session_id,
+            provider_run_id,
+            provider_run,
+            native_interaction_bridge,
+            rendered,
         )
     }
 }

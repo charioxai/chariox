@@ -60,6 +60,18 @@ impl KernelRuntimeState {
                 .await;
         }
 
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            let provider_run = provider_run.clone();
+            self.with_app_side_effect(|app| {
+                app.process_claude_native_bridge_for_runtime(
+                    session_id,
+                    provider_run_id,
+                    &provider_run,
+                )
+            })
+            .await?;
+        }
+
         let chunks = match self
             .with_app_side_effect(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
             .await
@@ -75,6 +87,24 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         };
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            let rendered = chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>();
+            if !rendered.is_empty() {
+                let provider_run = provider_run.clone();
+                self.with_app_side_effect(|app| {
+                    app.process_claude_native_terminal_output_bridge_for_runtime(
+                        session_id,
+                        provider_run_id,
+                        &provider_run,
+                        &rendered,
+                    )
+                })
+                .await?;
+            }
+        }
         if !chunks.is_empty() {
             owned.note_prompt_response_content(provider_run_id);
         }

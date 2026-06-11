@@ -164,6 +164,35 @@ fn claude_native_tui_runs_use_pty_output_pumping() {
 }
 
 #[test]
+fn claude_headless_runs_use_pty_output_pumping() {
+    let providers = ProviderProcessService::new();
+    let request = LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet-4-6",
+    );
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "claude:headless".to_string(),
+            pty_target: None,
+            pty_program: Some("claude".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+
+    assert!(!providers.run_uses_structured_prompt_io(&run));
+}
+
+#[test]
 fn provider_only_start_run_returns_outcome_without_session_mutation() {
     let mut sessions = sessions();
     let session = sessions
