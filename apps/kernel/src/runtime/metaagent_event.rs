@@ -54,6 +54,12 @@ struct MetaagentEventState {
     subscriptions: BTreeMap<String, MetaagentEventSubscription>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MetaagentEventSnapshot {
+    pub records: Vec<MetaagentEventRecord>,
+    pub subscriptions: Vec<MetaagentEventSubscription>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct MetaagentEventStore {
     state: Arc<Mutex<MetaagentEventState>>,
@@ -252,5 +258,75 @@ impl MetaagentEventStore {
         state.subscriptions.values().any(|subscription| {
             subscription.metaagent_id == metaagent_id && subscription.kind == kind
         })
+    }
+
+    pub(crate) fn snapshot(&self) -> MetaagentEventSnapshot {
+        let state = self.state.lock().expect("metaagent event store poisoned");
+        MetaagentEventSnapshot {
+            records: state.records.values().cloned().collect(),
+            subscriptions: state.subscriptions.values().cloned().collect(),
+        }
+    }
+
+    pub(crate) fn restore_snapshot(&self, snapshot: MetaagentEventSnapshot) {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        state.records = snapshot
+            .records
+            .into_iter()
+            .map(|record| (record.event_id.clone(), record))
+            .collect();
+        state.subscriptions = snapshot
+            .subscriptions
+            .into_iter()
+            .map(|subscription| (subscription.subscription_id.clone(), subscription))
+            .collect();
+        Self::refresh_sequences(&mut state);
+    }
+
+    pub(crate) fn restore_record(&self, record: MetaagentEventRecord) {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        state.records.insert(record.event_id.clone(), record);
+        Self::refresh_sequences(&mut state);
+    }
+
+    pub(crate) fn restore_subscription(&self, subscription: MetaagentEventSubscription) {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        state
+            .subscriptions
+            .insert(subscription.subscription_id.clone(), subscription);
+        Self::refresh_sequences(&mut state);
+    }
+
+    pub(crate) fn remove_restored_subscription(&self, metaagent_id: &str, subscription_id: &str) {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        if state
+            .subscriptions
+            .get(subscription_id)
+            .is_some_and(|subscription| subscription.metaagent_id == metaagent_id)
+        {
+            state.subscriptions.remove(subscription_id);
+        }
+        Self::refresh_sequences(&mut state);
+    }
+
+    fn refresh_sequences(state: &mut MetaagentEventState) {
+        state.next_sequence = state
+            .records
+            .values()
+            .map(|record| record.sequence)
+            .max()
+            .unwrap_or_default();
+        state.next_subscription_sequence = state
+            .subscriptions
+            .values()
+            .filter_map(|subscription| {
+                subscription
+                    .subscription_id
+                    .rsplit(':')
+                    .next()
+                    .and_then(|suffix| suffix.parse::<u64>().ok())
+            })
+            .max()
+            .unwrap_or_default();
     }
 }

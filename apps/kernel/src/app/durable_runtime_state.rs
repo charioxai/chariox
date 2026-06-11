@@ -3,6 +3,9 @@ use crate::app::DaemonApp;
 use crate::durable_snapshot::{DurableKernelSnapshotPayload, DurableSnapshotScheduler};
 use crate::durable_state::DurableStateEvent;
 use crate::error::DaemonError;
+use crate::runtime::metaagent_event::{
+    MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
+};
 use crate::session::RuntimeSession;
 
 fn decode_durable_payload_field<T>(
@@ -81,12 +84,27 @@ impl DaemonApp {
         self.slices.restore_records(restored_slices);
         self.slices
             .restore_saved_state_records(snapshot.slice_saved_states, snapshot.slice_backups);
+        let mut restored_agent_ids = std::collections::BTreeSet::<String>::new();
         for agent in snapshot.agents {
             if !restored_session_ids.contains(agent.session_id()) {
                 continue;
             }
+            restored_agent_ids.insert(agent.id().to_string());
             self.agents.restore_agent(agent);
         }
+        self.metaagent_events
+            .restore_snapshot(MetaagentEventSnapshot {
+                records: snapshot
+                    .metaagent_event_records
+                    .into_iter()
+                    .filter(|record| restored_session_ids.contains(&record.session_id))
+                    .collect(),
+                subscriptions: snapshot
+                    .metaagent_event_subscriptions
+                    .into_iter()
+                    .filter(|subscription| restored_agent_ids.contains(&subscription.metaagent_id))
+                    .collect(),
+            });
         self.refresh_restored_session_projections()?;
         Ok(())
     }
@@ -164,8 +182,12 @@ impl DaemonApp {
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
         let sequence = self.durable_state.latest_event_sequence()?;
-        let payload =
-            DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents, &self.slices);
+        let payload = DurableKernelSnapshotPayload::capture(
+            &self.sessions,
+            &self.agents,
+            &self.slices,
+            &self.metaagent_events,
+        );
         self.durable_state.save_snapshot(
             sequence,
             serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
@@ -183,6 +205,7 @@ impl DaemonApp {
             self.session_state_store(),
             self.agents.clone(),
             self.slices.clone(),
+            self.metaagent_events.clone(),
             interval_events,
         ))
     }
@@ -335,6 +358,39 @@ impl DaemonApp {
                 backups.push(backup);
                 self.slices
                     .restore_saved_state_records(self.slices.list_saved_states(), backups);
+            }
+            "metaagent.event.recorded" | "metaagent.event.read" | "metaagent.event.acked" => {
+                let record: MetaagentEventRecord = decode_durable_payload_field(
+                    &event,
+                    "record",
+                    "durable_state.restore_metaagent_event_record",
+                )?;
+                if self.sessions.get_session(&record.session_id).is_ok()
+                    && self.agents.get_agent(&record.metaagent_id).is_ok()
+                {
+                    self.metaagent_events.restore_record(record);
+                }
+            }
+            "metaagent.subscription.created" => {
+                let subscription: MetaagentEventSubscription = decode_durable_payload_field(
+                    &event,
+                    "subscription",
+                    "durable_state.restore_metaagent_subscription",
+                )?;
+                if self.agents.get_agent(&subscription.metaagent_id).is_ok() {
+                    self.metaagent_events.restore_subscription(subscription);
+                }
+            }
+            "metaagent.subscription.deleted" => {
+                let subscription: MetaagentEventSubscription = decode_durable_payload_field(
+                    &event,
+                    "subscription",
+                    "durable_state.restore_deleted_metaagent_subscription",
+                )?;
+                self.metaagent_events.remove_restored_subscription(
+                    &subscription.metaagent_id,
+                    &subscription.subscription_id,
+                );
             }
             _ => {}
         }

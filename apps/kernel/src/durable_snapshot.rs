@@ -6,6 +6,9 @@ use tokio::time::sleep;
 use crate::agent::{AgentInstance, AgentServiceStore};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
+use crate::runtime::metaagent_event::{
+    MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
+};
 use crate::session::{RuntimeSession, SessionStateStore};
 use crate::slice::{SliceBackupRecord, SliceRecord, SliceSavedStateRecord, SliceStore};
 
@@ -19,6 +22,10 @@ pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) slice_saved_states: Vec<SliceSavedStateRecord>,
     #[serde(default)]
     pub(crate) slice_backups: Vec<SliceBackupRecord>,
+    #[serde(default)]
+    pub(crate) metaagent_event_records: Vec<MetaagentEventRecord>,
+    #[serde(default)]
+    pub(crate) metaagent_event_subscriptions: Vec<MetaagentEventSubscription>,
 }
 
 impl DurableKernelSnapshotPayload {
@@ -26,18 +33,22 @@ impl DurableKernelSnapshotPayload {
         sessions: &SessionStateStore,
         agents: &AgentServiceStore,
         slices: &SliceStore,
+        metaagent_events: &MetaagentEventStore,
     ) -> Self {
         let sessions = sessions.read().store().list();
         let agents = agents.list_agents();
         let slice_records = slices.list();
         let slice_saved_states = slices.list_saved_states();
         let slice_backups = slices.list_backups();
+        let metaagent_snapshot = metaagent_events.snapshot();
         Self {
             sessions,
             agents,
             slices: slice_records,
             slice_saved_states,
             slice_backups,
+            metaagent_event_records: metaagent_snapshot.records,
+            metaagent_event_subscriptions: metaagent_snapshot.subscriptions,
         }
     }
 }
@@ -55,6 +66,7 @@ pub(crate) struct DurableSnapshotScheduler {
     sessions: SessionStateStore,
     agents: AgentServiceStore,
     slices: SliceStore,
+    metaagent_events: MetaagentEventStore,
     interval_events: u64,
 }
 
@@ -64,6 +76,7 @@ impl DurableSnapshotScheduler {
         sessions: SessionStateStore,
         agents: AgentServiceStore,
         slices: SliceStore,
+        metaagent_events: MetaagentEventStore,
         interval_events: u64,
     ) -> Self {
         Self {
@@ -71,6 +84,7 @@ impl DurableSnapshotScheduler {
             sessions,
             agents,
             slices,
+            metaagent_events,
             interval_events,
         }
     }
@@ -86,8 +100,12 @@ impl DurableSnapshotScheduler {
             });
         }
 
-        let payload =
-            DurableKernelSnapshotPayload::capture(&self.sessions, &self.agents, &self.slices);
+        let payload = DurableKernelSnapshotPayload::capture(
+            &self.sessions,
+            &self.agents,
+            &self.slices,
+            &self.metaagent_events,
+        );
         let payload =
             serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.encode_snapshot_payload",
@@ -152,6 +170,7 @@ mod tests {
             app.session_state_store(),
             app.agents().clone(),
             app.slices(),
+            app.metaagent_event_store(),
             10,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -199,6 +218,7 @@ mod tests {
             app.session_state_store(),
             app.agents().clone(),
             app.slices(),
+            app.metaagent_event_store(),
             1,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -226,6 +246,7 @@ mod tests {
             app.session_state_store(),
             app.agents().clone(),
             app.slices(),
+            app.metaagent_event_store(),
             1,
         );
         let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));

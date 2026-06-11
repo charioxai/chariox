@@ -349,6 +349,23 @@ impl KernelRuntimeOwnedState {
                     detail,
                     injected_prompt_id: Some(prompt_id.clone()),
                 });
+        if let Err(error) = self.durable_state_store.append_event(
+            "metaagent.event.recorded",
+            Some(record.event_id.clone()),
+            serde_json::json!({
+                "record": &record,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.event",
+                "failed to persist metaagent event record",
+                serde_json::json!({
+                    "event_id": &record.event_id,
+                    "metaagent_id": &record.metaagent_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
         let assembly = crate::scheduler::prompt_injection::render_metaagent_event_prompt_assembly(
             crate::scheduler::prompt_injection::MetaagentEventPromptContext {
                 event_id: record.event_id,

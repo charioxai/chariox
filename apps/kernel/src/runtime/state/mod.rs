@@ -109,6 +109,21 @@ struct SlicePrivateRelayConnector {
     task: std::thread::JoinHandle<()>,
 }
 
+fn shared_metaagent_event_store(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> crate::runtime::metaagent_event::MetaagentEventStore {
+    let started = Instant::now();
+    loop {
+        if let Ok(app) = app.try_lock() {
+            return app.metaagent_event_store();
+        }
+        if started.elapsed() >= Duration::from_secs(5) {
+            panic!("KernelRuntimeState could not acquire the app lock during bootstrap");
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
@@ -286,6 +301,7 @@ impl KernelRuntimeState {
                     crate::git_observer::WorkspaceLiveSyncJournal::default()
                 }
             };
+        let metaagent_events = shared_metaagent_event_store(&app);
         Self {
             app,
             provider_runtime_lanes,
@@ -320,7 +336,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
-                metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
+                metaagent_events,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),

@@ -16,6 +16,7 @@ impl KernelRuntimeState {
             self.owned.session_store.clone(),
             self.owned.agent_store.clone(),
             self.owned.slice_store.clone(),
+            self.owned.metaagent_events.clone(),
             interval_events,
         ))
     }

@@ -160,6 +160,7 @@ impl KernelRuntimeState {
                         }),
                     });
                 };
+                self.persist_metaagent_event_record("metaagent.event.read", &event);
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({ "event": event }),
@@ -180,14 +181,17 @@ impl KernelRuntimeState {
                         }),
                     });
                 }
+                let acked =
+                    self.owned
+                        .metaagent_events
+                        .ack(agent.id(), &event_ids, args.up_to_sequence);
+                for event in &acked {
+                    self.persist_metaagent_event_record("metaagent.event.acked", event);
+                }
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "acked": self.owned.metaagent_events.ack(
-                            agent.id(),
-                            &event_ids,
-                            args.up_to_sequence,
-                        ),
+                        "acked": acked,
                     }),
                 })
             }
@@ -208,6 +212,10 @@ impl KernelRuntimeState {
                     self.owned
                         .metaagent_events
                         .subscribe(agent.id(), args.kind, args.filter);
+                self.persist_metaagent_subscription(
+                    "metaagent.subscription.created",
+                    &subscription,
+                );
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -231,6 +239,12 @@ impl KernelRuntimeState {
                     .owned
                     .metaagent_events
                     .unsubscribe(agent.id(), &args.subscription_id);
+                if let Some(subscription) = removed.as_ref() {
+                    self.persist_metaagent_subscription(
+                        "metaagent.subscription.deleted",
+                        subscription,
+                    );
+                }
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
@@ -265,6 +279,56 @@ impl KernelRuntimeState {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
             }),
+        }
+    }
+
+    fn persist_metaagent_event_record(
+        &self,
+        kind: &'static str,
+        record: &crate::runtime::metaagent_event::MetaagentEventRecord,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            kind,
+            Some(record.event_id.clone()),
+            serde_json::json!({
+                "record": record,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.event",
+                "failed to persist metaagent event mutation",
+                serde_json::json!({
+                    "kind": kind,
+                    "event_id": &record.event_id,
+                    "metaagent_id": &record.metaagent_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn persist_metaagent_subscription(
+        &self,
+        kind: &'static str,
+        subscription: &crate::runtime::metaagent_event::MetaagentEventSubscription,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            kind,
+            Some(subscription.subscription_id.clone()),
+            serde_json::json!({
+                "subscription": subscription,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.event",
+                "failed to persist metaagent event subscription mutation",
+                serde_json::json!({
+                    "kind": kind,
+                    "subscription_id": &subscription.subscription_id,
+                    "metaagent_id": &subscription.metaagent_id,
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 

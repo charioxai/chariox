@@ -123,6 +123,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -215,6 +216,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
@@ -300,6 +302,12 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn metaagent_event_store(
+        &self,
+    ) -> crate::runtime::metaagent_event::MetaagentEventStore {
+        self.metaagent_events.clone()
     }
 
     pub(crate) fn session_state_projection_store(&self) -> SessionStateProjectionStore {

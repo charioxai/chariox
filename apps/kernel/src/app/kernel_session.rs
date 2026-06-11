@@ -167,6 +167,136 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_restores_metaagent_events_from_snapshot_then_replays_state() {
+        let config = DaemonConfig::for_tests();
+        let (metaagent_id, event_id, subscription_id, deleted_subscription_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, metaagent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree").with_metaagent(true),
+                )
+                .expect("metaagent session should create");
+            let metaagent_id = metaagent.id().to_string();
+            let event = app.metaagent_event_store().record(
+                crate::runtime::metaagent_event::NewMetaagentEvent {
+                    session_id: session.id().to_string(),
+                    metaagent_id: metaagent_id.clone(),
+                    owner_user_id: metaagent.owner_user_id().to_string(),
+                    kind: "agent.turn.completed".to_string(),
+                    source_agent_id: None,
+                    title: "Worker completed".to_string(),
+                    summary: "Worker completed a turn".to_string(),
+                    detail: serde_json::json!({ "prompt_id": "prompt-1" }),
+                    injected_prompt_id: Some("prompt-meta-1".to_string()),
+                },
+            );
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.recorded",
+                    Some(event.event_id.clone()),
+                    serde_json::json!({ "record": &event }),
+                )
+                .expect("event record should persist");
+            app.save_durable_state_snapshot()
+                .expect("snapshot should save recorded event");
+
+            let read = app
+                .metaagent_event_store()
+                .read(&metaagent_id, &event.event_id)
+                .expect("event should read");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.read",
+                    Some(read.event_id.clone()),
+                    serde_json::json!({ "record": &read }),
+                )
+                .expect("event read should persist");
+
+            let acked =
+                app.metaagent_event_store()
+                    .ack(&metaagent_id, &[event.event_id.clone()], None);
+            let acked_event = acked.first().expect("event should ack");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.acked",
+                    Some(acked_event.event_id.clone()),
+                    serde_json::json!({ "record": acked_event }),
+                )
+                .expect("event ack should persist");
+
+            let subscription = app.metaagent_event_store().subscribe(
+                &metaagent_id,
+                "workflow.run.completed".to_string(),
+                None,
+            );
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.subscription.created",
+                    Some(subscription.subscription_id.clone()),
+                    serde_json::json!({ "subscription": &subscription }),
+                )
+                .expect("subscription should persist");
+
+            let deleted_subscription = app.metaagent_event_store().subscribe(
+                &metaagent_id,
+                "workflow.run.failed".to_string(),
+                None,
+            );
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.subscription.created",
+                    Some(deleted_subscription.subscription_id.clone()),
+                    serde_json::json!({ "subscription": &deleted_subscription }),
+                )
+                .expect("deleted subscription create should persist");
+            let deleted_subscription = app
+                .metaagent_event_store()
+                .unsubscribe(&metaagent_id, &deleted_subscription.subscription_id)
+                .expect("subscription should remove");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.subscription.deleted",
+                    Some(deleted_subscription.subscription_id.clone()),
+                    serde_json::json!({ "subscription": &deleted_subscription }),
+                )
+                .expect("subscription deletion should persist");
+
+            (
+                metaagent_id,
+                event.event_id,
+                subscription.subscription_id,
+                deleted_subscription.subscription_id,
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_events = app.metaagent_event_store().list(
+            &metaagent_id,
+            Some("agent.turn.completed"),
+            Some("acked"),
+            10,
+        );
+        assert_eq!(restored_events.len(), 1);
+        assert_eq!(restored_events[0].event_id, event_id);
+        assert!(restored_events[0].read_at_ms.is_some());
+        assert!(restored_events[0].ack_at_ms.is_some());
+        assert_eq!(
+            restored_events[0].injected_prompt_id.as_deref(),
+            Some("prompt-meta-1")
+        );
+
+        let restored_subscriptions = app
+            .metaagent_event_store()
+            .list_subscriptions(&metaagent_id);
+        assert_eq!(restored_subscriptions.len(), 1);
+        assert_eq!(restored_subscriptions[0].subscription_id, subscription_id);
+        assert_ne!(
+            restored_subscriptions[0].subscription_id,
+            deleted_subscription_id
+        );
+    }
+
+    #[test]
     fn bootstrap_reconciles_stale_runtime_work_after_restart() {
         let config = DaemonConfig::for_tests();
         let (session_id, workflow_run_id, workflow_node_run_id) = {
