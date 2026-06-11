@@ -2,7 +2,7 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -69,8 +69,15 @@ async function run(command, args, options = {}) {
 
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel', '--bin', 'arroba-adapter-http'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
+  return binary
+}
+
+async function buildHttpAdapter() {
+  const binary = path.join(repoRoot, 'adapters/rust/target/debug/arroba-adapter-http')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'adapters/rust/Cargo.toml'), '--bin', 'arroba-adapter-http'])
+  if (result.code !== 0) throw new Error(`HTTP adapter build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
 
@@ -149,7 +156,7 @@ function startApiServer(expectedSecret) {
   })
 }
 
-async function registerConnector(client, root, port, vaultKey) {
+async function registerConnector(client, root, port, vaultKey, adapterBinary) {
   const adapterDir = path.join(root, 'http-adapter')
   const adapterPath = path.join(adapterDir, 'adapter.yaml')
   const credentialPath = path.join(root, 'agent-credential.yaml')
@@ -160,7 +167,7 @@ kind: connector_adapter
 name: http
 version: 0.1.0
 adapter_protocol: arroba-connector-adapter-v2
-command: ${path.join(repoRoot, 'apps/kernel/target/debug/arroba-adapter-http')}
+command: ${adapterBinary}
 description: HTTP adapter agent drill build.
 `, 'utf8')
   await writeFile(credentialPath, `
@@ -285,7 +292,7 @@ async function runProviderScenario({ client, session, attachment, workspace, out
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) return printHelp()
-  const root = path.join(repoRoot, 'target', 'live-connector-extension-agent-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(tmpdir(), 'arroba-live-connector-extension-agent-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const configHome = path.join(root, 'config')
@@ -305,7 +312,10 @@ async function main() {
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     await writeFile(path.join(workspace, 'README.md'), '# connector extension agent drill\n', 'utf8')
     api = await startApiServer(secretValue)
-    const kernelBinary = await buildKernel()
+    const [kernelBinary, adapterBinary] = await Promise.all([
+      buildKernel(),
+      buildHttpAdapter(),
+    ])
     daemon = startDaemon(kernelBinary, {
       ...process.env,
       HOME: realHomeDir,
@@ -326,7 +336,7 @@ async function main() {
     await waitForDaemon(kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     await client.send(requests.setCredentialSecretRequest(vaultKey, secretValue))
-    await registerConnector(client, root, api.port, vaultKey)
+    await registerConnector(client, root, api.port, vaultKey, adapterBinary)
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'connector-extension-agent-drill')), 'SessionCreated').session
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(session.id, `connector-agent-drill-${process.pid}`)), 'SessionAttached').attachment
     for (const provider of options.providers) await runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options })

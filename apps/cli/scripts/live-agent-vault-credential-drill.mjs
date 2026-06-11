@@ -216,6 +216,7 @@ function toolName(update) {
 
 async function waitForHistoryToolCall({ historyDir, agentId, sinceMs, timeoutMs, pollMs, predicate }) {
   const started = Date.now()
+  const toolStarts = new Map()
   while (Date.now() - started < timeoutMs) {
     const files = (await readdir(historyDir).catch(() => []))
       .filter((file) => file.endsWith('.jsonl'))
@@ -240,6 +241,17 @@ async function waitForHistoryToolCall({ historyDir, agentId, sinceMs, timeoutMs,
           update = JSON.parse(entry.text)
         } catch {
           continue
+        }
+        const toolKey = entry.merge_key ?? update.id
+        if (update.status === 'started' && update.input !== undefined) {
+          toolStarts.set(toolKey, { input: update.input, tool: update.tool })
+        } else if (toolStarts.has(toolKey)) {
+          const startedUpdate = toolStarts.get(toolKey)
+          update = {
+            ...update,
+            input: update.input ?? startedUpdate.input,
+            tool: update.tool === 'tool_result' ? startedUpdate.tool : update.tool,
+          }
         }
         if (predicate(update)) return update
       }
