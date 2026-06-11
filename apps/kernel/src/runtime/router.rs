@@ -155,6 +155,7 @@ mod tests {
                 machine_id: None,
                 realm_id: Some("realm-1".to_string()),
                 public_key_thumbprint: Some("thumbprint-remote".to_string()),
+                metaagent_id: None,
             },
             None,
             None,

@@ -28,7 +28,7 @@ struct SessionCommandEnvelope {
     command_type: String,
     telemetry: LaneCommandTrace,
     caller_user_id: String,
-    caller_is_metaagent: bool,
+    caller_metaagent_id: Option<String>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -96,15 +96,17 @@ impl SessionRuntime {
             crate::runtime::command_latency::now_ms(),
         );
         let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
+        let caller_metaagent_id = self
+            .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
+            .await?;
         let command_id = command.command_id;
         let command_type = command.command_type;
-        let caller_is_metaagent = command.caller.caller_id.starts_with("metaagent:");
         match lane.try_send(SessionCommandEnvelope {
             telemetry: telemetry.clone(),
             command_id,
             command_type,
             caller_user_id,
-            caller_is_metaagent,
+            caller_metaagent_id,
             request,
             result_tx,
         }) {
@@ -234,7 +236,7 @@ impl SessionRuntime {
                 crate::runtime::command_latency::now_ms(),
             ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
-            caller_is_metaagent: false,
+            caller_metaagent_id: None,
             request,
             result_tx,
         })
@@ -284,7 +286,7 @@ async fn run_session_command_lane(
             .execute(
                 envelope.request,
                 envelope.caller_user_id,
-                envelope.caller_is_metaagent,
+                envelope.caller_metaagent_id,
             )
             .await;
         log_lane_completed(
@@ -322,7 +324,7 @@ async fn run_session_command_lane(
 
 fn command_session_actor_user_id(command: &KernelCommand) -> String {
     match command.caller.caller_kind {
-        KernelCallerKind::LocalClient => command
+        KernelCallerKind::LocalClient | KernelCallerKind::Metaagent => command
             .caller
             .user_id
             .clone()
@@ -334,6 +336,30 @@ fn command_session_actor_user_id(command: &KernelCommand) -> String {
             .user_id
             .clone()
             .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+    }
+}
+
+impl SessionRuntime {
+    async fn verified_metaagent_caller_id(
+        &self,
+        command: &KernelCommand,
+        session_id: &str,
+        caller_user_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if command.caller.caller_kind != KernelCallerKind::Metaagent {
+            return Ok(None);
+        }
+        let Some(metaagent_id) = command.caller.metaagent_id.as_deref() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch session metaagent command",
+                message: "metaagent caller kind requires metaagent_id".to_string(),
+            });
+        };
+        let verified = self
+            .store
+            .verify_metaagent_caller(session_id, metaagent_id, caller_user_id)
+            .await?;
+        Ok(Some(verified))
     }
 }
 

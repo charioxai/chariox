@@ -293,7 +293,7 @@ impl WorkflowRuntimeCommandExecutor {
 
 fn command_workflow_actor_user_id(command: &KernelCommand) -> String {
     match command.caller.caller_kind {
-        KernelCallerKind::LocalClient => command
+        KernelCallerKind::LocalClient | KernelCallerKind::Metaagent => command
             .caller
             .user_id
             .clone()

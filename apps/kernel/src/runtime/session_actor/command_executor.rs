@@ -45,7 +45,7 @@ impl SessionRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
-        caller_is_metaagent: bool,
+        caller_metaagent_id: Option<String>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
@@ -84,7 +84,7 @@ impl SessionRuntimeCommandExecutor {
         {
             (result, None)
         } else {
-            self.execute_store_request(request, caller_user_id, caller_is_metaagent)
+            self.execute_store_request(request, caller_user_id, caller_metaagent_id)
                 .await
         };
         let projected_session = match projection_action {
@@ -123,11 +123,12 @@ impl SessionRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
-        caller_is_metaagent: bool,
+        caller_metaagent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        let caller_is_metaagent = caller_metaagent_id.is_some();
         match request {
             LocalDaemonRequest::CreateSession(request) => {
                 self.store.create_session(request, caller_user_id).await

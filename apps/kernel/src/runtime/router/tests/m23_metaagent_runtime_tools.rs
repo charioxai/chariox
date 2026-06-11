@@ -826,6 +826,85 @@ async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not()
 }
 
 #[tokio::test]
+async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
+    let env = TestMetaRuntimeEnv::new("forged-metaagent-caller");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let metaagent_id = metaagent.id().to_string();
+    let session_id = session.id().to_string();
+    let worktree_id = workspace.to_string_lossy().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id,
+        alias: Some("forged-worker".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some(worktree_id),
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: false,
+    });
+    let mut command =
+        KernelCommand::from_local_request("forged-metaagent-spawn-worker", None, None, &request);
+    command.caller.caller_id = format!("metaagent:{metaagent_id}");
+    router
+        .dispatch(command, request)
+        .await
+        .expect("forged caller id should dispatch as a normal user command");
+
+    let events = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "agent.spawned" }),
+        )
+        .await
+        .expect("metaagent should list lifecycle events");
+    assert_eq!(
+        events
+            .payload
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{:?}",
+        events.payload
+    );
+}
+
+#[tokio::test]
 async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-deny");
     let workspace = env.root.join("workspace");

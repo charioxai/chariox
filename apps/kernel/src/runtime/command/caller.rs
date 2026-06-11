@@ -24,6 +24,7 @@ pub enum KernelCallerKind {
     RemoteClient,
     RemoteKernel,
     HostedService,
+    Metaagent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,8 @@ pub struct KernelCaller {
     pub realm_id: Option<String>,
     #[serde(default)]
     pub public_key_thumbprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metaagent_id: Option<String>,
 }
 
 impl Default for KernelCaller {
@@ -71,6 +74,7 @@ impl KernelCaller {
             machine_id: None,
             realm_id: None,
             public_key_thumbprint: None,
+            metaagent_id: None,
         }
     }
 
@@ -96,6 +100,7 @@ impl KernelCaller {
             machine_id,
             realm_id: Some(identity.realm_id),
             public_key_thumbprint: identity.public_key_thumbprint,
+            metaagent_id: None,
         }
     }
 }

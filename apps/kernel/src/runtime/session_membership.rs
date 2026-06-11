@@ -10,7 +10,7 @@ use scope::{request_session_scope, SessionMembershipScope};
 
 pub(crate) fn command_session_user_id(command: &KernelCommand) -> Option<String> {
     match command.caller.caller_kind {
-        KernelCallerKind::LocalClient => command
+        KernelCallerKind::LocalClient | KernelCallerKind::Metaagent => command
             .caller
             .user_id
             .clone()

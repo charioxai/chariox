@@ -42,6 +42,28 @@ impl SessionRuntimeStore {
         self.state.attachment_session_id(attachment_id).await
     }
 
+    pub(super) async fn verify_metaagent_caller(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        caller_user_id: &str,
+    ) -> Result<String, DaemonError> {
+        let Some(agent) = self.state.list_agents().into_iter().find(|agent| {
+            agent.id() == metaagent_id
+                && agent.session_id() == session_id
+                && agent.owner_user_id() == caller_user_id
+                && agent.is_metaagent()
+        }) else {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch session metaagent command",
+                message: format!(
+                    "metaagent caller `{metaagent_id}` is not an owned metaagent in session `{session_id}`"
+                ),
+            });
+        };
+        Ok(agent.id().to_string())
+    }
+
     async fn with_session_projection_action_result(
         &self,
         result: Result<LocalDaemonResponse, DaemonError>,
