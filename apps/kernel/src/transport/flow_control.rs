@@ -75,6 +75,37 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
         });
 }
 
+pub(crate) fn note_prompt_output(app: &mut DaemonApp, provider_run_id: &str) {
+    if let Some(state) = app.prompt_activity.write().get_mut(provider_run_id) {
+        state.last_output_at = Some(Instant::now());
+    }
+    app.active_turns.mark_streaming(provider_run_id);
+}
+
+pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, provider_run_id: &str) {
+    let first_response_content = {
+        let mut prompt_activity = app.prompt_activity.write();
+        if let Some(state) = prompt_activity.get_mut(provider_run_id) {
+            let first_response_content = !state.saw_response_content;
+            state.last_output_at = Some(Instant::now());
+            state.saw_response_content = true;
+            first_response_content
+        } else {
+            false
+        }
+    };
+    if first_response_content {
+        app.active_turns.mark_streaming(provider_run_id);
+        if let Ok(run) = app.providers().get_run(provider_run_id) {
+            let active_turn = app.active_turns.snapshot().remove(provider_run_id);
+            crate::runtime::command_latency::log_provider_first_response_content(
+                &run,
+                active_turn.as_ref(),
+            );
+        }
+    }
+}
+
 pub(crate) fn mark_prompt_completion_recorded(app: &mut DaemonApp, provider_run_id: &str) {
     if let Some(state) = app.prompt_activity.write().get_mut(provider_run_id) {
         state.completion_recorded = true;

@@ -1,18 +1,283 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use serde_json::Value;
 
+use super::provider_output_fanout::ProviderOutputFanout;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{ProviderNativeInteractionBridge, RuntimeProviderRun};
-use crate::session::{
-    PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionKind, RuntimeInteractionLevel,
+use crate::provider::{
+    ProviderNativeInteractionBridge, ProviderPromptSignalBatch, ProviderResumeState,
+    RuntimeProviderRun,
 };
+use crate::session::{
+    unix_epoch_ms, PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionKind, RuntimeInteractionLevel,
+};
+use crate::terminal::TerminalOutputKind;
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct ClaudeTranscriptCursor {
+    #[serde(default)]
+    files: BTreeMap<String, ClaudeTranscriptFileCursor>,
+    #[serde(default)]
+    seen_keys: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct ClaudeTranscriptFileCursor {
+    #[serde(default)]
+    line_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeTranscriptChunk {
+    kind: TerminalOutputKind,
+    merge_key_suffix: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ClaudeTranscriptDrain {
+    chunks: Vec<ClaudeTranscriptChunk>,
+    assistant_message_ids: Vec<String>,
+    session_id: Option<String>,
+    model: Option<String>,
+}
+
+fn claude_transcript_cursor_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("transcript-cursor.json"))
+}
+
+fn load_claude_transcript_cursor(context_file: &str) -> ClaudeTranscriptCursor {
+    let Some(path) = claude_transcript_cursor_path(context_file) else {
+        return ClaudeTranscriptCursor::default();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_claude_transcript_cursor(context_file: &str, cursor: &ClaudeTranscriptCursor) {
+    let Some(path) = claude_transcript_cursor_path(context_file) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(raw) = serde_json::to_string(cursor) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+fn drain_claude_transcript_file(
+    transcript_path: &str,
+    cursor: &mut ClaudeTranscriptCursor,
+) -> ClaudeTranscriptDrain {
+    let path = Path::new(transcript_path);
+    let Ok(raw) = fs::read_to_string(path) else {
+        return ClaudeTranscriptDrain::default();
+    };
+    let lines = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let file_key = transcript_path.to_string();
+    let start = cursor
+        .files
+        .get(&file_key)
+        .map(|file| file.line_count)
+        .unwrap_or_default()
+        .min(lines.len());
+    let mut drain = ClaudeTranscriptDrain::default();
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let key = claude_transcript_entry_key(transcript_path, index, &value);
+        if !cursor.seen_keys.insert(key) {
+            continue;
+        }
+        if drain.session_id.is_none() {
+            drain.session_id = claude_string_field(&value, &["sessionId", "session_id"]);
+        }
+        if let Some(model) = claude_transcript_model(&value) {
+            drain.model = Some(model);
+        }
+        drain.chunks.extend(claude_transcript_chunks(&value));
+        if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
+            drain.assistant_message_ids.push(message_id);
+        }
+    }
+    cursor.files.insert(
+        file_key,
+        ClaudeTranscriptFileCursor {
+            line_count: lines.len(),
+        },
+    );
+    drain
+}
+
+fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> String {
+    claude_string_field(value, &["uuid"])
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|message| claude_string_field(message, &["id"]))
+        })
+        .map(|id| format!("{path}:{id}"))
+        .unwrap_or_else(|| format!("{path}:line:{index}"))
+}
+
+fn claude_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+    let Some(kind) = value.get("type").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    match kind {
+        "assistant" => claude_assistant_transcript_chunks(value),
+        "user" => claude_tool_result_transcript_chunks(value),
+        _ => Vec::new(),
+    }
+}
+
+fn claude_assistant_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+    let message = value.get("message").unwrap_or(value);
+    let message_id =
+        claude_transcript_assistant_message_id(value).unwrap_or_else(|| "assistant".to_string());
+    let Some(content) = message.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut chunks = Vec::new();
+    for (index, block) in content.iter().enumerate() {
+        let block_kind = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match block_kind {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    chunks.push(ClaudeTranscriptChunk {
+                        kind: TerminalOutputKind::ProviderOutput,
+                        merge_key_suffix: format!("assistant:{message_id}:{index}"),
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "thinking" => {
+                if let Some(text) = block
+                    .get("thinking")
+                    .or_else(|| block.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    chunks.push(ClaudeTranscriptChunk {
+                        kind: TerminalOutputKind::ProviderReasoning,
+                        merge_key_suffix: format!("thinking:{message_id}:{index}"),
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "tool_use" => {
+                let payload = serde_json::json!({
+                    "id": block.get("id").cloned().unwrap_or(Value::Null),
+                    "tool": block.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                    "status": "started",
+                    "input": block.get("input").cloned().unwrap_or(Value::Null),
+                });
+                chunks.push(ClaudeTranscriptChunk {
+                    kind: TerminalOutputKind::ProviderTool,
+                    merge_key_suffix: format!(
+                        "tool:{}",
+                        block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&message_id)
+                    ),
+                    text: payload.to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    chunks
+}
+
+fn claude_tool_result_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+    let message = value.get("message").unwrap_or(value);
+    let Some(content) = message.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    content
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|block| {
+            let tool_use_id = block.get("tool_use_id").and_then(Value::as_str)?;
+            let content = match block.get("content") {
+                Some(Value::String(value)) => value.to_string(),
+                Some(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+                None => String::new(),
+            };
+            let is_error = block
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let payload = serde_json::json!({
+                "id": tool_use_id,
+                "tool": "tool_result",
+                "status": if is_error { "failed" } else { "completed" },
+                "output": content,
+            });
+            Some(ClaudeTranscriptChunk {
+                kind: TerminalOutputKind::ProviderTool,
+                merge_key_suffix: format!("tool:{tool_use_id}"),
+                text: payload.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn claude_transcript_assistant_message_id(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    value
+        .get("message")
+        .and_then(|message| claude_string_field(message, &["id"]))
+        .or_else(|| claude_string_field(value, &["uuid"]))
+}
+
+fn claude_transcript_model(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    value
+        .get("message")
+        .and_then(|message| claude_string_field(message, &["model"]))
+        .map(|model| {
+            if model.starts_with("claude/") {
+                model
+            } else {
+                format!("claude/{model}")
+            }
+        })
+}
+
+fn claude_string_field(value: &Value, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| {
+        value
+            .get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
 
 fn claude_native_marker(context_file: &str) -> Option<String> {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
@@ -25,6 +290,24 @@ fn claude_native_marker(context_file: &str) -> Option<String> {
 fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+}
+
+fn append_claude_headless_debug(context_file: &str, label: &str, value: &str) {
+    if std::env::var_os("ARROBA_CLAUDE_HEADLESS_DEBUG").is_none() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(context_file).parent() else {
+        return;
+    };
+    let path = root.join("headless-debug.log");
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            writeln!(file, "[{}] {label}: {value}", unix_epoch_ms())
+        });
 }
 
 fn claude_permission_input_dir(context_file: &str) -> Option<PathBuf> {
@@ -188,6 +471,23 @@ fn claude_rendered_permission_visible(text: &str) -> bool {
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
 
+fn claude_headless_workspace_trust_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    (normalized_lower.contains("quick safety check") || compact.contains("quicksafetycheck"))
+        && (normalized_lower.contains("trust this folder") || compact.contains("trustthisfolder"))
+}
+
+fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    (normalized_lower.contains("bypass permissions mode")
+        || compact.contains("bypasspermissionsmode"))
+        && (normalized_lower.contains("yes, i accept") || compact.contains("yes,iaccept"))
+}
+
 fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {
     let normalized = normalize_claude_rendered_permission_text(rendered);
     if normalized.trim().is_empty() {
@@ -310,7 +610,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
             write_claude_native_marker(context_file, "");
         }
-        self.inject_pending_prompt(session_id, provider_run_id, &agent_id, context_file)?;
+        self.inject_pending_prompt(
+            session_id,
+            provider_run_id,
+            &agent_id,
+            context_file,
+            provider_run,
+        )?;
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
@@ -329,6 +635,21 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             let Ok(event) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
+            if provider_run.provider() == "claude-headless" {
+                if let Some(transcript_path) = event
+                    .get("transcript_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    self.drain_headless_transcript(
+                        session_id,
+                        provider_run_id,
+                        context_file,
+                        transcript_path,
+                    )?;
+                }
+            }
             let event_name = event
                 .get("hook_event_name")
                 .and_then(Value::as_str)
@@ -397,6 +718,98 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(())
     }
 
+    fn drain_headless_transcript(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        context_file: &str,
+        transcript_path: &str,
+    ) -> Result<(), DaemonError> {
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let drain = drain_claude_transcript_file(transcript_path, &mut cursor);
+        save_claude_transcript_cursor(context_file, &cursor);
+        if drain.chunks.is_empty()
+            && drain.assistant_message_ids.is_empty()
+            && drain.session_id.is_none()
+            && drain.model.is_none()
+        {
+            return Ok(());
+        }
+
+        let mut metadata = ProviderPromptSignalBatch::default();
+        if let Some(session_id) = drain.session_id {
+            metadata.resolved_resume_state =
+                Some(ProviderResumeState::from_claude_session_id(session_id));
+        }
+        if let Some(model) = drain.model {
+            metadata.resolved_model = Some(model);
+            metadata.resolved_model_source = Some("claude.headless.transcript");
+        }
+        if metadata.resolved_resume_state.is_some() || metadata.resolved_model.is_some() {
+            self.app
+                .providers
+                .apply_structured_output_metadata(provider_run_id, &metadata)?;
+            if let Ok(run) = self.app.providers.get_run(provider_run_id) {
+                self.app.update_provider_run_projection(run);
+            }
+        }
+
+        let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
+        let fanout = ProviderOutputFanout::new(self.app);
+        let mut saw_response_content = false;
+        let mut saw_runtime_activity = false;
+        for chunk in drain.chunks {
+            if chunk.text.is_empty() {
+                continue;
+            }
+            if matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+            ) {
+                saw_response_content = true;
+            }
+            if matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput
+                    | TerminalOutputKind::ProviderReasoning
+                    | TerminalOutputKind::ProviderTool
+                    | TerminalOutputKind::ProviderStatus
+            ) {
+                saw_runtime_activity = true;
+            }
+            fanout.fan_out(
+                session_id,
+                provider_run_id,
+                chunk.kind,
+                Some(format!(
+                    "claude-headless:{provider_run_id}:{}",
+                    chunk.merge_key_suffix
+                )),
+                recipient_attachment_ids.clone(),
+                chunk.text.as_bytes(),
+            );
+        }
+        if saw_response_content {
+            crate::transport::flow_control::note_prompt_response_content(self.app, provider_run_id);
+        } else if saw_runtime_activity {
+            crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
+        }
+        for message_id in drain.assistant_message_ids {
+            ProviderOutputFanout::new(self.app).record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &message_id,
+                unix_epoch_ms(),
+            );
+            crate::transport::flow_control::mark_prompt_completion_recorded(
+                self.app,
+                provider_run_id,
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn process_terminal_output(
         &mut self,
         session_id: &str,
@@ -415,6 +828,28 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         };
         let visible = claude_rendered_permission_visible(rendered);
+        if provider_run.provider() == "claude-headless" && !rendered.is_empty() {
+            append_claude_headless_debug(context_file, "pty", rendered);
+        }
+        if provider_run.provider() == "claude-headless" {
+            let recent = update_claude_permission_recent(context_file, rendered);
+            if claude_headless_workspace_trust_visible(&recent) {
+                append_claude_headless_debug(context_file, "auto_confirm", "workspace_trust");
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_native_marker(context_file, "");
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
+            if claude_headless_bypass_confirmation_visible(&recent) {
+                append_claude_headless_debug(context_file, "auto_confirm", "bypass_permissions");
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
+                write_claude_native_marker(context_file, "");
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
+        }
         let recent = if visible {
             rendered.to_string()
         } else {
@@ -606,6 +1041,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         agent_id: &str,
         context_file: &str,
+        provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
         let Some(prompt) = self
             .app
@@ -614,7 +1050,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         };
         let marker = claude_native_marker(context_file);
+        if provider_run.provider() == "claude-headless"
+            && marker.is_none()
+            && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
+        {
+            append_claude_headless_debug(context_file, "inject_wait", prompt.id());
+            return Ok(());
+        }
         if marker.as_deref() == Some(&format!("typed:{}", prompt.id())) {
+            append_claude_headless_debug(context_file, "inject_enter", prompt.id());
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
@@ -640,6 +1084,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .to_string();
         let visible = join_claude_context([native_attachment_suffix, visible]);
         if !visible.is_empty() {
+            append_claude_headless_debug(context_file, "inject_prompt", &visible);
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, visible.as_bytes())?;
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
@@ -647,6 +1092,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
         } else {
+            append_claude_headless_debug(context_file, "inject_empty", prompt.id());
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
         }
         Ok(())
@@ -928,5 +1374,114 @@ fn mime_for_path(path: &Path) -> &'static str {
         "xml" => "application/xml",
         "yaml" | "yml" => "application/yaml",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
+        let mut cursor = ClaudeTranscriptCursor::default();
+        let dir = std::env::temp_dir().join(format!(
+            "arroba-claude-transcript-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let transcript = dir.join("session.jsonl");
+        fs::write(
+            &transcript,
+            [
+                serde_json::json!({
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "sessionId": "claude-session-1",
+                    "message": {
+                        "id": "msg_1",
+                        "model": "claude-sonnet-4-6",
+                        "role": "assistant",
+                        "content": [
+                            { "type": "thinking", "thinking": "considering" },
+                            { "type": "text", "text": "hello" },
+                            { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "pwd" } }
+                        ]
+                    }
+                })
+                .to_string(),
+                serde_json::json!({
+                    "type": "user",
+                    "uuid": "user-1",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }
+                        ]
+                    }
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .expect("fixture should write");
+
+        let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+        assert_eq!(drain.session_id.as_deref(), Some("claude-session-1"));
+        assert_eq!(drain.model.as_deref(), Some("claude/claude-sonnet-4-6"));
+        assert_eq!(drain.assistant_message_ids, vec!["msg_1"]);
+        assert_eq!(drain.chunks.len(), 4);
+        assert_eq!(drain.chunks[0].kind, TerminalOutputKind::ProviderReasoning);
+        assert_eq!(drain.chunks[0].text, "considering");
+        assert_eq!(drain.chunks[1].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(drain.chunks[1].text, "hello");
+        assert_eq!(drain.chunks[2].kind, TerminalOutputKind::ProviderTool);
+        assert!(drain.chunks[2].text.contains("\"tool\":\"Bash\""));
+        assert!(drain.chunks[3].text.contains("\"status\":\"completed\""));
+
+        let second = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+        assert!(second.chunks.is_empty());
+        assert!(second.assistant_message_ids.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
+        let mut cursor = ClaudeTranscriptCursor::default();
+        let dir = std::env::temp_dir().join(format!(
+            "arroba-claude-transcript-dedupe-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let transcript = dir.join("session.jsonl");
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-1",
+            "message": {
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "once" }]
+            }
+        })
+        .to_string();
+        fs::write(
+            &transcript,
+            [
+                serde_json::json!({ "type": "queue-operation", "operation": "enqueue" })
+                    .to_string(),
+                assistant.clone(),
+                assistant,
+            ]
+            .join("\n"),
+        )
+        .expect("fixture should write");
+
+        let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+        assert_eq!(drain.chunks.len(), 1);
+        assert_eq!(drain.chunks[0].text, "once");
+        assert_eq!(drain.assistant_message_ids, vec!["assistant-1"]);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

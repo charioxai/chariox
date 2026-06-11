@@ -1,16 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::provider::{
-    ProviderPromptSignalBatch, RuntimeProviderRun, classify_provider_terminal_failure_text,
+    classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
+use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use super::provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 use super::provider_output_fanout::ProviderOutputFanout;
@@ -379,21 +377,29 @@ impl<'a> ProviderOutputPump<'a> {
                 .collect::<String>(),
         );
         if !chunks.is_empty() {
-            self.context
-                .note_prompt_response_content(request.provider_run_id);
+            if provider_run.provider() == "claude-headless" {
+                self.context.note_prompt_output(request.provider_run_id);
+            } else {
+                self.context
+                    .note_prompt_response_content(request.provider_run_id);
+            }
         }
 
-        let records = chunks
-            .into_iter()
-            .map(|chunk| {
-                self.context.fan_out_provider_output(
-                    request.session_id,
-                    request.provider_run_id,
-                    request.recipient_attachment_ids.clone(),
-                    &chunk.bytes,
-                )
-            })
-            .collect::<Vec<_>>();
+        let records = if provider_run.provider() == "claude-headless" {
+            Vec::new()
+        } else {
+            chunks
+                .into_iter()
+                .map(|chunk| {
+                    self.context.fan_out_provider_output(
+                        request.session_id,
+                        request.provider_run_id,
+                        request.recipient_attachment_ids.clone(),
+                        &chunk.bytes,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         if let Some(message) = terminal_failure {
             let run = self
                 .context
@@ -917,35 +923,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
         ProviderOutputRecipientResolver::new(self.app).session_attachment_ids(session_id)
     }
 
-    fn note_prompt_output(&self, provider_run_id: &str) {
-        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
-            state.last_output_at = Some(Instant::now());
-        }
-        self.active_turns.mark_streaming(provider_run_id);
+    fn note_prompt_output(&mut self, provider_run_id: &str) {
+        crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
     }
 
-    fn note_prompt_response_content(&self, provider_run_id: &str) {
-        let first_response_content = {
-            let mut prompt_activity = self.prompt_activity.write();
-            if let Some(state) = prompt_activity.get_mut(provider_run_id) {
-                let first_response_content = !state.saw_response_content;
-                state.last_output_at = Some(Instant::now());
-                state.saw_response_content = true;
-                first_response_content
-            } else {
-                false
-            }
-        };
-        if first_response_content {
-            self.active_turns.mark_streaming(provider_run_id);
-            if let Ok(run) = self.provider_store.get_run(provider_run_id) {
-                let active_turn = self.active_turns.snapshot().remove(provider_run_id);
-                crate::runtime::command_latency::log_provider_first_response_content(
-                    &run,
-                    active_turn.as_ref(),
-                );
-            }
-        }
+    fn note_prompt_response_content(&mut self, provider_run_id: &str) {
+        crate::transport::flow_control::note_prompt_response_content(self.app, provider_run_id);
     }
 
     fn mark_prompt_completion_recorded(&self, provider_run_id: &str) {

@@ -106,7 +106,11 @@ impl KernelRuntimeState {
             }
         }
         if !chunks.is_empty() {
-            owned.note_prompt_response_content(provider_run_id);
+            if provider_run.provider() == "claude-headless" {
+                owned.note_prompt_output(provider_run_id);
+            } else {
+                owned.note_prompt_response_content(provider_run_id);
+            }
         }
         let terminal_failure = crate::provider::classify_provider_terminal_failure_text(
             provider_run.adapter_key(),
@@ -115,19 +119,23 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
-        let records = chunks
-            .into_iter()
-            .map(|chunk| {
-                owned.fan_out_terminal_output(
-                    session_id,
-                    provider_run_id,
-                    crate::terminal::TerminalOutputKind::ProviderOutput,
-                    None,
-                    recipient_attachment_ids.clone(),
-                    &chunk.bytes,
-                )
-            })
-            .collect::<Vec<_>>();
+        let records = if provider_run.provider() == "claude-headless" {
+            Vec::new()
+        } else {
+            chunks
+                .into_iter()
+                .map(|chunk| {
+                    owned.fan_out_terminal_output(
+                        session_id,
+                        provider_run_id,
+                        crate::terminal::TerminalOutputKind::ProviderOutput,
+                        None,
+                        recipient_attachment_ids.clone(),
+                        &chunk.bytes,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         if let Some(message) = terminal_failure {
             let run = owned
                 .provider_store
