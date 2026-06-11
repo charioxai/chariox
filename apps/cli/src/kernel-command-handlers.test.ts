@@ -963,6 +963,35 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
 })
 
+test("kernel remote-runtime formatter treats session projection invariant drift as a blocker", () => {
+  const unhealthy = health({
+    projection_invariants: {
+      checked_sessions: 1,
+      checked_agents: 1,
+      mismatches: [{
+        kind: "agent_record_not_in_session_projection",
+        session_id: "session-1",
+        agent_id: "agent-2",
+        details: "canonical agent record is not present in its projected session agent list",
+      }],
+    },
+  })
+  const rendered = formatKernelRemoteRuntimeHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
+  assert.deepEqual(kernelRemoteRuntimeReadiness(unhealthy), {
+    state: "blocked",
+    issueCount: 1,
+    attentionCount: 1,
+  })
+  assert.match(rendered, /session projection: checked_sessions=1 checked_agents=1 mismatches=1/)
+  assert.match(rendered, /session projection invariant issues: mismatches=1/)
+  assert.match(rendered, /agent_record_not_in_session_projection session=session-1 agent=agent-2: canonical agent record is not present in its projected session agent list/)
+  assert.match(rendered, /next: refresh agent agent-2 in session session-1; run \/kernel health and \/agent list; capture a debug bundle before restarting the kernel if the mismatch persists/)
+  assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
+})
+
 test("kernel remote-runtime formatter avoids placeholder recovery targets", () => {
   const unhealthy = health({
     provider_runs: {

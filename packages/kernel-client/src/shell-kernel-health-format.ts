@@ -43,6 +43,7 @@ export function kernelRemoteRuntimeReadiness(health: DaemonHealthProjection): Ke
 
 function remoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
   return providerRunRuntimeIssueCount(health)
+    + health.projection_invariants.mismatches.length
     + workspaceRemoteRuntimeHardIssueCount(health)
     + sliceLifecycleIssueCount(health)
     + remoteExecutionIssueCount(health)
@@ -80,6 +81,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
+    `session projection: checked_sessions=${health.projection_invariants.checked_sessions} checked_agents=${health.projection_invariants.checked_agents} mismatches=${health.projection_invariants.mismatches.length}`,
     ...(remoteExtensionSync.home_proxy_grants > 0
       ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
       : []),
@@ -92,6 +94,9 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
 
   if (providerRunIssues > 0 || health.provider_run_actor.enqueue_rejections > 0) {
     appendRemoteRuntimeProviderRunIssues(lines, health)
+  }
+  if (health.projection_invariants.mismatches.length > 0) {
+    appendRemoteRuntimeProjectionInvariantIssues(lines, health)
   }
   appendRemoteRuntimeIssues(lines, health)
   const readiness = kernelRemoteRuntimeReadiness(health)
@@ -558,6 +563,20 @@ function uniqueNonEmpty(values: readonly string[]): string[] {
     }
   }
   return unique
+}
+
+function appendRemoteRuntimeProjectionInvariantIssues(lines: string[], health: DaemonHealthProjection): void {
+  lines.push(`session projection invariant issues: mismatches=${health.projection_invariants.mismatches.length}`)
+  for (const mismatch of health.projection_invariants.mismatches) {
+    lines.push(`  ${mismatch.kind} session=${mismatch.session_id} agent=${mismatch.agent_id ?? "-"}: ${mismatch.details}`)
+  }
+  const first = health.projection_invariants.mismatches[0]
+  const target = first?.agent_id
+    ? `agent ${first.agent_id} in session ${first.session_id}`
+    : first?.session_id
+      ? `session ${first.session_id}`
+      : "the affected session"
+  lines.push(`  next: refresh ${target}; run /kernel health and /agent list; capture a debug bundle before restarting the kernel if the mismatch persists`)
 }
 
 function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHealthProjection): void {
