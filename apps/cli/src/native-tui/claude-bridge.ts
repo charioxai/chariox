@@ -151,6 +151,11 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
             options.attachmentContextDir,
           )
           await writeFile(options.contextFile, joinClaudeAdditionalContext(hidden, attachmentContext), "utf8")
+          if (hidden.trim()) {
+            options.debug("hidden_instructions_forwarded", {
+              promptId: activePrompt.id,
+            })
+          }
           if ((activePrompt.attachments?.length ?? 0) > 0) {
             options.debug("attachments_forwarded", {
               promptId: activePrompt.id,

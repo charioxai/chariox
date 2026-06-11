@@ -39,12 +39,16 @@ Native TUI prompt-injection validation was also rerun after repairing the drill
 for the current history-outline API and provider-native hidden-context fields:
 
 ```sh
-pnpm --filter @arroba/cli run native-tui:prompt-injection-drill -- --providers codex,opencode
+pnpm --filter @arroba/cli run native-tui:prompt-injection-drill -- --providers codex,opencode,claude
 ```
 
-Result: passed for Codex and OpenCode. The drill verifies native-origin prompts
-enter Arroba history/output, provider-hidden context is forwarded using the
-current provider-native fields, and the native TUI screen does not show Arroba
+Result: passed for Codex, OpenCode, and Claude. For Codex and OpenCode, the
+drill verifies native-origin prompts enter Arroba history/output,
+provider-hidden context is forwarded using the current provider-native fields,
+and the native TUI screen does not show Arroba hidden instruction markers. For
+Claude, the drill verifies Arroba-origin prompt injection reaches Claude through
+the hook/PTY bridge, the hook-visible prompt is redacted, the expected output is
+recorded in Arroba history, and the Claude native screen does not show Arroba
 hidden instruction markers.
 
 ## Arroba Kernel Behavior

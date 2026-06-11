@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
+import os from "node:os"
 import path from "node:path"
 import { mkdir, readFile, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
@@ -15,6 +16,7 @@ import {
   getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
+  submitPromptRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -38,14 +40,14 @@ function parseArgs(argv) {
     else if (arg === "--providers") options.providers = argv[++index].split(",").map((value) => value.trim()).filter(Boolean)
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node apps/cli/scripts/live-native-tui-prompt-injection-drill.mjs [--providers codex,opencode] [--keep-artifacts-on-failure]")
+      console.log("Usage: node apps/cli/scripts/live-native-tui-prompt-injection-drill.mjs [--providers codex,opencode,claude] [--keep-artifacts-on-failure]")
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
   for (const provider of options.providers) {
-    if (provider !== "codex" && provider !== "opencode") throw new Error(`unsupported provider: ${provider}`)
+    if (provider !== "codex" && provider !== "opencode" && provider !== "claude") throw new Error(`unsupported provider: ${provider}`)
   }
   return options
 }
@@ -119,6 +121,11 @@ async function screenQuit(name) {
   await screen(name, ["-X", "quit"]).catch(() => {})
 }
 
+function nativeTempRootForClaudeScreen(screenName) {
+  const suffix = screenName.replace(/^arroba-claude-/, "")
+  return path.join(os.tmpdir(), `arroba-claude-native-${suffix}`)
+}
+
 function startScreen(name, logDir, command, args, env) {
   return execFileAsync("screen", [
     "-dmS",
@@ -187,6 +194,35 @@ async function waitForProxyHiddenForward(logFile, timeoutMs = 90_000) {
   throw new Error(`timed out waiting for hidden instruction forwarding in ${logFile}\n${text.slice(-4000)}`)
 }
 
+async function waitForClaudeHookPrompt(eventsFile, visiblePrompt, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  let raw = ""
+  while (Date.now() < deadline) {
+    raw = await readFile(eventsFile, "utf8").catch(() => "")
+    const prompts = raw
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        try {
+          return JSON.parse(line)
+        } catch {
+          return null
+        }
+      })
+      .filter((event) => event?.hook_event_name === "UserPromptSubmit")
+      .map((event) => event.prompt ?? "")
+    const prompt = prompts.find((entry) => entry.includes(visiblePrompt))
+    if (prompt) {
+      if (prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request")) {
+        throw new Error(`Claude hook prompt showed hidden Arroba instructions in ${eventsFile}`)
+      }
+      return prompt
+    }
+    await sleep(500)
+  }
+  throw new Error(`timed out waiting for Claude hook prompt ${visiblePrompt} in ${eventsFile}\n${raw}`)
+}
+
 async function assertNativeTuiDidNotShowHiddenInstructions(logFile) {
   const text = await readFile(logFile, "utf8").catch(() => "")
   if (text.includes(hiddenMarker) || text.includes("list_extensions") || text.includes("native approval request")) {
@@ -237,7 +273,7 @@ async function runProvider(provider, options) {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const alias = `${provider === "codex" ? "cdx" : "oc"}-injection`
+  const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-injection`
   const screenNative = `arroba-${provider}-injection-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
@@ -247,6 +283,7 @@ async function runProvider(provider, options) {
   const outputMarker = `${marker}_${provider}_VISIBLE_PROMPT`
   let daemon = null
   let client = null
+  let succeeded = false
   try {
     await mkdir(logs.nativeDir, { recursive: true })
     daemon = spawn(kernelBinary, [], {
@@ -279,7 +316,7 @@ async function runProvider(provider, options) {
       "--worktree",
       worktree,
       "--permissions",
-      "yolo",
+      provider === "claude" ? "required" : "yolo",
     ]
     if (provider === "codex") {
       nativeArgs.push(
@@ -290,6 +327,14 @@ async function runProvider(provider, options) {
         "--initial-prompt",
         `Reply with exactly ${outputMarker} and nothing else.`,
       )
+    } else if (provider === "claude") {
+      nativeArgs.push(
+        "--detached-screen",
+        "--model",
+        "sonnet",
+        "--effort",
+        "low",
+      )
     }
     await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, {
       ...process.env,
@@ -297,6 +342,8 @@ async function runProvider(provider, options) {
       ARROBA_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
       ARROBA_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      ARROBA_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
+      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
     })
     const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "opencode"
@@ -305,6 +352,13 @@ async function runProvider(provider, options) {
     const providerSessionId = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
+    const claudeScreen = provider === "claude"
+      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
+      : null
+    if (claudeScreen) {
+      logs.claudeScreen = path.join(nativeTempRootForClaudeScreen(claudeScreen), "screen", "screenlog.0")
+      logs.claudeEvents = path.join(nativeTempRootForClaudeScreen(claudeScreen), "events.jsonl")
+    }
 
     client = new LocalIpcClient(kernelUrl)
     const attachment = unwrap(
@@ -315,12 +369,30 @@ async function runProvider(provider, options) {
 
     if (provider === "opencode") {
       await runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, `Reply with exactly ${outputMarker} and nothing else.`)
+    } else if (provider === "claude") {
+      await client.send(submitPromptRequest(
+        sessionId,
+        attachment.id,
+        agent.id,
+        `Reply with exactly ${outputMarker} and nothing else.`,
+        [],
+      ))
     }
     await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, outputMarker)
-    await waitForProxyHiddenForward(logs.proxy)
+    if (provider !== "claude") {
+      await waitForProxyHiddenForward(logs.proxy)
+    }
+    if (provider === "claude") {
+      await waitForClaudeHookPrompt(logs.claudeEvents, outputMarker)
+    }
     await sleep(1_000)
     await assertNativeTuiDidNotShowHiddenInstructions(logs.native)
-    return { provider, status: "ok", sessionId, alias, outputMarker, logs }
+    if (logs.claudeScreen) {
+      await assertNativeTuiDidNotShowHiddenInstructions(logs.claudeScreen)
+    }
+    const result = { provider, status: "ok", sessionId, alias, outputMarker, logs }
+    succeeded = true
+    return result
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
@@ -329,10 +401,11 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && process.exitCode)) {
+    if (process.env.ARROBA_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && !succeeded)) {
       console.log(JSON.stringify({ provider, artifactsKept: root }))
     } else {
       await rm(root, { recursive: true, force: true }).catch(() => {})
+      if (logs.claudeScreen) await rm(path.dirname(path.dirname(logs.claudeScreen)), { recursive: true, force: true }).catch(() => {})
     }
   }
 }
