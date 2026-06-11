@@ -1219,6 +1219,13 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -1233,6 +1240,14 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
         "dev-stub",
         "dev-stub",
         "worker-model",
+    );
+    let peer_worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        peer_worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "peer-worker-model",
     );
     let meta_run = launch_test_provider(
         &mut app,
@@ -1302,6 +1317,55 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
             },
         )
         .expect("provider tool output should append to operational history");
+    let peer_prompt_entry = crate::history::SessionHistoryEntry::user_prompt(
+        session.id(),
+        "peer-attachment",
+        peer_worker.id(),
+        "peer private prompt",
+    );
+    router
+        .operational_history_store
+        .append_transcript(
+            &peer_prompt_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(peer_worker.id().to_string()),
+                provider: Some(peer_worker_run.provider().to_string()),
+                model: Some(peer_worker_run.model().to_string()),
+                provider_run_id: Some(peer_worker_run.id().to_string()),
+                turn_id: Some("peer-trace-turn".to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("peer prompt should append to operational history");
+    let peer_tool_entry = crate::history::SessionHistoryEntry::provider_output(
+        session.id(),
+        peer_worker_run.id(),
+        Some(peer_worker.id()),
+        crate::terminal::TerminalOutputKind::ProviderTool,
+        None,
+        serde_json::json!({
+            "tool": "shell",
+            "status": "completed",
+            "input": {"command": "cat secret-peer-file"}
+        })
+        .to_string(),
+    );
+    router
+        .operational_history_store
+        .append_transcript(
+            &peer_tool_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(peer_worker.id().to_string()),
+                provider: Some(peer_worker_run.provider().to_string()),
+                model: Some(peer_worker_run.model().to_string()),
+                provider_run_id: Some(peer_worker_run.id().to_string()),
+                turn_id: Some("peer-trace-turn".to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("peer provider tool output should append to operational history");
 
     let overview = router
         .dispatch_authenticated_runtime_tool_call(
@@ -1362,6 +1426,63 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
             .is_some_and(|message| message.contains("not an owned regular agent")),
         "{:?}",
         denied.payload
+    );
+
+    let peer_overview_denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL,
+            serde_json::json!({ "agent_ref": "peer-worker" }),
+        )
+        .await
+        .expect("peer turn overview denial should dispatch");
+    assert!(!peer_overview_denied.ok);
+    assert!(
+        peer_overview_denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        peer_overview_denied.payload
+    );
+
+    let peer_history = crate::runtime::history_requests::execute_session_history_outline_request(
+        router.operational_history_store.clone(),
+        crate::local::GetSessionHistoryOutlineRequest {
+            session_id: session.id().to_string(),
+            agent_ids: Some(vec![peer_worker.id().to_string()]),
+            latest_prompt_count: Some(1),
+        },
+    )
+    .await
+    .expect("peer history outline should load");
+    let crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } = peer_history else {
+        panic!("unexpected peer history response");
+    };
+    let peer_blob_id = agents
+        .first()
+        .and_then(|agent| agent.turns.first())
+        .and_then(|turn| turn.blobs.first())
+        .map(|blob| blob.blob_id.clone())
+        .expect("peer history should include a blob");
+    let peer_blob_denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_TURN_BLOB_TOOL,
+            serde_json::json!({ "blob_id": peer_blob_id }),
+        )
+        .await
+        .expect("peer blob denial should dispatch");
+    assert!(!peer_blob_denied.ok);
+    assert!(
+        peer_blob_denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("owned regular agent")),
+        "{:?}",
+        peer_blob_denied.payload
     );
 }
 
