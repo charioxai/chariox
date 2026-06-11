@@ -16,6 +16,7 @@ mod home_extension_authorizer;
 mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
 mod home_script_executor;
+mod meta;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
@@ -55,6 +56,9 @@ impl KernelRuntimeState {
             specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
+            if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
+                specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
+            }
             if self.slice_kernel_id().is_some() {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
@@ -84,6 +88,9 @@ impl KernelRuntimeState {
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_slice_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name)
@@ -206,6 +213,31 @@ impl KernelRuntimeState {
                 .await?
             {
                 return Ok(result);
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+                    | crate::transport::runtime_tools::META_SEARCH_COMMANDS_TOOL
+                    | crate::transport::runtime_tools::META_LIST_COMMANDS_TOOL
+                    | crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL
+                    | crate::transport::runtime_tools::META_RUN_COMMAND_TOOL
+                    | crate::transport::runtime_tools::META_LIST_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_READ_EVENT_TOOL
+                    | crate::transport::runtime_tools::META_ACK_EVENT_TOOL
+                    | crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL
+                    | crate::transport::runtime_tools::META_TURN_BLOB_TOOL
+                    | crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_UNSUBSCRIBE_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_LIST_SUBSCRIPTIONS_TOOL
+                    | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
+            ) {
+                return self
+                    .dispatch_meta_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
             }
             if matches!(
                 canonical_tool_name,

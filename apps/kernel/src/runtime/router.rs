@@ -169,6 +169,7 @@ mod tests {
 
     mod interactive_command_admission;
     mod m16_runtime_extension_registration;
+    mod m23_metaagent_runtime_tools;
     mod provider_projection;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;

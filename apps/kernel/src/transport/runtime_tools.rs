@@ -79,6 +79,20 @@ pub const SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL: &str = "arroba.slice_browser_wai
 pub const SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS: &str = "slice_browser_wait_for_selector";
 pub const SLICE_BROWSER_WAIT_FOR_IDLE_TOOL: &str = "arroba.slice_browser_wait_for_idle";
 pub const SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS: &str = "slice_browser_wait_for_idle";
+pub const META_SESSION_OVERVIEW_TOOL: &str = "arroba.meta.session_overview";
+pub const META_SEARCH_COMMANDS_TOOL: &str = "arroba.meta.search_commands";
+pub const META_LIST_COMMANDS_TOOL: &str = "arroba.meta.list_commands";
+pub const META_COMMAND_DOCS_TOOL: &str = "arroba.meta.command_docs";
+pub const META_RUN_COMMAND_TOOL: &str = "arroba.meta.run_command";
+pub const META_LIST_EVENTS_TOOL: &str = "arroba.meta.list_events";
+pub const META_READ_EVENT_TOOL: &str = "arroba.meta.read_event";
+pub const META_ACK_EVENT_TOOL: &str = "arroba.meta.ack_event";
+pub const META_TURN_OVERVIEW_TOOL: &str = "arroba.meta.turn_overview";
+pub const META_TURN_BLOB_TOOL: &str = "arroba.meta.turn_blob";
+pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.subscribe_events";
+pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.unsubscribe_events";
+pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "arroba.meta.list_subscriptions";
+pub const META_RESOLVE_RUNTIME_INTERACTION_TOOL: &str = "arroba.meta.resolve_runtime_interaction";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -248,6 +262,35 @@ pub struct QueryRecallArgs {
     pub before_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaSessionOverviewArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_workflows: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_events: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaCommandSearchArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutates: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaCommandDocsArgs {
+    pub command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -697,6 +740,184 @@ pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ]
 }
 
+pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    vec![
+        RuntimeToolSpec {
+            name: META_SESSION_OVERVIEW_TOOL.to_string(),
+            description: "Return a compact overview of the current session for the metaagent: owned agents, agent status, workflow state, pending interactions, and event counts.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "include_workflows": {"type": "boolean"},
+                    "include_events": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_SEARCH_COMMANDS_TOOL.to_string(),
+            description: "Search Arroba commands available to this metaagent by name, usage, tag, scope, mutation behavior, or metaagent policy.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "tag": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["session", "global", "external"]},
+                    "mutates": {"type": "boolean"},
+                    "policy": {"type": "string", "enum": ["allow", "approval", "deny"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_LIST_COMMANDS_TOOL.to_string(),
+            description: "List Arroba commands available to this metaagent, with optional filtering by tag, scope, mutation behavior, or policy.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tag": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["session", "global", "external"]},
+                    "mutates": {"type": "boolean"},
+                    "policy": {"type": "string", "enum": ["allow", "approval", "deny"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_COMMAND_DOCS_TOOL.to_string(),
+            description: "Return exact usage, examples, tags, scope, mutation behavior, and policy for one Arroba command.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_RUN_COMMAND_TOOL.to_string(),
+            description: "Run one allowed Arroba command inside this session as the metaagent. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_LIST_EVENTS_TOOL.to_string(),
+            description: "List metaagent event inbox records. Event prompts are delivered through prompt injection; this tool is for replay and detail lookup.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "status": {"type": "string"},
+                    "kind": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_READ_EVENT_TOOL.to_string(),
+            description: "Read full detail for one metaagent event by event id.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["event_id"],
+                "properties": {"event_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_ACK_EVENT_TOOL.to_string(),
+            description: "Acknowledge one or more metaagent events for bookkeeping and replay control.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string"},
+                    "event_ids": {"type": "array", "items": {"type": "string"}},
+                    "up_to_sequence": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_TURN_OVERVIEW_TOOL.to_string(),
+            description: "Return an ordered overview of a turn trace: assistant messages, reasoning entries, tool calls, tool results, status, and errors.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent_ref": {"type": "string"},
+                    "turn_ref": {"type": "string"},
+                    "turns_back": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_TURN_BLOB_TOOL.to_string(),
+            description: "Return exact content for a selected turn blob when policy allows it.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["blob_id"],
+                "properties": {"blob_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_SUBSCRIBE_EVENTS_TOOL.to_string(),
+            description: "Subscribe the metaagent to optional session events such as workflow outputs or runtime tool activity.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "filter": {"type": "object"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_UNSUBSCRIBE_EVENTS_TOOL.to_string(),
+            description: "Remove an optional metaagent event subscription. Required agent turn and interaction subscriptions cannot be removed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["subscription_id"],
+                "properties": {"subscription_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_LIST_SUBSCRIPTIONS_TOOL.to_string(),
+            description: "List required and optional event subscriptions for this metaagent.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
+            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["interaction_id"],
+                "properties": {
+                    "interaction_id": {"type": "string"},
+                    "choice_id": {"type": "string"},
+                    "input": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+    ]
+}
+
 pub fn canonical_recall_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         SEARCH_RECALL_TOOL
@@ -707,6 +928,70 @@ pub fn canonical_recall_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_query_recall"
         | "mcp__arroba__query_recall"
         | "mcp__arroba__arroba_query_recall" => Some(QUERY_RECALL_TOOL),
+        _ => None,
+    }
+}
+
+pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        META_SESSION_OVERVIEW_TOOL
+        | "arroba_meta_session_overview"
+        | "mcp__arroba__meta_session_overview"
+        | "mcp__arroba__arroba_meta_session_overview" => Some(META_SESSION_OVERVIEW_TOOL),
+        META_SEARCH_COMMANDS_TOOL
+        | "arroba_meta_search_commands"
+        | "mcp__arroba__meta_search_commands"
+        | "mcp__arroba__arroba_meta_search_commands" => Some(META_SEARCH_COMMANDS_TOOL),
+        META_LIST_COMMANDS_TOOL
+        | "arroba_meta_list_commands"
+        | "mcp__arroba__meta_list_commands"
+        | "mcp__arroba__arroba_meta_list_commands" => Some(META_LIST_COMMANDS_TOOL),
+        META_COMMAND_DOCS_TOOL
+        | "arroba_meta_command_docs"
+        | "mcp__arroba__meta_command_docs"
+        | "mcp__arroba__arroba_meta_command_docs" => Some(META_COMMAND_DOCS_TOOL),
+        META_RUN_COMMAND_TOOL
+        | "arroba_meta_run_command"
+        | "mcp__arroba__meta_run_command"
+        | "mcp__arroba__arroba_meta_run_command" => Some(META_RUN_COMMAND_TOOL),
+        META_LIST_EVENTS_TOOL
+        | "arroba_meta_list_events"
+        | "mcp__arroba__meta_list_events"
+        | "mcp__arroba__arroba_meta_list_events" => Some(META_LIST_EVENTS_TOOL),
+        META_READ_EVENT_TOOL
+        | "arroba_meta_read_event"
+        | "mcp__arroba__meta_read_event"
+        | "mcp__arroba__arroba_meta_read_event" => Some(META_READ_EVENT_TOOL),
+        META_ACK_EVENT_TOOL
+        | "arroba_meta_ack_event"
+        | "mcp__arroba__meta_ack_event"
+        | "mcp__arroba__arroba_meta_ack_event" => Some(META_ACK_EVENT_TOOL),
+        META_TURN_OVERVIEW_TOOL
+        | "arroba_meta_turn_overview"
+        | "mcp__arroba__meta_turn_overview"
+        | "mcp__arroba__arroba_meta_turn_overview" => Some(META_TURN_OVERVIEW_TOOL),
+        META_TURN_BLOB_TOOL
+        | "arroba_meta_turn_blob"
+        | "mcp__arroba__meta_turn_blob"
+        | "mcp__arroba__arroba_meta_turn_blob" => Some(META_TURN_BLOB_TOOL),
+        META_SUBSCRIBE_EVENTS_TOOL
+        | "arroba_meta_subscribe_events"
+        | "mcp__arroba__meta_subscribe_events"
+        | "mcp__arroba__arroba_meta_subscribe_events" => Some(META_SUBSCRIBE_EVENTS_TOOL),
+        META_UNSUBSCRIBE_EVENTS_TOOL
+        | "arroba_meta_unsubscribe_events"
+        | "mcp__arroba__meta_unsubscribe_events"
+        | "mcp__arroba__arroba_meta_unsubscribe_events" => Some(META_UNSUBSCRIBE_EVENTS_TOOL),
+        META_LIST_SUBSCRIPTIONS_TOOL
+        | "arroba_meta_list_subscriptions"
+        | "mcp__arroba__meta_list_subscriptions"
+        | "mcp__arroba__arroba_meta_list_subscriptions" => Some(META_LIST_SUBSCRIPTIONS_TOOL),
+        META_RESOLVE_RUNTIME_INTERACTION_TOOL
+        | "arroba_meta_resolve_runtime_interaction"
+        | "mcp__arroba__meta_resolve_runtime_interaction"
+        | "mcp__arroba__arroba_meta_resolve_runtime_interaction" => {
+            Some(META_RESOLVE_RUNTIME_INTERACTION_TOOL)
+        }
         _ => None,
     }
 }
