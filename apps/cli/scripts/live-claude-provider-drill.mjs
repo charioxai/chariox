@@ -11,15 +11,18 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 
 const DEFAULT_MODEL = 'sonnet'
 const DEFAULT_EFFORT = 'low'
+const DEFAULT_PROVIDER = 'claude-p'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
 const SCENARIOS = new Set(['echo', 'attachment', 'resume', 'selection', 'abort'])
+const PROVIDERS = new Set(['claude', 'claude-p', 'claude-headless'])
 
 function parseArgs(argv) {
   const options = {
     kernel: null,
     workspace: null,
     worktree: null,
+    provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,
     scenario: 'echo',
@@ -33,6 +36,10 @@ function parseArgs(argv) {
     if (arg === '--kernel') options.kernel = argv[++index]
     else if (arg === '--workspace') options.workspace = argv[++index]
     else if (arg === '--worktree') options.worktree = argv[++index]
+    else if (arg === '--provider') {
+      options.provider = argv[++index]
+      if (!PROVIDERS.has(options.provider)) throw new Error(`unknown provider: ${options.provider}`)
+    }
     else if (arg === '--model') options.model = argv[++index]
     else if (arg === '--effort') options.effort = argv[++index]
     else if (arg === '--scenario') {
@@ -57,6 +64,7 @@ function printHelp() {
     'and verifies streamed output plus assistant completion through session history.',
     '',
     'Options:',
+    `  --provider ${DEFAULT_PROVIDER}`,
     `  --model ${DEFAULT_MODEL}`,
     `  --effort ${DEFAULT_EFFORT}`,
     '  --scenario echo|attachment|resume|selection|abort',
@@ -301,6 +309,9 @@ async function main() {
     printHelp()
     return
   }
+  if (options.provider === 'claude-headless' && options.scenario === 'resume') {
+    throw new Error('claude-headless resume is not supported by this drill yet; use --scenario echo or --provider claude-p')
+  }
 
   const runtimeDir = path.join(cliRoot, '.tmp-live-claude-provider-drill')
   const rootDir = path.join(os.tmpdir(), `arroba-claude-provider-${process.pid}-${Date.now()}`)
@@ -341,7 +352,7 @@ async function main() {
     await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     const session = unwrap(
-      await client.send(requests.createSessionRequest(workspace, worktree)),
+      await client.send(requests.createSessionRequest(workspace, worktree, undefined, undefined, null, 'off')),
       'SessionCreated',
     ).session
     const attachment = unwrap(
@@ -350,7 +361,7 @@ async function main() {
     ).attachment
     const launchResponse = await client.send(requests.launchProviderRunRequest(
         session.id,
-        'claude',
+        options.provider,
         'default',
         options.model,
         options.effort,
@@ -394,7 +405,7 @@ async function main() {
       )
       const resumeResponse = await client.send(requests.launchProviderRunRequest(
         session.id,
-        'claude',
+        options.provider,
         'default',
         options.model,
         options.effort,
