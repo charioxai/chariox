@@ -247,11 +247,21 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
       fieldPart("duration", typeof payload.duration_ms === "number" ? `${payload.duration_ms}ms` : payload.duration_ms),
     ].filter(Boolean)
     if (result.length > 0) rows.push(`  result: ${result.join(" ")}`)
+    const redacted = homeExtensionAuditRedactedFields(payload)
+    if (redacted) rows.push(`  redacted: ${redacted}`)
     if (typeof payload.error === "string" && payload.error) rows.push(`  error: ${payload.error}`)
     const next = homeExtensionAuditRecoveryAction(String(event.kind ?? ""), payload)
     if (next) rows.push(`  next: ${next}`)
     return rows.join("\n")
   }).join("\n")
+}
+
+function homeExtensionAuditRedactedFields(payload: Record<string, unknown>): string {
+  const fields = [
+    Object.hasOwn(payload, "args") || Object.hasOwn(payload, "arguments") ? "args" : null,
+    Object.hasOwn(payload, "result") || Object.hasOwn(payload, "results") ? "result" : null,
+  ].filter(Boolean)
+  return fields.join(" ")
 }
 
 function formatHomeExtensionAuditInvocation(value: unknown): string {
