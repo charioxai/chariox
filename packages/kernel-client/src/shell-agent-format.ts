@@ -76,6 +76,7 @@ function formatAgentListEntry(
     formatAgentListPlacement(agent, slice),
     formatAgentListSliceAuth(slice),
     formatAgentListProviderRun(agent, providerRunContext),
+    formatAgentListProviderRunHealth(agent),
     agent.execution_mode_override ? `mode ${agent.execution_mode_override}` : null,
     agent.permission_level_override ? `permissions ${agent.permission_level_override}` : null,
     formatAgentListGrantCount(agent),
@@ -97,6 +98,18 @@ function formatAgentListProviderRun(
 ): string | null {
   const runId = agentProviderRunId(agent, context)
   return runId ? `session run ${runId}` : null
+}
+
+function formatAgentListProviderRunHealth(agent: AgentInstance): string | null {
+  const remote = agent.remote_execution
+  if (!remote || remote.active_worker_provider_run_id) {
+    return null
+  }
+  if (agent.state !== "Working" && !agent.is_processing) {
+    return null
+  }
+  const worker = remote.worker_machine_id ? ` on ${remote.worker_machine_id}` : ""
+  return `provider blocked (missing worker run${worker}; inspect ${agent.agent_ref})`
 }
 
 function formatAgentProvider(agent: AgentInstance): string {

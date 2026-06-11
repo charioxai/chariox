@@ -131,6 +131,38 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   ])
 })
 
+test("executeShellCommand lists blocked remote worker provider runs inline", async () => {
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "worker",
+    state: "Working",
+    is_processing: true,
+    worktree_id: "/repo/feature",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "hetzner",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: null,
+    },
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return { SessionState: { session: makeSession({ agents: [agent], focused_agent_id: agent.id }) } }
+    }
+    if ("ListSlices" in request) {
+      return { SlicesListed: { slices: [] } }
+    }
+    throw new Error("unexpected request")
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-remote \(worker\) \[Working; opencode gpt-5\.2; worktree \/repo\/feature; remote worker-kernel@hetzner \(lease=lease-1, leased_agent=leased-agent-1\); provider blocked \(missing worker run on hetzner; inspect agent-remote\); 0 grants\]/)
+})
+
 test("executeShellCommand lists remote skill-only agents without manifest pending", async () => {
   const agent = makeAgent({
     id: "agent-remote",
