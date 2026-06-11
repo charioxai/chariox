@@ -117,6 +117,9 @@ pub(crate) fn cloud_kernel_presence_body(
             "provider_accounts": registration
                 .map(|registration| registration.provider_accounts.clone())
                 .unwrap_or_default(),
+            "accepting_remote_leases": registration
+                .map(|registration| registration.accepting_remote_leases)
+                .unwrap_or(config.accept_remote_leases),
         }),
     );
     Some(serde_json::Value::Object(body))
@@ -240,6 +243,7 @@ mod tests {
         assert_eq!(body["kernelAlias"], "dev kernel");
         assert_eq!(body["metadata"]["host"], "127.0.0.1");
         assert_eq!(body["metadata"]["port"], 43118);
+        assert_eq!(body["metadata"]["accepting_remote_leases"], true);
 
         let mut session_profile = profile();
         session_profile.machine_credential = None;
@@ -308,5 +312,6 @@ mod tests {
             body["metadata"]["provider_accounts"][0]["account_id"],
             "acct-1"
         );
+        assert_eq!(body["metadata"]["accepting_remote_leases"], true);
     }
 }
