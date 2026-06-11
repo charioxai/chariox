@@ -5,7 +5,7 @@ fn execution_leases_require_opt_in_and_can_be_destroyed() {
     let mut disabled =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let error = RemoteLeaseRuntime::new(&mut disabled)
-        .create_execution_lease("home-kernel", "session-1", "agent-1", "user-home")
+        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
         .expect_err("remote leases should require opt-in");
     match error {
         DaemonError::RemoteLeasesDisabled { .. } => {}
@@ -16,7 +16,7 @@ fn execution_leases_require_opt_in_and_can_be_destroyed() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-1", "user-home")
+        .create_execution_lease("home-kernel", "session-1", "agent-1", false, "user-home")
         .expect("execution lease should be created");
     assert_eq!(lease.worker_kernel_id, config.daemon_id);
     assert_eq!(lease.machine_id, config.host_machine_id);
@@ -35,7 +35,13 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
         "arroba-leased-agent-worktree-{}",
@@ -81,7 +87,13 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
         "arroba-leased-agent-wls-mode-{}",
@@ -143,7 +155,13 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
         "arroba-shared-leased-agent-worktree-{}",
@@ -197,7 +215,13 @@ fn leased_agents_reject_missing_working_directory() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let missing = std::env::temp_dir().join(format!(
         "arroba-missing-leased-agent-worktree-{}",
@@ -246,7 +270,13 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -285,7 +315,13 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         );
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -351,7 +387,13 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -405,7 +447,13 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -466,7 +514,13 @@ fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -518,7 +572,13 @@ fn leased_projection_pump_settles_quiet_non_workflow_prompt() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -571,7 +631,13 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -646,7 +712,13 @@ fn leased_projection_recovers_output_from_history_when_terminal_records_are_miss
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -712,7 +784,13 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -807,7 +885,13 @@ fn leased_projection_recovers_history_output_when_tool_chunks_are_drained() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(
@@ -871,7 +955,13 @@ fn leased_projection_history_dedupe_is_scoped_to_backing_session() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-1", "agent-home-1", "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let first_worktree = std::env::temp_dir().join(format!(
         "arroba-leased-history-dedupe-a-{}",

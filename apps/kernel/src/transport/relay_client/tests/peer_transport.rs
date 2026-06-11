@@ -373,6 +373,7 @@ async fn execution_leases_are_managed_through_peer_transport() {
             home_kernel_id: config_a.daemon_id.clone(),
             home_session_id: "session-remote-1".to_string(),
             home_agent_id: "agent-remote-1".to_string(),
+            home_agent_metaagent: false,
             owner_user_id: "user-home".to_string(),
         },
     )
@@ -511,6 +512,7 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
             home_kernel_id: config_a.daemon_id.clone(),
             home_session_id: home_session_id.clone(),
             home_agent_id: home_agent_id.clone(),
+            home_agent_metaagent: false,
             owner_user_id: "user-home".to_string(),
         },
     )

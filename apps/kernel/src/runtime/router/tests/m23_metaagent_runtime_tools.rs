@@ -106,6 +106,84 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
 }
 
 #[tokio::test]
+async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
+    let env = TestMetaRuntimeEnv::new("forwarded-remote");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("remote-meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let metaagent = app
+        .agents()
+        .bind_remote_execution(
+            metaagent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("worker-run-1".to_string()),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("metaagent should be remote-backed");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: "home-kernel".to_string(),
+        home_session_id: session.id().to_string(),
+        home_agent_id: metaagent.id().to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        worker_provider_run_id: "worker-run-1".to_string(),
+        worker_worktree_path: workspace.to_string_lossy().to_string(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local(
+            workspace.to_string_lossy().to_string(),
+        ),
+    };
+
+    let overview = router
+        .dispatch_forwarded_meta_runtime_tool_call(
+            context.clone(),
+            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL.to_string(),
+            serde_json::json!({}),
+        )
+        .await
+        .expect("forwarded overview should dispatch home-side");
+    assert!(overview.ok, "{overview:?}");
+    assert_eq!(
+        overview
+            .payload
+            .pointer("/metaagent/id")
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+
+    let command = router
+        .dispatch_forwarded_meta_runtime_tool_call(
+            context,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL.to_string(),
+            serde_json::json!({ "command": "agent list" }),
+        )
+        .await
+        .expect("forwarded run_command should dispatch through the router");
+    assert!(command.ok, "{command:?}");
+}
+
+#[tokio::test]
 async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     let env = TestMetaRuntimeEnv::new("overview");
     let workspace = env.root.join("workspace");
@@ -601,6 +679,150 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .agents()
         .iter()
         .all(|agent| agent.id() != worker.id()));
+}
+
+#[tokio::test]
+async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not() {
+    let env = TestMetaRuntimeEnv::new("agent-lifecycle-events");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let human_spawn = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id: session.id().to_string(),
+        alias: Some("human-worker".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some(workspace.to_string_lossy().to_string()),
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: false,
+    });
+    let spawned = router
+        .dispatch(
+            KernelCommand::from_local_request("human-spawn-worker", None, None, &human_spawn),
+            human_spawn,
+        )
+        .await
+        .expect("human spawn should dispatch");
+    let LocalDaemonResponse::AgentSpawned {
+        agent: human_worker,
+    } = spawned
+    else {
+        panic!("unexpected human spawn response");
+    };
+
+    let events = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "agent.spawned" }),
+        )
+        .await
+        .expect("metaagent should list lifecycle events");
+    assert!(events.ok, "{events:?}");
+    assert_eq!(
+        events
+            .payload
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{:?}",
+        events.payload
+    );
+
+    let meta_spawn = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn quiet-worker" }),
+        )
+        .await
+        .expect("metaagent spawn command should dispatch");
+    assert!(meta_spawn.ok, "{meta_spawn:?}");
+    let events_after_meta_spawn = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "agent.spawned" }),
+        )
+        .await
+        .expect("metaagent should list lifecycle events");
+    assert_eq!(
+        events_after_meta_spawn
+            .payload
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{:?}",
+        events_after_meta_spawn.payload
+    );
+
+    let human_delete = LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+        session_id: session.id().to_string(),
+        agent_id: human_worker.id().to_string(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("human-delete-worker", None, None, &human_delete),
+            human_delete,
+        )
+        .await
+        .expect("human delete should dispatch");
+    let deleted_events = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "agent.deleted" }),
+        )
+        .await
+        .expect("metaagent should list delete lifecycle events");
+    assert_eq!(
+        deleted_events
+            .payload
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{:?}",
+        deleted_events.payload
+    );
 }
 
 #[tokio::test]

@@ -211,7 +211,13 @@ mod tests {
         let mut app =
             crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
         let lease = RemoteLeaseRuntime::new(&mut app)
-            .create_execution_lease("home-kernel", "home-session", "home-agent", "home-user")
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "home-user",
+            )
             .expect("execution lease should be created");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
             .create_leased_agent(

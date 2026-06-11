@@ -1,6 +1,52 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn inject_metaagent_agent_lifecycle_event_for_agent(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+        kind: &str,
+    ) -> Result<(), DaemonError> {
+        let title = match kind {
+            "agent.spawned" => format!("Agent `{}` was spawned", agent.agent_ref()),
+            "agent.deleted" => format!("Agent `{}` was deleted", agent.agent_ref()),
+            _ => format!("Agent `{}` changed", agent.agent_ref()),
+        };
+        let summary = match kind {
+            "agent.spawned" => format!(
+                "A regular agent `{}` was spawned by the user in this session.",
+                agent.agent_ref()
+            ),
+            "agent.deleted" => format!(
+                "A regular agent `{}` was deleted by the user in this session.",
+                agent.agent_ref()
+            ),
+            _ => format!(
+                "A regular agent `{}` had lifecycle event `{kind}` in this session.",
+                agent.agent_ref()
+            ),
+        };
+        let source_attachment_id = crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+            &format!("metaagent-{kind}-{}", agent.id()),
+        );
+        let dispatches = self
+            .owned
+            .metaagent_owned_agent_event_prompt_dispatches_for_agent(
+                session_id,
+                kind,
+                agent,
+                &source_attachment_id,
+                title,
+                summary,
+                serde_json::json!({
+                    "agent": agent,
+                    "kind": kind,
+                }),
+            );
+        self.spawn_workflow_prompt_dispatches(dispatches);
+        Ok(())
+    }
+
     pub(crate) fn inject_metaagent_turn_completion_event(
         &self,
         session_id: &str,
@@ -186,6 +232,27 @@ impl KernelRuntimeOwnedState {
         let Ok(source_agent) = self.agent_store.get_agent(source_agent_id) else {
             return WorkflowPromptDispatches::default();
         };
+        self.metaagent_owned_agent_event_prompt_dispatches_for_agent(
+            session_id,
+            kind,
+            &source_agent,
+            source_attachment_id,
+            title,
+            summary,
+            detail,
+        )
+    }
+
+    pub(super) fn metaagent_owned_agent_event_prompt_dispatches_for_agent(
+        &self,
+        session_id: &str,
+        kind: &str,
+        source_agent: &crate::agent::AgentInstance,
+        source_attachment_id: &str,
+        title: impl Into<String>,
+        summary: impl Into<String>,
+        detail: serde_json::Value,
+    ) -> WorkflowPromptDispatches {
         if source_agent.is_metaagent() {
             return WorkflowPromptDispatches::default();
         }
@@ -203,7 +270,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             &metaagent,
             kind,
-            Some(source_agent_id),
+            Some(source_agent.id()),
             source_attachment_id,
             title,
             summary,

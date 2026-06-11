@@ -28,6 +28,7 @@ struct SessionCommandEnvelope {
     command_type: String,
     telemetry: LaneCommandTrace,
     caller_user_id: String,
+    caller_is_metaagent: bool,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -97,11 +98,13 @@ impl SessionRuntime {
         let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
         let command_id = command.command_id;
         let command_type = command.command_type;
+        let caller_is_metaagent = command.caller.caller_id.starts_with("metaagent:");
         match lane.try_send(SessionCommandEnvelope {
             telemetry: telemetry.clone(),
             command_id,
             command_type,
             caller_user_id,
+            caller_is_metaagent,
             request,
             result_tx,
         }) {
@@ -231,6 +234,7 @@ impl SessionRuntime {
                 crate::runtime::command_latency::now_ms(),
             ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
+            caller_is_metaagent: false,
             request,
             result_tx,
         })
@@ -277,7 +281,11 @@ async fn run_session_command_lane(
             }),
         );
         let result = executor
-            .execute(envelope.request, envelope.caller_user_id)
+            .execute(
+                envelope.request,
+                envelope.caller_user_id,
+                envelope.caller_is_metaagent,
+            )
             .await;
         log_lane_completed(
             &envelope.telemetry,

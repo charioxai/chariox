@@ -61,7 +61,88 @@ impl CommandRouter {
             Ok(request) => request,
             Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
         };
-        let command = meta_kernel_command(&provider_run, &metaagent, &request);
+        let command = meta_kernel_command(Some(&provider_run), &metaagent, &request);
+        let response = match self.dispatch(command, request).await {
+            Ok(response) => response,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "command": args.command,
+                "response": response,
+            }),
+        })
+    }
+
+    pub(super) async fn dispatch_forwarded_meta_run_command(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let (session, metaagent) = {
+            let app = self.app.lock().await;
+            let session = app.sessions().get_session(&context.home_session_id)?;
+            let agent = app.agents().get_agent(&context.home_agent_id)?;
+            (session, agent)
+        };
+        let Some(remote) = metaagent.remote_execution() else {
+            return Err(meta_command_error(format!(
+                "home agent `{}` is not remote-backed",
+                context.home_agent_id
+            )));
+        };
+        if !metaagent.is_metaagent()
+            || metaagent.session_id() != context.home_session_id
+            || remote.leased_agent_id != context.leased_agent_id
+            || remote.worker_kernel_id != context.worker_kernel_id
+        {
+            return Err(meta_command_error(
+                "forwarded metaagent context does not match a home remote metaagent",
+            ));
+        }
+        let args = serde_json::from_value::<MetaRunCommandArgs>(arguments).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_meta.run_command",
+                message: format!("invalid tool arguments: {error}"),
+            }
+        })?;
+        let tokens = match tokenize_meta_command(&args.command) {
+            Ok(tokens) => tokens,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
+                message,
+            } => {
+                return Ok(meta_command_failure_result(
+                    &args.command,
+                    meta_command_error(message),
+                ))
+            }
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::NotRouted {
+                message,
+            } => {
+                return Ok(meta_command_failure_result(
+                    &args.command,
+                    meta_command_error(message),
+                ))
+            }
+        }
+        if tokens.first().map(String::as_str) == Some("prompt") {
+            return self
+                .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
+                .await;
+        }
+        let request = match self
+            .meta_command_request(&session, &metaagent, &tokens)
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        let command = meta_kernel_command(None, &metaagent, &request);
         let response = match self.dispatch(command, request).await {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
@@ -448,12 +529,12 @@ fn tokenize_meta_command(input: &str) -> Result<Vec<String>, DaemonError> {
 }
 
 fn meta_kernel_command(
-    provider_run: &crate::provider::RuntimeProviderRun,
+    provider_run: Option<&crate::provider::RuntimeProviderRun>,
     metaagent: &crate::agent::AgentInstance,
     request: &LocalDaemonRequest,
 ) -> KernelCommand {
     let mut command = meta_kernel_command_without_request(metaagent, request);
-    command.provider_run_id = Some(provider_run.id().to_string());
+    command.provider_run_id = provider_run.map(|run| run.id().to_string());
     command
 }
 

@@ -60,6 +60,7 @@ pub(crate) async fn create_relay_execution_lease(
     home_kernel_id: &str,
     home_session_id: &str,
     home_agent_id: &str,
+    home_agent_metaagent: bool,
     owner_user_id: &str,
 ) -> Result<ExecutionLease, DaemonError> {
     runtime_state
@@ -67,6 +68,7 @@ pub(crate) async fn create_relay_execution_lease(
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            home_agent_metaagent,
             owner_user_id,
         )
         .await

@@ -240,6 +240,16 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_LIST_SUBSCRIPTIONS_TOOL
                     | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return self
                     .dispatch_meta_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),

@@ -132,6 +132,24 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn dispatch_forwarded_meta_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name)
+            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
+        {
+            return self
+                .dispatch_forwarded_meta_run_command(context, arguments)
+                .await;
+        }
+        self.runtime_state
+            .dispatch_forwarded_meta_runtime_tool_call(context, tool_name, arguments)
+            .await
+    }
+
     pub(crate) async fn dispatch_forwarded_home_extension_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteExtensionInvocationContext,

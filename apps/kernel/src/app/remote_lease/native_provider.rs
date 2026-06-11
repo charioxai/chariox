@@ -188,7 +188,13 @@ mod tests {
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
-            .create_execution_lease("home-kernel", "home-session", "home-agent", "local-user")
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "local-user",
+            )
             .expect("lease should create");
         let leased_agent = runtime
             .create_leased_agent(
@@ -256,7 +262,13 @@ mod tests {
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
-            .create_execution_lease("home-kernel", "home-session", "home-agent", "local-user")
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "local-user",
+            )
             .expect("lease should create");
         let leased_agent = runtime
             .create_leased_agent(

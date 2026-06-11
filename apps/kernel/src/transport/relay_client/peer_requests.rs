@@ -64,6 +64,7 @@ pub(super) async fn handle_daemon_peer_request(
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            home_agent_metaagent,
             owner_user_id,
         } => {
             let lease = router
@@ -71,6 +72,7 @@ pub(super) async fn handle_daemon_peer_request(
                     &home_kernel_id,
                     &home_session_id,
                     &home_agent_id,
+                    home_agent_metaagent,
                     &owner_user_id,
                 )
                 .await;
@@ -506,6 +508,24 @@ pub(super) async fn handle_daemon_peer_request(
                         remote_extension_manifest,
                     }
                 }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardMetaRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = router
+                .dispatch_forwarded_meta_runtime_tool_call(context, tool_name, arguments)
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::MetaRuntimeToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

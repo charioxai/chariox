@@ -168,6 +168,7 @@ impl SessionRuntimeStore {
         &self,
         request: SpawnAgentRequest,
         caller_user_id: String,
+        caller_is_metaagent: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -297,6 +298,16 @@ impl SessionRuntimeStore {
                         return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
+                if !caller_is_metaagent && !agent.is_metaagent() {
+                    let _ = self
+                        .state
+                        .inject_metaagent_agent_lifecycle_event_for_agent(
+                            &session_id,
+                            &agent,
+                            "agent.spawned",
+                        )
+                        .await;
+                }
                 self.state
                     .session_snapshot(&session_id)
                     .await
@@ -311,6 +322,7 @@ impl SessionRuntimeStore {
         &self,
         request: DestroyAgentRequest,
         caller_user_id: String,
+        caller_is_metaagent: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -322,6 +334,16 @@ impl SessionRuntimeStore {
         {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
+                if !caller_is_metaagent && !agent.is_metaagent() {
+                    let _ = self
+                        .state
+                        .inject_metaagent_agent_lifecycle_event_for_agent(
+                            &session_id,
+                            &agent,
+                            "agent.deleted",
+                        )
+                        .await;
+                }
                 self.state
                     .session_snapshot(&session_id)
                     .await

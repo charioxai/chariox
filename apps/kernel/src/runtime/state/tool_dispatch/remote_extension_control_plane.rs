@@ -7,6 +7,89 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use super::*;
 
 impl KernelRuntimeState {
+    pub(super) async fn try_dispatch_remote_meta_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let workspace_context = self
+            .workspace_live_sync_workspace_for_provider_run(provider_run)
+            .await?;
+        let remote_context = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workspace_live_sync_context_for_provider_run(
+                        provider_run.id(),
+                        workspace_context.identity.clone(),
+                    )
+            })
+            .await;
+        let Some(remote_context) = remote_context else {
+            return Ok(None);
+        };
+        let response = self
+            .with_app_side_effect(|app| {
+                app.block_on_relay_future(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        app.config(),
+                        ClientTarget {
+                            daemon_id: Some(remote_context.home_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::ForwardMetaRuntimeTool {
+                            context: remote_context.clone(),
+                            tool_name: tool_name.to_string(),
+                            arguments: arguments.clone(),
+                        },
+                    ),
+                )
+            })
+            .await?;
+        match response {
+            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(Some(result)),
+            other => Err(DaemonError::LocalTransport {
+                operation: "forward leased metaagent runtime tool",
+                message: format!("unexpected forwarded metaagent response: {other:?}"),
+            }),
+        }
+    }
+
+    pub(crate) async fn dispatch_forwarded_meta_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+        let Some(remote) = agent.remote_execution() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch forwarded metaagent runtime tool",
+                message: format!(
+                    "home agent `{}` is not remote-backed",
+                    context.home_agent_id
+                ),
+            });
+        };
+        if agent.session_id() != context.home_session_id
+            || remote.leased_agent_id != context.leased_agent_id
+            || remote.worker_kernel_id != context.worker_kernel_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch forwarded metaagent runtime tool",
+                message: "forwarded metaagent context does not match the home remote binding"
+                    .to_string(),
+            });
+        }
+        self.dispatch_meta_runtime_tool_call_for_agent(
+            &context.home_session_id,
+            &context.home_agent_id,
+            &tool_name,
+            arguments,
+        )
+        .await
+    }
+
     pub(super) async fn try_dispatch_remote_capability_runtime_tool_call(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,

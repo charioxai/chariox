@@ -37,6 +37,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         home_kernel_id: &str,
         home_session_id: &str,
         home_agent_id: &str,
+        home_agent_metaagent: bool,
         owner_user_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
         if !self.app.config.accept_remote_leases {
@@ -54,6 +55,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             home_kernel_id.to_string(),
             home_session_id.to_string(),
             home_agent_id.to_string(),
+            home_agent_metaagent,
             owner_user_id.to_string(),
             self.app.config.daemon_id.clone(),
             self.app.config.host_machine_id.clone(),
@@ -197,6 +199,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .with_worktree(session.worktree_id())
                 .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
                 .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string()));
+            if lease.home_agent_metaagent {
+                request = request.with_role(crate::agent::AgentRole::Meta);
+            }
             if let Some(execution_mode) = execution_mode {
                 request = request.with_execution_mode_override(execution_mode);
             }

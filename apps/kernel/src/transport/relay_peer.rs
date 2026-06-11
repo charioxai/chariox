@@ -171,6 +171,8 @@ pub enum RelayPeerRequest {
         home_kernel_id: String,
         home_session_id: String,
         home_agent_id: String,
+        #[serde(default)]
+        home_agent_metaagent: bool,
         owner_user_id: String,
     },
     DestroyExecutionLease {
@@ -286,6 +288,11 @@ pub enum RelayPeerRequest {
         final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
     ForwardCapabilityRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ForwardMetaRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
@@ -415,6 +422,9 @@ pub enum RelayPeerResponse {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    MetaRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
     },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,

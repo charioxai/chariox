@@ -12,6 +12,8 @@ pub struct ExecutionLease {
     pub home_kernel_id: String,
     pub home_session_id: String,
     pub home_agent_id: String,
+    #[serde(default)]
+    pub home_agent_metaagent: bool,
     #[serde(default = "default_lease_owner_user_id")]
     pub owner_user_id: String,
     pub worker_kernel_id: String,
@@ -26,6 +28,7 @@ impl ExecutionLease {
         home_kernel_id: String,
         home_session_id: String,
         home_agent_id: String,
+        home_agent_metaagent: bool,
         owner_user_id: String,
         worker_kernel_id: String,
         machine_id: String,
@@ -36,6 +39,7 @@ impl ExecutionLease {
             home_kernel_id,
             home_session_id,
             home_agent_id,
+            home_agent_metaagent,
             owner_user_id,
             worker_kernel_id,
             machine_id,

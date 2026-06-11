@@ -45,6 +45,7 @@ impl SessionRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
+        caller_is_metaagent: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
@@ -83,7 +84,8 @@ impl SessionRuntimeCommandExecutor {
         {
             (result, None)
         } else {
-            self.execute_store_request(request, caller_user_id).await
+            self.execute_store_request(request, caller_user_id, caller_is_metaagent)
+                .await
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
@@ -121,6 +123,7 @@ impl SessionRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
+        caller_is_metaagent: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -181,10 +184,14 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
             LocalDaemonRequest::SpawnAgent(request) => {
-                self.store.spawn_agent(request, caller_user_id).await
+                self.store
+                    .spawn_agent(request, caller_user_id, caller_is_metaagent)
+                    .await
             }
             LocalDaemonRequest::DestroyAgent(request) => {
-                self.store.destroy_agent(request, caller_user_id).await
+                self.store
+                    .destroy_agent(request, caller_user_id, caller_is_metaagent)
+                    .await
             }
             LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,
             LocalDaemonRequest::DeleteSession(request) => self.store.delete_session(request).await,

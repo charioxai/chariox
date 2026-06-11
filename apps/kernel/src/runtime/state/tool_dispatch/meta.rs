@@ -54,11 +54,46 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let (session, agent) = self.metaagent_for_provider_run(provider_run)?;
+        self.dispatch_meta_runtime_tool_call_for_session_agent(
+            &session, &agent, tool_name, arguments,
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_meta_runtime_tool_call_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session.id() || !agent.is_metaagent() {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_meta",
+                message: "metaagent runtime tools are only available to session metaagents"
+                    .to_string(),
+            });
+        }
+        self.dispatch_meta_runtime_tool_call_for_session_agent(
+            &session, &agent, tool_name, arguments,
+        )
+        .await
+    }
+
+    async fn dispatch_meta_runtime_tool_call_for_session_agent(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         match tool_name {
             META_SESSION_OVERVIEW_TOOL => {
                 let args = serde_json::from_value::<MetaSessionOverviewArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_session_overview(&session, &agent, args)
+                self.meta_session_overview(session, agent, args)
             }
             META_SEARCH_COMMANDS_TOOL | META_LIST_COMMANDS_TOOL => {
                 let args = serde_json::from_value::<
@@ -159,12 +194,12 @@ impl KernelRuntimeState {
             META_TURN_OVERVIEW_TOOL => {
                 let args = serde_json::from_value::<MetaTurnOverviewArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_turn_overview(&session, &agent, args).await
+                self.meta_turn_overview(session, agent, args).await
             }
             META_TURN_BLOB_TOOL => {
                 let args = serde_json::from_value::<MetaTurnBlobArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_turn_blob(&session, &agent, args).await
+                self.meta_turn_blob(session, agent, args).await
             }
             META_SUBSCRIBE_EVENTS_TOOL => {
                 let args = serde_json::from_value::<MetaSubscribeEventsArgs>(arguments)
@@ -223,7 +258,7 @@ impl KernelRuntimeState {
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_resolve_runtime_interaction(&session, &agent, args)
+                self.meta_resolve_runtime_interaction(session, agent, args)
                     .await
             }
             _ => Err(DaemonError::LocalTransport {

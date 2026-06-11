@@ -193,6 +193,7 @@ impl DaemonApp {
                 home_kernel_id: self.config.daemon_id.clone(),
                 home_session_id: agent.session_id().to_string(),
                 home_agent_id: agent.id().to_string(),
+                home_agent_metaagent: agent.is_metaagent(),
                 owner_user_id: agent.owner_user_id().to_string(),
             },
         ))? {
