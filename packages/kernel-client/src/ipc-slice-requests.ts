@@ -14,6 +14,7 @@ export function createSliceRequest(options: {
   displayUrl?: string | null
   providerAuth?: unknown[]
   fromSavedState?: string | null
+  base?: "default" | "clean" | null
 }) {
   return {
     CreateSlice: {
@@ -28,6 +29,7 @@ export function createSliceRequest(options: {
       display_url: options.displayUrl ?? null,
       provider_auth: options.providerAuth ?? [],
       from_saved_state: options.fromSavedState ?? null,
+      base: options.base ?? null,
     },
   }
 }
@@ -108,9 +110,14 @@ export function listSliceAuditRequest(sliceRef: string, limit?: number | null) {
 }
 
 export type SliceStateSaveMode = "restart_agents" | "shutdown"
+export type SliceStateSaveScope = "this_slice" | "future_slices"
 
-export function saveSliceStateRequest(sliceRef: string, mode?: SliceStateSaveMode | null) {
-  return { SaveSliceState: { slice_ref: sliceRef, ...(mode == null ? {} : { mode }) } }
+export function saveSliceStateRequest(
+  sliceRef: string,
+  mode?: SliceStateSaveMode | null,
+  scope?: SliceStateSaveScope | null,
+) {
+  return { SaveSliceState: { slice_ref: sliceRef, ...(mode == null ? {} : { mode }), ...(scope == null ? {} : { scope }) } }
 }
 
 export function getSliceStateStatusRequest(sliceRef: string) {

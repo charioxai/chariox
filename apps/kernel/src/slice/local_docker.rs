@@ -13,6 +13,15 @@ use super::model::{
 };
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct LocalDockerDefaultSavedStateRef {
+    backend: SliceBackendKind,
+    os: String,
+    state_id: String,
+    manifest_path: String,
+    updated_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDockerSliceRelay {
     pub relay_url: String,
@@ -222,6 +231,76 @@ pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<
         }
     }
     Ok(())
+}
+
+pub fn set_local_docker_default_saved_state(
+    state: &SliceSavedStateRecord,
+    options: &LocalDockerSliceOptions,
+) -> Result<(), DaemonError> {
+    let default_ref = LocalDockerDefaultSavedStateRef {
+        backend: state.backend.clone(),
+        os: state.os.clone(),
+        state_id: state.id.clone(),
+        manifest_path: state.manifest_path.clone(),
+        updated_at_ms: crate::session::unix_epoch_ms(),
+    };
+    let path = default_saved_state_path(options, &state.backend, &state.os);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.state.default.set",
+            message: format!(
+                "failed to create slice default directory {}: {error}",
+                parent.display()
+            ),
+        })?;
+    }
+    write_state_manifest(&path, &default_ref)
+}
+
+pub fn default_local_docker_saved_state(
+    options: &LocalDockerSliceOptions,
+    backend: SliceBackendKind,
+    os: &str,
+) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
+    let path = default_saved_state_path(options, &backend, os);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let default_ref: LocalDockerDefaultSavedStateRef = read_state_manifest(
+        &path,
+        "slice.state.default.get",
+        "default saved state reference",
+    )?;
+    if default_ref.backend != backend || default_ref.os != os {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.default.get",
+            message: format!(
+                "default saved state {} targets {:?}/{} but requested {:?}/{}",
+                path.display(),
+                default_ref.backend,
+                default_ref.os,
+                backend,
+                os
+            ),
+        });
+    }
+    let manifest_path = PathBuf::from(&default_ref.manifest_path);
+    if !manifest_path.exists() {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.state.default.get",
+            message: format!(
+                "default saved state `{}` manifest is missing at {}; create with --clean or save another default state",
+                default_ref.state_id,
+                manifest_path.display()
+            ),
+        });
+    }
+    let state: SliceSavedStateRecord = read_state_manifest(
+        &manifest_path,
+        "slice.state.default.get",
+        "saved state manifest",
+    )?;
+    Ok(Some(state))
 }
 
 pub fn run_local_docker_slice_action(
@@ -1190,6 +1269,36 @@ fn write_state_manifest<T: serde::Serialize>(path: &Path, value: &T) -> Result<(
     })
 }
 
+fn read_state_manifest<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    operation: &'static str,
+    label: &str,
+) -> Result<T, DaemonError> {
+    let payload = std::fs::read(path).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("failed to read {label} {}: {error}", path.display()),
+    })?;
+    serde_json::from_slice(&payload).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("failed to decode {label} {}: {error}", path.display()),
+    })
+}
+
+fn default_saved_state_path(
+    options: &LocalDockerSliceOptions,
+    backend: &SliceBackendKind,
+    os: &str,
+) -> PathBuf {
+    let backend = match backend {
+        SliceBackendKind::LocalDocker => "local_docker",
+        SliceBackendKind::SshDocker => "ssh_docker",
+    };
+    options
+        .root
+        .join("defaults")
+        .join(format!("{}-{}.json", backend, sanitize_state_component(os)))
+}
+
 fn file_size(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|metadata| metadata.len())
 }
@@ -1341,7 +1450,7 @@ fn command_log_preview(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slice::{CreateSliceInput, SliceStore};
+    use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
     fn test_record() -> SliceRecord {
         let store = SliceStore::default();
@@ -1382,6 +1491,33 @@ mod tests {
         }
     }
 
+    fn test_root(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("arroba-{label}-{unique}"))
+    }
+
+    fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
+        SliceSavedStateRecord {
+            id: "gmail-ready".to_string(),
+            slice_name: "gmail-ready".to_string(),
+            source_slice_id: "slice-1".to_string(),
+            backend: SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            image_ref: "arroba-slice-state:gmail-ready".to_string(),
+            home_archive_path: "/tmp/gmail-ready-home.tar.zst".to_string(),
+            manifest_path,
+            created_at_ms: 1000,
+            updated_at_ms: 2000,
+            size_bytes: Some(4096),
+            last_operation: Some("state.save".to_string()),
+            last_operation_status: Some(SliceOperationStatus::Completed),
+            last_error: None,
+        }
+    }
+
     #[test]
     fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
         let record = test_record();
@@ -1399,6 +1535,35 @@ mod tests {
             })
             .expect("provider bind host should be configured");
         assert_eq!(provider_bind_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn local_docker_default_saved_state_round_trips_through_pointer_manifest() {
+        let root = test_root("slice-default-state");
+        let state_dir = root.join("states").join("gmail-ready");
+        std::fs::create_dir_all(&state_dir).expect("state dir should be created");
+        let manifest_path = state_dir.join("manifest.json");
+        let state = saved_state(manifest_path.display().to_string());
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&state).expect("state should encode"),
+        )
+        .expect("state manifest should write");
+        let options = LocalDockerSliceOptions {
+            root: root.clone(),
+            ..test_options()
+        };
+
+        set_local_docker_default_saved_state(&state, &options)
+            .expect("default pointer should write");
+        let resolved =
+            default_local_docker_saved_state(&options, SliceBackendKind::LocalDocker, "linux")
+                .expect("default pointer should resolve")
+                .expect("default state should exist");
+
+        assert_eq!(resolved.id, "gmail-ready");
+        assert_eq!(resolved.manifest_path, state.manifest_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

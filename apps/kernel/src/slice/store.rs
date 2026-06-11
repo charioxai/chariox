@@ -110,6 +110,7 @@ impl SliceStore {
                 "mouse".to_string(),
             ],
         });
+        let from_saved_state = input.from_saved_state.clone();
         let record = SliceRecord {
             id: id.clone(),
             name: input.name,
@@ -136,22 +137,20 @@ impl SliceStore {
             local_docker_ports,
             providers: Vec::new(),
             provider_auth: input.provider_auth,
-            saved_state_ref: input
-                .from_saved_state
-                .as_ref()
-                .map(|state| state.id.clone()),
-            saved_state_status: input
-                .from_saved_state
+            saved_state_ref: from_saved_state.as_ref().map(|state| state.id.clone()),
+            saved_state_status: from_saved_state
                 .as_ref()
                 .map(|_| SliceSavedStateStatus::Saved),
-            saved_state_updated_at_ms: input
-                .from_saved_state
-                .as_ref()
-                .map(|state| state.updated_at_ms),
+            saved_state_updated_at_ms: from_saved_state.as_ref().map(|state| state.updated_at_ms),
             display_endpoint,
             created_at_ms: input.now_ms,
             updated_at_ms: input.now_ms,
         };
+        if let Some(saved_state) = from_saved_state {
+            state
+                .saved_states
+                .insert(saved_state.id.clone(), saved_state);
+        }
         state.records.insert(id, record.clone());
         Ok(record)
     }

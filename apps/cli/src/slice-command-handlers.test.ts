@@ -117,8 +117,18 @@ test("slice command create passes display mode and current worktree mount", asyn
     workerKernelRef: null,
     displayUrl: null,
     fromSavedState: null,
+    base: null,
   }])
   assert.equal(harness.footers.at(-1)?.message, "created slice qa")
+})
+
+test("slice command create can request a clean base", async () => {
+  const harness = sliceHarness()
+
+  await handleSliceSlashCommand(harness.deps, command("create", "qa-clean", "--clean"))
+
+  assert.equal(harness.createdSlices[0]?.base, "clean")
+  assert.equal(harness.footers.at(-1)?.message, "created slice qa-clean")
 })
 
 test("slice command create can restore from saved state", async () => {
@@ -354,10 +364,14 @@ test("slice saved-state commands call kernel APIs and render metadata", async ()
   const harness = sliceHarness()
 
   await handleSliceSlashCommand(harness.deps, command("save-state", "linux-dev"))
+  await handleSliceSlashCommand(harness.deps, command("save-state", "linux-dev", "--future-slices"))
   await handleSliceSlashCommand(harness.deps, command("state", "linux-dev"))
   await handleSliceSlashCommand(harness.deps, command("reset-state", "linux-dev"))
 
-  assert.deepEqual(harness.savedStates, ["linux-dev"])
+  assert.deepEqual(harness.savedStates, [
+    { sliceRef: "linux-dev", mode: undefined, scope: undefined },
+    { sliceRef: "linux-dev", mode: undefined, scope: "future_slices" },
+  ])
   assert.deepEqual(harness.stateStatusRequests, ["linux-dev"])
   assert.deepEqual(harness.resetStates, ["linux-dev"])
   assert.match(harness.notices.join("\n"), /saved slice state linux-dev/)
@@ -562,7 +576,7 @@ function sliceHarness(options: {
   const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
   const auditRequests: Array<{ sliceRef: string; limit: number | null | undefined }> = []
-  const savedStates: string[] = []
+  const savedStates: Array<{ sliceRef: string; mode: string | null | undefined; scope: string | null | undefined }> = []
   const stateStatusRequests: string[] = []
   const resetStates: string[] = []
   const backups: Array<{ sliceRef: string; name: string | null | undefined }> = []
@@ -691,8 +705,8 @@ function sliceHarness(options: {
         },
       ]
     },
-    saveSliceState: async (sliceRef) => {
-      savedStates.push(sliceRef)
+    saveSliceState: async (sliceRef, mode, scope) => {
+      savedStates.push({ sliceRef, mode, scope })
       return { slice: slice({ id: sliceRef, name: sliceRef, saved_state_status: "saved" }), state: savedState({ source_slice_id: sliceRef }) }
     },
     getSliceStateStatus: async (sliceRef) => {

@@ -31,6 +31,7 @@ type SliceCreateOptions = {
   workerKernelRef?: string | null
   displayUrl?: string | null
   fromSavedState?: string | null
+  base?: "default" | "clean" | null
 }
 
 export type SliceCommandHandlerDeps = {
@@ -54,7 +55,7 @@ export type SliceCommandHandlerDeps = {
   getSliceDisplayEndpoint?: (sliceRef: string) => Promise<SliceDisplayEndpoint>
   getSliceLogs?: (sliceRef: string, tailLines?: number | null) => Promise<{ slice: SliceRecord; entries: SliceLogEntry[] }>
   listSliceAudit?: (sliceRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
-  saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
+  saveSliceState?: (sliceRef: string, mode?: "restart_agents" | "shutdown" | null, scope?: "this_slice" | "future_slices" | null) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }>
   getSliceStateStatus?: (sliceRef: string) => Promise<{ slice: SliceRecord; state: SliceSavedStateRecord | null }>
   resetSliceState?: (sliceRef: string) => Promise<{ slice: SliceRecord; removed_state: SliceSavedStateRecord | null }>
   createSliceBackup?: (sliceRef: string, name?: string | null) => Promise<{ slice: SliceRecord; backup: SliceBackupRecord; instructions: string }>
@@ -420,7 +421,7 @@ async function saveSliceState(deps: SliceCommandHandlerDeps, args: string[]): Pr
     deps.flashFooter("slice save-state is unavailable in this build", "error")
     return
   }
-  const { sliceRef, mode, error } = parseSliceSaveStateArgs(args)
+  const { sliceRef, mode, scope, error } = parseSliceSaveStateArgs(args)
   if (error) {
     deps.flashFooter(error, "error")
     return
@@ -433,7 +434,7 @@ async function saveSliceState(deps: SliceCommandHandlerDeps, args: string[]): Pr
     return
   }
   try {
-    const payload = await deps.saveSliceState(resolvedRef, mode)
+    const payload = await deps.saveSliceState(resolvedRef, mode, scope)
     deps.appendNotice(formatSliceStateSaved(payload.slice, payload.state))
     deps.flashFooter(`saved slice state ${formatSliceLabel(payload.slice)}`, "info")
   } catch (error) {
@@ -444,10 +445,12 @@ async function saveSliceState(deps: SliceCommandHandlerDeps, args: string[]): Pr
 function parseSliceSaveStateArgs(args: string[]): {
   sliceRef?: string
   mode?: "restart_agents" | "shutdown"
+  scope?: "this_slice" | "future_slices"
   error?: string
 } {
   let sliceRef: string | undefined
   let mode: "restart_agents" | "shutdown" | undefined
+  let scope: "this_slice" | "future_slices" | undefined
   for (const arg of args) {
     if (arg === "--restart-agents") {
       mode = "restart_agents"
@@ -455,6 +458,14 @@ function parseSliceSaveStateArgs(args: string[]): {
     }
     if (arg === "--shutdown") {
       mode = "shutdown"
+      continue
+    }
+    if (arg === "--this-slice") {
+      scope = "this_slice"
+      continue
+    }
+    if (arg === "--future-slices" || arg === "--default") {
+      scope = "future_slices"
       continue
     }
     if (arg.startsWith("--")) {
@@ -468,6 +479,7 @@ function parseSliceSaveStateArgs(args: string[]): {
   return {
     ...(sliceRef === undefined ? {} : { sliceRef }),
     ...(mode === undefined ? {} : { mode }),
+    ...(scope === undefined ? {} : { scope }),
   }
 }
 
@@ -549,6 +561,7 @@ function parseSliceCreateOptions(
   worktreeId?: string | null
   displayMode?: "headless" | "headed"
   fromSavedState?: string | null
+  base?: "default" | "clean" | null
   error?: string
 } {
   const name = args[0]
@@ -560,6 +573,7 @@ function parseSliceCreateOptions(
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
   let displayMode: "headless" | "headed" | undefined
   let fromSavedState: string | null | undefined
+  let base: "default" | "clean" | null | undefined
   let error: string | undefined
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index]
@@ -608,6 +622,14 @@ function parseSliceCreateOptions(
       index += 1
       continue
     }
+    if (arg === "--clean") {
+      base = "clean"
+      continue
+    }
+    if (arg === "--default") {
+      base = "default"
+      continue
+    }
     if (arg === "--mount") {
       if (!value || value.startsWith("--")) {
         error = "usage: /slice create <name> --mount <path|none>"
@@ -631,6 +653,7 @@ function parseSliceCreateOptions(
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
     ...(displayMode !== undefined ? { displayMode } : {}),
     ...(fromSavedState !== undefined ? { fromSavedState } : {}),
+    ...(base !== undefined ? { base } : {}),
     ...(error !== undefined ? { error } : {}),
   }
 }
@@ -668,6 +691,7 @@ async function createSlice(
     workerKernelRef: parsed.workerKernelRef ?? null,
     displayUrl: parsed.displayUrl ?? null,
     fromSavedState: parsed.fromSavedState ?? null,
+    base: parsed.base ?? null,
   }
   const slice = await deps.createSlice(createOptions)
   deps.flashFooter(`created slice ${formatSliceLabel(slice)}`, "info")

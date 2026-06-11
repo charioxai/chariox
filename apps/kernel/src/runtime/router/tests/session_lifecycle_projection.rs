@@ -333,6 +333,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
             source: "client".to_string(),
         }],
         from_saved_state: None,
+        base: None,
     });
     let command =
         KernelCommand::from_local_request("cmd-create-slice-forged-auth", None, None, &request);
@@ -394,6 +395,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         display_url: None,
         provider_auth: Vec::new(),
         from_saved_state: None,
+        base: None,
     });
     let create_command =
         KernelCommand::from_local_request("cmd-create-ssh-slice", None, None, &create_request);

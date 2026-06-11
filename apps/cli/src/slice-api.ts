@@ -45,6 +45,7 @@ export async function createSlice(
     workerKernelRef?: string | null
     displayUrl?: string | null
     fromSavedState?: string | null
+    base?: "default" | "clean" | null
   },
 ): Promise<SliceRecord> {
   const response = await client.send<Record<string, unknown>>(createSliceRequest(options))
@@ -135,8 +136,9 @@ export async function saveSliceState(
   client: LocalIpcClient,
   sliceRef: string,
   mode?: "restart_agents" | "shutdown" | null,
+  scope?: "this_slice" | "future_slices" | null,
 ): Promise<{ slice: SliceRecord; state: SliceSavedStateRecord }> {
-  const response = await client.send<Record<string, unknown>>(saveSliceStateRequest(sliceRef, mode))
+  const response = await client.send<Record<string, unknown>>(saveSliceStateRequest(sliceRef, mode, scope))
   return expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
 }
 

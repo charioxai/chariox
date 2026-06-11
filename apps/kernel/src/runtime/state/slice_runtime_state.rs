@@ -27,7 +27,12 @@ impl KernelRuntimeState {
         let config = self.owned.config_projection.snapshot();
         let from_saved_state = match request.from_saved_state.as_deref() {
             Some(state_ref) => Some(self.owned.slice_store.saved_state(state_ref)?),
-            None => None,
+            None if request.base == Some(crate::local::SliceCreateBase::Clean) => None,
+            None => crate::slice::default_local_docker_saved_state(
+                &crate::slice::LocalDockerSliceOptions::from_config(&config),
+                request.backend.clone(),
+                &request.os,
+            )?,
         };
         let slice = self.owned.slice_store.create(
             &config.daemon_id,

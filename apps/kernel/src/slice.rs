@@ -5,12 +5,12 @@ mod store;
 
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
-    create_local_docker_slice_backup_live, inspect_local_docker_slice_host_runtime,
-    local_docker_private_relay, local_docker_private_relay_endpoint,
-    local_docker_private_relay_token, remove_local_docker_saved_state,
-    run_local_docker_slice_action, save_local_docker_slice_state,
-    save_local_docker_slice_state_live, start_local_docker_slice_provider_login,
-    LocalDockerSliceOptions, LocalDockerSliceRelay,
+    create_local_docker_slice_backup_live, default_local_docker_saved_state,
+    inspect_local_docker_slice_host_runtime, local_docker_private_relay,
+    local_docker_private_relay_endpoint, local_docker_private_relay_token,
+    remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
+    save_local_docker_slice_state_live, set_local_docker_default_saved_state,
+    start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -50,6 +50,25 @@ mod tests {
             provider_auth: Vec::new(),
             from_saved_state: None,
             now_ms: 42,
+        }
+    }
+
+    fn saved_state(id: &str) -> SliceSavedStateRecord {
+        SliceSavedStateRecord {
+            id: id.to_string(),
+            slice_name: "gmail-ready".to_string(),
+            source_slice_id: "slice-source".to_string(),
+            backend: SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            image_ref: "arroba-slice-state:gmail-ready".to_string(),
+            home_archive_path: "/tmp/gmail-ready-home.tar.zst".to_string(),
+            manifest_path: "/tmp/gmail-ready-manifest.json".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            size_bytes: Some(1024),
+            last_operation: Some("state.save".to_string()),
+            last_operation_status: Some(SliceOperationStatus::Completed),
+            last_error: None,
         }
     }
 
@@ -108,6 +127,29 @@ mod tests {
         assert!(store
             .create("kernel-1", "machine-1", create_input("slice-1"))
             .is_err());
+    }
+
+    #[test]
+    fn slice_store_registers_inherited_saved_state_on_create() {
+        let store = SliceStore::default();
+        let mut input = create_input("dev");
+        input.from_saved_state = Some(saved_state("state-default"));
+
+        let slice = store
+            .create("kernel-1", "machine-1", input)
+            .expect("slice should create from saved state");
+
+        assert_eq!(slice.saved_state_ref.as_deref(), Some("state-default"));
+        assert_eq!(slice.saved_state_status, Some(SliceSavedStateStatus::Saved));
+        assert_eq!(slice.saved_state_updated_at_ms, Some(2));
+        assert_eq!(
+            store
+                .active_saved_state_for_slice("dev")
+                .expect("saved state lookup should work")
+                .expect("saved state should be registered")
+                .id,
+            "state-default"
+        );
     }
 
     #[test]

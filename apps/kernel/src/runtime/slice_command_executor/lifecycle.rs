@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::local::{
     CreateSliceBackupRequest, CreateSliceRequest, GetSliceLogsRequest, ListSliceAuditRequest,
     ListSlicesRequest, LocalDaemonResponse, SliceRefRequest, SliceStateResetRequest,
-    SliceStateSaveMode, SliceStateSaveRequest, SliceStateStatusRequest,
+    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -138,9 +138,10 @@ pub(super) async fn execute_save_slice_state_request(
     let stopping_slice = runtime_state.mark_slice_stopping(&request.slice_ref)?;
     let docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
+    let save_docker_options = docker_options.clone();
     let task_slice = stopping_slice.clone();
     let save_result = tokio::task::spawn_blocking(move || {
-        crate::slice::save_local_docker_slice_state(&task_slice, &docker_options)
+        crate::slice::save_local_docker_slice_state(&task_slice, &save_docker_options)
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -166,6 +167,9 @@ pub(super) async fn execute_save_slice_state_request(
         .stop_slice_private_relay_home_connection(&stopped_slice.id)
         .await;
     let saved_slice = runtime_state.save_slice_state_record(&request.slice_ref, state.clone())?;
+    if request.scope == Some(SliceStateSaveScope::FutureSlices) {
+        crate::slice::set_local_docker_default_saved_state(&state, &docker_options)?;
+    }
     runtime_state.record_slice_audit_event(&saved_slice, "state.save", "completed", None, None)?;
     drop(operation_guard);
 

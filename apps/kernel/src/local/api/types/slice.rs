@@ -26,6 +26,8 @@ pub struct CreateSliceRequest {
     pub provider_auth: Vec<crate::slice_provider_auth::SliceProviderAuthSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_saved_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SliceCreateBase>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,8 @@ pub struct SliceStateSaveRequest {
     pub slice_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<SliceStateSaveMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SliceStateSaveScope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +49,20 @@ pub struct SliceStateSaveRequest {
 pub enum SliceStateSaveMode {
     RestartAgents,
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceStateSaveScope {
+    ThisSlice,
+    FutureSlices,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceCreateBase {
+    Default,
+    Clean,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

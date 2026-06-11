@@ -57,11 +57,12 @@ export async function executeSliceCommand(
     }
     case "create": {
       if (!first) {
-        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+        return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
       }
       let workerKernelRef: string | undefined
       let displayUrl: string | undefined
       let fromSavedState: string | undefined
+      let base: "default" | "clean" | undefined
       let displayMode: "headless" | "headed" | undefined
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index]
@@ -79,10 +80,14 @@ export async function executeSliceCommand(
           displayMode = "headed"
         } else if (arg === "--headless" || arg === "--no-display") {
           displayMode = "headless"
+        } else if (arg === "--clean") {
+          base = "clean"
+        } else if (arg === "--default") {
+          base = "default"
         } else if (arg?.startsWith("--")) {
           return { ok: false, message: `unknown or incomplete slice create option: ${arg}` }
         } else if (arg) {
-          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
+          return { ok: false, message: "usage: slice create <name> [--headed|--headless] [--clean|--default] [--kernel <worker-kernel-ref>] [--display-url <url>] [--from-state <state-ref>]" }
         }
       }
       const response = await deps.client.send(createSliceRequest({
@@ -94,6 +99,7 @@ export async function executeSliceCommand(
         workerKernelRef: workerKernelRef ?? null,
         displayUrl: displayUrl ?? null,
         fromSavedState: fromSavedState ?? null,
+        base: base ?? null,
       }))
       const slice = expectVariant<{ slice: SliceRecord }>(response, "SliceCreated").slice
       return resourceResult(`created slice ${formatSliceLabel(slice)}`, parsed.assignment, slice.id, {}, { slice })
@@ -145,7 +151,7 @@ export async function executeSliceCommand(
       const parsed = parseSliceSaveStateArgs([first, ...rest].filter((value): value is string => Boolean(value)))
       if (parsed.error) return { ok: false, message: parsed.error }
       const sliceRef = parsed.sliceRef ?? await focusedAgentSliceRef(context, deps)
-      const response = await deps.client.send(saveSliceStateRequest(sliceRef, parsed.mode))
+      const response = await deps.client.send(saveSliceStateRequest(sliceRef, parsed.mode, parsed.scope))
       const payload = expectVariant<{ slice: SliceRecord; state: SliceSavedStateRecord }>(response, "SliceStateSaved")
       return { ok: true, message: formatSliceStateSaved(payload.slice, payload.state), data: payload }
     }
@@ -275,10 +281,12 @@ export async function executeSliceCommand(
 function parseSliceSaveStateArgs(args: readonly string[]): {
   sliceRef?: string
   mode?: "restart_agents" | "shutdown"
+  scope?: "this_slice" | "future_slices"
   error?: string
 } {
   let sliceRef: string | undefined
   let mode: "restart_agents" | "shutdown" | undefined
+  let scope: "this_slice" | "future_slices" | undefined
   for (const arg of args) {
     if (arg === "save-state" || arg === "save") continue
     if (arg === "--restart-agents") {
@@ -287,6 +295,14 @@ function parseSliceSaveStateArgs(args: readonly string[]): {
     }
     if (arg === "--shutdown") {
       mode = "shutdown"
+      continue
+    }
+    if (arg === "--this-slice") {
+      scope = "this_slice"
+      continue
+    }
+    if (arg === "--future-slices" || arg === "--default") {
+      scope = "future_slices"
       continue
     }
     if (arg.startsWith("--")) {
@@ -300,6 +316,7 @@ function parseSliceSaveStateArgs(args: readonly string[]): {
   return {
     ...(sliceRef === undefined ? {} : { sliceRef }),
     ...(mode === undefined ? {} : { mode }),
+    ...(scope === undefined ? {} : { scope }),
   }
 }
 

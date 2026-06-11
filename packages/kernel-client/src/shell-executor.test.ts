@@ -1087,6 +1087,7 @@ test("executeShellCommand creates and starts a headless slice for a new session"
       display_url: null,
       provider_auth: [],
       from_saved_state: null,
+      base: null,
     },
   })
   assert.deepEqual(requests[1], { StartSlice: { slice_ref: "slice-1" } })
@@ -1246,6 +1247,7 @@ test("executeShellCommand creates manually managed slices scoped to the current 
       display_url: null,
       provider_auth: [],
       from_saved_state: null,
+      base: null,
     },
   }])
   assert.deepEqual(result.bindings, { sl: "slice-manual" })
