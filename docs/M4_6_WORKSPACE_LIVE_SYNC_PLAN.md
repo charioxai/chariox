@@ -389,6 +389,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: remote workspace live sync full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
 - Landed: local and remote workspace live sync drill scripts now cover opaque write/read/move/delete alongside text operations.
 - Landed: local workspace live sync drill hardening now serializes provider positive phases into smaller prompts and covers Codex permission-upgrade denial. The current OpenCode validation path uses the Zen provider model `opencode/gpt-5.2`; both OpenCode and Codex complete managed text and opaque operations, direct/native write attempts leave no forbidden files, collision serialization holds, stale non-overlap external changes rebase, and stale overlap external changes are rejected.
+- Validation update 2026-06-11: tracked Workspace Live Sync passed the full remote drill locally and with the Hetzner Linux worker using Codex `gpt-5.5`. The covered matrix includes turn-end native write observation, target fanout, bidirectional sync, target-side rebase, overlap conflict reporting, resolver reconciliation, `.arrobaignore`/force-exclude behavior, ignored outside-turn origins, sibling-repo writes outside the synced root, and unchanged Git heads because Workspace Live Sync does not create commits.
 - Post-v1: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals
