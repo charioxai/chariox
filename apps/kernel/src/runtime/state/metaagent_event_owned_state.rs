@@ -251,6 +251,8 @@ impl KernelRuntimeState {
         status: &str,
         provider_run_id: Option<&str>,
     ) {
+        let timestamp_ms = crate::session::unix_epoch_ms();
+        let correlation_id = format!("metaagent:{}:prompt:{prompt_id}", metaagent.id());
         if let Err(error) = self.owned.durable_state_store.append_event(
             "metaagent.prompt.submitted",
             Some(prompt_id.to_string()),
@@ -262,7 +264,9 @@ impl KernelRuntimeState {
                 "prompt_id": prompt_id,
                 "provider_run_id": provider_run_id,
                 "status": status,
-                "timestamp_ms": crate::session::unix_epoch_ms(),
+                "causation_id": prompt_id,
+                "correlation_id": correlation_id,
+                "timestamp_ms": timestamp_ms,
             }),
         ) {
             crate::logging::warn_with_fields(

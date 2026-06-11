@@ -487,18 +487,45 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
         .durable_state_store()
         .load_events_after(0)
         .expect("durable audit events should load");
-    assert!(audit_events.iter().any(|event| {
-        event.kind == "metaagent.command.executed"
-            && event.payload["metaagent_id"] == metaagent.id()
-            && event.payload["command"] == "prompt worker \"please inspect the failing test\""
-            && event.payload["status"] == "succeeded"
-    }));
-    assert!(audit_events.iter().any(|event| {
-        event.kind == "metaagent.prompt.submitted"
-            && event.payload["metaagent_id"] == metaagent.id()
-            && event.payload["target_agent_id"] == worker.id()
-            && event.payload["status"] == "steered"
-    }));
+    let command_audit = audit_events
+        .iter()
+        .find(|event| {
+            event.kind == "metaagent.command.executed"
+                && event.payload["metaagent_id"] == metaagent.id()
+                && event.payload["command"] == "prompt worker \"please inspect the failing test\""
+                && event.payload["status"] == "succeeded"
+        })
+        .expect("metaagent command audit should include durable provenance");
+    assert_eq!(command_audit.payload["provider_run_id"], meta_run.id());
+    assert_eq!(command_audit.payload["causation_id"], meta_run.id());
+    let command_correlation_id = command_audit
+        .payload
+        .get("correlation_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("command audit should include a correlation id");
+    assert!(
+        command_correlation_id.starts_with(&format!("metaagent:{}:command:", metaagent.id())),
+        "{command_correlation_id}"
+    );
+    let prompt_audit = audit_events
+        .iter()
+        .find(|event| {
+            event.kind == "metaagent.prompt.submitted"
+                && event.payload["metaagent_id"] == metaagent.id()
+                && event.payload["target_agent_id"] == worker.id()
+                && event.payload["status"] == "steered"
+        })
+        .expect("metaagent prompt audit should include durable provenance");
+    let prompt_id = prompt_audit
+        .payload
+        .get("prompt_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("prompt audit should include a prompt id");
+    assert_eq!(prompt_audit.payload["causation_id"], prompt_id);
+    assert_eq!(
+        prompt_audit.payload["correlation_id"],
+        format!("metaagent:{}:prompt:{prompt_id}", metaagent.id())
+    );
 }
 
 #[tokio::test]
@@ -1040,6 +1067,33 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .is_some_and(|message| message.contains("only `mcp list`")),
         "{:?}",
         not_routed.payload
+    );
+
+    let audit_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable audit events should load");
+    let denied_audit = audit_events
+        .iter()
+        .find(|event| {
+            event.kind == "metaagent.command.executed"
+                && event.payload["metaagent_id"] == metaagent.id()
+                && event.payload["command"] == "session new"
+                && event.payload["status"] == "denied"
+        })
+        .expect("denied metaagent commands should be audited");
+    assert_eq!(denied_audit.payload["provider_run_id"], meta_run.id());
+    assert_eq!(denied_audit.payload["causation_id"], meta_run.id());
+    let denied_correlation_id = denied_audit
+        .payload
+        .get("correlation_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("denied command audit should include a correlation id");
+    assert!(
+        denied_correlation_id.starts_with(&format!("metaagent:{}:command:", metaagent.id())),
+        "{denied_correlation_id}"
     );
 }
 

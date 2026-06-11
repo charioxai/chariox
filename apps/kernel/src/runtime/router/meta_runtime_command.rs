@@ -321,6 +321,9 @@ impl CommandRouter {
         status: &str,
         result: serde_json::Value,
     ) {
+        let timestamp_ms = crate::session::unix_epoch_ms();
+        let causation_id = provider_run_id.unwrap_or_else(|| metaagent.id());
+        let correlation_id = format!("metaagent:{}:command:{timestamp_ms}", metaagent.id());
         let durable_state = {
             let app = self.app.lock().await;
             app.durable_state_store()
@@ -336,7 +339,9 @@ impl CommandRouter {
                 "command": command,
                 "status": status,
                 "result": result,
-                "timestamp_ms": crate::session::unix_epoch_ms(),
+                "causation_id": causation_id,
+                "correlation_id": correlation_id,
+                "timestamp_ms": timestamp_ms,
             }),
         ) {
             crate::logging::warn_with_fields(
