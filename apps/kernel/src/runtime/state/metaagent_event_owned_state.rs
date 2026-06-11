@@ -1,5 +1,74 @@
 use super::*;
 
+impl KernelRuntimeState {
+    pub(crate) async fn submit_metaagent_command_prompt(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        prompt_text: String,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let prompt_id = self.owned.session_store.reserve_prompt_id();
+        let prompt = crate::session::PromptQueueItem::new(
+            prompt_id.clone(),
+            source_attachment_id,
+            target_agent_id,
+            prompt_text,
+            crate::session::PromptStatus::Queued,
+        );
+        if let Some(dispatches) = self
+            .owned
+            .steer_active_metaagent_prompt(session_id, &prompt)?
+        {
+            self.spawn_workflow_prompt_dispatches(dispatches);
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "status": "steered",
+                    "prompt_id": prompt_id,
+                    "target_agent_id": target_agent_id,
+                }),
+            });
+        }
+        let mut submission = self
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.to_string(),
+                prompt,
+                force_queue: false,
+            })
+            .await?;
+        if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
+            (&submission.outcome, submission.dispatch.as_ref())
+        {
+            self.start_active_turn_with_trace_id(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                prompt.id(),
+                &dispatch.provider_run_id,
+                "metaagent-command",
+            );
+        }
+        let agent_activity = self.agent_activity_for_session(&submission.session);
+        if let Some(dispatch) = submission.dispatch.take() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        if let Some(dispatch) = submission.remote_dispatch.take() {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "status": "submitted",
+                "response": crate::local::LocalDaemonResponse::PromptSubmitted {
+                    outcome: submission.outcome,
+                    session: submission.session,
+                    agent_activity,
+                },
+            }),
+        })
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn metaagent_owned_agent_event_prompt_dispatches(
         &self,
@@ -135,7 +204,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         prompt: crate::session::PromptQueueItem,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
-        if let Some(dispatches) = self.steer_active_metaagent_event_prompt(session_id, &prompt)? {
+        if let Some(dispatches) = self.steer_active_metaagent_prompt(session_id, &prompt)? {
             return Ok(dispatches);
         }
         let prepared = crate::app::KernelPreparedPromptSubmission {
@@ -186,7 +255,7 @@ impl KernelRuntimeOwnedState {
         Ok(dispatches)
     }
 
-    fn steer_active_metaagent_event_prompt(
+    pub(super) fn steer_active_metaagent_prompt(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,

@@ -363,6 +363,37 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
         result.payload.get("response").is_some(),
         "router response should be included"
     );
+    let steered = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "prompt worker \"add this to the active investigation\""
+            }),
+        )
+        .await
+        .expect("meta run_command should steer active worker prompts");
+    assert!(steered.ok, "{:?}", steered.payload);
+    assert_eq!(
+        steered
+            .payload
+            .get("status")
+            .and_then(serde_json::Value::as_str),
+        Some("steered")
+    );
+    let worker_queued_prompts = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(session.id())
+        .expect("session should load")
+        .queued_prompts_for_agent(worker.id())
+        .map(|queued| queued.len())
+        .unwrap_or_default();
+    assert_eq!(
+        worker_queued_prompts, 0,
+        "metaagent prompt commands should steer active local agents instead of queueing"
+    );
     let attachments = app
         .lock()
         .await

@@ -2,7 +2,7 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
     AttachToSessionRequest, ListAgentsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
+    LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -47,6 +47,11 @@ impl CommandRouter {
                 ))
             }
         }
+        if tokens.first().map(String::as_str) == Some("prompt") {
+            return self
+                .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
+                .await;
+        }
         let request = match self
             .meta_command_request(&session, &metaagent, &tokens)
             .await
@@ -68,6 +73,55 @@ impl CommandRouter {
         })
     }
 
+    async fn dispatch_meta_prompt_command(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        if args.len() < 2 {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error("usage: prompt <owned-agent-ref> <prompt text>"),
+            ));
+        }
+        let target = match self
+            .resolve_owned_regular_agent(session.id(), metaagent, &args[0])
+            .await
+        {
+            Ok(target) => target,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+        let prompt = args[1..].join(" ");
+        let attachment_id = match self
+            .ensure_metaagent_command_attachment(session.id(), metaagent)
+            .await
+        {
+            Ok(attachment_id) => attachment_id,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+        let mut result = self
+            .runtime_state
+            .submit_metaagent_command_prompt(session.id(), &attachment_id, target.id(), prompt)
+            .await?;
+        if let Some(payload) = result.payload.as_object_mut() {
+            payload.insert(
+                "command".to_string(),
+                serde_json::Value::String(command.to_string()),
+            );
+            payload.insert(
+                "target_agent_id".to_string(),
+                serde_json::Value::String(target.id().to_string()),
+            );
+            payload.insert(
+                "target_agent_ref".to_string(),
+                serde_json::Value::String(target.agent_ref().to_string()),
+            );
+        }
+        Ok(result)
+    }
+
     async fn meta_command_request(
         &self,
         session: &crate::session::RuntimeSession,
@@ -78,43 +132,12 @@ impl CommandRouter {
             return Err(meta_command_error("empty metaagent command"));
         };
         match command {
-            "prompt" => {
-                self.meta_prompt_request(session, metaagent, &tokens[1..])
-                    .await
-            }
             "agent" => meta_agent_request(session, metaagent, &tokens[1..]),
             "workflow" => meta_workflow_request(session, &tokens[1..]),
             other => Err(meta_command_error(format!(
                 "`{other}` is registered but not implemented by the metaagent command router"
             ))),
         }
-    }
-
-    async fn meta_prompt_request(
-        &self,
-        session: &crate::session::RuntimeSession,
-        metaagent: &crate::agent::AgentInstance,
-        args: &[String],
-    ) -> Result<LocalDaemonRequest, DaemonError> {
-        if args.len() < 2 {
-            return Err(meta_command_error(
-                "usage: prompt <owned-agent-ref> <prompt text>",
-            ));
-        }
-        let target = self
-            .resolve_owned_regular_agent(session.id(), metaagent, &args[0])
-            .await?;
-        let prompt = args[1..].join(" ");
-        let attachment_id = self
-            .ensure_metaagent_command_attachment(session.id(), metaagent)
-            .await?;
-        Ok(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session.id().to_string(),
-            attachment_id,
-            target_agent_id: Some(target.id().to_string()),
-            prompt,
-            attachments: Vec::new(),
-        }))
     }
 
     async fn ensure_metaagent_command_attachment(
