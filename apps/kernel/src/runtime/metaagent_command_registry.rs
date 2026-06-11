@@ -85,7 +85,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "workflow",
         aliases: &["workflow new", "workflow run", "workflow cancel", "workflow resume"],
-        usage: "workflow <new|list|show|run|runs|cancel|resume> ...",
+        usage: "workflow <new|list|run|runs|cancel|resume> ...",
         examples: &["workflow run qa-flow default \"Run QA\""],
         tags: &["workflow", "orchestration"],
         scope: "session",
@@ -93,13 +93,13 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "session workflow policy",
         routed: true,
-        description: "Create, edit, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
+        description: "Create, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
     },
     MetaCommandDoc {
         name: "mcp",
         aliases: &["mcp grant", "mcp revoke", "mcp list"],
-        usage: "mcp <install|list|show|import|grant|revoke|grants> ...",
-        examples: &["mcp grant playwright --agent agent-2"],
+        usage: "mcp <list|show|grant|revoke> ...",
+        examples: &["mcp grant agent-2 playwright"],
         tags: &["extension", "mcp", "capability"],
         scope: "session",
         mutates: true,
@@ -111,8 +111,8 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "skill",
         aliases: &["skill grant", "skill list", "skills"],
-        usage: "skill <install|list|show|import|grant|revoke|grants> ...",
-        examples: &["skill grant browser-qa --agent agent-2"],
+        usage: "skill <list|show|grant|revoke> ...",
+        examples: &["skill grant agent-2 browser-qa"],
         tags: &["extension", "skill", "capability"],
         scope: "session",
         mutates: true,
@@ -123,8 +123,8 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "slice",
-        aliases: &["slice save", "slice restart", "slice stop"],
-        usage: "slice <list|show|save-state|start|stop|reset-state|backup> ...",
+        aliases: &["slice save", "slice save-state", "slice stop"],
+        usage: "slice <list|show|start|stop|save-state|status|backup> ...",
         examples: &["slice save-state dev --restart-agents"],
         tags: &["slice", "environment"],
         scope: "session",
@@ -136,16 +136,34 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "credential",
-        aliases: &["credential set", "credential list"],
-        usage: "credential <list|get|upsert|remove|set-secret|delete-secret> ...",
-        examples: &["credential list"],
+        aliases: &["credential list", "credential get"],
+        usage: "credential <list|get> ...",
+        examples: &["credential list", "credential get credential-1"],
+        tags: &["credential", "vault", "sensitive"],
+        scope: "global",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "credential handle metadata only",
+        routed: true,
+        description: "List and inspect credential handles. Sensitive credential mutations are not routed by metaagent command execution.",
+    },
+    MetaCommandDoc {
+        name: "credential mutation",
+        aliases: &[
+            "credential upsert",
+            "credential remove",
+            "credential set-secret",
+            "credential delete-secret",
+        ],
+        usage: "credential upsert|remove|set-secret|delete-secret ...",
+        examples: &[],
         tags: &["credential", "vault", "sensitive"],
         scope: "global",
         mutates: true,
         policy: MetaCommandPolicy::Approval,
         authority: "configured user approval",
-        routed: true,
-        description: "List and inspect credential handles. Sensitive credential mutations require approval policy and are not routed by default.",
+        routed: false,
+        description: "Credential mutations require explicit approval policy and are not routed by metaagent command execution.",
     },
     MetaCommandDoc {
         name: "session new",
@@ -338,18 +356,32 @@ fn command_matches_query(command: &MetaCommandDoc, query: &str) -> bool {
 
 fn find_command(command: &str) -> Option<&'static MetaCommandDoc> {
     let normalized = command.to_lowercase();
-    META_COMMANDS.iter().find(|candidate| {
-        candidate.name == normalized
-            || candidate
-                .aliases
-                .iter()
-                .any(|alias| alias.to_lowercase() == normalized)
-            || normalized.starts_with(candidate.name)
-            || candidate
-                .aliases
-                .iter()
-                .any(|alias| normalized.starts_with(*alias))
-    })
+    META_COMMANDS
+        .iter()
+        .filter_map(|candidate| {
+            command_match_len(candidate, &normalized).map(|len| (len, candidate))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, command)| command)
+}
+
+fn command_match_len(command: &MetaCommandDoc, normalized: &str) -> Option<usize> {
+    let mut matches = Vec::new();
+    if token_prefix_matches(normalized, command.name) {
+        matches.push(command.name.len());
+    }
+    matches.extend(command.aliases.iter().filter_map(|alias| {
+        let alias = alias.to_lowercase();
+        token_prefix_matches(normalized, &alias).then_some(alias.len())
+    }));
+    matches.into_iter().max()
+}
+
+fn token_prefix_matches(normalized: &str, candidate: &str) -> bool {
+    normalized == candidate
+        || normalized
+            .strip_prefix(candidate)
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace))
 }
 
 fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
@@ -366,4 +398,86 @@ fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
         "routed": command.routed,
         "description": command.description,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documented_routed_examples_match_execution_policy() {
+        for command in META_COMMANDS.iter().filter(|command| command.routed) {
+            for example in command
+                .examples
+                .iter()
+                .filter(|example| !example.starts_with("arroba.meta."))
+            {
+                let tokens = example
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    execution_policy(&tokens),
+                    MetaCommandExecutionPolicy::Routed,
+                    "documented example `{example}` for `{}` is not routed",
+                    command.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_docs_do_not_advertise_unrouted_subcommands() {
+        let forbidden = [
+            ("workflow", &["show", "edit"][..]),
+            ("mcp", &["install", "import", "grants"][..]),
+            ("skill", &["install", "import", "grants"][..]),
+            ("slice", &["reset-state"][..]),
+            (
+                "credential",
+                &["upsert", "remove", "set-secret", "delete-secret"][..],
+            ),
+        ];
+
+        for (command, terms) in forbidden {
+            let docs = command_docs(MetaCommandDocsArgs {
+                command: command.to_string(),
+            })
+            .unwrap_or_else(|| panic!("missing docs for `{command}`"));
+            let rendered = serde_json::json!({
+                "usage": docs.get("usage"),
+                "aliases": docs.get("aliases"),
+                "examples": docs.get("examples"),
+            })
+            .to_string();
+            for term in terms {
+                assert!(
+                    !rendered.contains(term),
+                    "`{command}` docs should not advertise unrouted `{term}`: {rendered}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_docs_prefer_specific_approval_policy_entries() {
+        let docs = command_docs(MetaCommandDocsArgs {
+            command: "credential upsert".to_string(),
+        })
+        .expect("credential mutation docs should exist");
+
+        assert_eq!(
+            docs.get("name").and_then(serde_json::Value::as_str),
+            Some("credential mutation")
+        );
+        assert_eq!(
+            docs.get("metaagent_policy")
+                .and_then(serde_json::Value::as_str),
+            Some("approval")
+        );
+        assert_eq!(
+            docs.get("routed").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+    }
 }
