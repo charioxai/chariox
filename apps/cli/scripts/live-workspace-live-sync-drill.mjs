@@ -441,7 +441,7 @@ async function providerErrorsSince({ historyDir, sinceMs }) {
         continue
       }
       if ((entry.timestamp_ms ?? 0) < sinceMs) continue
-      if (entry.kind !== 'provider_error') continue
+      if (entry.kind !== 'provider_error' && !isProviderTerminalFailureNotice(entry)) continue
       errors.push({
         file,
         agentId: entry.agent_id ?? null,
@@ -451,6 +451,18 @@ async function providerErrorsSince({ historyDir, sinceMs }) {
     }
   }
   return errors
+}
+
+function isProviderTerminalFailureNotice(entry) {
+  if (entry.kind !== 'notice') return false
+  const text = String(entry.text ?? '').trim()
+  if (!text.startsWith('{')) return false
+  try {
+    const parsed = JSON.parse(text)
+    return parsed?.type === 'error' && parsed?.error != null
+  } catch {
+    return false
+  }
 }
 
 async function throwIfProviderError({ historyDir, sinceMs }) {
@@ -1806,7 +1818,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     `Modify outputs/${provider}-tracked-rebase.txt so it becomes exactly "alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n".`,
     `Modify outputs/${provider}-tracked-conflict.txt so it becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
     `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
-    `Create ../sibling-repo/${provider}-tracked-sibling.txt containing exactly "${provider}-tracked-sibling\\n"; this sibling repo is outside the synced workspace and must remain writable.`,
+    `Create ${siblingWritePath} containing exactly "${provider}-tracked-sibling\\n"; this sibling repo is outside the synced workspace and must remain writable.`,
     `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
 
