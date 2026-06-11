@@ -10,6 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import WebSocket from "ws"
 
 const repoRoot = path.resolve(new URL("../../..", import.meta.url).pathname)
+const cliRoot = path.join(repoRoot, "apps/cli")
 const defaultTimeoutMs = 240_000
 
 function parseArgs(argv) {
@@ -149,6 +150,66 @@ async function stopChild(child) {
     }
     await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(1_000)])
   }
+}
+
+async function loadCliIpcModules(runtimeDir) {
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import("@babel/core"),
+    import("@babel/preset-typescript"),
+  ])
+  await mkdir(runtimeDir, { recursive: true })
+  for (const rel of ["src/ipc.ts", "src/ipc-requests.ts"]) {
+    const sourcePath = path.join(cliRoot, rel)
+    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, ".js"))
+    const code = await readFile(sourcePath, "utf8")
+    const transformed = await transformAsync(code, {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await writeFile(outPath, transformed?.code ?? "", "utf8")
+  }
+  const { LocalIpcClient } = await import(new URL(`file://${path.join(runtimeDir, "ipc.js")}`).href)
+  const requests = await import(new URL(`file://${path.join(runtimeDir, "ipc-requests.js")}`).href)
+  return { LocalIpcClient, requests }
+}
+
+function unwrap(response, variant) {
+  const value = response?.[variant]
+  if (value == null) throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
+  return value
+}
+
+async function waitForKernelIpc(LocalIpcClient, listSessionsRequest, kernelUrl, child, timeoutMs = 25_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    if (child?.exitCode != null) throw new Error(`kernel exited before ready: ${child.exitCode}`)
+    const client = new LocalIpcClient(kernelUrl)
+    try {
+      await client.send(listSessionsRequest())
+      await client.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error
+      await client.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`kernel did not become ready: ${lastError?.message ?? lastError}`)
+}
+
+async function waitForProviderRunReady(client, requests, providerRunId, timeoutMs) {
+  const deadline = Date.now() + Math.min(timeoutMs, 60_000)
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const response = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), "ProviderRun")
+    lastRun = response.provider_run
+    if (lastRun?.state === "Running") return lastRun
+    if (lastRun?.state === "Ended") throw new Error(`provider run ended before ready: ${JSON.stringify(lastRun)}`)
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for provider run ${providerRunId} to become ready\n${JSON.stringify(lastRun)}`)
 }
 
 function makeProbe(provider) {
@@ -755,13 +816,6 @@ async function runClaudeDrill(options, root, provider = "claude") {
 
 async function runClaudeHeadlessDrill(options, root) {
   const provider = "claude-headless"
-  if (options.includeMidturnSteering) {
-    return {
-      provider,
-      status: "failed",
-      reason: "Claude headless midturn steering is not implemented in this drill yet",
-    }
-  }
   const logs = {
     stdout: path.join(root, "claude-headless-prompt-assembly.stdout.log"),
     stderr: path.join(root, "claude-headless-prompt-assembly.stderr.log"),
@@ -815,9 +869,14 @@ async function runClaudeHeadlessDrill(options, root) {
     parsed = JSON.parse(rawJson)
   } catch {}
   const result = parsed?.results?.find((item) => item.provider === provider)
+  const midturnSteering = options.includeMidturnSteering
+    ? await claudeHeadlessMidturnSteeringProbe(options, root)
+    : null
+  const midturnOk = !midturnSteering
+    || (midturnSteering.firstCompleted && midturnSteering.classification !== "unobserved")
   return {
     provider,
-    status: result?.status === "ok" ? "ok" : "failed",
+    status: result?.status === "ok" && midturnOk ? "ok" : "failed",
     channel: "Arroba kernel Claude headless UserPromptSubmit additionalContext",
     sessionId: result?.providerRunId ?? null,
     perTurnContext: Boolean(result?.tokenSeenByModel),
@@ -825,9 +884,262 @@ async function runClaudeHeadlessDrill(options, root) {
     hiddenTextVisibleInProviderHistoryApi: Boolean(result?.hiddenTokenVisibleInUserPromptHistory),
     first: { matched: Boolean(result?.tokenSeenByModel), completed: result?.status === "ok" },
     second: { matched: true, completed: true, note: "covered by prompt-assembly drill single-turn validation" },
-    midturnSteering: null,
+    midturnSteering,
     logs,
   }
+}
+
+async function claudeHeadlessMidturnSteeringProbe(options, root) {
+  const provider = "claude-headless"
+  const runId = `${process.pid}-${Date.now()}`
+  const runtimeDir = path.join(cliRoot, `.tmp-provider-context-claude-headless-steering-${runId}`)
+  const rootDir = path.join(root, `claude-headless-steering-${runId}`)
+  const workspace = path.join(rootDir, "workspace")
+  const arrobaHome = path.join(rootDir, "arroba-home")
+  const logs = {
+    kernel: path.join(root, `claude-headless-steering-kernel-${runId}.log`),
+  }
+  await mkdir(workspace, { recursive: true })
+  await mkdir(arrobaHome, { recursive: true })
+  const { LocalIpcClient, requests } = await loadCliIpcModules(runtimeDir)
+  const kernelPort = await reservePort()
+  const kernelUrl = `ws://127.0.0.1:${kernelPort}`
+  const kernelLog = createWriteStream(logs.kernel, { flags: "a" })
+  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+  const daemon = spawn(kernelBinary, [], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ARROBA_HOME: arrobaHome,
+      XDG_CONFIG_HOME: path.join(rootDir, "xdg-config"),
+      XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
+      ARROBA_LOG_DIR: path.join(rootDir, "logs"),
+      ARROBA_LOG_LEVEL: "debug",
+      ARROBA_CLAUDE_HEADLESS_DEBUG: "1",
+      ARROBA_KERNEL_PORT: String(kernelPort),
+      ARROBA_MCP_PORT: String(kernelPort + 1000),
+      ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
+      ARROBA_CODEX_PORT: String(kernelPort + 2001),
+      ARROBA_DAEMON_ID: `claude-headless-steering-${runId}`,
+      ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
+      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
+    },
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+  })
+  daemon.stderr.pipe(kernelLog)
+  let client = null
+  try {
+    await waitForKernelIpc(LocalIpcClient, requests.listSessionsRequest, kernelUrl, daemon)
+    client = new LocalIpcClient(kernelUrl)
+    const session = unwrap(
+      await client.send(requests.createSessionRequest(workspace, workspace, "claude-headless-steering")),
+      "SessionCreated",
+    ).session
+    await client.send(requests.setWorkspaceLiveSyncModeRequest(session.id, "unrestricted"))
+    const attachment = unwrap(
+      await client.send(requests.attachToSessionRequest(session.id, `claude-headless-steering-${runId}`)),
+      "SessionAttached",
+    ).attachment
+    const launchResponse = await client.send(requests.launchProviderRunRequest(
+      session.id,
+      provider,
+      "default",
+      providerModel(options, provider) ?? "sonnet",
+      "low",
+      null,
+      null,
+    ))
+    const launchPayload = launchResponse.ProviderRunLaunched ?? launchResponse.ProviderRunLaunchAccepted
+    if (!launchPayload?.provider_run) throw new Error(`unexpected launch response: ${JSON.stringify(launchResponse)}`)
+    await waitForProviderRunReady(client, requests, launchPayload.provider_run.id, options.timeoutMs)
+
+    const firstMarker = `ARROBA_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_A`
+    const secondMarker = `ARROBA_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_B`
+    const firstPrompt = [
+      "Midturn steering probe.",
+      "Write twenty short numbered lines, then finish with this marker:",
+      firstMarker,
+      "If another user message arrives before you finish and contains another marker, include that other marker before the final line.",
+    ].join(" ")
+    const secondPrompt = `Midturn steering follow-up. Reply with exactly ${secondMarker}.`
+
+    await client.send(requests.submitPromptRequest(session.id, attachment.id, null, firstPrompt, []))
+    await waitForActivePrompt(client, requests, session.id, attachment.id, 15_000).catch(() => null)
+    await sleep(750)
+    const activeAtSecondSubmit = await sessionHasActivePrompt(client, requests, session.id, attachment.id)
+    let secondSubmit = "accepted"
+    let secondError = null
+    try {
+      await client.send(requests.submitPromptRequest(session.id, attachment.id, null, secondPrompt, []))
+    } catch (error) {
+      secondSubmit = "rejected"
+      secondError = error.message
+    }
+
+    const turns = await waitForHeadlessSteeringTurns(
+      client,
+      requests,
+      session.id,
+      attachment.id,
+      rootDir,
+      { firstMarker, secondMarker },
+      options.timeoutMs,
+    )
+    const firstTurn = turns.find((turn) => turn.userText.includes(firstMarker)) ?? null
+    const secondTurn = turns.find((turn) => turn.userText.includes(secondMarker)) ?? null
+    const rawProviderOutputs = await readRawProviderOutputs(rootDir, session.id)
+    const firstOutputIndex = rawProviderOutputs.findIndex((text) => text.includes(firstMarker))
+    const secondOutputIndex = rawProviderOutputs.findIndex((text) => text.includes(secondMarker))
+    const firstCompleted = Boolean(firstTurn?.providerText.includes(firstMarker)) || firstOutputIndex >= 0
+    const observedInFirst = Boolean(firstTurn?.providerText.includes(secondMarker))
+      || (firstOutputIndex >= 0 && rawProviderOutputs[firstOutputIndex]?.includes(secondMarker))
+    const observedInSecond = Boolean(secondTurn?.providerText.includes(secondMarker))
+      || (secondOutputIndex >= 0 && (firstOutputIndex < 0 || secondOutputIndex > firstOutputIndex))
+    const classification = observedInFirst
+      ? "active-turn-fold"
+      : observedInSecond
+        ? (activeAtSecondSubmit ? "queued-next-turn" : "idle-next-turn")
+        : secondSubmit === "rejected"
+          ? "rejected"
+          : "unobserved"
+    await client.send(requests.endSessionRequest(session.id)).catch(() => {})
+    return {
+      firstMarker,
+      secondMarker,
+      secondSubmit,
+      secondError,
+      activeAtSecondSubmit,
+      observedInFirst,
+      observedInSecond,
+      classification,
+      firstCompleted,
+      secondCompleted: observedInSecond,
+      logs,
+    }
+  } finally {
+    await client?.close?.().catch(() => {})
+    await stopChild(daemon)
+    kernelLog.end()
+    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function sessionHasActivePrompt(client, requests, sessionId, attachmentId) {
+  await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+  const response = await client.send(requests.getSessionStateRequest(sessionId))
+  const session = response.SessionState?.session ?? response.SessionStateLoaded?.session ?? response.session ?? response
+  return Boolean(session?.active_prompt)
+}
+
+async function waitForActivePrompt(client, requests, sessionId, attachmentId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await sessionHasActivePrompt(client, requests, sessionId, attachmentId)) return true
+    await sleep(250)
+  }
+  throw new Error("timed out waiting for active prompt")
+}
+
+async function waitForHeadlessSteeringTurns(client, requests, sessionId, attachmentId, rootDir, markers, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastTurns = []
+  while (Date.now() < deadline) {
+    await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    lastTurns = [
+      ...await readSessionHistoryTurns(client, requests, sessionId),
+      ...await readRawSessionHistoryTurns(rootDir, sessionId),
+    ]
+    const firstTurn = lastTurns.find((turn) => turn.userText.includes(markers.firstMarker))
+    const secondTurn = lastTurns.find((turn) => turn.userText.includes(markers.secondMarker))
+    if (firstTurn?.providerText.includes(markers.firstMarker)
+      && (firstTurn.providerText.includes(markers.secondMarker) || secondTurn?.providerText.includes(markers.secondMarker))) {
+      return lastTurns
+    }
+    const active = await sessionHasActivePrompt(client, requests, sessionId, attachmentId)
+    if (!active && firstTurn?.providerText.includes(markers.firstMarker) && secondTurn) return lastTurns
+    await sleep(1000)
+  }
+  return lastTurns
+}
+
+async function readSessionHistoryTurns(client, requests, sessionId) {
+  const outline = unwrap(await client.send(requests.getSessionHistoryOutlineRequest(sessionId, null, 12)), "SessionHistoryOutline")
+  const turns = []
+  for (const agent of outline.agents ?? []) {
+    for (const turn of agent.turns ?? []) {
+      const userParts = []
+      const providerParts = []
+      if (turn.user_prompt?.entry?.text) userParts.push(turn.user_prompt.entry.text)
+      for (const row of turn.entries ?? []) {
+        const entry = row?.entry
+        if (!entry?.text) continue
+        if (entry.kind === "user_prompt") userParts.push(entry.text)
+        else providerParts.push(entry.text)
+      }
+      if (turn.summary?.entry?.text) providerParts.push(turn.summary.entry.text)
+      for (const blob of turn.blobs ?? []) {
+        const blobContent = unwrap(
+          await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agent.agent_id, blob.blob_id)),
+          "SessionHistoryBlobContent",
+        )
+        for (const row of blobContent.entries ?? []) {
+          const entry = row?.entry
+          if (!entry?.text) continue
+          if (entry.kind === "user_prompt") userParts.push(entry.text)
+          else providerParts.push(entry.text)
+        }
+      }
+      turns.push({ userText: userParts.join("\n"), providerText: providerParts.join("\n") })
+    }
+  }
+  return turns
+}
+
+async function readRawSessionHistoryTurns(rootDir, sessionId) {
+  const historyDir = path.join(rootDir, "history")
+  const { readdir } = await import("node:fs/promises")
+  const files = await readdir(historyDir).catch(() => [])
+  const turns = []
+  let current = null
+  for (const file of files.filter((name) => name.startsWith(`${sessionId}-`) && name.endsWith(".jsonl"))) {
+    const raw = await readFile(path.join(historyDir, file), "utf8").catch(() => "")
+    for (const line of raw.split("\n").filter(Boolean)) {
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (entry.kind === "user_prompt") {
+        current = { userText: String(entry.text ?? ""), providerText: "" }
+        turns.push(current)
+      } else if (current && entry.kind !== "notice") {
+        current.providerText += `\n${entry.text ?? ""}`
+      }
+    }
+  }
+  return turns
+}
+
+async function readRawProviderOutputs(rootDir, sessionId) {
+  const historyDir = path.join(rootDir, "history")
+  const { readdir } = await import("node:fs/promises")
+  const files = await readdir(historyDir).catch(() => [])
+  const outputs = []
+  for (const file of files.filter((name) => name.startsWith(`${sessionId}-`) && name.endsWith(".jsonl"))) {
+    const raw = await readFile(path.join(historyDir, file), "utf8").catch(() => "")
+    for (const line of raw.split("\n").filter(Boolean)) {
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (entry.kind === "provider_output") outputs.push(String(entry.text ?? ""))
+    }
+  }
+  return outputs
 }
 
 function claudeHookHandlerSource() {

@@ -746,11 +746,40 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
                 }
             } else if matches!(event_name, "Stop" | "StopFailure" | "SessionEnd") {
+                if provider_run.provider() == "claude-headless" {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    self.drain_known_headless_transcripts(
+                        session_id,
+                        provider_run_id,
+                        context_file,
+                    )?;
+                }
                 let _ = fs::write(context_file, "");
                 write_claude_native_marker(context_file, "");
                 let _ =
                     self.app
                         .complete_active_prompt(session_id, &agent_id, Some(provider_run_id));
+                if provider_run.provider() == "claude-headless" {
+                    if let Some(next_prompt) = self
+                        .app
+                        .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                    {
+                        crate::logging::debug_with_fields(
+                            "daemon.claude_headless",
+                            "marked post-stop queued prompt ready",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "provider_run_id": provider_run_id,
+                                "agent_id": agent_id,
+                                "prompt_id": next_prompt.id(),
+                            }),
+                        );
+                        write_claude_native_marker(
+                            context_file,
+                            &format!("post-stop-ready:{}", next_prompt.id()),
+                        );
+                    }
+                }
             } else if matches!(event_name, "PreToolUse" | "PermissionRequest") {
                 self.resolve_permission_event(
                     session_id,
@@ -1118,6 +1147,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         };
         let mut marker = claude_native_marker(context_file);
+        let force_post_stop_ready = provider_run.provider() == "claude-headless"
+            && marker
+                .as_deref()
+                .is_some_and(|value| value == format!("post-stop-ready:{}", prompt.id()));
+        if force_post_stop_ready {
+            crate::logging::debug_with_fields(
+                "daemon.claude_headless",
+                "forcing post-stop queued prompt injection",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": prompt.id(),
+                }),
+            );
+            write_claude_native_marker(context_file, "");
+            marker = None;
+        }
+        let prompt_typed_for_headless = provider_run.provider() == "claude-headless"
+            && marker.as_deref() == Some(&format!("typed:{}", prompt.id()));
         if let Some(started_at_ms) = marker
             .as_deref()
             .and_then(|value| value.strip_prefix("startup-wait:"))
@@ -1165,7 +1214,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
-            if !claude_headless_composer_visible(&recent) {
+            if !force_post_stop_ready
+                && !prompt_typed_for_headless
+                && !claude_headless_composer_visible(&recent)
+            {
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id());
                 return Ok(());
             }
@@ -1192,15 +1244,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let attachment_context =
             format_claude_attachment_context(prompt.attachments(), context_file);
         let hidden_context = if provider_run.provider() == "claude-headless" {
-            let envelope =
-                crate::prompt_assembly::PromptAssemblyService::from_env()?.assemble_provider_turn(
+            let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()?
+                .assemble_provider_turn(
                     provider_run,
                     &visible,
                     Some(prompt.hidden_system_context()),
                     prompt.attachments().to_vec(),
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                 )?;
-            let skill_context = self.claude_native_prompt_context(session_id, agent_id, &visible)?;
+            let skill_context =
+                self.claude_native_prompt_context(session_id, agent_id, &visible)?;
             join_claude_context([
                 envelope.hidden_system_context,
                 skill_context,
