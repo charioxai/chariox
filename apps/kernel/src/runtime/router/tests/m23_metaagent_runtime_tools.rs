@@ -903,15 +903,29 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         docs.payload
             .get("routed")
             .and_then(serde_json::Value::as_bool),
-        Some(false)
+        Some(true)
     );
+
+    for command in ["mcp list", "skill list", "credential list", "slice list"] {
+        let routed = router
+            .dispatch_authenticated_runtime_tool_call(
+                &meta_auth_token,
+                crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+                serde_json::json!({
+                    "command": command
+                }),
+            )
+            .await
+            .expect("safe registered commands should dispatch");
+        assert!(routed.ok, "{command}: {:?}", routed.payload);
+    }
 
     let not_routed = router
         .dispatch_authenticated_runtime_tool_call(
             &meta_auth_token,
             crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
             serde_json::json!({
-                "command": "mcp list"
+                "command": "mcp install test --command node"
             }),
         )
         .await
@@ -922,7 +936,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("command registry")),
+            .is_some_and(|message| message.contains("only `mcp list`")),
         "{:?}",
         not_routed.payload
     );

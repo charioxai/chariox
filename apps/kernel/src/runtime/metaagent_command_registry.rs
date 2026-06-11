@@ -105,7 +105,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
-        routed: false,
+        routed: true,
         description: "Manage MCP extension grants for this user's agents through existing kernel extension policy.",
     },
     MetaCommandDoc {
@@ -118,7 +118,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
-        routed: false,
+        routed: true,
         description: "Manage skill grants for this user's agents through existing kernel extension policy.",
     },
     MetaCommandDoc {
@@ -131,7 +131,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "authorized slices",
-        routed: false,
+        routed: true,
         description: "Inspect and manage slices. Metaagents cannot run inside a slice but can manage authorized slices.",
     },
     MetaCommandDoc {
@@ -144,8 +144,8 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         mutates: true,
         policy: MetaCommandPolicy::Approval,
         authority: "configured user approval",
-        routed: false,
-        description: "Manage credential handles and vault-backed values. Sensitive mutations should require policy approval.",
+        routed: true,
+        description: "List and inspect credential handles. Sensitive credential mutations require approval policy and are not routed by default.",
     },
     MetaCommandDoc {
         name: "session new",
@@ -279,6 +279,37 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
                 message: "only `workflow list`, `workflow new`, `workflow run`, `workflow runs`, `workflow cancel`, and `workflow resume` are routed for metaagent command execution yet".to_string(),
+            }),
+        },
+        "mcp" => match tokens.get(1).map(String::as_str) {
+            Some("list" | "ls" | "show" | "get" | "grant" | "revoke") => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `mcp list`, `mcp show`, `mcp grant`, and `mcp revoke` are routed for metaagent command execution yet".to_string(),
+            }),
+        },
+        "skill" | "skills" => match tokens.get(1).map(String::as_str) {
+            Some("list" | "ls" | "show" | "get" | "grant" | "revoke") => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `skill list`, `skill show`, `skill grant`, and `skill revoke` are routed for metaagent command execution yet".to_string(),
+            }),
+        },
+        "slice" => match tokens.get(1).map(String::as_str) {
+            Some(
+                "list" | "ls" | "show" | "get" | "start" | "stop" | "save" | "save-state"
+                | "status" | "state-status" | "backup",
+            ) => Some(MetaCommandExecutionPolicy::Routed),
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `slice list`, `slice show`, `slice start`, `slice stop`, `slice save-state`, `slice status`, and `slice backup` are routed for metaagent command execution yet".to_string(),
+            }),
+        },
+        "credential" | "credentials" => match tokens.get(1).map(String::as_str) {
+            Some("list" | "ls" | "get" | "show") => Some(MetaCommandExecutionPolicy::Routed),
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `credential list` and `credential get` are routed for metaagent command execution; credential mutations require approval policy".to_string(),
             }),
         },
         _ => None,
