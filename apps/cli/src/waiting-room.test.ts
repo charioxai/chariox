@@ -50,7 +50,7 @@ test("waiting room cycles model and effort from provider catalog", () => {
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "effort")?.value, "Low")
 })
 
-test("waiting room cycles Claude Code as a provider backend", () => {
+test("waiting room cycles Claude modes as provider backends", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
@@ -59,7 +59,11 @@ test("waiting room cycles Claude Code as a provider backend", () => {
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Codex")
 
   state = cycleWaitingRoomValue(state, [], catalog, 1)
-  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude Code")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude headless")
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Claude Sonnet 4.6")
+
+  state = cycleWaitingRoomValue(state, [], catalog, 1)
+  assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "provider")?.value, "Claude -p")
   assert.equal(waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value, "Claude Sonnet 4.6")
 
   state = moveWaitingRoomFocus(state, [], 2)

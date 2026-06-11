@@ -113,11 +113,18 @@ export function buildProviderItems(input: string, providerNode: CommandNode, con
       value: "codex",
     },
     {
-      id: "provider-claude",
-      label: backendProviderLabel("claude"),
-      description: providerSelectionDescription("Claude Code", localFallback),
+      id: "provider-claude-headless",
+      label: backendProviderLabel("claude-headless"),
+      description: providerSelectionDescription("Claude headless", localFallback),
       kind: "provider",
-      value: "claude",
+      value: "claude-headless",
+    },
+    {
+      id: "provider-claude-p",
+      label: backendProviderLabel("claude-p"),
+      description: providerSelectionDescription("Claude -p", localFallback),
+      kind: "provider",
+      value: "claude-p",
     },
     {
       id: "provider-status",

@@ -97,7 +97,7 @@ test("deriveCurrentProviderSelection does not infer focused agent ownership from
         effort: "medium",
       }),
       waitingRoomState: waitingRoomState({
-        providerId: "claude",
+        providerId: "claude-p",
         modelId: "anthropic/claude-sonnet-4",
         effort: "high",
       }),

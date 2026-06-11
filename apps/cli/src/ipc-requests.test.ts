@@ -51,6 +51,36 @@ test("launchProviderRunRequest includes native TUI binding metadata", () => {
   )
 })
 
+test("launchProviderRunRequest maps Claude modes to the Claude adapter", () => {
+  assert.deepEqual(
+    launchProviderRunRequest(
+      "session-1",
+      "claude-headless",
+      "default",
+      "claude-headless/claude-sonnet-4-6",
+      "high",
+      "agent-a",
+    ).LaunchProviderRun,
+    {
+      session_id: "session-1",
+      agent_id: "agent-a",
+      adapter_key: "claude",
+      provider: "claude-headless",
+      account_profile: "default",
+      model: "claude-sonnet-4-6",
+      variant: "high",
+      structured_endpoint: null,
+      provider_session_id: null,
+      native_tui: false,
+    },
+  )
+  assert.equal(
+    launchProviderRunRequest("session-1", "claude-p", "default", "claude-p/claude-opus-4-7", "", null)
+      .LaunchProviderRun.adapter_key,
+    "claude",
+  )
+})
+
 test("attach and submit requests preserve full terminal fields", () => {
   assert.deepEqual(attachToSessionRequest("session-1", "cli-1"), {
     AttachToSession: {

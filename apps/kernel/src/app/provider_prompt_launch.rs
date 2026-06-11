@@ -35,14 +35,11 @@ impl DaemonApp {
                 ),
             });
         }
-        let adapter_key = match agent.provider() {
-            "default" => "opencode",
-            value => value,
-        };
         let provider = match agent.provider() {
             "default" => "opencode",
             value => value,
         };
+        let adapter_key = crate::provider::adapter_key_for_provider(provider);
         let session = self.sessions.get_session(session_id)?;
         let effective_config =
             crate::session::effective_agent_execution_config(&session, Some(&agent));

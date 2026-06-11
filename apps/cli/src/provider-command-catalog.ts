@@ -44,8 +44,15 @@ const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
     // but no machine-readable provider-command list yet.
     commands: [],
   },
-  claude: {
-    provider: "claude",
+  "claude-headless": {
+    provider: "claude-headless",
+    source: "shipped",
+    discovery: "none",
+    // Claude Code CLI commands are not exposed through Arroba forwarding yet.
+    commands: [],
+  },
+  "claude-p": {
+    provider: "claude-p",
     source: "shipped",
     discovery: "none",
     // Claude Code CLI commands are not exposed through Arroba forwarding yet.
@@ -81,10 +88,15 @@ export function fallbackProviderCommandCatalogs(
       ...metadata,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.codex.commands],
     },
-    claude: {
-      ...EMPTY_PROVIDER_COMMAND_CATALOGS.claude,
+    "claude-headless": {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-headless"],
       ...metadata,
-      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.claude.commands],
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-headless"].commands],
+    },
+    "claude-p": {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-p"],
+      ...metadata,
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-p"].commands],
     },
   }
 }

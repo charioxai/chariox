@@ -33,7 +33,7 @@ export type CatalogModelOption = {
   variants: string[]
 }
 
-export const BACKEND_PROVIDER_IDS = ["opencode", "codex", "claude"] as const
+export const BACKEND_PROVIDER_IDS = ["opencode", "codex", "claude-headless", "claude-p"] as const
 
 export type BackendProviderId = typeof BACKEND_PROVIDER_IDS[number]
 
@@ -42,6 +42,9 @@ export function isBackendProviderId(value: string): value is BackendProviderId {
 }
 
 export function normalizeBackendProviderId(value: string): BackendProviderId {
+  if (value === "claude") {
+    return "claude-p"
+  }
   return isBackendProviderId(value) ? value : "opencode"
 }
 
@@ -49,8 +52,10 @@ export function backendProviderLabel(providerId: BackendProviderId) {
   switch (providerId) {
     case "codex":
       return "Codex"
-    case "claude":
-      return "Claude Code"
+    case "claude-headless":
+      return "Claude headless"
+    case "claude-p":
+      return "Claude -p"
     case "opencode":
       return "OpenCode"
   }
@@ -98,8 +103,27 @@ export function fallbackProviderCatalog(options: {
         },
       },
       {
-        id: "claude",
-        name: "Claude Code",
+        id: "claude-headless",
+        name: "Claude headless",
+        remote_machine_aliases: [],
+        models: {
+          "claude-sonnet-4-6": {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+              max: {},
+            },
+          },
+        },
+      },
+      {
+        id: "claude-p",
+        name: "Claude -p",
         remote_machine_aliases: [],
         models: {
           "claude-sonnet-4-6": {
@@ -120,9 +144,10 @@ export function fallbackProviderCatalog(options: {
     default: {
       codex: "gpt-5.4",
       opencode: "gpt-5.4",
-      claude: "claude-sonnet-4-6",
+      "claude-headless": "claude-sonnet-4-6",
+      "claude-p": "claude-sonnet-4-6",
     },
-    connected: ["codex", "opencode", "claude"],
+    connected: ["codex", "opencode", "claude-headless", "claude-p"],
     ...(options.source ? { source: options.source } : {}),
     ...(options.unavailableReason ? { unavailable_reason: options.unavailableReason } : {}),
   } satisfies ProviderCatalog
@@ -217,8 +242,11 @@ function providerBelongsToBackend(
   if (backendProviderId === "codex") {
     return providerId === "codex"
   }
-  if (backendProviderId === "claude") {
-    return providerId === "claude"
+  if (backendProviderId === "claude-headless") {
+    return providerId === "claude-headless"
+  }
+  if (backendProviderId === "claude-p") {
+    return providerId === "claude-p" || providerId === "claude"
   }
   return providerId === "opencode"
 }

@@ -150,14 +150,11 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                         ),
                     });
                 }
-                let adapter_key = match agent.provider() {
-                    "default" => "opencode",
-                    value => value,
-                };
                 let provider = match agent.provider() {
                     "default" => "opencode",
                     value => value,
                 };
+                let adapter_key = crate::provider::adapter_key_for_provider(provider);
                 let session = app.sessions().get_session(session_id)?;
                 let effective_config =
                     crate::session::effective_agent_execution_config(&session, Some(&agent));
@@ -193,14 +190,11 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
         }
         Err(DaemonError::NoActiveProviderRun { .. }) => {
             let agent = app.agents().get_agent(agent_id)?;
-            let adapter_key = match agent.provider() {
-                "default" => "opencode",
-                value => value,
-            };
             let provider = match agent.provider() {
                 "default" => "opencode",
                 value => value,
             };
+            let adapter_key = crate::provider::adapter_key_for_provider(provider);
             let mut request = LaunchProviderRequest::new(
                 session_id,
                 adapter_key,

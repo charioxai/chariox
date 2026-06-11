@@ -78,6 +78,14 @@ pub(crate) use workspace_live_sync_policy::{
     native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
     NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
 };
+
+pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
+    match provider {
+        "default" => "opencode",
+        "claude-headless" | "claude-p" => "claude",
+        value => value,
+    }
+}
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,

@@ -51,18 +51,23 @@ test("catalogModelOptions uses remote machine qualified provider names", () => {
   assert.equal(options[0]?.providerName, "Codex (builder-west)")
 })
 
-test("fallback catalog exposes Claude Code as an isolated backend", () => {
+test("fallback catalog exposes Claude headless and Claude -p as isolated backends", () => {
   const catalog = fallbackProviderCatalog()
 
-  assert.equal(backendProviderLabel("claude"), "Claude Code")
-  assert.equal(normalizeBackendProviderId("claude"), "claude")
+  assert.equal(backendProviderLabel("claude-headless"), "Claude headless")
+  assert.equal(backendProviderLabel("claude-p"), "Claude -p")
+  assert.equal(normalizeBackendProviderId("claude"), "claude-p")
 
-  const claudeOptions = catalogModelOptions(catalog, "claude")
-  assert.deepEqual(claudeOptions.map((option) => option.providerId), ["claude"])
-  assert.deepEqual(claudeOptions.map((option) => option.id), ["claude/claude-sonnet-4-6"])
+  const claudeHeadlessOptions = catalogModelOptions(catalog, "claude-headless")
+  assert.deepEqual(claudeHeadlessOptions.map((option) => option.providerId), ["claude-headless"])
+  assert.deepEqual(claudeHeadlessOptions.map((option) => option.id), ["claude-headless/claude-sonnet-4-6"])
+
+  const claudePrintOptions = catalogModelOptions(catalog, "claude-p")
+  assert.deepEqual(claudePrintOptions.map((option) => option.providerId), ["claude-p"])
+  assert.deepEqual(claudePrintOptions.map((option) => option.id), ["claude-p/claude-sonnet-4-6"])
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
-  assert.equal(opencodeOptions.some((option) => option.providerId === "claude"), false)
+  assert.equal(opencodeOptions.some((option) => option.providerId.startsWith("claude")), false)
 })
 
 test("fallback catalog can be marked as local fallback metadata", () => {

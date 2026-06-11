@@ -39,7 +39,13 @@ test("command center dynamic items project provider, model, variant, and view ch
     currentVariant: "high",
   }
 
-  assert.equal(buildProviderItems("/provider cla", providerNode, context)[0]?.value, "claude")
+  assert.deepEqual(
+    buildProviderItems("/provider cla", providerNode, context)
+      .filter((item) => item.kind === "provider")
+      .map((item) => item.value)
+      .sort(),
+    ["claude-headless", "claude-p"],
+  )
   assert.equal(buildProviderItems("/provider proc", providerNode, context).some((item) => item.value === "/provider processes "), true)
   const teardownItem = buildProviderItems("/provider teardown", providerNode, context).find((item) => item.value === "/provider processes teardown ")
   assert.equal(teardownItem?.description, "Tear down safe daemon-tracked provider processes for one provider")

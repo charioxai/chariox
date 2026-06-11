@@ -88,7 +88,7 @@ test("provider namespace submit restores UI after submission failure", async () 
 })
 
 function createHarness(options: {
-  focusedProvider?: "opencode" | "codex" | "claude" | null
+  focusedProvider?: "opencode" | "codex" | "claude-headless" | "claude-p" | null
   focusedAgentId?: string | null
   hasAgent?: (agentId: string) => boolean
   attachment?: RuntimeAttachment | null

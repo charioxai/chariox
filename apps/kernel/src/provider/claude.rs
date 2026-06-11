@@ -10,6 +10,7 @@ mod launch_args;
 mod native_tui;
 
 pub use catalog::claude_provider_catalog;
+use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 use launch_args::claude_launch_args;
 pub(crate) use launch_args::claude_launch_args_for_run;
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
@@ -100,6 +101,41 @@ fn plan_claude_launch_unlocked(
         return Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "claude:native-tui".to_string(),
+            pty_target: None,
+            pty_program: Some(executable.display().to_string()),
+            pty_args: claude_native_tui_args(request, &native.settings_file)?,
+            pty_env,
+            pty_env_remove: claude_provider_env_remove(Some(request)),
+            working_directory: request.working_directory.clone(),
+            structured_endpoint: None,
+        });
+    }
+    if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
+        let native = prepare_claude_native_tui_files()?;
+        let mut pty_env = BTreeMap::new();
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+            native.events_file.display().to_string(),
+        );
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+            native.context_file.display().to_string(),
+        );
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+            native.context_response_dir.display().to_string(),
+        );
+        pty_env.insert(
+            "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+            native.permission_response_dir.display().to_string(),
+        );
+        pty_env.insert(
+            "ARROBA_CLAUDE_SETTINGS_FILE".to_string(),
+            native.settings_file.display().to_string(),
+        );
+        return Ok(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "claude:headless".to_string(),
             pty_target: None,
             pty_program: Some(executable.display().to_string()),
             pty_args: claude_native_tui_args(request, &native.settings_file)?,
@@ -240,6 +276,22 @@ mod tests {
         std::env::remove_var("ARROBA_CLAUDE_CONFIG");
         let _ = fs::remove_file(&path);
 
+        assert_eq!(
+            catalog
+                .all
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-headless", "claude-p"]
+        );
+        assert_eq!(
+            catalog.default.get("claude-headless").map(String::as_str),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            catalog.default.get("claude-p").map(String::as_str),
+            Some("claude-sonnet-4-6")
+        );
         let models = &catalog.all[0].models;
         assert!(!models.contains_key("sonnet"));
         assert!(models.contains_key("claude-sonnet-4-6"));
@@ -302,6 +354,74 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn plans_claude_print_mode_with_structured_stdio() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-resolve-test-{}-print-mode",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-p",
+            "default",
+            "claude-p/claude-sonnet-4-6",
+        );
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
+        assert_eq!(
+            launch.structured_endpoint.as_deref(),
+            Some("stdio://claude")
+        );
+        assert_eq!(launch.pty_args.first().map(String::as_str), Some("-p"));
+        assert!(launch
+            .pty_args
+            .windows(2)
+            .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
+    }
+
+    #[test]
+    fn plans_claude_headless_mode_without_print_stream_json() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-resolve-test-{}-headless-mode",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-headless/claude-sonnet-4-6",
+        );
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_eq!(launch.process_label, "claude:headless");
+        assert_eq!(launch.structured_endpoint, None);
+        assert!(!launch.pty_args.iter().any(|arg| arg == "-p"));
+        assert!(!launch.pty_args.iter().any(|arg| arg == "stream-json"));
+        assert!(launch
+            .pty_args
+            .windows(2)
+            .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
+        assert!(launch.pty_env.contains_key("ARROBA_CLAUDE_SETTINGS_FILE"));
     }
 
     #[test]

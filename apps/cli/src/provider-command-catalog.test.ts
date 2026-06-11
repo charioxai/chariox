@@ -38,6 +38,6 @@ test("parseProviderNamespaceCommand rewrites focused provider namespaces", () =>
     provider: "codex",
     forwardedCommand: "/compact",
   })
-  assert.equal(parseProviderNamespaceCommand("/claude compact", "claude"), null)
+  assert.equal(parseProviderNamespaceCommand("/claude compact", "claude-p"), null)
   assert.equal(providerNamespace("codex"), "/codex")
 })

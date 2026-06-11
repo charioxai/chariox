@@ -372,9 +372,10 @@ pub(crate) fn launch_provider_request_from_local(
     app: &DaemonApp,
     request: LaunchProviderRunRequest,
 ) -> LaunchProviderRequest {
+    let adapter_key = crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
     let mut launch_request = LaunchProviderRequest::new(
         request.session_id.clone(),
-        request.adapter_key,
+        adapter_key,
         request.provider,
         request.account_profile,
         request.model,

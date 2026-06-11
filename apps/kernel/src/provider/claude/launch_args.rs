@@ -197,9 +197,11 @@ fn claude_mcp_server_config(server: &ArrobaMcpServerConfig) -> serde_json::Value
 }
 
 pub(super) fn normalized_claude_model(model: &str) -> String {
-    model
-        .trim()
-        .strip_prefix("claude/")
-        .unwrap_or_else(|| model.trim())
-        .to_string()
+    let model = model.trim();
+    for prefix in ["claude/", "claude-headless/", "claude-p/"] {
+        if let Some(stripped) = model.strip_prefix(prefix) {
+            return stripped.to_string();
+        }
+    }
+    model.to_string()
 }

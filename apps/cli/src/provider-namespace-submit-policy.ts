@@ -21,7 +21,7 @@ export function validateProviderNamespaceSubmit(options: {
       ok: false,
       message: options.focusedProvider
         ? `${command.raw.split(/\s+/, 1)[0]} is unavailable while the focused agent uses ${options.focusedProvider}`
-        : "provider-native commands require a focused OpenCode, Codex, or Claude Code agent",
+        : "provider-native commands require a focused OpenCode, Codex, or Claude agent",
     }
   }
   if (!command.forwardedCommand) {

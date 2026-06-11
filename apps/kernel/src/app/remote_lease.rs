@@ -98,9 +98,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: lease_id.to_string(),
             })?;
-        if self.app.providers.registry().resolve(provider).is_none() {
+        let adapter_key = crate::provider::adapter_key_for_provider(provider);
+        if self.app.providers.registry().resolve(adapter_key).is_none() {
             return Err(DaemonError::ProviderAdapterNotFound {
-                adapter_key: provider.to_string(),
+                adapter_key: adapter_key.to_string(),
             });
         }
         let worktree = if let Some(placement) = worktree_placement {

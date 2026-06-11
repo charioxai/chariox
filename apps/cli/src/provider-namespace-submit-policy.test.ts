@@ -55,7 +55,7 @@ test("provider namespace submit policy requires a focused provider", () => {
     }),
     {
       ok: false,
-      message: "provider-native commands require a focused OpenCode, Codex, or Claude Code agent",
+      message: "provider-native commands require a focused OpenCode, Codex, or Claude agent",
     },
   )
 })

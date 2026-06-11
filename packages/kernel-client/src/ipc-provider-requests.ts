@@ -84,14 +84,15 @@ export function launchProviderRunRequest(
     nativeTui?: boolean | null
   } | null,
 ) {
-  const normalizedModel = provider === "codex" && model.startsWith("codex/")
-    ? model.slice("codex/".length)
-    : model
+  const adapterKey = provider === "claude-headless" || provider === "claude-p"
+    ? "claude"
+    : provider
+  const normalizedModel = normalizedProviderModel(provider, model)
   return {
     LaunchProviderRun: {
       session_id: sessionId,
       agent_id: agentId ?? null,
-      adapter_key: provider,
+      adapter_key: adapterKey,
       provider,
       account_profile: accountProfile,
       model: normalizedModel,
@@ -101,4 +102,16 @@ export function launchProviderRunRequest(
       native_tui: native?.nativeTui ?? false,
     },
   }
+}
+
+function normalizedProviderModel(provider: string, model: string) {
+  if (provider === "codex" && model.startsWith("codex/")) {
+    return model.slice("codex/".length)
+  }
+  for (const claudeProvider of ["claude", "claude-headless", "claude-p"]) {
+    if (provider === claudeProvider && model.startsWith(`${claudeProvider}/`)) {
+      return model.slice(claudeProvider.length + 1)
+    }
+  }
+  return model
 }

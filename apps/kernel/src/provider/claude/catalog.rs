@@ -10,6 +10,9 @@ use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodePro
 use super::launch_args::normalized_claude_model;
 use super::resolve_claude_executable;
 
+pub(crate) const CLAUDE_HEADLESS_PROVIDER_ID: &str = "claude-headless";
+pub(crate) const CLAUDE_PRINT_PROVIDER_ID: &str = "claude-p";
+
 const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
     ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
     ("claude-opus-4-7", "Claude Opus 4.7"),
@@ -20,19 +23,30 @@ pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
     for (id, name) in claude_catalog_model_entries() {
         models.insert(id.clone(), claude_model(&id, &name));
     }
+    let providers = [
+        (CLAUDE_HEADLESS_PROVIDER_ID, "Claude headless"),
+        (CLAUDE_PRINT_PROVIDER_ID, "Claude -p"),
+    ];
+    let connected = if resolve_claude_executable().is_ok() {
+        providers.iter().map(|(id, _)| (*id).to_string()).collect()
+    } else {
+        Vec::new()
+    };
     OpenCodeProviderCatalog {
-        all: vec![OpenCodeProviderInfo {
-            id: "claude".to_string(),
-            name: "Claude Code".to_string(),
-            remote_machine_aliases: Vec::new(),
-            models,
-        }],
-        default: BTreeMap::from([("claude".to_string(), "claude-sonnet-4-6".to_string())]),
-        connected: if resolve_claude_executable().is_ok() {
-            vec!["claude".to_string()]
-        } else {
-            Vec::new()
-        },
+        all: providers
+            .iter()
+            .map(|(id, name)| OpenCodeProviderInfo {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                remote_machine_aliases: Vec::new(),
+                models: models.clone(),
+            })
+            .collect(),
+        default: providers
+            .iter()
+            .map(|(id, _)| ((*id).to_string(), "claude-sonnet-4-6".to_string()))
+            .collect(),
+        connected,
     }
 }
 

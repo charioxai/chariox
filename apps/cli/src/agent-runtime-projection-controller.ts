@@ -27,6 +27,7 @@ import {
 } from "./session-agent-resolver.js"
 import {
   isBackendProviderId,
+  normalizeBackendProviderId,
   type BackendProviderId,
 } from "./provider-catalog.js"
 
@@ -61,7 +62,9 @@ export function createAgentRuntimeProjectionController(
     deps.getSession().agents.find((agent) => agent.id === deps.getFocusedAgentId()) ?? null
   const focusedBackendProvider = (): BackendProviderId | null => {
     const provider = focusedAgent()?.provider
-    return provider && isBackendProviderId(provider) ? provider : null
+    return provider && (isBackendProviderId(provider) || provider === "claude")
+      ? normalizeBackendProviderId(provider)
+      : null
   }
   const focusedProviderRun = () => focusedProviderRunForAgent(
     deps.getProviderRun(),

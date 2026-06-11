@@ -49,8 +49,14 @@ test("getProviderCommandCatalogs marks daemon catalog source", async () => {
           discovery: "none",
           commands: [],
         },
-        claude: {
-          provider: "claude",
+        "claude-headless": {
+          provider: "claude-headless",
+          source: "shipped",
+          discovery: "none",
+          commands: [],
+        },
+        "claude-p": {
+          provider: "claude-p",
           source: "shipped",
           discovery: "none",
           commands: [],

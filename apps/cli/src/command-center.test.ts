@@ -188,24 +188,25 @@ test("buildCommandCenterItems exposes Claude provider and models", () => {
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
   })
-  assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude"), true)
+  assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude-headless"), true)
+  assert.equal(providerItems.some((item) => item.kind === "provider" && item.value === "claude-p"), true)
 
   const modelItems = buildCommandCenterItems("/model son", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    currentProvider: "claude",
-    focusedProvider: "claude",
-    currentModel: "claude/claude-sonnet-4-6",
+    currentProvider: "claude-headless",
+    focusedProvider: "claude-headless",
+    currentModel: "claude-headless/claude-sonnet-4-6",
     currentVariant: "high",
   })
-  assert.deepEqual(modelItems.map((item) => item.value), ["claude/claude-sonnet-4-6"])
+  assert.deepEqual(modelItems.map((item) => item.value), ["claude-headless/claude-sonnet-4-6"])
 
   const rootItems = buildCommandCenterItems("/", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
-    currentProvider: "claude",
-    focusedProvider: "claude",
-    currentModel: "claude/claude-sonnet-4-6",
+    currentProvider: "claude-headless",
+    focusedProvider: "claude-headless",
+    currentModel: "claude-headless/claude-sonnet-4-6",
     currentVariant: "high",
   })
   assert.equal(rootItems.some((item) => item.kind === "group" && item.label === "/claude"), false)
