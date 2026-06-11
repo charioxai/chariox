@@ -697,14 +697,36 @@ function formatSliceAuditEvents(events: readonly Record<string, unknown>[]): str
     const message = typeof payload.message === "string" && payload.message ? ` message=${payload.message}` : ""
     const details = [
       fieldPart("status", payload.status),
+      fieldPart("backend", payload.backend),
       fieldPart("display", payload.display_mode),
       fieldPart("worktree", payload.worktree_id ?? payload.workspace_mount),
+      fieldPart("sessions", Array.isArray(payload.session_ids) ? payload.session_ids.length : undefined),
       fieldPart("agents", Array.isArray(payload.agent_ids) ? payload.agent_ids.length : undefined),
       fieldPart("worker", payload.worker_kernel_id ?? payload.worker_kernel_ref),
+      fieldPart("machine", payload.worker_machine_id ?? payload.owner_machine_id),
     ].filter(Boolean)
     const detailLine = details.length > 0 ? `\n  ${details.join(" ")}` : ""
-    return `${at} ${action}${outcome ? ` ${outcome}` : ""} slice=${String(label ?? "-")}${provider}${message}${detailLine}`
+    const next = sliceAuditNextAction(action, outcome, payload, label)
+    const nextLine = next ? `\n  next: ${next}` : ""
+    return `${at} ${action}${outcome ? ` ${outcome}` : ""} slice=${String(label ?? "-")}${provider}${message}${detailLine}${nextLine}`
   }).join("\n")
+}
+
+function sliceAuditNextAction(action: string, outcome: string, payload: Record<string, unknown>, label: unknown): string | null {
+  if (outcome !== "failed") {
+    return null
+  }
+  const sliceRef = String(label || payload.slice_id || "<slice>")
+  const provider = typeof payload.provider === "string" && payload.provider ? payload.provider : null
+  if (action.startsWith("auth.")) {
+    return provider
+      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      : `run /slice doctor ${sliceRef}; inspect provider account state, then retry the matching /slice auth command`
+  }
+  if (["start", "stop", "delete", "state.save", "state.reset", "backup.create"].includes(action)) {
+    return `run /slice doctor ${sliceRef}; inspect /slice logs ${sliceRef} and /slice audit ${sliceRef}, then retry after fixing the reported error`
+  }
+  return `run /slice doctor ${sliceRef}; inspect logs and retry after fixing the reported error`
 }
 
 function fieldPart(label: string, value: unknown): string | null {

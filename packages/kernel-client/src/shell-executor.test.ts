@@ -1754,25 +1754,53 @@ test("executeShellCommand renders slice audit", async () => {
     if ("ListSliceAudit" in request) {
       return {
         SliceAuditListed: {
-          events: [{
-            sequence: 1,
-            event_id: "state_evt_1",
-            kind: "slice.audit",
-            subject_id: "slice-1",
-            timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
-            payload: {
-              slice_id: "slice-1",
-              slice_name: "linux-a",
-              action: "auth.import",
-              outcome: "completed",
-              provider: "codex",
-              status: "running",
-              display_mode: "headless",
-              worktree_id: "/repo/feature",
-              agent_ids: ["agent-1"],
-              worker_kernel_id: "kernel-slice",
+          events: [
+            {
+              sequence: 1,
+              event_id: "state_evt_1",
+              kind: "slice.audit",
+              subject_id: "slice-1",
+              timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
+              payload: {
+                slice_id: "slice-1",
+                slice_name: "linux-a",
+                action: "auth.import",
+                outcome: "completed",
+                provider: "codex",
+                status: "running",
+                backend: "local_docker",
+                display_mode: "headless",
+                worktree_id: "/repo/feature",
+                session_ids: ["session-1", "session-2"],
+                agent_ids: ["agent-1"],
+                worker_kernel_id: "kernel-slice",
+                worker_machine_id: "machine-slice",
+              },
             },
-          }],
+            {
+              sequence: 2,
+              event_id: "state_evt_2",
+              kind: "slice.audit",
+              subject_id: "slice-1",
+              timestamp_ms: Date.parse("2026-01-02T03:04:06.000Z"),
+              payload: {
+                slice_id: "slice-1",
+                slice_name: "linux-a",
+                action: "auth.login",
+                outcome: "failed",
+                provider: "opencode",
+                message: "login failed",
+                status: "running",
+                backend: "local_docker",
+                display_mode: "headless",
+                worktree_id: "/repo/feature",
+                session_ids: ["session-1", "session-2"],
+                agent_ids: ["agent-1"],
+                worker_kernel_id: "kernel-slice",
+                worker_machine_id: "machine-slice",
+              },
+            },
+          ],
         },
       }
     }
@@ -1784,7 +1812,9 @@ test("executeShellCommand renders slice audit", async () => {
   assert.equal(result.ok, true)
   assert.deepEqual(requests, [{ ListSliceAudit: { slice_ref: "linux-a", limit: 5 } }])
   assert.match(result.message ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-a provider=codex/)
-  assert.match(result.message ?? "", /status=running display=headless worktree=\/repo\/feature agents=1 worker=kernel-slice/)
+  assert.match(result.message ?? "", /status=running backend=local_docker display=headless worktree=\/repo\/feature sessions=2 agents=1 worker=kernel-slice machine=machine-slice/)
+  assert.match(result.message ?? "", /2026-01-02T03:04:06.000Z auth\.login failed slice=linux-a provider=opencode message=login failed/)
+  assert.match(result.message ?? "", /next: run \/slice doctor linux-a; retry with \/slice auth login linux-a opencode or \/slice auth import linux-a opencode/)
 })
 
 test("executeShellCommand attaches standalone shell clients when switching sessions", async () => {

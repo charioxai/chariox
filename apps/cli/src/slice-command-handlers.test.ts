@@ -344,7 +344,9 @@ test("slice command audit resolves focused slice and passes limit", async () => 
 
   assert.deepEqual(harness.auditRequests, [{ sliceRef: "linux-dev", limit: 5 }])
   assert.match(harness.notices.at(-1) ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-dev provider=codex/)
-  assert.match(harness.notices.at(-1) ?? "", /status=running display=headless worktree=\/repo\/wt agents=1 worker=kernel-slice/)
+  assert.match(harness.notices.at(-1) ?? "", /status=running backend=local_docker display=headless worktree=\/repo\/wt sessions=2 agents=1 worker=kernel-slice machine=machine-slice/)
+  assert.match(harness.notices.at(-1) ?? "", /2026-01-02T03:04:06.000Z auth\.login failed slice=linux-dev provider=opencode message=login failed/)
+  assert.match(harness.notices.at(-1) ?? "", /next: run \/slice doctor linux-dev; retry with \/slice auth login linux-dev opencode or \/slice auth import linux-dev opencode/)
   assert.equal(harness.footers.at(-1)?.message, "slice audit linux-dev")
 })
 
@@ -641,25 +643,53 @@ function sliceHarness(options: {
     },
     listSliceAudit: async (sliceRef, limit) => {
       auditRequests.push({ sliceRef, limit })
-      return [{
-        sequence: 1,
-        event_id: "state_evt_1",
-        kind: "slice.audit",
-        subject_id: "slice-1",
-        timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
-        payload: {
-          slice_id: "slice-1",
-          slice_name: sliceRef,
-          action: "auth.import",
-          outcome: "completed",
-          provider: "codex",
-          status: "running",
-          display_mode: "headless",
-          worktree_id: "/repo/wt",
-          agent_ids: ["agent-1"],
-          worker_kernel_id: "kernel-slice",
+      return [
+        {
+          sequence: 1,
+          event_id: "state_evt_1",
+          kind: "slice.audit",
+          subject_id: "slice-1",
+          timestamp_ms: Date.parse("2026-01-02T03:04:05.000Z"),
+          payload: {
+            slice_id: "slice-1",
+            slice_name: sliceRef,
+            action: "auth.import",
+            outcome: "completed",
+            provider: "codex",
+            status: "running",
+            backend: "local_docker",
+            display_mode: "headless",
+            worktree_id: "/repo/wt",
+            session_ids: ["session-1", "session-2"],
+            agent_ids: ["agent-1"],
+            worker_kernel_id: "kernel-slice",
+            worker_machine_id: "machine-slice",
+          },
         },
-      }]
+        {
+          sequence: 2,
+          event_id: "state_evt_2",
+          kind: "slice.audit",
+          subject_id: "slice-1",
+          timestamp_ms: Date.parse("2026-01-02T03:04:06.000Z"),
+          payload: {
+            slice_id: "slice-1",
+            slice_name: sliceRef,
+            action: "auth.login",
+            outcome: "failed",
+            provider: "opencode",
+            message: "login failed",
+            status: "running",
+            backend: "local_docker",
+            display_mode: "headless",
+            worktree_id: "/repo/wt",
+            session_ids: ["session-1", "session-2"],
+            agent_ids: ["agent-1"],
+            worker_kernel_id: "kernel-slice",
+            worker_machine_id: "machine-slice",
+          },
+        },
+      ]
     },
     saveSliceState: async (sliceRef) => {
       savedStates.push(sliceRef)
