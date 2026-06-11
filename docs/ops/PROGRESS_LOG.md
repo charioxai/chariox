@@ -1506,3 +1506,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added worker kernel, machine, and worktree identity to the forwarded managed live-sync context; updated relay peer protocol shape coverage and bumped the local daemon protocol to 110.
 - Extracted shared managed file-change construction for local and remote managed fanout, and updated notices so remote managed changes render as managed summaries.
 - Revalidated with `cargo fmt --manifest-path apps/kernel/Cargo.toml`, `cargo test --manifest-path apps/kernel/Cargo.toml workspace_live_sync -- --nocapture`, and `pnpm --filter @arroba/cli run workspace-live-sync:matrix-drill -- --include-remote --only remote-managed-codex --continue-on-failure`. The final same-host relay managed drill passed in 263.9s, covering text write/edit, patch/move/delete, opaque move/delete, ignored direct writes, and collision/external-change checks across two managed targets.
+
+### Hosted Cloud home extension revalidation
+
+- Revalidated hosted Cloud staging on 2026-06-11 against OSS main `0b2f7ba6b` and `arroba-cloud` main `d6edc7b8` with `pnpm run smoke:hosted-oss-drill -- --second-kernel --multi-user` from `/Users/miguel/arroba-cloud`.
+- The run used `https://arroba-cloud-staging.osc-fr1.scalingo.io` and hosted relay `wss://195.201.123.115.sslip.io`. It passed the paired second-kernel worker path and Cloud multi-user path in one run.
+- The second-kernel scenario validated hosted worker machine pairing, relay target readiness, remote agent leasing, home-owned script/MCP/connector execution from the worker runtime MCP surface, revoke removing advertisement and blocking stale calls, and prompt completion through the leased worker agent.
+- The collab extension scenario validated a collaborator-owned remote agent on the hosted second kernel, collaborator denial for grant/revoke/request of owner home extensions, owner-scoped grant authority, and successful home-executed script/MCP/connector calls after owner grant.
