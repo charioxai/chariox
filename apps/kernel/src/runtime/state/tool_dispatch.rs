@@ -43,24 +43,23 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
-        let mut specs = crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
-            .into_iter()
-            .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
-            .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
-            .chain(provider_runs.iter().flat_map(|run| {
+        let mut specs = Vec::new();
+        if matches!(provider_runs.as_slice(), [_]) {
+            specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            specs.extend(provider_runs.iter().flat_map(|run| {
                 run.remote_extension_manifest()
                     .home_proxy_runtime_tool_specs()
-            }))
-            .chain(self.script_runtime_tool_specs_for_auth_token(auth_token))
-            .chain(self.connector_runtime_tool_specs_for_auth_token(auth_token))
-            .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
-            .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
-            .collect::<Vec<_>>();
-        if self.runtime_auth_token_has_active_provider_run(auth_token)
-            && self.slice_kernel_id().is_some()
-        {
-            specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
+            }));
+            specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
+            specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
+            specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
+            if self.slice_kernel_id().is_some() {
+                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
+            }
         }
+        specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
         specs
     }
 
@@ -99,6 +98,16 @@ impl KernelRuntimeState {
                     message: "invalid runtime MCP auth token".to_string(),
                 });
             }
+            let is_workflow_tool =
+                crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name).is_some();
+            let provider_run = if is_workflow_tool {
+                None
+            } else {
+                Some(unambiguous_runtime_tool_provider_run(
+                    &provider_runs,
+                    canonical_tool_name,
+                )?)
+            };
             if matches!(
                 canonical_tool_name,
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL
@@ -110,7 +119,7 @@ impl KernelRuntimeState {
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_workspace_live_sync_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -120,7 +129,7 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_workspace_live_sync_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
                     )
@@ -139,7 +148,7 @@ impl KernelRuntimeState {
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_capability_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -149,7 +158,7 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_capability_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
                     )
@@ -162,7 +171,7 @@ impl KernelRuntimeState {
             ) {
                 return self
                     .dispatch_recall_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
                     )
@@ -170,7 +179,7 @@ impl KernelRuntimeState {
             }
             if let Some(result) = self
                 .try_dispatch_remote_home_extension_runtime_tool_call(
-                    &provider_runs[0],
+                    provider_run.expect("non-workflow tool should have provider run"),
                     canonical_tool_name,
                     arguments.clone(),
                 )
@@ -180,7 +189,7 @@ impl KernelRuntimeState {
             }
             if let Some(result) = self
                 .try_dispatch_script_runtime_tool_call(
-                    &provider_runs[0],
+                    provider_run.expect("non-workflow tool should have provider run"),
                     canonical_tool_name,
                     arguments.clone(),
                 )
@@ -190,7 +199,7 @@ impl KernelRuntimeState {
             }
             if let Some(result) = self
                 .try_dispatch_connector_runtime_tool_call(
-                    &provider_runs[0],
+                    provider_run.expect("non-workflow tool should have provider run"),
                     canonical_tool_name,
                     arguments.clone(),
                 )
@@ -209,7 +218,7 @@ impl KernelRuntimeState {
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_home_credential_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
                     )
@@ -219,7 +228,7 @@ impl KernelRuntimeState {
                 }
                 return self
                     .dispatch_credential_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
                     )
@@ -244,7 +253,7 @@ impl KernelRuntimeState {
             ) {
                 return self
                     .dispatch_slice_runtime_tool_call(
-                        &provider_runs[0],
+                        provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
                     )
@@ -259,14 +268,6 @@ impl KernelRuntimeState {
         }
     }
 
-    fn runtime_auth_token_has_active_provider_run(&self, auth_token: &str) -> bool {
-        !self
-            .owned
-            .provider_store
-            .get_runs_by_runtime_mcp_auth_token(auth_token)
-            .is_empty()
-    }
-
     fn slice_kernel_id(&self) -> Option<String> {
         self.owned
             .config_projection
@@ -274,5 +275,32 @@ impl KernelRuntimeState {
             .host_machine_id
             .strip_prefix("slice:")
             .map(str::to_string)
+    }
+}
+
+fn unambiguous_runtime_tool_provider_run<'a>(
+    provider_runs: &'a [crate::provider::RuntimeProviderRun],
+    tool_name: &str,
+) -> Result<&'a crate::provider::RuntimeProviderRun, DaemonError> {
+    match provider_runs {
+        [provider_run] => Ok(provider_run),
+        [] => Err(DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "invalid runtime MCP auth token".to_string(),
+        }),
+        runs => {
+            let mut run_ids = runs
+                .iter()
+                .map(|run| run.id().to_string())
+                .collect::<Vec<_>>();
+            run_ids.sort();
+            Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: format!(
+                    "runtime MCP auth token is bound to multiple active provider runs ({}) while dispatching `{tool_name}`. Non-workflow runtime tools require one authoritative provider run; run /kernel health and /provider processes, then stop duplicate provider runs before retrying.",
+                    run_ids.join(",")
+                ),
+            })
+        }
     }
 }

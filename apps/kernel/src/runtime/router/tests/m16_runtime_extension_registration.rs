@@ -23,6 +23,97 @@ impl Drop for TestCapabilityEnv {
 }
 
 #[tokio::test]
+async fn runtime_tools_reject_ambiguous_provider_run_tokens_for_run_scoped_tools() {
+    let env = TestCapabilityEnv::new("ambiguous-token");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let provider_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "m16-model",
+    );
+    let auth_token = provider_run
+        .runtime_mcp_auth_token()
+        .expect("provider run should expose runtime MCP auth token")
+        .to_string();
+    let server_url = provider_run
+        .runtime_mcp_server_url()
+        .expect("provider run should expose runtime MCP server URL")
+        .to_string();
+    let duplicate_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "m16-model-duplicate",
+            )
+            .with_agent_id(agent.id())
+            .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                server_url,
+                auth_token.clone(),
+            )),
+        )
+        .expect("duplicate provider run should start")
+        .into_run();
+    app.update_provider_run_projection(duplicate_run.clone());
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let specs = router
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&auth_token);
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL),
+        "workflow tools should remain visible for shared workflow auth"
+    );
+    assert!(
+        specs
+            .iter()
+            .all(|spec| spec.name != crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL),
+        "run-scoped extension tools should not be advertised for ambiguous provider tokens"
+    );
+
+    let result = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+            serde_json::json!({
+                "kind": "mcp",
+                "name": "filesystem"
+            }),
+        )
+        .await
+        .expect_err("run-scoped tool calls should reject ambiguous provider tokens");
+    let message = result.to_string();
+    assert!(
+        message.contains("multiple active provider runs"),
+        "{message}"
+    );
+    assert!(message.contains(provider_run.id()), "{message}");
+    assert!(message.contains(duplicate_run.id()), "{message}");
+    assert!(
+        message.contains("run /kernel health and /provider processes"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
 async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_session() {
     let env = TestCapabilityEnv::new("yolo-mcp");
     let workspace = env.root.join("workspace");
