@@ -19,6 +19,7 @@ function parseArgs(argv) {
     worktree: repoRoot,
     keepArtifacts: false,
     providerModels: new Map(),
+    includeMidturnSteering: false,
   }
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -35,6 +36,8 @@ function parseArgs(argv) {
       if (provider && model) options.providerModels.set(provider.trim(), model.trim())
     } else if (arg === "--keep-artifacts-on-failure") {
       options.keepArtifacts = true
+    } else if (arg === "--include-midturn-steering") {
+      options.includeMidturnSteering = true
     } else if (arg === "--help" || arg === "-h") {
       printHelp()
       process.exit(0)
@@ -59,6 +62,7 @@ Options:
   --timeout-ms 240000
   --worktree /path/to/worktree
   --keep-artifacts-on-failure
+  --include-midturn-steering     Also submit a second provider-native prompt before the first turn completes and report the observed behavior.
 `)
 }
 
@@ -296,6 +300,9 @@ async function runCodexDrill(options, root) {
     const probe = makeProbe(provider)
     const first = await codexTurn(client, { options, threadId, model: turnModel, probe, token: probe.tokenA })
     const second = await codexTurn(client, { options, threadId, model: turnModel, probe, token: probe.tokenB })
+    const midturnSteering = options.includeMidturnSteering
+      ? await codexMidturnSteeringProbe(client, { options, threadId, model: turnModel, provider })
+      : null
     const turns = await client.request("thread/turns/list", { threadId }, 30_000).catch((error) => ({ error: error.message }))
     const visibleHistory = JSON.stringify(turns)
     return summarizeProbe({
@@ -306,6 +313,7 @@ async function runCodexDrill(options, root) {
       tokenB: probe.tokenB,
       first,
       second,
+      midturnSteering,
       hiddenTextVisibleInHistory: visibleHistory.includes(probe.tokenA) || visibleHistory.includes(probe.tokenB),
       visiblePromptIncludesHiddenText: probe.visiblePrompt.includes(probe.tokenA) || probe.visiblePrompt.includes(probe.tokenB),
       logs,
@@ -313,6 +321,84 @@ async function runCodexDrill(options, root) {
   } finally {
     client?.close()
     await stopChild(child)
+  }
+}
+
+async function codexMidturnSteeringProbe(client, { options, threadId, model, provider }) {
+  const marker = `ARROBA_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
+  const firstMarker = `${marker}_FIRST`
+  const secondMarker = `${marker}_SECOND`
+  client.drainNotifications()
+  const common = {
+    threadId,
+    approvalPolicy: "never",
+    approvalsReviewer: "user",
+    personality: "pragmatic",
+    sandbox: "read-only",
+    sandboxPolicy: { type: "readOnly" },
+    summary: "detailed",
+    cwd: options.worktree,
+  }
+  if (model) common.model = model
+  const firstStart = await client.request("turn/start", {
+    ...common,
+    input: [{ type: "text", text: [
+      `Begin your answer with ${firstMarker}.`,
+      "Then continue with a deliberately long numbered list from 1 to 120.",
+      "Do not mention any second prompt unless one is delivered.",
+    ].join(" ") }],
+  }, options.timeoutMs)
+  await sleep(750)
+  let secondSubmit = "accepted"
+  let secondError = null
+  try {
+    await client.request("turn/start", {
+      ...common,
+      input: [{ type: "text", text: `Midturn steering probe: include ${secondMarker} in your current answer if you can see this before finishing.` }],
+    }, 20_000)
+  } catch (error) {
+    secondSubmit = "rejected"
+    secondError = error.message
+  }
+  const observation = await collectCodexMidturnNotifications(client, { firstMarker, secondMarker, timeoutMs: Math.min(options.timeoutMs, 90_000) })
+  return {
+    channel: "codex turn/start while previous turn is active",
+    firstStartTurnId: firstStart?.turn?.id ?? firstStart?.id ?? null,
+    secondSubmit,
+    secondError,
+    firstMarker,
+    secondMarker,
+    ...observation,
+  }
+}
+
+async function collectCodexMidturnNotifications(client, { firstMarker, secondMarker, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs
+  let output = ""
+  let completedTurns = 0
+  const methods = []
+  while (Date.now() < deadline) {
+    for (const notification of client.drainNotifications()) {
+      methods.push(notification.method)
+      if (notification.method === "item/agentMessage/delta") {
+        output += notification.params?.delta ?? ""
+      } else if (notification.method === "item/completed") {
+        const item = notification.params?.item
+        if (item?.type === "agent_message" || item?.type === "message") output += item.text ?? item.content ?? ""
+      } else if (notification.method === "turn/completed") {
+        completedTurns += 1
+      }
+    }
+    if (completedTurns > 0 && output.includes(firstMarker)) break
+    if (output.includes(firstMarker) && output.includes(secondMarker)) break
+    await sleep(250)
+  }
+  return {
+    completedTurns,
+    sawFirstMarker: output.includes(firstMarker),
+    sawSecondMarker: output.includes(secondMarker),
+    outputPreview: output.trim().slice(0, 2000),
+    methods: [...new Set(methods)].filter(Boolean),
   }
 }
 
@@ -408,6 +494,10 @@ async function runOpenCodeDrill(options, root) {
     await waitForOpenCodeIdle(baseUrl, sessionId, options.timeoutMs)
     await sleep(1_500)
     const second = await opencodeTurn(baseUrl, sessionId, options, probe, probe.tokenB, "b")
+    await waitForOpenCodeIdle(baseUrl, sessionId, options.timeoutMs)
+    const midturnSteering = options.includeMidturnSteering
+      ? await opencodeMidturnSteeringProbe(baseUrl, sessionId, options, provider)
+      : null
     const messages = await fetchJson(new URL(`/session/${sessionId}/message`, baseUrl))
     const visibleHistory = JSON.stringify(messages)
     return summarizeProbe({
@@ -418,12 +508,108 @@ async function runOpenCodeDrill(options, root) {
       tokenB: probe.tokenB,
       first,
       second,
+      midturnSteering,
       hiddenTextVisibleInHistory: visibleHistory.includes(probe.tokenA) || visibleHistory.includes(probe.tokenB),
       visiblePromptIncludesHiddenText: probe.visiblePrompt.includes(probe.tokenA) || probe.visiblePrompt.includes(probe.tokenB),
       logs,
     })
   } finally {
     await stopChild(child)
+  }
+}
+
+async function opencodeMidturnSteeringProbe(baseUrl, sessionId, options, provider) {
+  const marker = `ARROBA_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
+  const firstMarker = `${marker}_FIRST`
+  const secondMarker = `${marker}_SECOND`
+  const firstMessageId = nextOpenCodeMessageId()
+  const secondMessageId = nextOpenCodeMessageId()
+  const firstBody = opencodePromptBody(options, firstMessageId, [
+    `Begin your answer with ${firstMarker}.`,
+    "Then continue with a deliberately long numbered list from 1 to 120.",
+    "Do not mention any second prompt unless one is delivered.",
+  ].join(" "))
+  await fetchJson(new URL(`/session/${sessionId}/prompt_async`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(firstBody),
+  }, [200, 204])
+  await sleep(750)
+  let secondSubmit = "accepted"
+  let secondError = null
+  try {
+    const secondBody = opencodePromptBody(options, secondMessageId, `Midturn steering probe: include ${secondMarker} in your current answer if you can see this before finishing.`)
+    await fetchJson(new URL(`/session/${sessionId}/prompt_async`, baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(secondBody),
+    }, [200, 204])
+  } catch (error) {
+    secondSubmit = "rejected"
+    secondError = error.message
+  }
+  const observation = await collectOpenCodeMidturnMessages(baseUrl, sessionId, {
+    firstMessageId,
+    secondMessageId,
+    firstMarker,
+    secondMarker,
+    timeoutMs: Math.min(options.timeoutMs, 90_000),
+  })
+  return {
+    channel: "opencode prompt_async while session status is busy",
+    firstMessageId,
+    secondMessageId,
+    secondSubmit,
+    secondError,
+    firstMarker,
+    secondMarker,
+    ...observation,
+  }
+}
+
+function opencodePromptBody(options, messageId, text) {
+  const body = {
+    messageID: messageId,
+    parts: [{ type: "text", text }],
+    agent: "build",
+    tools: {
+      bash: false,
+      edit: false,
+      write: false,
+      apply_patch: false,
+      multiedit: false,
+      task: false,
+    },
+  }
+  const model = providerModel(options, "opencode")
+  const parsedModel = parseOpenCodeModel(model)
+  if (parsedModel) body.model = parsedModel
+  return body
+}
+
+async function collectOpenCodeMidturnMessages(baseUrl, sessionId, { firstMessageId, secondMessageId, firstMarker, secondMarker, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs
+  let lastMessages = []
+  while (Date.now() < deadline) {
+    lastMessages = await fetchJson(new URL(`/session/${sessionId}/message`, baseUrl)).catch(() => [])
+    const text = JSON.stringify(lastMessages)
+    if (text.includes(firstMarker) && (text.includes(secondMarker) || text.includes(secondMessageId))) break
+    const statusMap = await fetchJson(new URL("/session/status", baseUrl)).catch(() => ({}))
+    if ((statusMap?.[sessionId]?.type ?? "idle") === "idle" && text.includes(firstMarker)) break
+    await sleep(500)
+  }
+  const messages = Array.isArray(lastMessages) ? lastMessages : []
+  const firstChildren = messages.filter((message) => message?.info?.parentID === firstMessageId)
+  const secondChildren = messages.filter((message) => message?.info?.parentID === secondMessageId)
+  const output = messages.map((message) =>
+    (message.parts ?? []).map((part) => part.text ?? part.state?.output ?? "").join("")
+  ).join("\n")
+  return {
+    firstAssistantChildren: firstChildren.length,
+    secondAssistantChildren: secondChildren.length,
+    sawFirstMarker: output.includes(firstMarker),
+    sawSecondMarker: output.includes(secondMarker),
+    outputPreview: output.trim().slice(0, 2000),
   }
 }
 
@@ -547,6 +733,7 @@ async function runClaudeDrill(options, root) {
       tokenB: probe.tokenB,
       first,
       second,
+      midturnSteering: null,
       hiddenTextVisibleInHistory: transcriptText.includes(probe.tokenA) || transcriptText.includes(probe.tokenB),
       visiblePromptIncludesHiddenText: probe.visiblePrompt.includes(probe.tokenA) || probe.visiblePrompt.includes(probe.tokenB),
       logs,
@@ -743,6 +930,7 @@ function summarizeProbe(input) {
     hiddenTextVisibleInProviderHistoryApi: Boolean(input.hiddenTextVisibleInHistory),
     first: input.first,
     second: input.second,
+    midturnSteering: input.midturnSteering ?? null,
     logs: input.logs,
   }
 }

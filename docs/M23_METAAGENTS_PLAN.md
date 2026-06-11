@@ -229,6 +229,8 @@ midturn prompt behavior for Codex, OpenCode, and Claude. The implementation must
 not assume provider steering semantics that the current Arroba adapters do not
 actually provide.
 
+Current provider matrix: see `docs/M23_METAAGENTS_PROVIDER_STEERING.md`.
+
 Required provider characterization:
 
 - Submit a second prompt to a running agent through Arroba for each provider.

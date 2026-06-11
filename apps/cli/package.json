@@ -9,6 +9,7 @@
     "mcp-skill:drill": "node scripts/live-mcp-skill-drill.mjs --providers opencode,codex",
     "runtime-mcp-reattach:drill": "node scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex",
     "provider-context-injection:drill": "node scripts/live-provider-context-injection-drill.mjs --providers opencode,codex,claude",
+    "provider-steering:drill": "node scripts/live-provider-context-injection-drill.mjs --providers opencode,codex --include-midturn-steering",
     "external-provider-session:drill": "pnpm run build && node scripts/live-external-provider-session-import-drill.mjs",
     "prompt-assembly:drill": "node scripts/live-prompt-assembly-drill.mjs --providers codex,opencode,claude",
     "remote-popup:drill": "node scripts/live-remote-popup-drill.mjs --providers opencode,codex",
