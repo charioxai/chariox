@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 134;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 135;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -66,6 +66,37 @@ pub struct GetWaitingRoomPublicSnapshotRequest;
 pub struct DeleteKernelRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListMetaagentEventsRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadMetaagentEventRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AckMetaagentEventsRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -84,6 +115,9 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    ListMetaagentEvents(ListMetaagentEventsRequest),
+    ReadMetaagentEvent(ReadMetaagentEventRequest),
+    AckMetaagentEvents(AckMetaagentEventsRequest),
     GetDaemonHealth(GetDaemonHealthRequest),
     ExportDebugBundle(ExportDebugBundleRequest),
     GetProviderRun(GetProviderRunRequest),
@@ -371,6 +405,15 @@ pub enum LocalDaemonResponse {
     SessionState {
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+    },
+    MetaagentEventsListed {
+        events: Vec<serde_json::Value>,
+    },
+    MetaagentEventRead {
+        event: serde_json::Value,
+    },
+    MetaagentEventsAcked {
+        acked: Vec<serde_json::Value>,
     },
     DaemonHealth {
         projection: DaemonHealthProjection,

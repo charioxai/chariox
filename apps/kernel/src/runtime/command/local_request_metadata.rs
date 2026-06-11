@@ -220,6 +220,21 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::ListMetaagentEvents(request) => {
+            LocalRequestMetadata::new("metaagent.event.list", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::ReadMetaagentEvent(request) => {
+            LocalRequestMetadata::new("metaagent.event.read", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::AckMetaagentEvents(request) => {
+            LocalRequestMetadata::new("metaagent.event.ack", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
@@ -269,6 +284,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::ListMetaagentEvents(_) => "metaagent.event.list",
+        LocalDaemonRequest::ReadMetaagentEvent(_) => "metaagent.event.read",
+        LocalDaemonRequest::AckMetaagentEvents(_) => "metaagent.event.ack",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",

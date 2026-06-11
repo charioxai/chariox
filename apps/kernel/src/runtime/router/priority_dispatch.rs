@@ -6,7 +6,7 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::execute_required_capability_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
@@ -15,6 +15,7 @@ use crate::runtime::interactive_command_dispatcher::{
     dispatch_interactive_command, is_interactive_command,
 };
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
+use crate::runtime::metaagent_event_control::execute_metaagent_event_request;
 use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
@@ -75,6 +76,12 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSessionState(_)
             | LocalDaemonRequest::ListAgents(_)) => {
                 execute_session_read_request(&self.runtime_state, request).await
+            }
+            request @ (LocalDaemonRequest::ListMetaagentEvents(_)
+            | LocalDaemonRequest::ReadMetaagentEvent(_)
+            | LocalDaemonRequest::AckMetaagentEvents(_)) => {
+                let caller_user_id = command_caller_user_id(&command);
+                execute_metaagent_event_request(&self.runtime_state, request, &caller_user_id).await
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await

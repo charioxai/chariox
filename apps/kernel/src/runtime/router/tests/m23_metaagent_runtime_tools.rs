@@ -1263,6 +1263,166 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
 }
 
 #[tokio::test]
+async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox() {
+    Box::pin(local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl()).await
+}
+
+async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl() {
+    let env = TestMetaRuntimeEnv::new("local-event-requests");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let event =
+        app.metaagent_event_store()
+            .record(crate::runtime::metaagent_event::NewMetaagentEvent {
+                session_id: session.id().to_string(),
+                metaagent_id: metaagent.id().to_string(),
+                owner_user_id: metaagent.owner_user_id().to_string(),
+                kind: "agent.turn.completed".to_string(),
+                source_agent_id: Some("agent-1".to_string()),
+                title: "Worker completed".to_string(),
+                summary: "Worker completed a turn".to_string(),
+                detail: serde_json::json!({ "prompt_id": "prompt-1" }),
+                injected_prompt_id: None,
+            });
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let mut owner_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    owner_caller.user_id = Some(metaagent.owner_user_id().to_string());
+
+    let list_request = LocalDaemonRequest::ListMetaagentEvents(ListMetaagentEventsRequest {
+        session_id: session.id().to_string(),
+        metaagent_id: metaagent.id().to_string(),
+        limit: Some(10),
+        status: None,
+        kind: Some("agent.turn.completed".to_string()),
+    });
+    let listed = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "list-metaagent-events",
+                KernelCommandSource::LocalCli,
+                owner_caller.clone(),
+                None,
+                None,
+                &list_request,
+            ),
+            list_request.clone(),
+        )
+        .await
+        .expect("owner should list metaagent events");
+    let LocalDaemonResponse::MetaagentEventsListed { events } = listed else {
+        panic!("unexpected metaagent event list response: {listed:?}");
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]
+            .get("event_id")
+            .and_then(serde_json::Value::as_str),
+        Some(event.event_id.as_str())
+    );
+
+    let mut forged_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    forged_caller.user_id = Some("user-2".to_string());
+    let denied = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "foreign-list-metaagent-events",
+                KernelCommandSource::LocalCli,
+                forged_caller,
+                None,
+                None,
+                &list_request,
+            ),
+            list_request,
+        )
+        .await
+        .expect_err("another user must not list a metaagent inbox");
+    assert!(
+        denied
+            .to_string()
+            .contains("requires an owned session metaagent"),
+        "{denied:?}"
+    );
+
+    let read_request = LocalDaemonRequest::ReadMetaagentEvent(ReadMetaagentEventRequest {
+        session_id: session.id().to_string(),
+        metaagent_id: metaagent.id().to_string(),
+        event_id: event.event_id.clone(),
+    });
+    let read = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "read-metaagent-event",
+                KernelCommandSource::LocalCli,
+                owner_caller.clone(),
+                None,
+                None,
+                &read_request,
+            ),
+            read_request,
+        )
+        .await
+        .expect("owner should read metaagent event");
+    let LocalDaemonResponse::MetaagentEventRead { event: read_event } = read else {
+        panic!("unexpected metaagent event read response: {read:?}");
+    };
+    assert!(
+        read_event
+            .get("read_at_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "{read_event:?}"
+    );
+
+    let ack_request = LocalDaemonRequest::AckMetaagentEvents(AckMetaagentEventsRequest {
+        session_id: session.id().to_string(),
+        metaagent_id: metaagent.id().to_string(),
+        event_id: Some(event.event_id.clone()),
+        event_ids: None,
+        up_to_sequence: None,
+    });
+    let acked = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "ack-metaagent-event",
+                KernelCommandSource::LocalCli,
+                owner_caller,
+                None,
+                None,
+                &ack_request,
+            ),
+            ack_request,
+        )
+        .await
+        .expect("owner should ack metaagent event");
+    let LocalDaemonResponse::MetaagentEventsAcked { acked } = acked else {
+        panic!("unexpected metaagent event ack response: {acked:?}");
+    };
+    assert_eq!(acked.len(), 1);
+    assert!(
+        acked[0]
+            .get("ack_at_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "{acked:?}"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_event_prompts_retry_after_provider_launch() {
     let env = TestMetaRuntimeEnv::new("event-retry-after-launch");
     let workspace = env.root.join("workspace");
