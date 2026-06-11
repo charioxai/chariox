@@ -558,8 +558,14 @@ Current web product drill coverage:
   opens the side-panel spawn dialog, verifies the metaagent control, verifies
   metaagent/slice mutual exclusion, and verifies duplicate metaagent spawn is
   rejected through the product flow. It then spawns a regular agent through the
-  side-panel product UI and verifies the workflow canvas add dock lists that
+  side-panel product UI and verifies the workflow canvas add dock lists the
   regular agent while excluding the metaagent.
+- The same drill has an opt-in `ARROBA_METAAGENT_WEB_DRILL_EVENT_PROMPT=1` path
+  that submits a prompt to the regular agent through the web terminal product
+  prompt, deterministically completes the local dev-stub provider turn, and
+  verifies the metaagent pane renders the inline `agent.turn.completed` event
+  prompt. This path is kept opt-in because repeated hosted staging runs can hit
+  Cloud rate limits while polling the browser relay.
 
 Remote/slice drills:
 
