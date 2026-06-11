@@ -259,9 +259,13 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "workflow" => match tokens.get(1).map(String::as_str) {
-            None | Some("list" | "ls" | "runs") => Some(MetaCommandExecutionPolicy::Routed),
+            None
+            | Some(
+                "list" | "ls" | "new" | "create" | "run" | "start" | "runs" | "cancel"
+                | "resume",
+            ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `workflow list` and `workflow runs` are routed for metaagent command execution yet".to_string(),
+                message: "only `workflow list`, `workflow new`, `workflow run`, `workflow runs`, `workflow cancel`, and `workflow resume` are routed for metaagent command execution yet".to_string(),
             }),
         },
         _ => None,

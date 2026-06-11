@@ -404,6 +404,100 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
 }
 
 #[tokio::test]
+async fn metaagent_run_command_routes_core_workflow_commands() {
+    let env = TestMetaRuntimeEnv::new("run-command-workflow");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow new meta-flow"
+            }),
+        )
+        .await
+        .expect("workflow create command should dispatch");
+    assert!(created.ok, "{:?}", created.payload);
+    assert!(
+        serde_json::to_string(&created.payload)
+            .expect("payload should serialize")
+            .contains("meta-flow"),
+        "{:?}",
+        created.payload
+    );
+
+    let listed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow list"
+            }),
+        )
+        .await
+        .expect("workflow list command should dispatch");
+    assert!(listed.ok, "{:?}", listed.payload);
+    assert!(
+        serde_json::to_string(&listed.payload)
+            .expect("payload should serialize")
+            .contains("meta-flow"),
+        "{:?}",
+        listed.payload
+    );
+
+    let invalid_run = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow run endpoint-only"
+            }),
+        )
+        .await
+        .expect("workflow run usage errors should be structured");
+    assert!(!invalid_run.ok);
+    assert!(
+        invalid_run
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("workflow run <workflow-ref>")),
+        "{:?}",
+        invalid_run.payload
+    );
+}
+
+#[tokio::test]
 async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-deny");
     let workspace = env.root.join("workspace");

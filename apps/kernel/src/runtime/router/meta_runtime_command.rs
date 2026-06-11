@@ -1,8 +1,10 @@
 use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
-    AttachToSessionRequest, ListAgentsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+    AttachToSessionRequest, CancelWorkflowRunRequest, CreateWorkflowRequest,
+    InvokeWorkflowEndpointRequest, ListAgentsRequest, ListWorkflowRunsRequest,
+    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResumeWorkflowRunRequest,
+    SpawnAgentRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -256,14 +258,68 @@ fn meta_workflow_request(
         Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
         })),
+        Some("new" | "create") => {
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: workflow new [alias]"));
+            }
+            Ok(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: args.get(1).cloned(),
+            }))
+        }
+        Some("run" | "start") => {
+            if args.len() < 3 {
+                return Err(meta_command_error(
+                    "usage: workflow run <workflow-ref> <endpoint-ref> [prompt]",
+                ));
+            }
+            Ok(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: args[1].clone(),
+                    endpoint_ref: args[2].clone(),
+                    queue_ref: None,
+                    prompt: (!args[3..].is_empty()).then(|| args[3..].join(" ")),
+                    publication_invocation: None,
+                },
+            ))
+        }
         Some("runs") => Ok(LocalDaemonRequest::ListWorkflowRuns(
             ListWorkflowRunsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: args.get(1).cloned(),
             },
         )),
+        Some("cancel") => {
+            let Some(workflow_run_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: workflow cancel <run-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: workflow cancel <run-ref>"));
+            }
+            Ok(LocalDaemonRequest::CancelWorkflowRun(
+                CancelWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run_ref.clone(),
+                },
+            ))
+        }
+        Some("resume") => {
+            let Some(workflow_run_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: workflow resume <run-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: workflow resume <run-ref>"));
+            }
+            Ok(LocalDaemonRequest::ResumeWorkflowRun(
+                ResumeWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run_ref.clone(),
+                },
+            ))
+        }
         _ => Err(meta_command_error(
-            "usage: workflow <list|runs> [workflow-ref]",
+            "usage: workflow <list|new|run|runs|cancel|resume> ...",
         )),
     }
 }
