@@ -40,6 +40,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],

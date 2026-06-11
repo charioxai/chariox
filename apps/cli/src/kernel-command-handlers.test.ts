@@ -46,6 +46,7 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -221,6 +222,7 @@ test("kernel health formatter reports provider-run identity issues", () => {
         agent_id: "agent-1",
         provider_run_ids: ["run-1", "run-2"],
       }],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [{
         session_id: "session-2",
         agent_id: "agent-2",
@@ -275,6 +277,7 @@ test("kernel health formatter reports provider-run terminal diagnostics", () => 
         diagnostic: "provider produced no terminal output within 10m",
       }],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -311,6 +314,7 @@ test("kernel health formatter avoids placeholder agent recovery for unbound prov
         diagnostic: "provider produced no terminal output within 10m",
       }],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -885,6 +889,7 @@ test("kernel health command reports duplicate provider-run bindings", async () =
         agent_id: "agent-1",
         provider_run_ids: ["provider-run-1", "provider-run-2"],
       }],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -905,6 +910,44 @@ test("kernel health command reports duplicate provider-run bindings", async () =
   assert.match(notices.at(-1) ?? "", /invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates/)
   assert.match(notices.at(-1) ?? "", /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(notices.at(-1) ?? "", /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
+  assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
+})
+
+test("kernel health command reports duplicate native TUI provider-run bindings", async () => {
+  const notices: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const unhealthy = health({
+    provider_runs: {
+      projected_runs: 2,
+      active_runs: 2,
+      arroba_active_runs: 0,
+      native_tui_active_runs: 2,
+      terminal_diagnostics: [],
+      duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [{
+        session_id: "session-1",
+        agent_id: "agent-1",
+        provider_run_ids: ["provider-run-1", "provider-run-2"],
+      }],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+  })
+
+  await handleKernelSlashCommand({
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message) => { notices.push(message) },
+    flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+    getDaemonHealth: async () => unhealthy,
+    transitionToNoSession: () => {},
+  }, { kind: "kernel", raw: "/kernel health", args: ["health"] })
+
+  assert.match(notices.at(-1) ?? "", /duplicate native TUI provider run bindings/)
+  assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
+  assert.match(notices.at(-1) ?? "", /invariant: native TUI attachments should share one provider run per agent/)
+  assert.match(notices.at(-1) ?? "", /next: run \/agent inspect agent-1; run \/provider processes; close duplicate native TUIs before sending prompts to that agent/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
@@ -943,6 +986,7 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
         agent_id: "agent-1",
         provider_run_ids: ["provider-run-1", "provider-run-2"],
       }],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -958,7 +1002,7 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
   assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
-  assert.match(rendered, /duplicate session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
+  assert.match(rendered, /duplicate_arroba session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
 })
@@ -1008,6 +1052,7 @@ test("kernel remote-runtime formatter avoids placeholder recovery targets", () =
         diagnostic: "provider produced no terminal output within 10m",
       }],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -1109,6 +1154,7 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
       native_tui_active_runs: 1,
       terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",

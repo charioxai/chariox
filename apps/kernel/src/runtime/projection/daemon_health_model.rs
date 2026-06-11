@@ -79,6 +79,7 @@ pub struct ProviderRunHealthSnapshot {
     pub native_tui_active_runs: usize,
     pub terminal_diagnostics: Vec<ProviderRunTerminalDiagnosticIssue>,
     pub duplicate_arroba_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
+    pub duplicate_native_tui_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub multi_interface_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub orphaned_active_runs: Vec<ProviderRunIdentityIssue>,
     pub session_active_run_mismatches: Vec<ProviderRunSessionPointerIssue>,
@@ -880,6 +881,14 @@ mod tests {
                         "provider-run-2".to_string(),
                     ],
                 }],
+                duplicate_native_tui_agent_bindings: vec![ProviderRunAgentBindingConflict {
+                    session_id: "session-native".to_string(),
+                    agent_id: "agent-native".to_string(),
+                    provider_run_ids: vec![
+                        "provider-run-native-1".to_string(),
+                        "provider-run-native-2".to_string(),
+                    ],
+                }],
                 multi_interface_agent_bindings: vec![ProviderRunAgentBindingConflict {
                     session_id: "session-2".to_string(),
                     agent_id: "agent-2".to_string(),
@@ -1094,6 +1103,13 @@ mod tests {
             projection
                 .provider_runs
                 .duplicate_arroba_agent_bindings
+                .len(),
+            1
+        );
+        assert_eq!(
+            projection
+                .provider_runs
+                .duplicate_native_tui_agent_bindings
                 .len(),
             1
         );

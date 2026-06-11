@@ -122,6 +122,7 @@ fn provider_run_health_snapshot(
     let mut arroba_active_runs = 0;
     let mut native_tui_active_runs = 0;
     let mut active_arroba_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut active_native_tui_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut active_agent_bindings: BTreeMap<(String, String), Vec<(String, &'static str)>> =
         BTreeMap::new();
     let mut orphaned_active_runs = Vec::new();
@@ -152,7 +153,15 @@ fn provider_run_health_snapshot(
                         .push(run.id().to_string());
                 }
             }
-            ProviderClientInterface::NativeTui => native_tui_active_runs += 1,
+            ProviderClientInterface::NativeTui => {
+                native_tui_active_runs += 1;
+                if let Some(agent_id) = run.agent_instance_id() {
+                    active_native_tui_bindings
+                        .entry((run.session_id().to_string(), agent_id.to_string()))
+                        .or_default()
+                        .push(run.id().to_string());
+                }
+            }
         }
         if let Some(agent_id) = run.agent_instance_id() {
             active_agent_bindings
@@ -187,6 +196,18 @@ fn provider_run_health_snapshot(
     }
 
     let duplicate_arroba_agent_bindings = active_arroba_bindings
+        .into_iter()
+        .filter_map(|((session_id, agent_id), mut provider_run_ids)| {
+            provider_run_ids.sort();
+            (provider_run_ids.len() > 1).then_some(ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids,
+            })
+        })
+        .collect();
+
+    let duplicate_native_tui_agent_bindings = active_native_tui_bindings
         .into_iter()
         .filter_map(|((session_id, agent_id), mut provider_run_ids)| {
             provider_run_ids.sort();
@@ -272,6 +293,7 @@ fn provider_run_health_snapshot(
         native_tui_active_runs,
         terminal_diagnostics,
         duplicate_arroba_agent_bindings,
+        duplicate_native_tui_agent_bindings,
         multi_interface_agent_bindings,
         orphaned_active_runs,
         session_active_run_mismatches,

@@ -108,6 +108,7 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
               agent_id: "agent-1",
               provider_run_ids: ["run-1", "run-2"],
             }],
+            duplicate_native_tui_agent_bindings: [],
           },
           remote_execution: {
             ...baseHealth.remote_execution,
@@ -1888,6 +1889,7 @@ function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): DaemonHe
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
       duplicate_arroba_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],

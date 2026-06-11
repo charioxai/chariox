@@ -406,6 +406,7 @@ export type ProviderRunHealthSnapshot = {
   native_tui_active_runs: number
   terminal_diagnostics: ProviderRunTerminalDiagnosticIssue[]
   duplicate_arroba_agent_bindings: ProviderRunAgentBindingConflict[]
+  duplicate_native_tui_agent_bindings: ProviderRunAgentBindingConflict[]
   multi_interface_agent_bindings: ProviderRunAgentBindingConflict[]
   orphaned_active_runs: ProviderRunIdentityIssue[]
   session_active_run_mismatches: ProviderRunSessionPointerIssue[]
@@ -1351,7 +1352,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 127
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 130
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

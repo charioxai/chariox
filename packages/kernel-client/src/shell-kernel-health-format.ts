@@ -3,7 +3,7 @@ import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.j
 import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
-  return health.provider_runs.duplicate_arroba_agent_bindings.length
+  return duplicateProviderRunBindingCount(health)
     + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
@@ -77,7 +77,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const lines = [
     "remote runtime",
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
-    `provider run invariants: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
+    `provider run invariants: duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
@@ -169,6 +169,19 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push(firstAgent
       ? `  next: run /agent inspect ${firstAgent}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
       : "  next: run /provider processes; capture a debug bundle, then identify and stop duplicate provider runs before sending more prompts")
+  }
+
+  if (providerRuns.duplicate_native_tui_agent_bindings.length > 0) {
+    lines.push("duplicate native TUI provider run bindings:")
+    let firstAgent: string | null = null
+    for (const conflict of providerRuns.duplicate_native_tui_agent_bindings) {
+      firstAgent ??= conflict.agent_id
+      lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+    }
+    lines.push("  invariant: native TUI attachments should share one provider run per agent unless multi-run ownership is explicitly modeled")
+    lines.push(firstAgent
+      ? `  next: run /agent inspect ${firstAgent}; run /provider processes; close duplicate native TUIs before sending prompts to that agent`
+      : "  next: run /provider processes; identify and close duplicate native TUIs before sending more prompts")
   }
 
   if (providerRuns.multi_interface_agent_bindings.length > 0) {
@@ -510,7 +523,7 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
   const providerRunIssues = providerRunInvariantIssueCount(health)
   const providerRunsSummary = providerRunIssues === 0 && providerRunActor.enqueue_rejections === 0
     ? "ok"
-    : `attention duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${providerRunActor.enqueue_rejections}`
+    : `attention duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${providerRunActor.enqueue_rejections}`
   return `remote runtime invariants: provider_runs=${providerRunsSummary}; worker_runs=${workerRuns}; slices=${slices}; manifests=${manifests}; live_sync_scope=${liveSyncScope}`
 }
 
@@ -582,9 +595,12 @@ function appendRemoteRuntimeProjectionInvariantIssues(lines: string[], health: D
 function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHealthProjection): void {
   const providerRuns = health.provider_runs
   const actorRejects = health.provider_run_actor.enqueue_rejections
-  lines.push(`provider run issues: duplicate=${providerRuns.duplicate_arroba_agent_bindings.length} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${actorRejects}`)
+  lines.push(`provider run issues: duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${actorRejects}`)
   for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
-    lines.push(`  duplicate session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+    lines.push(`  duplicate_arroba session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+  }
+  for (const conflict of providerRuns.duplicate_native_tui_agent_bindings) {
+    lines.push(`  duplicate_native_tui session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
   }
   for (const conflict of providerRuns.multi_interface_agent_bindings) {
     lines.push(`  mixed session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
@@ -611,6 +627,12 @@ function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): str
     return duplicate.agent_id
       ? `run /agent inspect ${duplicate.agent_id}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
       : "run /provider processes; capture a debug bundle, then identify and stop duplicate provider runs before sending more prompts"
+  }
+  const duplicateNative = providerRuns.duplicate_native_tui_agent_bindings[0]
+  if (duplicateNative) {
+    return duplicateNative.agent_id
+      ? `run /agent inspect ${duplicateNative.agent_id}; run /provider processes; close duplicate native TUIs before sending prompts to that agent`
+      : "run /provider processes; identify and close duplicate native TUIs before sending more prompts"
   }
   const mixed = providerRuns.multi_interface_agent_bindings[0]
   if (mixed) {
@@ -643,11 +665,16 @@ function providerRunRuntimeIssueCount(health: DaemonHealthProjection): number {
 }
 
 function providerRunInvariantIssueCount(health: DaemonHealthProjection): number {
-  return health.provider_runs.duplicate_arroba_agent_bindings.length
+  return duplicateProviderRunBindingCount(health)
     + health.provider_runs.multi_interface_agent_bindings.length
     + health.provider_runs.orphaned_active_runs.length
     + health.provider_runs.session_active_run_mismatches.length
     + health.provider_runs.terminal_diagnostics.length
+}
+
+function duplicateProviderRunBindingCount(health: DaemonHealthProjection): number {
+  return health.provider_runs.duplicate_arroba_agent_bindings.length
+    + health.provider_runs.duplicate_native_tui_agent_bindings.length
 }
 
 function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number {

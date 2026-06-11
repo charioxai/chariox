@@ -2,124 +2,120 @@ use super::*;
 
 #[tokio::test]
 async fn daemon_health_projection_reports_session_and_agent_mailboxes() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
-        .expect("session should be created");
-    let session_id = session.id().to_string();
-    let agent_id = agent.id().to_string();
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
+    Box::pin(async {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        launch_test_provider(
+            &mut app,
             &session_id,
-            "cli-1",
-            ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    launch_test_provider(
-        &mut app,
-        &session_id,
-        &agent_id,
-        "dev-stub",
-        "claude-code",
-        "sonnet",
-    );
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
-    let focus_request = focus_request(&session_id, &agent_id);
-    let focus_command = KernelCommand::from_local_request("cmd-focus", None, None, &focus_request);
-    router
-        .dispatch(focus_command, focus_request)
-        .await
-        .expect("focus should create a session lane");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let focus_request = focus_request(&session_id, &agent_id);
+        let focus_command =
+            KernelCommand::from_local_request("cmd-focus", None, None, &focus_request);
+        router
+            .dispatch(focus_command, focus_request)
+            .await
+            .expect("focus should create a session lane");
 
-    let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-        session_id: session_id.clone(),
-        attachment_id: attachment.id().to_string(),
-        target_agent_id: Some(agent_id.clone()),
-        prompt: "hello from health projection test".to_string(),
-        attachments: Vec::new(),
-    });
-    let prompt_command =
-        KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);
-    router
-        .dispatch(prompt_command, prompt_request)
-        .await
-        .expect("prompt should create an agent lane");
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "hello from health projection test".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt should create an agent lane");
 
-    let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
-        session_id: session_id.clone(),
-        alias: Some("health-workflow".to_string()),
-    });
-    let workflow_command =
-        KernelCommand::from_local_request("cmd-workflow", None, None, &workflow_request);
-    router
-        .dispatch(workflow_command, workflow_request)
-        .await
-        .expect("workflow command should create a workflow lane");
+        let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("health-workflow".to_string()),
+        });
+        let workflow_command =
+            KernelCommand::from_local_request("cmd-workflow", None, None, &workflow_request);
+        router
+            .dispatch(workflow_command, workflow_request)
+            .await
+            .expect("workflow command should create a workflow lane");
 
-    let shell_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-        session_id: session_id.clone(),
-        attachment_id: attachment.id().to_string(),
-        command: "/bin/true".to_string(),
-        args: Vec::new(),
-        working_directory: None,
-        timeout_ms: Some(1_000),
-    });
-    let shell_command =
-        KernelCommand::from_local_request("cmd-capability", None, None, &shell_request);
-    router
-        .dispatch(shell_command, shell_request)
-        .await
-        .expect_err("capability command should report executor failure for missing test worktree");
+        let shell_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            command: "/bin/true".to_string(),
+            args: Vec::new(),
+            working_directory: None,
+            timeout_ms: Some(1_000),
+        });
+        let shell_command =
+            KernelCommand::from_local_request("cmd-capability", None, None, &shell_request);
+        router
+            .dispatch(shell_command, shell_request)
+            .await
+            .expect_err(
+                "capability command should report executor failure for missing test worktree",
+            );
 
-    let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
-    let health_command =
-        KernelCommand::from_local_request("cmd-health", None, None, &health_request);
-    let health_response = router
-        .dispatch(health_command, health_request)
-        .await
-        .expect("health projection should be returned");
-    let projection = match health_response {
-        LocalDaemonResponse::DaemonHealth { projection } => projection,
-        _ => panic!("unexpected health response"),
-    };
-    assert!(projection
-        .session_command_lanes
-        .iter()
-        .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
-    assert!(projection
-        .agent_command_lanes
-        .iter()
-        .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
-    assert!(projection
-        .workflow_command_lanes
-        .iter()
-        .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
-    assert_eq!(projection.session_projection.projected_sessions, 1);
-    assert_eq!(projection.session_projection.active_prompts, 1);
-    assert_eq!(projection.session_projection.queued_prompts, 0);
-    assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
-    assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
-    assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
-    assert_eq!(projection.provider_runs.projected_runs, 1);
-    assert_eq!(projection.provider_runs.active_runs, 1);
-    assert_eq!(projection.provider_runs.arroba_active_runs, 1);
-    assert!(projection
-        .provider_runs
-        .duplicate_arroba_agent_bindings
-        .is_empty());
-    assert!(projection.provider_runs.orphaned_active_runs.is_empty());
-    assert!(projection
-        .provider_runs
-        .session_active_run_mismatches
-        .is_empty());
-    assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
-    assert_eq!(projection.capability_executor.available_permits, 64);
-    assert_eq!(projection.capability_executor.submitted_jobs, 1);
-    assert_eq!(projection.capability_executor.completed_jobs, 0);
-    assert_eq!(projection.capability_executor.failed_jobs, 1);
-    assert_eq!(projection.capability_executor.rejected_jobs, 0);
-    assert!(!projection.provider_catalog.cached);
+        let projection = router.daemon_health_projection(0).await;
+        assert!(projection
+            .session_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
+        assert!(projection
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
+        assert!(projection
+            .workflow_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
+        assert_eq!(projection.session_projection.projected_sessions, 1);
+        assert_eq!(projection.session_projection.active_prompts, 1);
+        assert_eq!(projection.session_projection.queued_prompts, 0);
+        assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
+        assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
+        assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
+        assert_eq!(projection.provider_runs.projected_runs, 1);
+        assert_eq!(projection.provider_runs.active_runs, 1);
+        assert_eq!(projection.provider_runs.arroba_active_runs, 1);
+        assert!(projection
+            .provider_runs
+            .duplicate_arroba_agent_bindings
+            .is_empty());
+        assert!(projection.provider_runs.orphaned_active_runs.is_empty());
+        assert!(projection
+            .provider_runs
+            .session_active_run_mismatches
+            .is_empty());
+        assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
+        assert_eq!(projection.capability_executor.available_permits, 64);
+        assert_eq!(projection.capability_executor.submitted_jobs, 1);
+        assert_eq!(projection.capability_executor.completed_jobs, 0);
+        assert_eq!(projection.capability_executor.failed_jobs, 1);
+        assert_eq!(projection.capability_executor.rejected_jobs, 0);
+        assert!(!projection.provider_catalog.cached);
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -182,6 +178,10 @@ async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent()
             }
         ]
     );
+    assert!(projection
+        .provider_runs
+        .duplicate_native_tui_agent_bindings
+        .is_empty());
 }
 
 #[tokio::test]
@@ -272,6 +272,10 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
         .provider_runs
         .duplicate_arroba_agent_bindings
         .is_empty());
+    assert!(projection
+        .provider_runs
+        .duplicate_native_tui_agent_bindings
+        .is_empty());
     assert_eq!(
         projection.provider_runs.multi_interface_agent_bindings,
         vec![
@@ -289,6 +293,80 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
             }
         ]
     );
+}
+
+#[tokio::test]
+async fn daemon_health_reports_duplicate_active_native_tui_provider_runs_per_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let first_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "sonnet")
+                .with_agent_id(&agent_id)
+                .with_client_interface(ProviderClientInterface::NativeTui),
+        )
+        .expect("first native provider run should start")
+        .into_run();
+    app.update_provider_run_projection(first_run.clone());
+    let duplicate_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(&session_id, "dev-stub", "claude-code", "default", "opus")
+                .with_agent_id(&agent_id)
+                .with_client_interface(ProviderClientInterface::NativeTui),
+        )
+        .expect("duplicate native provider run should start")
+        .into_run();
+    app.update_provider_run_projection(duplicate_run.clone());
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let health_command = KernelCommand::from_local_request(
+        "cmd-health-duplicate-native-provider",
+        None,
+        None,
+        &health_request,
+    );
+    let health_response = router
+        .dispatch(health_command, health_request)
+        .await
+        .expect("health projection should be returned");
+    let projection = match health_response {
+        LocalDaemonResponse::DaemonHealth { projection } => projection,
+        _ => panic!("unexpected health response"),
+    };
+
+    assert_eq!(projection.provider_runs.projected_runs, 2);
+    assert_eq!(projection.provider_runs.active_runs, 2);
+    assert_eq!(projection.provider_runs.arroba_active_runs, 0);
+    assert_eq!(projection.provider_runs.native_tui_active_runs, 2);
+    assert!(projection
+        .provider_runs
+        .duplicate_arroba_agent_bindings
+        .is_empty());
+    assert_eq!(
+        projection.provider_runs.duplicate_native_tui_agent_bindings,
+        vec![
+            crate::runtime::projection::ProviderRunAgentBindingConflict {
+                session_id,
+                agent_id,
+                provider_run_ids: {
+                    let mut ids = vec![first_run.id().to_string(), duplicate_run.id().to_string()];
+                    ids.sort();
+                    ids
+                },
+            }
+        ]
+    );
+    assert!(projection
+        .provider_runs
+        .multi_interface_agent_bindings
+        .is_empty());
 }
 
 #[tokio::test]
