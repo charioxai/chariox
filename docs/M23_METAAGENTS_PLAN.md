@@ -566,6 +566,12 @@ Current web product drill coverage:
   verifies the metaagent pane renders the inline `agent.turn.completed` event
   prompt. This path is kept opt-in because repeated hosted staging runs can hit
   Cloud rate limits while polling the browser relay.
+- `pnpm --filter @arroba-cloud/web run drill:metaagent:web:local` runs the
+  same event-prompt validation against a local relay, local kernel, and local
+  product web frontend. It creates the metaagent session and worker agent
+  through product UI, sends the worker prompt through the product terminal
+  prompt, verifies the event through the metaagent runtime MCP event list, and
+  verifies the product pane renders the inline `agent.turn.completed` prompt.
 
 Remote/slice drills:
 
