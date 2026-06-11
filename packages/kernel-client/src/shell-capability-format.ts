@@ -245,6 +245,7 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     const invocation = formatHomeExtensionAuditInvocation(payload.invocation)
     if (invocation) rows.push(`  invocation: ${invocation}`)
     const result = [
+      fieldPart("executor", payload.executor),
       fieldPart("ok", payload.ok),
       fieldPart("bytes", payload.result_bytes),
       fieldPart("duration", typeof payload.duration_ms === "number" ? `${payload.duration_ms}ms` : payload.duration_ms),

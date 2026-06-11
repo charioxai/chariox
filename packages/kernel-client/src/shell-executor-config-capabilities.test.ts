@@ -503,6 +503,7 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
                   worker_kernel_id: "worker-1",
                   worker_machine_id: "machine-1",
                   worker_provider_run_id: "run-1",
+                  executor: "script",
                   status: "denied",
                   error: "worker mismatch",
                   duration_ms: 24,
@@ -563,7 +564,7 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   assert.match(auditResult.message ?? "", /actor: home=alice caller=bob agent=A1 lease=lease-1 leased=leased-agent-1 worker=worker-1 machine=machine-1 run=run-1/)
   assert.match(auditResult.message ?? "", /tool: script:lookup as=lookup safety=read timeout=30s hash=hash-tool-1/)
   assert.match(auditResult.message ?? "", /invocation: id=invoke-1 call=call-1 attempt=2 idempotency=idem-1/)
-  assert.match(auditResult.message ?? "", /result: ok=false bytes=0 duration=24ms/)
+  assert.match(auditResult.message ?? "", /result: executor=script ok=false bytes=0 duration=24ms/)
   assert.match(auditResult.message ?? "", /redacted: args result/)
   assert.match(auditResult.message ?? "", /error: worker mismatch/)
   assert.match(auditResult.message ?? "", /next: run \/extension sync-status A1; inspect \/agent inspect A1; retry only after the worker lease and provider run match the current home grant/)
