@@ -37,7 +37,7 @@ function parseArgs(argv) {
         'Usage: node apps/cli/scripts/live-native-permission-drill.mjs [options]',
         '',
         'Options:',
-        '  --provider <codex|opencode>',
+        '  --provider <codex|opencode|claude-p|claude-headless>',
         '  --model <provider model override>',
         '  --kernel <ws://...> (reuse an already-running kernel)',
         '  --no-spawn-daemon',
@@ -87,6 +87,7 @@ function makePorts() {
 }
 
 function defaultModelForProvider(provider) {
+  if (provider === 'claude' || provider === 'claude-p' || provider === 'claude-headless') return 'sonnet'
   if (provider === 'opencode') return 'opencode/gpt-5.4'
   return 'gpt-5.4'
 }
@@ -220,16 +221,26 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function waitForSessionInteraction(client, sessionId, agentId, containsText, timeoutMs, pollMs) {
+async function pumpTerminal(client, sessionId, attachmentId) {
+  if (!attachmentId) return
+  const { pumpTerminalOutputRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+}
+
+async function waitForSessionInteraction(client, sessionId, attachmentId, agentId, containsText, timeoutMs, pollMs) {
   const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   let session = null
   const needles = Array.isArray(containsText) ? containsText : [containsText]
   while (Date.now() < deadline) {
+    await pumpTerminal(client, sessionId, attachmentId)
     const response = await client.send(getSessionStateRequest(sessionId))
     const payload = response?.SessionStateLoaded ?? response?.SessionState ?? response
     session = payload.session ?? payload
-    const matchesNeedle = (entry) => needles.some((needle) => String(entry.message ?? '').includes(needle))
+    const matchesNeedle = (entry) => {
+      const text = `${entry.title ?? ''}\n${entry.message ?? ''}`
+      return needles.some((needle) => text.includes(needle))
+    }
     const interaction = (session.active_interactions ?? []).find((entry) => entry.agent_id === agentId && matchesNeedle(entry))
       ?? (session.active_interactions ?? []).find(matchesNeedle)
     if (interaction) return { session, interaction }
@@ -258,9 +269,10 @@ function collectTerminalText(events) {
     .join('')
 }
 
-async function waitForTerminalText(events, needle, timeoutMs, pollMs) {
+async function waitForTerminalText(client, sessionId, attachmentId, events, needle, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    await pumpTerminal(client, sessionId, attachmentId)
     const text = collectTerminalText(events)
     if (text.includes(needle)) return text
     await sleep(pollMs)
@@ -283,10 +295,11 @@ async function waitForFileContent(filePath, expectedContent, timeoutMs, pollMs) 
   throw new Error(`timed out waiting for file content ${expectedContent} at ${filePath}: ${lastError?.message ?? 'content mismatch'}`)
 }
 
-async function waitForAgentIdle(client, sessionId, agentId, timeoutMs, pollMs) {
+async function waitForAgentIdle(client, sessionId, attachmentId, agentId, timeoutMs, pollMs) {
   const { getSessionStateRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    await pumpTerminal(client, sessionId, attachmentId)
     const payload = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const session = payload.session ?? payload
     const promptState = session.prompt_states?.[agentId]
@@ -438,8 +451,16 @@ async function main() {
     requireCondition(Boolean(activeAgentId), 'CLI did not expose focused agent', firstSnapshot)
     await client.send(focusAgentRequest(sessionId, activeAgentId))
 
-    const bashNeedle = provider === 'codex' ? 'Approve command execution?' : 'Approve OpenCode bash request?'
-    const editNeedle = provider === 'codex' ? ['Approve file changes?', 'Approve command execution?'] : 'Approve OpenCode edit request?'
+    const bashNeedle = provider === 'codex'
+      ? 'Approve command execution?'
+      : provider.startsWith('claude')
+        ? 'Approve Claude Code Bash?'
+        : 'Approve OpenCode bash request?'
+    const editNeedle = provider === 'codex'
+      ? ['Approve file changes?', 'Approve command execution?']
+      : provider.startsWith('claude')
+        ? ['Approve Claude Code Write?', 'Approve Claude Code Edit?', 'Approve Claude Code Bash?']
+        : 'Approve OpenCode edit request?'
     const codexSandboxEscapePath = `/tmp/arroba-codex-native-bash-${process.pid}.txt`
     const bashPrompt = provider === 'codex'
       ? `Use the shell to run \`printf 'native-bash\\n' > ${codexSandboxEscapePath}\`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE.`
@@ -447,7 +468,7 @@ async function main() {
 
     const beforeBash = events.length
     await client.send(submitPromptRequest(sessionId, attachmentId, activeAgentId, bashPrompt))
-    const bashInteraction = await waitForSessionInteraction(client, sessionId, activeAgentId, bashNeedle, options.timeoutMs, options.pollMs)
+    const bashInteraction = await waitForSessionInteraction(client, sessionId, attachmentId, activeAgentId, bashNeedle, options.timeoutMs, options.pollMs)
     requireCondition(bashInteraction.interaction.level === 'warning' || bashInteraction.interaction.level === 'critical', 'unexpected bash interaction level', bashInteraction)
     log('answering-bash-interaction', {
       provider,
@@ -456,8 +477,8 @@ async function main() {
       message: bashInteraction.interaction.message,
     })
     await client.send(respondToInteractionRequest(sessionId, bashInteraction.interaction.id, 'allow_once'))
-    await waitForAgentIdle(client, sessionId, activeAgentId, options.timeoutMs, options.pollMs)
-    await waitForTerminalText(events.slice(beforeBash), 'NATIVE_BASH_PERMISSION_DONE', options.timeoutMs, options.pollMs)
+    await waitForAgentIdle(client, sessionId, attachmentId, activeAgentId, options.timeoutMs, options.pollMs)
+    await waitForTerminalText(client, sessionId, attachmentId, events.slice(beforeBash), 'NATIVE_BASH_PERMISSION_DONE', options.timeoutMs, options.pollMs)
     log('bash-permission-passed', { provider })
 
     const beforeEdit = events.length
@@ -468,7 +489,7 @@ async function main() {
       activeAgentId,
       `Create a file named ${path.basename(createdFile)} with the exact text native-${provider}. After the write succeeds, reply with exactly NATIVE_EDIT_PERMISSION_DONE.`,
     ))
-    const editInteraction = await waitForSessionInteraction(client, sessionId, activeAgentId, editNeedle, options.timeoutMs, options.pollMs)
+    const editInteraction = await waitForSessionInteraction(client, sessionId, attachmentId, activeAgentId, editNeedle, options.timeoutMs, options.pollMs)
     requireCondition(editInteraction.interaction.level === 'critical' || editInteraction.interaction.level === 'warning', 'unexpected edit interaction level', editInteraction)
     log('answering-edit-interaction', {
       provider,
@@ -477,7 +498,7 @@ async function main() {
       message: editInteraction.interaction.message,
     })
     await client.send(respondToInteractionRequest(sessionId, editInteraction.interaction.id, 'allow_once'))
-    await waitForAgentIdle(client, sessionId, activeAgentId, options.timeoutMs, options.pollMs)
+    await waitForAgentIdle(client, sessionId, attachmentId, activeAgentId, options.timeoutMs, options.pollMs)
     const content = await waitForFileContent(createdFile, `native-${provider}`, options.timeoutMs, options.pollMs)
     requireCondition(content.trim() === `native-${provider}`, 'provider did not create expected file content', { provider, createdFile, content })
     log('edit-permission-passed', { provider, createdFile })

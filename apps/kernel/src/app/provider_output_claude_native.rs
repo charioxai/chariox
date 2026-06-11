@@ -577,7 +577,9 @@ fn claude_headless_composer_visible(text: &str) -> bool {
     (normalized_lower.contains("try \"write a test for")
         || compact.contains("try\"writeatestfor")
         || normalized_lower.contains("bypass permissions on")
-        || compact.contains("bypasspermissionson"))
+        || compact.contains("bypasspermissionson")
+        || normalized_lower.contains("for shortcuts")
+        || compact.contains("forshortcuts"))
         && !(claude_headless_workspace_trust_visible(&normalized)
             || claude_headless_bypass_confirmation_visible(&normalized))
 }
