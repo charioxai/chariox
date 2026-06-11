@@ -36,6 +36,7 @@ test("waiting room start rows render configuration labels and join action", () =
     "live-sync",
     "collaborators",
     "slice",
+    "metaagent",
     "join-header",
   ])
   assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "local")
@@ -43,6 +44,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
+  assert.equal(rows.find((row) => row.id === "metaagent")?.value, "off")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
@@ -68,12 +70,32 @@ test("waiting room start rows render loading placeholders before inventory arriv
 
   assert.equal(rows.find((row) => row.id === "model")?.value, "No models available")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
+  assert.equal(rows.find((row) => row.id === "metaagent")?.value, "off")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
+})
+
+test("waiting room start rows render the metaagent toggle", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ focus: "metaagent", createMetaagent: true }),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "metaagent")?.value, "on")
+  assert.equal(rows.find((row) => row.id === "metaagent")?.focused, true)
 })
 
 test("waiting room start rows hint cloud collaborator setup when cloud-linked", () => {

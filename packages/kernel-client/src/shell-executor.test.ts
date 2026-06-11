@@ -1086,6 +1086,51 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   })
 })
 
+test("executeShellCommand creates a session with a metaagent", async () => {
+  const session = makeSession({
+    id: "session-2",
+    worktree_id: "/repo/qa",
+    focused_agent_id: "agent-meta",
+    agents: [makeAgent({ id: "agent-meta", session_id: "session-2", role: "meta" })],
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, {
+      CreateSession: {
+        workspace_id: "/repo",
+        worktree_id: "/repo/qa",
+        alias: null,
+        slice_ref: null,
+        metaagent: true,
+      },
+    })
+    return { SessionCreated: { session } }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("session new --meta --dir qa as s"), context, {
+    client: fake.client,
+    resolveExistingDirectory: async () => "/repo/qa",
+  })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /created metaagent session session-2/)
+  assert.deepEqual(result.bindings, { s: "session-2" })
+  assert.deepEqual(result.contextUpdates?.agentId, "agent-meta")
+})
+
+test("executeShellCommand rejects metaagent sessions in slices", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called for invalid metaagent slice placement")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("session new --meta --slice slice-1"), context, {
+    client: fake.client,
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /metaagents cannot be launched in a slice/)
+})
+
 test("executeShellCommand does not adopt stale focused agent ids from session payloads", async () => {
   const session = makeSession({
     id: "session-2",

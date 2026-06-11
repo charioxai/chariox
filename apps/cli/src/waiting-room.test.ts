@@ -183,7 +183,7 @@ test("waiting room renders indented sections and only previews the last two acti
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 11)
+  state = moveWaitingRoomFocus(state, sessions, 12)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "launch-machine")
@@ -199,10 +199,12 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[9]?.id, "collaborators")
   assert.equal(firstWindow[10]?.id, "slice")
   assert.equal(firstWindow[10]?.value, "off")
-  assert.equal(firstWindow[11]?.id, "join-header")
-  assert.equal(firstWindow[11]?.indent, 0)
-  assert.equal(firstWindow[11]?.focused, true)
-  assert.equal(firstWindow[11]?.value, "Press Enter")
+  assert.equal(firstWindow[11]?.id, "metaagent")
+  assert.equal(firstWindow[11]?.value, "off")
+  assert.equal(firstWindow[12]?.id, "join-header")
+  assert.equal(firstWindow[12]?.indent, 0)
+  assert.equal(firstWindow[12]?.focused, true)
+  assert.equal(firstWindow[12]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
@@ -302,12 +304,14 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[9]?.id, "collaborators")
   assert.equal(rows[10]?.id, "slice")
   assert.equal(rows[10]?.value, "off")
-  assert.equal(rows[11]?.id, "join-header")
-  assert.equal(rows[11]?.title, "Join Existing Session")
+  assert.equal(rows[11]?.id, "metaagent")
+  assert.equal(rows[11]?.value, "off")
+  assert.equal(rows[12]?.id, "join-header")
+  assert.equal(rows[12]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")
   assert.equal(rows.at(-1)?.indent, 0)
 
-  state = moveWaitingRoomFocus(state, [], 11)
+  state = moveWaitingRoomFocus(state, [], 12)
   assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
@@ -378,7 +382,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 13, remote)
+  state = moveWaitingRoomFocus(state, [], 14, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
@@ -420,7 +424,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 12, remote)
+  state = moveWaitingRoomFocus(state, [], 13, remote)
   assert.equal(state.focus, "machine")
   let rows = waitingRoomRows(state, [], catalog, remote)
   const machineRow = rows.find((row) => row.id === "machine:machine-offline")

@@ -72,6 +72,86 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn create_session_can_create_metaagent_default_agent() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let terminal_stream = {
+        let app_locked = app.lock().await;
+        app_locked.terminal_stream_store()
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("meta-workspace", "meta-worktree").with_metaagent(true),
+    );
+    let command = KernelCommand::from_local_request("meta-session-create", None, None, &request);
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("metaagent session creation should succeed");
+
+    let LocalDaemonResponse::SessionCreated { session, agent } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agent.role(), crate::agent::AgentRole::Meta);
+    assert_eq!(session.focused_agent_id(), Some(agent.id()));
+    assert_eq!(
+        session
+            .agents()
+            .iter()
+            .find(|candidate| candidate.id() == agent.id())
+            .map(|candidate| candidate.role()),
+        Some(crate::agent::AgentRole::Meta)
+    );
+}
+
+#[tokio::test]
+async fn create_session_rejects_metaagent_in_slice() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let terminal_stream = {
+        let app_locked = app.lock().await;
+        app_locked.terminal_stream_store()
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("slice-workspace", "slice-worktree")
+            .with_slice_ref("linux-dev")
+            .with_metaagent(true),
+    );
+    let command =
+        KernelCommand::from_local_request("slice-meta-session-create", None, None, &request);
+    let error = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect_err("slice-backed metaagent session creation should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("metaagents cannot be launched in a slice"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn update_session_config_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

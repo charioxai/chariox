@@ -25,6 +25,7 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "live-sync",
     "collaborators",
     "slice",
+    "metaagent",
     "join-sessions",
     "session",
     "session",
@@ -83,11 +84,13 @@ test("waiting room focus targets include external provider sessions and paginati
   })
 
   assert.deepEqual(
-    targets.slice(12, 16).map((target) => ({
-      focus: target.focus,
-      sessionIndex: target.sessionIndex,
-      externalSessionIndex: target.externalSessionIndex,
-    })),
+    targets
+      .filter((target) => target.focus === "session" || target.focus === "external-session" || target.focus === "external-session-more")
+      .map((target) => ({
+        focus: target.focus,
+        sessionIndex: target.sessionIndex,
+        externalSessionIndex: target.externalSessionIndex,
+      })),
     [
       { focus: "session", sessionIndex: 0, externalSessionIndex: 0 },
       { focus: "external-session", sessionIndex: 0, externalSessionIndex: 0 },

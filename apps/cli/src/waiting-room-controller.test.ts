@@ -207,6 +207,59 @@ test("waiting room activation blocks stale reusable slice selections for new ses
   }
 })
 
+test("waiting room activation creates metaagent sessions and rejects metaagents in slices", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [
+      {
+        id: "existing:/workspace",
+        kind: "existing",
+        label: "main",
+        path: "/workspace",
+        branch: "main",
+        isCurrent: true,
+      },
+    ],
+  })
+  const catalog = fallbackProviderCatalog()
+  try {
+    const metaState = {
+      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
+      createMetaagent: true,
+    }
+    const decision = deriveWaitingRoomActivationDecision({
+      state: metaState,
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+    })
+
+    assert.equal(decision.action, "create")
+    if (decision.action === "create") {
+      assert.equal(decision.launch.metaagent, true)
+    }
+
+    const sliceDecision = deriveWaitingRoomCreateSessionDecision({
+      state: {
+        ...metaState,
+        sliceSelectionId: "new",
+      },
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+    })
+    assert.deepEqual(sliceDecision, {
+      action: "error",
+      message: "metaagents cannot be launched in a slice",
+    })
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+
 test("deriveWaitingRoomStateUpdate normalizes state and reports preference persistence", () => {
   const update = deriveWaitingRoomStateUpdate({
     currentState: waitingRoomState(),

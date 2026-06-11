@@ -84,6 +84,7 @@ impl KernelRuntimeOwnedState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
+        let metaagent = request.metaagent;
         let mut session =
             SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
         crate::logging::info_with_fields(
@@ -97,6 +98,11 @@ impl KernelRuntimeOwnedState {
         );
         let agent_request =
             agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
+                .with_role(if metaagent {
+                    crate::agent::AgentRole::Meta
+                } else {
+                    crate::agent::AgentRole::Standard
+                })
                 .with_worktree(session.worktree_id());
         let session_snapshot = self.session_store.get_session(session.id())?;
         let agent = self

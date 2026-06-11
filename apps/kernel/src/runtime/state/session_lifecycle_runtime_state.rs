@@ -13,6 +13,12 @@ impl KernelRuntimeState {
                 message: "use either kernel_ref or slice_ref, not both".to_string(),
             });
         }
+        if request.metaagent && slice_ref.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "session.create",
+                message: "metaagents cannot be launched in a slice".to_string(),
+            });
+        }
         let mut request = request;
         if let Some(slice_ref) = slice_ref.as_deref() {
             let slice = self.resolve_slice(slice_ref)?;
@@ -92,11 +98,17 @@ impl KernelRuntimeState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
+        let metaagent = request.metaagent;
         request.kernel_ref = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
         let agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
+                .with_role(if metaagent {
+                    crate::agent::AgentRole::Meta
+                } else {
+                    crate::agent::AgentRole::Standard
+                })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
         let agent = self.spawn_agent(agent_request).await?;
@@ -176,12 +188,18 @@ impl KernelRuntimeState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
+        let metaagent = request.metaagent;
         request.slice_ref = None;
         request.kernel_ref = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
         let agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
+                .with_role(if metaagent {
+                    crate::agent::AgentRole::Meta
+                } else {
+                    crate::agent::AgentRole::Standard
+                })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
         let agent = self.spawn_agent(agent_request).await?;

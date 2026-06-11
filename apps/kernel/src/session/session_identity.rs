@@ -122,6 +122,8 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     #[serde(default)]
+    pub metaagent: bool,
+    #[serde(default)]
     pub hidden: bool,
     #[serde(default = "default_session_owner_user_id")]
     pub owner_user_id: String,
@@ -137,6 +139,7 @@ impl CreateSessionRequest {
             slice_ref: None,
             kernel_ref: None,
             workspace_live_sync_mode: None,
+            metaagent: false,
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
         }
@@ -172,6 +175,11 @@ impl CreateSessionRequest {
         mode: crate::config::WorkspaceLiveSyncMode,
     ) -> Self {
         self.workspace_live_sync_mode = Some(mode);
+        self
+    }
+
+    pub fn with_metaagent(mut self, metaagent: bool) -> Self {
+        self.metaagent = metaagent;
         self
     }
 

@@ -10,6 +10,7 @@ export type WaitingRoomFocus =
   | "provider"
   | "model"
   | "effort"
+  | "metaagent"
   | "workspace"
   | "worktree"
   | "live-sync"
@@ -45,6 +46,7 @@ export type WaitingRoomState = {
   terminalIndex: number
   worktreeSelectionId: string
   workspaceLiveSyncMode: "off" | "managed" | "tracked"
+  createMetaagent?: boolean
   selectedMachineRef?: string
   selectedKernelRef?: string
   sliceSelectionId?: string
