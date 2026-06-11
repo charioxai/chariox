@@ -1125,6 +1125,32 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         .to_string();
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-meta-busy");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach-meta-busy", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let meta_prompt = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: "stay busy while a worker asks for permission".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit-meta-busy", None, None, &meta_prompt),
+            meta_prompt,
+        )
+        .await
+        .expect("metaagent prompt should start");
     let worker_interaction = RuntimeInteraction::new(
         "interaction-worker",
         worker.id(),
@@ -1155,6 +1181,19 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         .create_runtime_interaction(session.id(), worker_interaction)
         .await
         .expect("worker interaction should register");
+    let meta_queued_prompts = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(session.id())
+        .expect("session should load")
+        .queued_prompts_for_agent(metaagent.id())
+        .map(|queued| queued.len())
+        .unwrap_or_default();
+    assert_eq!(
+        meta_queued_prompts, 0,
+        "runtime interaction event prompts should steer an active metaagent instead of queueing"
+    );
     let listed_events = router
         .dispatch_authenticated_runtime_tool_call(
             &meta_auth_token,

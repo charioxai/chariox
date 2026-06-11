@@ -135,6 +135,9 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         prompt: crate::session::PromptQueueItem,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        if let Some(dispatches) = self.steer_active_metaagent_event_prompt(session_id, &prompt)? {
+            return Ok(dispatches);
+        }
         let prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt,
@@ -181,5 +184,53 @@ impl KernelRuntimeOwnedState {
             }
         }
         Ok(dispatches)
+    }
+
+    fn steer_active_metaagent_event_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<WorkflowPromptDispatches>, DaemonError> {
+        let target_agent_id = prompt.target_agent_id().to_string();
+        let target_agent = self.agent_store.get_agent(&target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &target_agent_id)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(provider_run) = self
+            .provider_store
+            .get_run_for_agent(session_id, &target_agent_id)
+        else {
+            return Ok(None);
+        };
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Ok(None);
+        }
+        self.append_user_prompt_history(
+            session_id,
+            prompt.source_attachment_id(),
+            &target_agent_id,
+            prompt.prompt(),
+            prompt.attachments(),
+        )?;
+        let mut dispatches = WorkflowPromptDispatches::default();
+        dispatches.local.push(crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            agent_id: target_agent_id,
+            prompt_id: prompt.id().to_string(),
+            source_attachment_id: prompt.source_attachment_id().to_string(),
+            prompt: prompt.prompt().to_string(),
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments: prompt.attachments().to_vec(),
+        });
+        Ok(Some(dispatches))
     }
 }
