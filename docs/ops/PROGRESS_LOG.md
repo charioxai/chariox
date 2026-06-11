@@ -1519,3 +1519,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Revalidated same-host relay tracked Workspace Live Sync on 2026-06-11 against OSS main `d21212443` with `pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill`.
 - The drill passed in full tracked mode with Codex, two target worktrees on `remote-live-sync-tracked-parity-target`, bidirectional fanout, `.arrobaignore` propagation, force-excludes, ignored outside-turn changes, unchanged source and target Git heads, conflict reporting, resolver convergence, final ready sync status, and a sibling-repo write outside the synced root left writable and unsynced.
 - Verified the drill cleaned its own `apps/cli/target/live-workspace-live-sync-drill/41519-1781136489232` and `/tmp/arroba-remote-workspace-live-sync-41341-*` artifacts after success.
+
+### Hetzner tracked Workspace Live Sync parity
+
+- Created an isolated Hetzner checkout `/tmp/arroba-workspace-live-sync-head-1781136653-48238`, built `arroba-kernel` and `arroba-relay` there, and verified it was at OSS main `7964baa`.
+- Revalidated actual-Hetzner tracked Workspace Live Sync on 2026-06-11 with `node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --mode tracked --tracked-target-count 2 --tracked-bidirectional --target-branch hetzner-live-sync-7964baa-tracked --full --timeout-ms 700000 --hetzner-worker --hetzner-repo /tmp/arroba-workspace-live-sync-head-1781136653-48238`.
+- The Linux worker drill passed in 93.6s, validating remote worker source side effects, two tracked target worktrees, bidirectional fanout, `.arrobaignore` propagation, force-excludes, ignored outside-turn changes, unchanged Git heads, conflict reporting, resolver convergence, and final ready sync status. Managed mode remains unsupported on this Linux worker because selective write fencing is macOS-only.
+- Removed the isolated Hetzner checkout after the run and verified local `apps/cli/target/live-workspace-live-sync-drill/hetzner-48614-1781136845735` plus `/tmp/arroba-remote-workspace-live-sync-48614-*` artifacts were gone.
