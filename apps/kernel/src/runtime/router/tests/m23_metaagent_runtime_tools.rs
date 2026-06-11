@@ -1209,6 +1209,88 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
 }
 
 #[tokio::test]
+async fn metaagent_event_prompts_retry_after_provider_launch() {
+    let env = TestMetaRuntimeEnv::new("event-retry-after-launch");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    router
+        .runtime_state
+        .inject_metaagent_agent_lifecycle_event_for_agent(session.id(), &worker, "agent.spawned")
+        .await
+        .expect("metaagent event should record even before provider launch");
+    let failed_event = app
+        .lock()
+        .await
+        .metaagent_event_store()
+        .list(metaagent.id(), Some("agent.spawned"), Some("failed"), 10)
+        .into_iter()
+        .next()
+        .expect("event prompt should fail while no metaagent provider route exists");
+    let failed_prompt_id = failed_event.injected_prompt_id.clone();
+
+    let started = app
+        .lock()
+        .await
+        .start_provider_launch(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "meta-model",
+            )
+            .with_agent_id(metaagent.id()),
+        )
+        .expect("metaagent provider launch should start");
+    router
+        .runtime_state
+        .finish_provider_launch(&started, None)
+        .await;
+
+    let retried_event = app
+        .lock()
+        .await
+        .metaagent_event_store()
+        .read(metaagent.id(), &failed_event.event_id)
+        .expect("event should still be readable after retry");
+    assert_ne!(
+        retried_event.prompt_delivery_status, "failed",
+        "provider launch should retry failed metaagent event prompts: {retried_event:?}"
+    );
+    assert_ne!(
+        retried_event.injected_prompt_id, failed_prompt_id,
+        "retry should use a fresh prompt id for the replayed visible event prompt"
+    );
+    assert!(
+        matches!(
+            retried_event.prompt_delivery_status.as_str(),
+            "submitted" | "queued" | "delivered"
+        ),
+        "retried event should be re-admitted through normal prompt delivery: {retried_event:?}"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
     let env = TestMetaRuntimeEnv::new("turn-trace");
     let workspace = env.root.join("workspace");

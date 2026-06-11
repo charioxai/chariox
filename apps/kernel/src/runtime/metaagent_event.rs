@@ -268,6 +268,20 @@ impl MetaagentEventStore {
         Some(record.clone())
     }
 
+    pub(crate) fn prepare_prompt_delivery_retry(
+        &self,
+        event_id: &str,
+        prompt_id: String,
+    ) -> Option<MetaagentEventRecord> {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let record = state.records.get_mut(event_id)?;
+        record.injected_prompt_id = Some(prompt_id);
+        record.prompt_delivery_status = "recorded".to_string();
+        record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
+        record.prompt_delivery_error = None;
+        Some(record.clone())
+    }
+
     pub(crate) fn subscribe(
         &self,
         metaagent_id: &str,

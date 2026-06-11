@@ -321,6 +321,7 @@ impl KernelRuntimeState {
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
         let mut durable_agent_update = None;
+        let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {
             let owned = &self.owned;
             let result = owned.finish_provider_launch_success(started, binding);
@@ -344,6 +345,15 @@ impl KernelRuntimeState {
                                 return;
                             }
                         }
+                        match owned.retry_pending_metaagent_event_prompts_for_provider_run(&run) {
+                            Ok(dispatches) => {
+                                retry_metaagent_event_dispatches = dispatches;
+                            }
+                            Err(error) => {
+                                self.fail_provider_launch(started, &error).await;
+                                return;
+                            }
+                        }
                         let _ = owned.session_snapshot(run.session_id());
                     }
                 }
@@ -352,6 +362,7 @@ impl KernelRuntimeState {
                 }
             }
         }
+        self.spawn_workflow_prompt_dispatches(retry_metaagent_event_dispatches);
         if let Some(agent) = durable_agent_update {
             if let Err(error) = self
                 .append_agent_durable_event("agent.runtime_profile_updated", &agent, None)

@@ -530,6 +530,80 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn retry_pending_metaagent_event_prompts_for_provider_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let Some(metaagent_id) = run.agent_instance_id() else {
+            return Ok(WorkflowPromptDispatches::default());
+        };
+        let metaagent = self.agent_store.get_agent(metaagent_id)?;
+        if !metaagent.is_metaagent() || metaagent.session_id() != run.session_id() {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        if run.state() != crate::provider::ProviderRunState::Running {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let mut records = self
+            .metaagent_events
+            .list(metaagent.id(), None, Some("failed"), 100);
+        records.extend(
+            self.metaagent_events
+                .list(metaagent.id(), None, Some("recorded"), 100),
+        );
+        records.retain(|record| record.session_id == run.session_id());
+        records.sort_by_key(|record| record.sequence);
+        records.dedup_by(|left, right| left.event_id == right.event_id);
+
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for record in records {
+            let prompt_id = self.session_store.reserve_prompt_id();
+            if let Some(retry_record) = self
+                .metaagent_events
+                .prepare_prompt_delivery_retry(&record.event_id, prompt_id.clone())
+            {
+                self.persist_metaagent_event_record(
+                    "metaagent.event.delivery_retry_prepared",
+                    &retry_record,
+                );
+            }
+            let source = record
+                .source_agent_id
+                .as_deref()
+                .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok())
+                .map(|agent| agent.agent_ref().to_string())
+                .unwrap_or_else(|| "runtime".to_string());
+            let assembly =
+                crate::scheduler::prompt_injection::render_metaagent_event_prompt_assembly(
+                    crate::scheduler::prompt_injection::MetaagentEventPromptContext {
+                        event_id: record.event_id.clone(),
+                        event_kind: record.kind.clone(),
+                        source,
+                        title: record.title.clone(),
+                        body: record.summary.clone(),
+                    },
+                );
+            let source_attachment_id =
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(&format!(
+                    "metaagent-event-retry-{}",
+                    record.event_id
+                ));
+            let prompt = crate::session::PromptQueueItem::new(
+                prompt_id,
+                &source_attachment_id,
+                metaagent.id(),
+                assembly.visible_user_prompt,
+                crate::session::PromptStatus::Queued,
+            );
+            dispatches.extend(self.submit_metaagent_event_prompt(
+                run.session_id(),
+                &record.event_id,
+                prompt,
+            )?);
+        }
+        Ok(dispatches)
+    }
+
     fn persist_metaagent_event_record(
         &self,
         kind: &'static str,
