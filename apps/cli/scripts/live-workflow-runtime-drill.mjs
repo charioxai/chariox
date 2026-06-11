@@ -88,6 +88,7 @@ function parseArgs(argv) {
     dryRun: false,
     spawnDaemon: false,
     noEarlyPass: false,
+    workspaceLiveSyncMode: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -112,6 +113,7 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--spawn-daemon') options.spawnDaemon = true
     else if (arg === '--no-early-pass') options.noEarlyPass = true
+    else if (arg === '--workspace-live-sync-mode') options.workspaceLiveSyncMode = argv[++index]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -137,6 +139,7 @@ function printHelp() {
     '  --dry-run',
     '  --spawn-daemon',
     '  --no-early-pass',
+    '  --workspace-live-sync-mode off|managed|tracked',
   ].join('\n'))
 }
 
@@ -976,7 +979,7 @@ async function main() {
         try {
           const probeClient = new LocalIpcClient(kernelUrl)
           const probeSession = unwrap(
-            await probeClient.send(createSessionRequest(options.workspace, options.worktree)),
+            await probeClient.send(createSessionRequest(options.workspace, options.worktree, undefined, undefined, null, options.workspaceLiveSyncMode)),
             'SessionCreated',
           ).session
           await probeClient.send(endSessionRequest(probeSession.id)).catch(() => {})
@@ -992,7 +995,7 @@ async function main() {
       }
     }
     logStep('create_session')
-    const session = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated').session
+    const session = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree, undefined, undefined, null, options.workspaceLiveSyncMode)), 'SessionCreated').session
     sessionId = session.id
     const attachment = unwrap(
       await client.send(attachToSessionRequest(session.id, `live-drill-${Date.now()}`)),
