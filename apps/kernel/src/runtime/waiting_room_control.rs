@@ -138,17 +138,22 @@ async fn projected_waiting_room_public_snapshot(
         };
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let terminals = paired_terminal_records();
-    let external_provider_session_page = {
+    let (external_provider_session_page, metaagent_events) = {
         let app = app.lock().await;
-        app.external_provider_session_index_store()
-            .list(&ListExternalProviderSessionsRequest {
-                provider: None,
-                cursor: None,
-                limit: Some(25),
-            })
+        (
+            app.external_provider_session_index_store().list(
+                &ListExternalProviderSessionsRequest {
+                    provider: None,
+                    cursor: None,
+                    limit: Some(25),
+                },
+            ),
+            app.metaagent_event_store(),
+        )
     };
     build_waiting_room_public_snapshot(
         runtime_sessions,
+        &metaagent_events,
         external_provider_session_page.sessions,
         external_provider_session_page.has_more,
         external_provider_session_page.next_cursor,

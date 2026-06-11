@@ -126,6 +126,8 @@ pub struct WaitingRoomPublicAgentSummary {
     pub extension_grants: Vec<crate::extension::ExtensionGrant>,
     #[serde(default)]
     pub activity: WaitingRoomPublicItemActivitySummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metaagent_event_counts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

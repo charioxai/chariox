@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
@@ -11,6 +11,7 @@ use crate::local::{
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
 };
+use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::runtime::waiting_room_activity::{
     waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
     waiting_room_workflow_activity_summary,
@@ -22,6 +23,7 @@ use crate::session::RuntimeSession;
 
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
+    metaagent_events: &MetaagentEventStore,
     external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<String>,
@@ -30,7 +32,8 @@ pub(crate) fn build_waiting_room_public_snapshot(
     generated_at_ms: u64,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-    let sessions = waiting_room_session_summaries(runtime_sessions, caller_user_id);
+    let sessions =
+        waiting_room_session_summaries(runtime_sessions, metaagent_events, caller_user_id);
     let launch_target = infer_waiting_room_launch_target();
     let inventory_version = waiting_room_inventory_version(
         &sessions,
@@ -42,7 +45,7 @@ pub(crate) fn build_waiting_room_public_snapshot(
         launch_target.as_ref(),
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 6,
+        schema_version: 7,
         inventory_version,
         generated_at_ms,
         sessions,
@@ -120,6 +123,7 @@ fn waiting_room_inventory_version(
 
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
+    metaagent_events: &MetaagentEventStore,
     caller_user_id: &str,
 ) -> Vec<WaitingRoomPublicSessionSummary> {
     let mut workspace_labels: HashMap<String, Option<String>> = HashMap::new();
@@ -157,6 +161,7 @@ fn waiting_room_session_summaries(
                 activity: waiting_room_session_activity_summary(&session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
                     &session,
+                    metaagent_events,
                     workspace_label.clone(),
                     &mut worktree_labels,
                     caller_user_id,
@@ -169,6 +174,7 @@ fn waiting_room_session_summaries(
 
 fn waiting_room_public_agent_summaries(
     session: &RuntimeSession,
+    metaagent_events: &MetaagentEventStore,
     workspace_label: Option<String>,
     worktree_labels: &mut HashMap<(String, String), Option<String>>,
     caller_user_id: &str,
@@ -211,6 +217,9 @@ fn waiting_room_public_agent_summaries(
                 worktree_label,
                 extension_grants: agent.extension_grants().to_vec(),
                 activity: waiting_room_agent_activity_summary(session, agent, caller_user_id),
+                metaagent_event_counts: agent
+                    .is_metaagent()
+                    .then(|| metaagent_events.counts(agent.id())),
             }
         })
         .collect::<Vec<_>>();
@@ -274,7 +283,9 @@ fn waiting_room_public_workflow_summaries(
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::{AgentInstance, AgentRole, GridPosition};
     use crate::local::{RelayStatus, TerminalType};
+    use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, waiting_room_session_summaries,
     };
@@ -293,8 +304,12 @@ mod tests {
         session.set_workspace_live_sync_mode(Some(crate::config::WorkspaceLiveSyncMode::Managed));
         session.add_attachment("cli-1".to_string());
 
-        let summaries =
-            waiting_room_session_summaries(vec![session], crate::session::DEFAULT_LOCAL_USER_ID);
+        let metaagent_events = MetaagentEventStore::default();
+        let summaries = waiting_room_session_summaries(
+            vec![session],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
 
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
@@ -312,7 +327,111 @@ mod tests {
     }
 
     #[test]
+    fn waiting_room_session_summaries_project_metaagent_event_counts() {
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        let mut metaagent = AgentInstance::new(
+            "meta-1",
+            "M1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        metaagent.set_role(AgentRole::Meta);
+        let worker = AgentInstance::new(
+            "agent-1",
+            "A1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(1, 0, 1, 1),
+        );
+        session.set_agents(vec![metaagent.clone(), worker]);
+        let metaagent_events = MetaagentEventStore::default();
+        let event = metaagent_events.record(NewMetaagentEvent {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            owner_user_id: metaagent.owner_user_id().to_string(),
+            kind: "agent.turn.completed".to_string(),
+            source_agent_id: Some("agent-1".to_string()),
+            title: "Worker completed".to_string(),
+            summary: "Worker completed a turn".to_string(),
+            detail: serde_json::json!({ "prompt_id": "prompt-1" }),
+            injected_prompt_id: None,
+        });
+        metaagent_events
+            .read(metaagent.id(), &event.event_id)
+            .expect("event should read");
+
+        let summaries = waiting_room_session_summaries(
+            vec![session],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        let agents = &summaries[0].agents;
+        let metaagent_summary = agents
+            .iter()
+            .find(|agent| agent.id == "meta-1")
+            .expect("metaagent summary should project");
+        assert_eq!(
+            metaagent_summary
+                .metaagent_event_counts
+                .as_ref()
+                .and_then(|counts| counts.pointer("/total"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            metaagent_summary
+                .metaagent_event_counts
+                .as_ref()
+                .and_then(|counts| counts.pointer("/unread"))
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            metaagent_summary
+                .metaagent_event_counts
+                .as_ref()
+                .and_then(|counts| counts.pointer("/unacked"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            metaagent_summary
+                .metaagent_event_counts
+                .as_ref()
+                .and_then(|counts| counts.pointer("/by_kind/agent.turn.completed"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(
+            agents
+                .iter()
+                .find(|agent| agent.id == "agent-1")
+                .expect("regular agent summary should project")
+                .metaagent_event_counts
+                .is_none()
+        );
+    }
+
+    #[test]
     fn waiting_room_public_snapshot_inventory_version_includes_projection_inputs() {
+        let metaagent_events = MetaagentEventStore::default();
         let snapshot = build_waiting_room_public_snapshot(
             vec![RuntimeSession::new(
                 "session-1",
@@ -322,6 +441,7 @@ mod tests {
                 "machine",
                 "daemon",
             )],
+            &metaagent_events,
             Vec::new(),
             false,
             None,
@@ -346,7 +466,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 6);
+        assert_eq!(snapshot.schema_version, 7);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
