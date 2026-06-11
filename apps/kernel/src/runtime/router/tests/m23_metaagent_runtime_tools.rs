@@ -1355,7 +1355,7 @@ async fn metaagent_event_subscriptions_persist_and_can_be_removed() {
 }
 
 #[tokio::test]
-async fn subscribed_workflow_output_records_and_injects_metaagent_event() {
+async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_event() {
     let env = TestMetaRuntimeEnv::new("workflow-output-event");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -1367,7 +1367,11 @@ async fn subscribed_workflow_output_records_and_injects_metaagent_event() {
         ))
         .expect("session should be created");
     let worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_owner_user_id("user-2"),
+        )
         .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
