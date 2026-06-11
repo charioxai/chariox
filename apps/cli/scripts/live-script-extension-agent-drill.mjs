@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -232,7 +232,7 @@ async function prepareNodePackage(packageRoot) {
   if (result.code !== 0) throw new Error(`npm install tsx failed\n${result.stdout}\n${result.stderr}`)
 }
 
-async function registerScripts(client, workspace, root, tokens) {
+async function registerScripts(client, workspace, root, tokens, scriptNames) {
   const python = process.env.PYTHON || await commandPath('python3') || await commandPath('python')
   const node = process.env.NODE || await commandPath('node')
   if (!python) throw new Error('python3 or python is required')
@@ -250,11 +250,11 @@ async function registerScripts(client, workspace, root, tokens) {
     runtime: { type: 'node', node, package_root: packageRoot },
   })), 'EnvironmentRegistered').environment
   const pyScript = unwrap(
-    await client.send(requests.registerScriptRequest(workspace, pythonScript, pyEnv.name, 'python_vector_lookup')),
+    await client.send(requests.registerScriptRequest(workspace, pythonScript, pyEnv.name, scriptNames.python)),
     'ScriptRegistered',
   ).script
   const tsScriptMeta = unwrap(
-    await client.send(requests.registerScriptRequest(workspace, tsScript, nodeEnv.name, 'ts_sdk_lookup')),
+    await client.send(requests.registerScriptRequest(workspace, tsScript, nodeEnv.name, scriptNames.typescript)),
     'ScriptRegistered',
   ).script
   return { pyEnv, nodeEnv, pyScript, tsScript: tsScriptMeta }
@@ -297,14 +297,14 @@ async function waitForFile(file, timeoutMs, pollMs) {
   throw new Error(`timed out waiting for ${file}`)
 }
 
-async function runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options, pyEnv, nodeEnv, tokens }) {
+async function runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options, pyEnv, nodeEnv, tokens, scriptNames }) {
   const model = modelForProvider(provider, options)
   const agent = unwrap(
     await client.send(requests.spawnAgentRequest(session.id, provider, `${provider}-script-extension`, model, workspace, options.effort)),
     'AgentSpawned',
   ).agent
-  await client.send(requests.grantAgentExtensionRequest(workspace, agent.id, 'script', 'python_vector_lookup', pyEnv.name))
-  await client.send(requests.grantAgentExtensionRequest(workspace, agent.id, 'script', 'ts_sdk_lookup', nodeEnv.name))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agent.id, 'script', scriptNames.python, pyEnv.name))
+  await client.send(requests.grantAgentExtensionRequest(workspace, agent.id, 'script', scriptNames.typescript, nodeEnv.name))
   const launch = unwrapOne(
     await client.send(requests.launchProviderRunRequest(session.id, provider, 'default', model, options.effort, agent.id)),
     'ProviderRunLaunched',
@@ -315,9 +315,9 @@ async function runProviderScenario({ client, session, attachment, workspace, out
   const outputPath = path.join(outputsDir, `${provider}-script-extension-result.json`)
   const prompt = [
     'This is an Arroba script extension end-to-end drill.',
-    'You have exactly two relevant script tools: `python_vector_lookup` and `ts_sdk_lookup`.',
-    'Call `python_vector_lookup` with {"query":"alpha","limit":1}.',
-    'Call `ts_sdk_lookup` with {"accountId":"acct-42","multiplier":3}.',
+    `You have exactly two relevant script tools: \`${scriptNames.python}\` and \`${scriptNames.typescript}\`.`,
+    `Call \`${scriptNames.python}\` with {"query":"alpha","limit":1}.`,
+    `Call \`${scriptNames.typescript}\` with {"accountId":"acct-42","multiplier":3}.`,
     `Then write ${outputRel} using Arroba workspace live sync as one JSON object with these keys:`,
     'python_source, python_query, python_token, python_first_id, typescript_source, typescript_account, typescript_token, typescript_multiplied, typescript_first_id.',
     'Use only values returned by the script tools. Do not use placeholders and do not guess token values. Reply exactly SCRIPT_EXTENSION_AGENT_DRILL_DONE.',
@@ -353,7 +353,7 @@ async function main() {
   }
   if (options.providers.length === 0) throw new Error('at least one provider is required')
 
-  const root = path.join(repoRoot, 'target', 'live-script-extension-agent-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(tmpdir(), 'arroba-live-script-extension-agent-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const historyDir = path.join(root, 'history')
@@ -362,6 +362,11 @@ async function main() {
   const tokens = {
     python: `py-token-${process.pid}-${Date.now()}`,
     typescript: `ts-token-${process.pid}-${Date.now()}`,
+  }
+  const scriptSuffix = `${process.pid}_${Date.now()}`
+  const scriptNames = {
+    python: `python_vector_lookup_${scriptSuffix}`,
+    typescript: `ts_sdk_lookup_${scriptSuffix}`,
   }
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
@@ -397,7 +402,7 @@ async function main() {
     })
     await waitForDaemon(kernelUrl, workspace)
     client = new LocalIpcClient(kernelUrl)
-    const { pyEnv, nodeEnv } = await registerScripts(client, workspace, root, tokens)
+    const { pyEnv, nodeEnv } = await registerScripts(client, workspace, root, tokens, scriptNames)
     const session = unwrap(
       await client.send(requests.createSessionRequest(workspace, workspace, 'script-extension-agent-drill')),
       'SessionCreated',
@@ -407,7 +412,7 @@ async function main() {
       'SessionAttached',
     ).attachment
     for (const provider of options.providers) {
-      await runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options, pyEnv, nodeEnv, tokens })
+      await runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options, pyEnv, nodeEnv, tokens, scriptNames })
     }
     succeeded = true
     log('pass', { providers: options.providers, workspace })
