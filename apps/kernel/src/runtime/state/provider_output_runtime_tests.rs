@@ -33,6 +33,38 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
 }
 
 #[tokio::test]
+async fn provider_output_pump_ignores_projected_remote_active_run() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    app.sessions
+        .set_active_provider_run(
+            session.id(),
+            Some("remote-projected-provider-run-1".to_string()),
+        )
+        .expect("active provider run should be recorded");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let provider_run_ids = provider_run_ids_for_owned_output_pump(&runtime.owned, &session_state);
+
+    assert!(
+        provider_run_ids.is_empty(),
+        "projected remote provider runs are drained through remote projection, not local PTY output"
+    );
+}
+
+#[tokio::test]
 async fn provider_switch_does_not_park_runs_with_active_prompts() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

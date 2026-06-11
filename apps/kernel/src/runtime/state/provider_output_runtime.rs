@@ -307,7 +307,10 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
     session: &crate::session::RuntimeSession,
 ) -> BTreeSet<String> {
     let mut provider_run_ids = BTreeSet::new();
-    if let Some(provider_run_id) = session.active_provider_run_id() {
+    if let Some(provider_run_id) = session
+        .active_provider_run_id()
+        .filter(|run_id| owned.provider_store.get_run(run_id).is_ok())
+    {
         provider_run_ids.insert(provider_run_id.to_string());
     }
     let mut agent_ids = session

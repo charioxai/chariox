@@ -173,7 +173,10 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
     };
     let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
     let mut provider_run_ids = BTreeSet::new();
-    if let Some(provider_run_id) = session.active_provider_run_id() {
+    if let Some(provider_run_id) = session
+        .active_provider_run_id()
+        .filter(|run_id| app.providers.get_run(run_id).is_ok())
+    {
         provider_run_ids.insert(provider_run_id.to_string());
     }
     let mut agent_ids = session
@@ -237,6 +240,36 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
         }
     }
     pumped_provider_run_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        app.sessions
+            .set_active_provider_run(
+                session.id(),
+                Some("remote-projected-provider-run-1".to_string()),
+            )
+            .expect("active provider run should be recorded");
+
+        let pumped = pump_active_prompt_outputs(&mut app);
+
+        assert!(
+            pumped.is_empty(),
+            "projected remote provider runs are not local PTY pump targets"
+        );
+    }
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {

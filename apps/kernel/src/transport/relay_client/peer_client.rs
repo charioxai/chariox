@@ -511,7 +511,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         }
     })
     .await;
-    response.unwrap_or_else(|_| {
+    let result = response.unwrap_or_else(|_| {
         let message = format!(
             "timed out waiting for relay peer response after {}ms",
             response_timeout_ms
@@ -521,7 +521,18 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
             operation: "read temporary relay peer response",
             message,
         })
+    });
+    let _ = socket.close(None).await;
+    let _ = timeout(Duration::from_millis(250), async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
     })
+    .await;
+    result
 }
 
 pub(super) async fn resolve_pending_peer_response(
