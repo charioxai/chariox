@@ -408,16 +408,31 @@ impl KernelRuntimeState {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
+                let error_message = error.to_string();
                 let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
                     agent.id(),
-                    Some(syncing_status.failed(error.to_string())),
+                    Some(syncing_status.failed(error_message.clone())),
+                );
+                let _ = self.append_home_extension_manifest_audit_event(
+                    "home_extension.manifest.failed",
+                    agent,
+                    caller_user_id,
+                    &manifest_hash,
+                    tool_count,
+                    pending_revoke,
+                    Some("failed"),
+                    Some(&error_message),
+                    None,
+                    None,
                 );
                 if SCHEDULE_RETRIES {
                     self.schedule_remote_extension_manifest_retry(
                         agent,
                         caller_user_id,
                         manifest_hash.clone(),
-                        error.to_string(),
+                        tool_count,
+                        pending_revoke,
+                        error_message.clone(),
                     )
                     .await;
                 }
@@ -427,7 +442,7 @@ impl KernelRuntimeState {
                     serde_json::json!({
                         "agent_id": agent.id(),
                         "worker_kernel_id": remote_execution.worker_kernel_id,
-                        "error": error.to_string(),
+                        "error": error_message,
                     }),
                 );
                 return Ok(());
@@ -442,11 +457,25 @@ impl KernelRuntimeState {
                 agent.id(),
                 Some(syncing_status.failed(error.clone())),
             );
+            let _ = self.append_home_extension_manifest_audit_event(
+                "home_extension.manifest.failed",
+                agent,
+                caller_user_id,
+                &manifest_hash,
+                tool_count,
+                pending_revoke,
+                Some("failed"),
+                Some(&error),
+                None,
+                None,
+            );
             if SCHEDULE_RETRIES {
                 self.schedule_remote_extension_manifest_retry(
                     agent,
                     caller_user_id,
                     manifest_hash.clone(),
+                    tool_count,
+                    pending_revoke,
                     error,
                 )
                 .await;
@@ -475,16 +504,17 @@ impl KernelRuntimeState {
                     manifest_hash.clone(),
                 )),
             );
-            let mut payload = self.home_extension_agent_audit_payload(agent, caller_user_id);
-            payload.insert(
-                "manifest_hash".to_string(),
-                serde_json::json!(manifest_hash),
-            );
-            payload.insert("tool_count".to_string(), serde_json::json!(tool_count));
-            self.owned.durable_state_store.append_event(
+            self.append_home_extension_manifest_audit_event(
                 "home_extension.manifest.synced",
-                Some(agent.id().to_string()),
-                serde_json::Value::Object(payload),
+                agent,
+                caller_user_id,
+                &manifest_hash,
+                tool_count,
+                pending_revoke,
+                Some("synced"),
+                None,
+                None,
+                None,
             )?;
         }
         Ok(())
@@ -495,6 +525,8 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         caller_user_id: Option<&str>,
         manifest_hash: String,
+        tool_count: usize,
+        pending_revoke: bool,
         error: String,
     ) {
         const RETRY_DELAYS_SECONDS: [u64; 3] = [2, 10, 30];
@@ -519,9 +551,15 @@ impl KernelRuntimeState {
             "manifest_hash".to_string(),
             serde_json::json!(manifest_hash),
         );
+        payload.insert("tool_count".to_string(), serde_json::json!(tool_count));
+        payload.insert(
+            "pending_revoke".to_string(),
+            serde_json::json!(pending_revoke),
+        );
         payload.insert("attempt".to_string(), serde_json::json!(attempt));
         payload.insert("delay_sec".to_string(), serde_json::json!(delay));
         payload.insert("error".to_string(), serde_json::json!(error));
+        payload.insert("status".to_string(), serde_json::json!("retry_scheduled"));
         let _ = self.owned.durable_state_store.append_event(
             "home_extension.manifest.retry_scheduled",
             Some(agent_id.clone()),
@@ -592,6 +630,52 @@ impl KernelRuntimeState {
                 "max_safety": grant.max_safety,
             }),
         );
+        self.owned.durable_state_store.append_event(
+            kind,
+            Some(agent.id().to_string()),
+            serde_json::Value::Object(payload),
+        )?;
+        Ok(())
+    }
+
+    fn append_home_extension_manifest_audit_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        caller_user_id: Option<&str>,
+        manifest_hash: &str,
+        tool_count: usize,
+        pending_revoke: bool,
+        status: Option<&str>,
+        error: Option<&str>,
+        attempt: Option<u32>,
+        delay_sec: Option<u64>,
+    ) -> Result<(), DaemonError> {
+        let mut payload = self.home_extension_agent_audit_payload(agent, caller_user_id);
+        payload.insert(
+            "manifest_hash".to_string(),
+            serde_json::json!(manifest_hash),
+        );
+        payload.insert("tool_count".to_string(), serde_json::json!(tool_count));
+        payload.insert(
+            "pending_revoke".to_string(),
+            serde_json::json!(pending_revoke),
+        );
+        if pending_revoke && kind == "home_extension.manifest.synced" {
+            payload.insert("revoke_acknowledged".to_string(), serde_json::json!(true));
+        }
+        if let Some(status) = status {
+            payload.insert("status".to_string(), serde_json::json!(status));
+        }
+        if let Some(error) = error {
+            payload.insert("error".to_string(), serde_json::json!(error));
+        }
+        if let Some(attempt) = attempt {
+            payload.insert("attempt".to_string(), serde_json::json!(attempt));
+        }
+        if let Some(delay_sec) = delay_sec {
+            payload.insert("delay_sec".to_string(), serde_json::json!(delay_sec));
+        }
         self.owned.durable_state_store.append_event(
             kind,
             Some(agent.id().to_string()),

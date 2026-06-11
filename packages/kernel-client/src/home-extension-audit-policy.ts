@@ -5,6 +5,15 @@ export function homeExtensionAuditRecoveryAction(kind: string, payload: Record<s
   if (status === "replayed" || kind.includes(".replayed")) {
     return "cached idempotent result was returned; no retry needed"
   }
+  if (kind.includes(".manifest.failed") || kind.includes(".manifest.retry_scheduled")) {
+    if (isConcreteHomeExtensionAuditAgentRef(agentRef)) {
+      return `home keeps stale home-proxy calls blocked; run /extension sync-status ${agentRef}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+    }
+    return "home keeps stale home-proxy calls blocked; identify the affected agent in /kernel remote-runtime, then retry manifest sync after worker connectivity is healthy"
+  }
+  if (kind.includes(".manifest.synced") && payload.revoke_acknowledged === true) {
+    return "worker acknowledged the revoke; home will continue denying calls for the removed grant"
+  }
   if (status === "denied" || kind.includes(".denied")) {
     if (/worker|lease|provider run|run|stale|mismatch/.test(error)) {
       if (isConcreteHomeExtensionAuditAgentRef(agentRef)) {

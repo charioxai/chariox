@@ -242,6 +242,8 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
       ].filter(Boolean)
       if (details.length > 0) rows.push(`  grant: ${details.join(" ")}`)
     }
+    const manifest = formatHomeExtensionAuditManifest(payload)
+    if (manifest) rows.push(`  manifest: ${manifest}`)
     const invocation = formatHomeExtensionAuditInvocation(payload.invocation)
     if (invocation) rows.push(`  invocation: ${invocation}`)
     const result = [
@@ -258,6 +260,18 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     if (next) rows.push(`  next: ${next}`)
     return rows.join("\n")
   }).join("\n")
+}
+
+function formatHomeExtensionAuditManifest(payload: Record<string, unknown>): string {
+  const parts = [
+    fieldPart("hash", payload.manifest_hash),
+    fieldPart("tools", payload.tool_count),
+    fieldPart("pending_revoke", payload.pending_revoke),
+    fieldPart("revoke_acknowledged", payload.revoke_acknowledged),
+    fieldPart("attempt", payload.attempt),
+    fieldPart("retry_in", typeof payload.delay_sec === "number" ? `${payload.delay_sec}s` : payload.delay_sec),
+  ].filter(Boolean)
+  return parts.join(" ")
 }
 
 function homeExtensionAuditRedactedFields(payload: Record<string, unknown>): string {

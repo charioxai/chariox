@@ -107,6 +107,13 @@ test("home extension audit policy handles terminal invocation outcomes", () => {
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.replayed", {
     status: "replayed",
   }), "cached idempotent result was returned; no retry needed")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.failed", {
+    agent_ref: "agent-ref-1",
+  }), "home keeps stale home-proxy calls blocked; run /extension sync-status agent-ref-1; use /extension sync-retry agent-ref-1 after worker connectivity is healthy")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.retry_scheduled", {}), "home keeps stale home-proxy calls blocked; identify the affected agent in /kernel remote-runtime, then retry manifest sync after worker connectivity is healthy")
+  assert.equal(homeExtensionAuditRecoveryAction("home_extension.manifest.synced", {
+    revoke_acknowledged: true,
+  }), "worker acknowledged the revoke; home will continue denying calls for the removed grant")
   assert.equal(homeExtensionAuditRecoveryAction("home_extension.invoke.timeout", {
     status: "timeout",
   }), "split the tool work or increase the home extension timeout before retrying")
