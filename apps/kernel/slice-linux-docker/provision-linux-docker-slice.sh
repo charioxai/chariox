@@ -194,6 +194,15 @@ JSON
   " || log "Chromium browser policy refresh unavailable; continuing"
 }
 
+configure_slice_state_directory() {
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "
+    set -euo pipefail
+    mkdir -p /tmp/arroba-slice-state
+    chown slice:slice /tmp/arroba-slice-state
+    chmod 700 /tmp/arroba-slice-state
+  " || log "slice state directory ownership refresh unavailable; continuing"
+}
+
 refresh_slice_support_files() {
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
     || log "runtime script overlay refresh unavailable; continuing"
@@ -366,6 +375,7 @@ ensure_container() {
   fi
   configure_stable_machine_identity
   configure_chromium_browser_policy
+  configure_slice_state_directory
   refresh_slice_support_files
 }
 
