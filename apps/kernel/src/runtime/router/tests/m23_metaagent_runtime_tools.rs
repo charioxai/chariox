@@ -507,3 +507,295 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
         Some(1)
     );
 }
+
+#[tokio::test]
+async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
+    let env = TestMetaRuntimeEnv::new("turn-trace");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-trace");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach-trace", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(worker.id().to_string()),
+        prompt: "summarize the trace".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit-trace", None, None, &submit),
+            submit,
+        )
+        .await
+        .expect("worker prompt should submit");
+    let tool_entry = crate::history::SessionHistoryEntry::provider_output(
+        session.id(),
+        worker_run.id(),
+        Some(worker.id()),
+        crate::terminal::TerminalOutputKind::ProviderTool,
+        None,
+        serde_json::json!({
+            "tool": "shell",
+            "status": "completed",
+            "input": {"command": "cargo test"}
+        })
+        .to_string(),
+    );
+    router
+        .operational_history_store
+        .append_transcript(
+            &tool_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(worker.id().to_string()),
+                provider: Some(worker_run.provider().to_string()),
+                model: Some(worker_run.model().to_string()),
+                provider_run_id: Some(worker_run.id().to_string()),
+                turn_id: Some("trace-turn".to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("provider tool output should append to operational history");
+
+    let overview = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL,
+            serde_json::json!({ "agent_ref": "worker" }),
+        )
+        .await
+        .expect("turn overview should dispatch");
+    assert!(overview.ok, "{:?}", overview.payload);
+    let blob_id = overview
+        .payload
+        .pointer("/turns/0/items")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.iter().find_map(|item| item.get("blob_id")))
+        .and_then(serde_json::Value::as_str)
+        .expect("overview should include provider tool blob id")
+        .to_string();
+
+    let blob = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_TURN_BLOB_TOOL,
+            serde_json::json!({ "blob_id": blob_id }),
+        )
+        .await
+        .expect("turn blob should dispatch");
+    assert!(blob.ok, "{:?}", blob.payload);
+    assert_eq!(
+        blob.payload
+            .pointer("/agent/id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker.id())
+    );
+    assert!(
+        blob.payload
+            .pointer("/entries/0/entry/text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| text.contains("cargo test")),
+        "{:?}",
+        blob.payload
+    );
+
+    let denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL,
+            serde_json::json!({ "agent_ref": "meta" }),
+        )
+        .await
+        .expect("turn overview denial should dispatch");
+    assert!(!denied.ok);
+    assert!(
+        denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        denied.payload
+    );
+}
+
+#[tokio::test]
+async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own() {
+    let env = TestMetaRuntimeEnv::new("interaction");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let worker_interaction = RuntimeInteraction::new(
+        "interaction-worker",
+        worker.id(),
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Allow command?".to_string()),
+        "Allow command?",
+        vec![
+            RuntimeInteractionChoice::new(
+                "allow_once",
+                "Allow once",
+                "allow",
+                Some(RuntimeInteractionChoiceStyle::Primary),
+            ),
+            RuntimeInteractionChoice::new(
+                "deny",
+                "Deny",
+                "deny",
+                Some(RuntimeInteractionChoiceStyle::Danger),
+            ),
+        ],
+        None,
+        None,
+        None,
+    );
+    let worker_resolution = router
+        .runtime_state
+        .create_runtime_interaction(session.id(), worker_interaction)
+        .await
+        .expect("worker interaction should register");
+
+    let resolved = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+            serde_json::json!({
+                "interaction_id": "interaction-worker",
+                "choice_id": "allow_once"
+            }),
+        )
+        .await
+        .expect("meta interaction resolution should dispatch");
+    assert!(resolved.ok, "{:?}", resolved.payload);
+    let resolution = tokio::time::timeout(std::time::Duration::from_secs(1), worker_resolution)
+        .await
+        .expect("resolution should be delivered")
+        .expect("interaction responder should receive resolution");
+    assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
+    assert_eq!(resolution.reply.as_deref(), Some("allow"));
+
+    let self_interaction = RuntimeInteraction::new(
+        "interaction-meta",
+        metaagent.id(),
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Allow self?".to_string()),
+        "Allow self?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+    let _self_resolution = router
+        .runtime_state
+        .create_runtime_interaction(session.id(), self_interaction)
+        .await
+        .expect("self interaction should register");
+    let denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+            serde_json::json!({
+                "interaction_id": "interaction-meta",
+                "choice_id": "allow_once"
+            }),
+        )
+        .await
+        .expect("self resolution denial should dispatch");
+    assert!(!denied.ok);
+    assert!(
+        denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("cannot resolve their own")),
+        "{:?}",
+        denied.payload
+    );
+}

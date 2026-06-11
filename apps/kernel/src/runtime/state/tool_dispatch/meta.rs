@@ -2,12 +2,13 @@ use super::*;
 
 use crate::transport::runtime_tools::{
     MetaAckEventArgs, MetaCommandDocsArgs, MetaCommandSearchArgs, MetaListEventsArgs,
-    MetaReadEventArgs, MetaSessionOverviewArgs, RuntimeToolResult, META_ACK_EVENT_TOOL,
-    META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
-    META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-    META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
-    META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL,
+    MetaReadEventArgs, MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs,
+    MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
+    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL,
+    META_LIST_EVENTS_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL,
+    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
+    META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL,
+    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -256,19 +257,83 @@ impl KernelRuntimeState {
                     }),
                 })
             }
-            META_TURN_OVERVIEW_TOOL
-            | META_TURN_BLOB_TOOL
-            | META_SUBSCRIBE_EVENTS_TOOL
-            | META_UNSUBSCRIBE_EVENTS_TOOL
-            | META_LIST_SUBSCRIPTIONS_TOOL
-            | META_RESOLVE_RUNTIME_INTERACTION_TOOL => Ok(RuntimeToolResult {
-                ok: false,
+            META_TURN_OVERVIEW_TOOL => {
+                let args = serde_json::from_value::<MetaTurnOverviewArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_turn_overview(&session, &agent, args).await
+            }
+            META_TURN_BLOB_TOOL => {
+                let args = serde_json::from_value::<MetaTurnBlobArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_turn_blob(&session, &agent, args).await
+            }
+            META_SUBSCRIBE_EVENTS_TOOL => {
+                let args = serde_json::from_value::<MetaSubscribeEventsArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "subscription": {
+                            "subscription_id": format!("optional:{}:{}", agent.id(), args.kind),
+                            "kind": args.kind,
+                            "filter": args.filter,
+                            "required": false,
+                            "status": "registered",
+                        }
+                    }),
+                })
+            }
+            META_UNSUBSCRIBE_EVENTS_TOOL => {
+                let args = serde_json::from_value::<MetaUnsubscribeEventsArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                if args.subscription_id.starts_with("required:") {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": "required metaagent event subscriptions cannot be removed",
+                            "subscription_id": args.subscription_id,
+                        }),
+                    });
+                }
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "subscription_id": args.subscription_id,
+                        "status": "removed",
+                    }),
+                })
+            }
+            META_LIST_SUBSCRIPTIONS_TOOL => Ok(RuntimeToolResult {
+                ok: true,
                 payload: serde_json::json!({
-                    "error": "metaagent tool is registered but not implemented in this slice",
-                    "tool": tool_name,
-                    "agent_ref": agent.agent_ref(),
+                    "subscriptions": [
+                        {
+                            "subscription_id": format!("required:{}:agent.turn.completed", agent.id()),
+                            "kind": "agent.turn.completed",
+                            "required": true,
+                            "scope": "owned_regular_agents",
+                        },
+                        {
+                            "subscription_id": format!("required:{}:agent.turn.failed", agent.id()),
+                            "kind": "agent.turn.failed",
+                            "required": true,
+                            "scope": "owned_regular_agents",
+                        },
+                        {
+                            "subscription_id": format!("required:{}:runtime.interaction", agent.id()),
+                            "kind": "runtime.interaction",
+                            "required": true,
+                            "scope": "owned_regular_agents",
+                        },
+                    ],
                 }),
             }),
+            META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
+                let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_resolve_runtime_interaction(&session, &agent, args)
+                    .await
+            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
@@ -360,6 +425,296 @@ impl KernelRuntimeState {
                 },
             }),
         })
+    }
+
+    async fn meta_turn_overview(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaTurnOverviewArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let target = match args.agent_ref.as_deref() {
+            Some(reference) => {
+                match self.meta_owned_regular_agent(session.id(), metaagent, reference) {
+                    Ok(agent) => agent,
+                    Err(error) => {
+                        return Ok(RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({ "error": error.to_string() }),
+                        });
+                    }
+                }
+            }
+            None => {
+                let agents = self.meta_owned_regular_agents(session.id(), metaagent);
+                let Some(agent) = agents.into_iter().next() else {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": "turn_overview requires agent_ref when no owned regular agents exist"
+                        }),
+                    });
+                };
+                agent
+            }
+        };
+        let latest_prompt_count = args.turns_back.unwrap_or(0).saturating_add(1).clamp(1, 20);
+        let request = crate::local::GetSessionHistoryOutlineRequest {
+            session_id: session.id().to_string(),
+            agent_ids: Some(vec![target.id().to_string()]),
+            latest_prompt_count: Some(latest_prompt_count),
+        };
+        let response = crate::runtime::history_requests::execute_session_history_outline_request(
+            self.owned.operational_history_store.clone(),
+            request,
+        )
+        .await?;
+        let crate::local::LocalDaemonResponse::SessionHistoryOutline { mut agents } = response
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_meta.turn_overview",
+                message: "history outline returned an unexpected response".to_string(),
+            });
+        };
+        let mut turns = agents.pop().map(|agent| agent.turns).unwrap_or_default();
+        if let Some(turn_ref) = args.turn_ref.as_deref() {
+            turns.retain(|turn| {
+                turn.turn_id == turn_ref || turn.prompt_id.as_deref() == Some(turn_ref)
+            });
+        } else {
+            let turns_back = args.turns_back.unwrap_or(0);
+            if turns_back > 0 {
+                turns = turns.into_iter().skip(turns_back).take(1).collect();
+            } else {
+                turns.truncate(1);
+            }
+        }
+        let limit = args.limit.unwrap_or(200).clamp(1, 200);
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "agent": meta_agent_ref_json(&target),
+                "turns": turns.into_iter().map(|turn| {
+                    let mut items = Vec::new();
+                    items.push(serde_json::json!({
+                        "kind": "user_prompt",
+                        "title": "prompt",
+                        "entry": turn.user_prompt,
+                    }));
+                    for entry in turn.entries.into_iter().take(limit) {
+                        items.push(serde_json::json!({
+                            "kind": "assistant",
+                            "title": "assistant",
+                            "entry": entry,
+                        }));
+                    }
+                    for blob in turn.blobs.into_iter().take(limit) {
+                        items.push(serde_json::json!({
+                            "kind": format!("{:?}", blob.kind),
+                            "title": blob.title,
+                            "summary": blob.summary,
+                            "blob_id": blob.blob_id,
+                            "sequence_start": blob.sequence_start,
+                            "sequence_end": blob.sequence_end,
+                            "entry_count": blob.entry_count,
+                            "total_chars": blob.total_chars,
+                            "timestamp_ms": blob.timestamp_ms,
+                        }));
+                    }
+                    if let Some(summary) = turn.summary {
+                        items.push(serde_json::json!({
+                            "kind": "assistant_summary",
+                            "title": "summary",
+                            "entry": summary,
+                        }));
+                    }
+                    serde_json::json!({
+                        "turn_id": turn.turn_id,
+                        "prompt_id": turn.prompt_id,
+                        "started_at_ms": turn.started_at_ms,
+                        "items": items.into_iter().take(limit).collect::<Vec<_>>(),
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        })
+    }
+
+    async fn meta_turn_blob(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaTurnBlobArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        for target in self.meta_owned_regular_agents(session.id(), metaagent) {
+            let request = crate::local::GetSessionHistoryBlobContentRequest {
+                session_id: session.id().to_string(),
+                agent_id: target.id().to_string(),
+                blob_id: args.blob_id.clone(),
+            };
+            let response =
+                crate::runtime::history_requests::execute_session_history_blob_content_request(
+                    self.owned.operational_history_store.clone(),
+                    request,
+                )
+                .await?;
+            let crate::local::LocalDaemonResponse::SessionHistoryBlobContent { blob_id, entries } =
+                response
+            else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_meta.turn_blob",
+                    message: "history blob returned an unexpected response".to_string(),
+                });
+            };
+            if !entries.is_empty() {
+                return Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "agent": meta_agent_ref_json(&target),
+                        "blob_id": blob_id,
+                        "entries": entries,
+                    }),
+                });
+            }
+        }
+        Ok(RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({
+                "error": format!("blob `{}` was not found for an owned regular agent", args.blob_id),
+            }),
+        })
+    }
+
+    async fn meta_resolve_runtime_interaction(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaResolveRuntimeInteractionArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let Some(interaction) = session
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == args.interaction_id)
+            .cloned()
+        else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": format!("runtime interaction `{}` is not active", args.interaction_id),
+                }),
+            });
+        };
+        if interaction.agent_id() == metaagent.id() {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "metaagents cannot resolve their own runtime interactions",
+                    "interaction_id": interaction.id(),
+                }),
+            });
+        }
+        let target = match self.owned.agent_store.get_agent(interaction.agent_id()) {
+            Ok(agent) => agent,
+            Err(error) => {
+                return Ok(RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({ "error": error.to_string() }),
+                });
+            }
+        };
+        if target.is_metaagent() || target.owner_user_id() != metaagent.owner_user_id() {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "metaagents may only resolve interactions for owned regular agents",
+                    "interaction_id": interaction.id(),
+                    "target_agent_id": target.id(),
+                }),
+            });
+        }
+        let choice_id = args.choice_id.or_else(|| {
+            if let Some(input) = args.input.as_deref() {
+                interaction
+                    .custom_choice()
+                    .filter(|choice| choice.id() == input)
+                    .map(|choice| choice.id().to_string())
+            } else {
+                None
+            }
+        });
+        let Some(choice_id) = choice_id else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "resolve_runtime_interaction requires choice_id",
+                    "interaction_id": interaction.id(),
+                }),
+            });
+        };
+        let custom_reply = interaction
+            .custom_choice()
+            .filter(|choice| choice.id() == choice_id)
+            .and_then(|_| args.input.as_deref());
+        match self
+            .resolve_runtime_interaction(session.id(), interaction.id(), &choice_id, custom_reply)
+            .await
+        {
+            Ok(()) => Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "interaction_id": interaction.id(),
+                    "choice_id": choice_id,
+                    "target_agent": meta_agent_ref_json(&target),
+                    "resolved_by": {
+                        "kind": "metaagent",
+                        "metaagent_id": metaagent.id(),
+                        "owner_user_id": metaagent.owner_user_id(),
+                    },
+                }),
+            }),
+            Err(error) => Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": error.to_string(),
+                    "interaction_id": interaction.id(),
+                }),
+            }),
+        }
+    }
+
+    fn meta_owned_regular_agents(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+    ) -> Vec<crate::agent::AgentInstance> {
+        self.owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter(|agent| {
+                !agent.is_metaagent() && agent.owner_user_id() == metaagent.owner_user_id()
+            })
+            .collect()
+    }
+
+    fn meta_owned_regular_agent(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.meta_owned_regular_agents(session_id, metaagent)
+            .into_iter()
+            .find(|agent| {
+                agent.id() == reference
+                    || agent.agent_ref() == reference
+                    || agent.alias() == Some(reference)
+            })
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_meta",
+                message: format!(
+                    "agent `{reference}` is not an owned regular agent in this session"
+                ),
+            })
     }
 
     pub(crate) fn metaagent_turn_completion_prompt(
@@ -524,5 +879,18 @@ fn meta_command_json(command: &MetaCommandDoc) -> serde_json::Value {
         "mutates": command.mutates,
         "metaagent_policy": command.policy,
         "description": command.description,
+    })
+}
+
+fn meta_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value {
+    serde_json::json!({
+        "id": agent.id(),
+        "agent_ref": agent.agent_ref(),
+        "alias": agent.alias(),
+        "provider": agent.provider(),
+        "model": agent.model(),
+        "owner_user_id": agent.owner_user_id(),
+        "role": agent.role(),
+        "state": agent.state(),
     })
 }

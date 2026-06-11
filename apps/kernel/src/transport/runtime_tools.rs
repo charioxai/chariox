@@ -323,6 +323,44 @@ pub struct MetaAckEventArgs {
     pub up_to_sequence: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaTurnOverviewArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns_back: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaTurnBlobArgs {
+    pub blob_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaSubscribeEventsArgs {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaUnsubscribeEventsArgs {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaResolveRuntimeInteractionArgs {
+    pub interaction_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
     pub id: String,
