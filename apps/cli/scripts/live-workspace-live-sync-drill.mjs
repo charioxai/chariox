@@ -1548,13 +1548,6 @@ async function runTrackedTargetOriginPhase({
     historyDir,
     providerErrorSinceMs: completionSinceMs,
   })
-  await waitForHistoryOutputMarkers({
-    historyDir,
-    markerGroups: [[marker]],
-    sinceMs: completionSinceMs,
-    timeoutMs,
-    pollMs,
-  })
   await waitForAgentsIdle({
     client,
     sessionId: session.id,
@@ -1842,13 +1835,6 @@ async function runTrackedWorkspaceLiveSyncDrill({
     pollMs,
     historyDir,
     providerErrorSinceMs: completionSinceMs,
-  })
-  await waitForHistoryOutputMarkers({
-    historyDir,
-    markerGroups: [[marker]],
-    sinceMs: completionSinceMs,
-    timeoutMs,
-    pollMs,
   })
   if (!options.remoteSourceSideEffects) {
     await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)

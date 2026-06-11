@@ -82,18 +82,23 @@ pub(super) fn ensure_browser_target_matches_expectations(
 
 pub(super) fn ensure_browser_fill_target(
     status: &serde_json::Value,
-    selector: Option<&str>,
+    target: Option<&str>,
 ) -> Result<(), DaemonError> {
-    if let Some(selector) = selector.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
         let found = status
             .get("fields")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|fields| {
                 fields.iter().any(|field| {
-                    field
+                    let selector_matches = field
                         .get("selector")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|field_selector| field_selector == selector)
+                        .is_some_and(|field_selector| field_selector == target);
+                    let field_id_matches = field
+                        .get("field_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|field_id| field_id == target);
+                    selector_matches || field_id_matches
                 })
             });
         if found {
@@ -101,7 +106,7 @@ pub(super) fn ensure_browser_fill_target(
         }
         return Err(DaemonError::LocalTransport {
             operation: "runtime_tool_paste_secret_to_slice",
-            message: format!("slice browser field `{selector}` was not found or is not fillable"),
+            message: format!("slice browser field `{target}` was not found or is not fillable"),
         });
     }
 
@@ -168,11 +173,13 @@ mod tests {
         let status = serde_json::json!({
             "url": "https://example.com/signup",
             "focusedElement": {"kind": "button"},
-            "fields": [{"selector": "#password"}]
+            "fields": [{"selector": "#password", "field_id": "field:1"}]
         });
 
         ensure_browser_fill_target(&status, Some("#password"))
             .expect("known fillable selector should pass");
+        ensure_browser_fill_target(&status, Some("field:1"))
+            .expect("known fillable field id should pass");
         assert!(ensure_browser_fill_target(&status, None).is_err());
     }
 }

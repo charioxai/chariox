@@ -110,9 +110,10 @@ async function typeIntoBrowser(text, options = {}) {
   await withSocket(async (send) => {
     if (options.useNativeInput) {
       const focusResult = await evaluate(send, `
+        ${browserDomScript()}
         const selector = __arrobaArgs.selector;
         const target = selector
-          ? document.querySelector(selector)
+          ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
             ? document.activeElement
             : null;
@@ -211,9 +212,10 @@ async function typeIntoBrowser(text, options = {}) {
       }
       await send("Input.insertText", { text });
       const verified = await evaluate(send, `
+        ${browserDomScript()}
         const selector = __arrobaArgs.selector;
         const active = selector
-          ? document.querySelector(selector)
+          ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
             ? document.activeElement
             : null;
@@ -249,11 +251,12 @@ async function typeIntoBrowser(text, options = {}) {
     }
 
     const result = await evaluate(send, `
+          ${browserDomScript()}
           const text = __arrobaArgs.text;
           const selector = __arrobaArgs.selector;
           const allowFallback = __arrobaArgs.allowFallback;
           const active = selector
-            ? document.querySelector(selector)
+            ? resolveTarget(selector, ["field"])
             : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
               ? document.activeElement
               : allowFallback
@@ -293,9 +296,10 @@ async function typeIntoBrowser(text, options = {}) {
     }
     if (!result.filled) {
       const focusResult = await evaluate(send, `
+        ${browserDomScript()}
         const selector = __arrobaArgs.selector;
         const active = selector
-          ? document.querySelector(selector)
+          ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
             ? document.activeElement
             : null;
@@ -309,9 +313,10 @@ async function typeIntoBrowser(text, options = {}) {
       }
       await send("Input.insertText", { text });
       const verified = await evaluate(send, `
+        ${browserDomScript()}
         const selector = __arrobaArgs.selector;
         const active = selector
-          ? document.querySelector(selector)
+          ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
             ? document.activeElement
             : null;
@@ -328,6 +333,8 @@ async function typeIntoBrowser(text, options = {}) {
 
 function browserDomScript() {
   return `
+    window.__arrobaCdpElementIds = window.__arrobaCdpElementIds || new WeakMap();
+    window.__arrobaCdpNextElementId = window.__arrobaCdpNextElementId || 1;
     const visible = (element) => {
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
@@ -351,6 +358,14 @@ function browserDomScript() {
       }
       return parts.length ? "body > " + parts.join(" > ") : element.tagName.toLowerCase();
     };
+    const fieldIdFor = (element, kind) => {
+      const existing = window.__arrobaCdpElementIds.get(element);
+      if (existing) return existing;
+      const next = String(window.__arrobaCdpNextElementId++);
+      const id = kind + ":" + next;
+      window.__arrobaCdpElementIds.set(element, id);
+      return id;
+    };
     const labelFor = (element) => {
       if (element.id) {
         const label = document.querySelector("label[for='" + cssString(element.id) + "']");
@@ -371,7 +386,7 @@ function browserDomScript() {
     const summarize = (element, kind) => ({
       kind,
       selector: selectorFor(element),
-      field_id: selectorFor(element),
+      field_id: fieldIdFor(element, kind),
       tag: element.tagName.toLowerCase(),
       type: element.getAttribute("type") || "",
       name: element.getAttribute("name") || "",
@@ -386,6 +401,27 @@ function browserDomScript() {
     const fields = Array.from(document.querySelectorAll("input, textarea, select, [contenteditable=true]")).filter(visible).map((element) => summarize(element, "field"));
     const buttons = Array.from(document.querySelectorAll("button, input[type=button], input[type=submit], [role=button]")).filter(visible).map((element) => summarize(element, "button"));
     const links = Array.from(document.querySelectorAll("a[href], [role=link]")).filter(visible).map((element) => summarize(element, "link"));
+    const resolveTarget = (target, kinds = ["field", "button", "link"]) => {
+      if (!target) return null;
+      try {
+        const bySelector = document.querySelector(target);
+        if (bySelector) return bySelector;
+      } catch (_) {
+        // Opaque field_id values are not necessarily valid CSS selectors.
+      }
+      const selectorByKind = {
+        field: "input, textarea, select, [contenteditable=true]",
+        button: "button, input[type=button], input[type=submit], [role=button]",
+        link: "a[href], [role=link]",
+      };
+      const selectors = kinds.map((kind) => selectorByKind[kind]).filter(Boolean).join(",");
+      for (const element of Array.from(document.querySelectorAll(selectors))) {
+        for (const kind of kinds) {
+          if (fieldIdFor(element, kind) === target) return element;
+        }
+      }
+      return null;
+    };
   `;
 }
 
@@ -435,7 +471,8 @@ async function browserFind(query, kind = "any") {
 async function clickSelector(selector) {
   await withSocket(async (send) => {
     const result = await evaluate(send, `
-      const element = document.querySelector(__arrobaArgs.selector);
+      ${browserDomScript()}
+      const element = resolveTarget(__arrobaArgs.selector, ["button", "link", "field"]);
       if (!element) return { ok: false, error: "target_not_found" };
       element.scrollIntoView({ block: "center", inline: "center" });
       const rect = element.getBoundingClientRect();
@@ -472,7 +509,8 @@ async function clickSelector(selector) {
 async function submitSelector(selector) {
   await withSocket(async (send) => {
     const result = await evaluate(send, `
-      const target = __arrobaArgs.selector ? document.querySelector(__arrobaArgs.selector) : document.activeElement;
+      ${browserDomScript()}
+      const target = __arrobaArgs.selector ? resolveTarget(__arrobaArgs.selector, ["field", "button"]) : document.activeElement;
       if (!target) return { ok: false, error: "target_not_found" };
       const form = target.closest?.("form");
       if (!form) return { ok: false, error: "form_not_found" };
