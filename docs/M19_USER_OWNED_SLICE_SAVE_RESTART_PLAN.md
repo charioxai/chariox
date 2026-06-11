@@ -146,6 +146,22 @@ Behavior:
 
 ## Validation
 
+### Current Lifecycle Baseline
+
+2026-06-11: `pnpm --filter @arroba/cli run slice:lifecycle-drill`
+passed locally. The drill covered headed slice creation and display endpoint
+projection, provider auth import summaries for Codex/OpenCode/Claude, Codex
+device-login start, OpenCode auth removal while preserving other providers,
+TUI `/slice auth alias` and status rendering, waiting-room delete confirmation,
+independent provider accounts across two slices, worktree-scoped session and
+agent slice rejection, reuse by multiple agents and sessions, attached-slice
+delete blocking, and cleanup of the drill containers and temp root.
+
+This establishes the baseline slice lifecycle, auth, scoping, reuse, and
+cleanup behavior that save/restart builds on. It does not validate saved browser
+state, installed program persistence, or provider session survival after
+save/restart.
+
 ### Automated Tests
 
 Kernel:
