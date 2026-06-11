@@ -13,7 +13,7 @@ serde_yaml = "0.9.34"
 toml = "0.8.19"
 thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3.31"
 wait-timeout = "0.2.0"
 libc = "0.2.172"
