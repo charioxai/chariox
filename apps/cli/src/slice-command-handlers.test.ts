@@ -260,7 +260,7 @@ test("slice command doctor flags missing provider accounts", async () => {
   await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
 
   assert.match(harness.notices.at(-1) ?? "", /ok provider CLIs: codex/)
-  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: none/)
+  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: missing codex/)
   assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for codex/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
@@ -286,7 +286,7 @@ test("slice command doctor requires provider auth for every advertised provider"
   await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
 
   assert.match(harness.notices.at(-1) ?? "", /ok provider CLIs: codex,opencode:openai/)
-  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: codex:codex@example.com/)
+  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: codex:codex@example.com; missing opencode:openai/)
   assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-dev opencode:openai or \/slice auth login linux-dev opencode:openai/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
