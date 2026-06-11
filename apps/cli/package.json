@@ -10,6 +10,7 @@
     "runtime-mcp-reattach:drill": "node scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex",
     "provider-context-injection:drill": "node scripts/live-provider-context-injection-drill.mjs --providers opencode,codex,claude",
     "provider-steering:drill": "node scripts/live-provider-context-injection-drill.mjs --providers opencode,codex --include-midturn-steering",
+    "metaagent:drill": "pnpm --filter @arroba/shell run build && pnpm --filter @arroba/kernel-client run build && node scripts/live-metaagent-drill.mjs",
     "external-provider-session:drill": "pnpm run build && node scripts/live-external-provider-session-import-drill.mjs",
     "prompt-assembly:drill": "node scripts/live-prompt-assembly-drill.mjs --providers codex,opencode,claude",
     "remote-popup:drill": "node scripts/live-remote-popup-drill.mjs --providers opencode,codex",
