@@ -197,13 +197,9 @@ async function waitForHistory(client, requests, sessionId, attachmentId, expecte
   let lastState = null
   while (Date.now() < deadline) {
     await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const history = unwrap(
-      await client.send(requests.getSessionHistoryRequest(sessionId, 200, 100_000, null, null)),
-      'SessionHistory',
-    )
     const stateResponse = await client.send(requests.getSessionStateRequest(sessionId))
     lastState = stateResponse.SessionState?.session ?? stateResponse.SessionStateLoaded?.session ?? null
-    const entries = history.entries.map((entry) => entry.entry).filter(Boolean)
+    const entries = await readSessionHistoryEntries(client, requests, sessionId, lastState)
     lastText = entries.map((entry) => entry.text ?? '').join('\n')
     const compactText = lastText.replace(/\s+/g, '')
     const compactExpected = expected.replace(/\s+/g, '')
@@ -214,6 +210,36 @@ async function waitForHistory(client, requests, sessionId, attachmentId, expecte
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for Claude output marker ${expected}\nlastState=${JSON.stringify(lastState)}\n${lastText.slice(-4000)}`)
+}
+
+async function readSessionHistoryEntries(client, requests, sessionId, session) {
+  const agentIds = Array.isArray(session?.agents)
+    ? session.agents.map((agent) => agent?.id).filter(Boolean)
+    : null
+  const outline = unwrap(
+    await client.send(requests.getSessionHistoryOutlineRequest(sessionId, agentIds, 8)),
+    'SessionHistoryOutline',
+  )
+  const entries = []
+  for (const agent of outline.agents ?? []) {
+    for (const turn of agent.turns ?? []) {
+      if (turn.user_prompt?.entry) entries.push(turn.user_prompt.entry)
+      for (const row of turn.entries ?? []) {
+        if (row?.entry) entries.push(row.entry)
+      }
+      if (turn.summary?.entry) entries.push(turn.summary.entry)
+      for (const blob of turn.blobs ?? []) {
+        const blobContent = unwrap(
+          await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agent.agent_id, blob.blob_id)),
+          'SessionHistoryBlobContent',
+        )
+        for (const row of blobContent.entries ?? []) {
+          if (row?.entry) entries.push(row.entry)
+        }
+      }
+    }
+  }
+  return entries
 }
 
 function promptFixture(scenario, marker) {

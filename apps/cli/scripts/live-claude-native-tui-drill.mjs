@@ -12,7 +12,8 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
@@ -174,8 +175,7 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
     let ok = true
     const histories = {}
     for (const agent of agents) {
-      const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 200, 100_000, null, agent.id)), "SessionHistory")
-      const entries = page.entries.map((entry) => entry.entry).filter(Boolean)
+      const entries = await readAgentHistoryEntries(client, sessionId, agent.id)
       histories[agent.alias] = {
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
@@ -189,6 +189,26 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
     await sleep(1_000)
   }
   throw new Error("timed out waiting for Claude native history markers")
+}
+
+async function readAgentHistoryEntries(client, sessionId, agentId) {
+  const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)), "SessionHistoryOutline")
+  const agent = outline.agents?.find((entry) => entry.agent_id === agentId) ?? null
+  const entries = []
+  for (const turn of agent?.turns ?? []) {
+    if (turn.user_prompt?.entry) entries.push(turn.user_prompt.entry)
+    for (const row of turn.entries ?? []) {
+      if (row?.entry) entries.push(row.entry)
+    }
+    if (turn.summary?.entry) entries.push(turn.summary.entry)
+    for (const blob of turn.blobs ?? []) {
+      const blobContent = unwrap(await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)), "SessionHistoryBlobContent")
+      for (const row of blobContent.entries ?? []) {
+        if (row?.entry) entries.push(row.entry)
+      }
+    }
+  }
+  return entries
 }
 
 function badgeSnapshotForAlias(snapshot, alias) {

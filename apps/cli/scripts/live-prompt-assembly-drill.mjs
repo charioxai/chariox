@@ -161,14 +161,10 @@ async function waitForHistoryToken(client, requests, sessionId, attachmentId, to
   let lastState = null
   while (Date.now() < deadline) {
     await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const history = unwrap(
-      await client.send(requests.getSessionHistoryRequest(sessionId, 300, 100_000, null, null)),
-      'SessionHistory',
-    )
+    const entries = await readSessionHistoryEntries(client, requests, sessionId)
     const stateResponse = await client.send(requests.getSessionStateRequest(sessionId))
     lastState = stateResponse.SessionState?.session ?? stateResponse.SessionStateLoaded?.session ?? null
-    lastHistory = history
-    const entries = history.entries.map((entry) => entry.entry).filter(Boolean)
+    lastHistory = entries
     const providerText = entries
       .filter((entry) => entry.kind !== 'user_prompt')
       .map((entry) => entry.text ?? '')
@@ -179,6 +175,33 @@ async function waitForHistoryToken(client, requests, sessionId, attachmentId, to
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for hidden token ${token}\nlastState=${JSON.stringify(lastState)}\nhistory=${JSON.stringify(lastHistory).slice(-4000)}`)
+}
+
+async function readSessionHistoryEntries(client, requests, sessionId) {
+  const outline = unwrap(
+    await client.send(requests.getSessionHistoryOutlineRequest(sessionId, null, 8)),
+    'SessionHistoryOutline',
+  )
+  const entries = []
+  for (const agent of outline.agents ?? []) {
+    for (const turn of agent.turns ?? []) {
+      if (turn.user_prompt?.entry) entries.push(turn.user_prompt.entry)
+      for (const row of turn.entries ?? []) {
+        if (row?.entry) entries.push(row.entry)
+      }
+      if (turn.summary?.entry) entries.push(turn.summary.entry)
+      for (const blob of turn.blobs ?? []) {
+        const blobContent = unwrap(
+          await client.send(requests.getSessionHistoryBlobContentRequest(sessionId, agent.agent_id, blob.blob_id)),
+          'SessionHistoryBlobContent',
+        )
+        for (const row of blobContent.entries ?? []) {
+          if (row?.entry) entries.push(row.entry)
+        }
+      }
+    }
+  }
+  return entries
 }
 
 async function writePromptRegistryToken(arrobaHome, provider, token) {
