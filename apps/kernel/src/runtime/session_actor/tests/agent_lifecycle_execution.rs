@@ -201,6 +201,42 @@ async fn local_spawn_agent_enforces_one_metaagent_per_user() {
         error.to_string().contains("already has a metaagent"),
         "unexpected error: {error}"
     );
+
+    let collaborator = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id: session_id.clone(),
+        alias: Some("collaborator-meta".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: Some("worktree".to_string()),
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: true,
+    });
+    let mut collaborator_caller = crate::runtime::command::KernelCaller::for_source(
+        &crate::runtime::command::KernelCommandSource::RelayClient,
+    );
+    collaborator_caller.user_id = Some("user-2".to_string());
+    let command = KernelCommand::from_local_request_with_caller(
+        "spawn-collaborator-meta",
+        crate::runtime::command::KernelCommandSource::RelayClient,
+        collaborator_caller,
+        None,
+        None,
+        &collaborator,
+    );
+    let response = runtime
+        .dispatch_session_command(command, collaborator)
+        .await
+        .expect("a collaborator should be able to create their own metaagent");
+    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+        panic!("unexpected response");
+    };
+    assert!(agent.is_metaagent());
+    assert_eq!(agent.owner_user_id(), "user-2");
 }
 
 #[tokio::test]

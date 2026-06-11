@@ -113,18 +113,16 @@ impl AgentPromptCommandService {
         self.state.agent_activity_for_session(session)
     }
 
-    pub(crate) fn metaagent_turn_completion_prompt(
+    pub(crate) fn inject_metaagent_turn_completion_event(
         &self,
         session_id: &str,
         completed_agent_id: &str,
         completion: &PromptCompletion,
-        prompt_id: String,
-    ) -> Option<PromptQueueItem> {
-        self.state.metaagent_turn_completion_prompt(
+    ) -> Result<(), DaemonError> {
+        self.state.inject_metaagent_turn_completion_event(
             session_id,
             completed_agent_id,
             completion,
-            prompt_id,
         )
     }
 

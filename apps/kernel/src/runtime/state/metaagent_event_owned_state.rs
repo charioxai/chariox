@@ -1,6 +1,109 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn inject_metaagent_turn_completion_event(
+        &self,
+        session_id: &str,
+        completed_agent_id: &str,
+        completion: &crate::session::PromptCompletion,
+    ) -> Result<(), DaemonError> {
+        let completed_agent = self.owned.agent_store.get_agent(completed_agent_id)?;
+        if completed_agent.is_metaagent() {
+            return Ok(());
+        }
+        let prompt_preview = completion
+            .completed
+            .prompt()
+            .chars()
+            .take(240)
+            .collect::<String>();
+        let title = format!(
+            "{} completed a turn",
+            completed_agent
+                .alias()
+                .unwrap_or_else(|| completed_agent.agent_ref())
+        );
+        let summary = format!(
+            "Agent {} completed prompt {}. User prompt preview: {}",
+            completed_agent.agent_ref(),
+            completion.completed.id(),
+            if prompt_preview.trim().is_empty() {
+                "<empty>"
+            } else {
+                prompt_preview.trim()
+            }
+        );
+        let dispatches = self.owned.metaagent_owned_agent_event_prompt_dispatches(
+            session_id,
+            "agent.turn.completed",
+            completed_agent_id,
+            completion.completed.source_attachment_id(),
+            title,
+            summary,
+            serde_json::json!({
+                "completed_prompt_id": completion.completed.id(),
+                "source_attachment_id": completion.completed.source_attachment_id(),
+                "completed_agent_id": completed_agent.id(),
+                "completed_agent_ref": completed_agent.agent_ref(),
+                "completed_agent_alias": completed_agent.alias(),
+                "started_next_prompt_id": completion.started_next.as_ref().map(|prompt| prompt.id()),
+            }),
+        );
+        self.spawn_workflow_prompt_dispatches(dispatches);
+        Ok(())
+    }
+
+    pub(crate) fn inject_metaagent_turn_failure_event(
+        &self,
+        session_id: &str,
+        failed_agent_id: &str,
+        failed_prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        let failed_agent = self.owned.agent_store.get_agent(failed_agent_id)?;
+        if failed_agent.is_metaagent() {
+            return Ok(());
+        }
+        let prompt_preview = failed_prompt.prompt().chars().take(240).collect::<String>();
+        let title = format!(
+            "{} failed a turn",
+            failed_agent
+                .alias()
+                .unwrap_or_else(|| failed_agent.agent_ref())
+        );
+        let summary = format!(
+            "Agent {} failed prompt {}. Error: {}. User prompt preview: {}",
+            failed_agent.agent_ref(),
+            failed_prompt.id(),
+            message.trim(),
+            if prompt_preview.trim().is_empty() {
+                "<empty>"
+            } else {
+                prompt_preview.trim()
+            }
+        );
+        let dispatches = self.owned.metaagent_owned_agent_event_prompt_dispatches(
+            session_id,
+            "agent.turn.failed",
+            failed_agent_id,
+            failed_prompt.source_attachment_id(),
+            title,
+            summary,
+            serde_json::json!({
+                "failed_prompt_id": failed_prompt.id(),
+                "source_attachment_id": failed_prompt.source_attachment_id(),
+                "failed_agent_id": failed_agent.id(),
+                "failed_agent_ref": failed_agent.agent_ref(),
+                "failed_agent_alias": failed_agent.alias(),
+                "provider_run_id": provider_run_id,
+                "message": message,
+            }),
+        );
+        self.spawn_workflow_prompt_dispatches(dispatches);
+        Ok(())
+    }
+
     pub(crate) async fn submit_metaagent_command_prompt(
         &self,
         session_id: &str,

@@ -138,6 +138,19 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
+            let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
+                &owned.session_store.get_session(&dispatch.session_id)?,
+                &dispatch.agent_id,
+            );
+            if let Some(failed_prompt) = failed_prompt.as_ref() {
+                let _ = self.inject_metaagent_turn_failure_event(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    Some(&dispatch.provider_run_id),
+                    &error.to_string(),
+                );
+            }
             let _ = owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
             let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
             let _ = owned.session_snapshot(&dispatch.session_id);

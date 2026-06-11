@@ -1048,3 +1048,144 @@ async fn first_output_timeout_records_diagnostic_and_closes_prompt() {
         "timeout diagnostic should be visible to attached clients"
     );
 }
+
+#[tokio::test]
+async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-meta-failure",
+            "worktree-meta-failure",
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-meta-failure",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let worker_request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.5",
+    )
+    .with_agent_id(agent.id());
+    let mut worker_run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-meta-failure-worker",
+        &worker_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-meta-failure-worker".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-meta-failure-worker-runtime".to_string()),
+        },
+    );
+    worker_run.mark_running();
+    app.providers_mut().insert_run_for_test(worker_run.clone());
+    app.update_provider_run_projection(worker_run.clone());
+
+    let meta_request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.5",
+    )
+    .with_agent_id(metaagent.id());
+    let mut meta_run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-meta-failure-meta",
+        &meta_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-meta-failure-meta".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-meta-failure-meta-runtime".to_string()),
+        },
+    );
+    meta_run.mark_running();
+    app.providers_mut().insert_run_for_test(meta_run.clone());
+    app.update_provider_run_projection(meta_run.clone());
+
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "start but never answer\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, worker_run.id());
+    let prompt_id = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .expect("active prompt should exist")
+        .id()
+        .to_string();
+    let mut timed_out_turn = crate::app::ActiveTurnState::new(
+        session.id().to_string(),
+        agent.id().to_string(),
+        prompt_id,
+        worker_run.id().to_string(),
+    )
+    .with_phase(crate::app::ActiveTurnPhase::AwaitingFirstOutput);
+    timed_out_turn.started_at_ms = crate::session::unix_epoch_ms().saturating_sub(11 * 60 * 1000);
+    app.active_turn_store().start(timed_out_turn);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .pump_owned_provider_output(
+            session.id(),
+            worker_run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
+        .await
+        .expect("provider output pump should reap silent timeout");
+
+    let events =
+        runtime
+            .owned
+            .metaagent_events
+            .list(metaagent.id(), Some("agent.turn.failed"), None, 10);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
+    assert!(events[0]
+        .summary
+        .contains("Provider prompt produced no output"));
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state
+            .active_prompt_for_agent(metaagent.id())
+            .is_some(),
+        "failed-turn event should start an inline metaagent prompt when the metaagent is idle"
+    );
+}

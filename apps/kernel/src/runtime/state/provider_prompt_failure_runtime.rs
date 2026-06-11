@@ -32,6 +32,13 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        let _ = self.inject_metaagent_turn_failure_event(
+            session_id,
+            &agent_id,
+            &active_prompt,
+            Some(provider_run_id),
+            message,
+        );
         if active_prompt.workflow_run_id().is_some() {
             owned.workflow_fail_provider_prompt(
                 session_id,
