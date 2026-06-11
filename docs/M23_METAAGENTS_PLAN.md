@@ -548,6 +548,17 @@ Web product drills:
   metaagent.
 - verify permission/popup resolution through product UI and metaagent path.
 
+Current web product drill coverage:
+
+- `pnpm --filter @arroba-cloud/web run drill:metaagent:web:staging` uses the
+  hosted product frontend against an isolated local kernel connected through the
+  staging relay.
+- The drill creates a session as a metaagent through the waiting-room product UI,
+  verifies the terminal Freeform pane/footer marks the focused agent as `meta`,
+  opens the side-panel spawn dialog, verifies the metaagent control, verifies
+  metaagent/slice mutual exclusion, and verifies duplicate metaagent spawn is
+  rejected through the product flow.
+
 Remote/slice drills:
 
 - remote-worker metaagent can start and receive meta tools.
