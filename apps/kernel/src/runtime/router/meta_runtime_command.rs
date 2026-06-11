@@ -1,0 +1,334 @@
+use crate::attachment::ClientCapabilityLevel;
+use crate::error::DaemonError;
+use crate::local::{
+    AttachToSessionRequest, ListAgentsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
+};
+use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
+use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
+
+use super::CommandRouter;
+
+impl CommandRouter {
+    pub(super) async fn dispatch_meta_run_command(
+        &self,
+        auth_token: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let (provider_run, session, metaagent) = self
+            .runtime_state
+            .metaagent_context_for_auth_token(auth_token)?;
+        let args = serde_json::from_value::<MetaRunCommandArgs>(arguments).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_meta.run_command",
+                message: format!("invalid tool arguments: {error}"),
+            }
+        })?;
+        let tokens = match tokenize_meta_command(&args.command) {
+            Ok(tokens) => tokens,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        let request = match self
+            .meta_command_request(&session, &metaagent, &tokens)
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        let command = meta_kernel_command(&provider_run, &metaagent, &request);
+        let response = match self.dispatch(command, request).await {
+            Ok(response) => response,
+            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+        };
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "command": args.command,
+                "response": response,
+            }),
+        })
+    }
+
+    async fn meta_command_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        tokens: &[String],
+    ) -> Result<LocalDaemonRequest, DaemonError> {
+        let Some(command) = tokens.first().map(String::as_str) else {
+            return Err(meta_command_error("empty metaagent command"));
+        };
+        match command {
+            "prompt" => {
+                self.meta_prompt_request(session, metaagent, &tokens[1..])
+                    .await
+            }
+            "agent" => meta_agent_request(session, metaagent, &tokens[1..]),
+            "workflow" => meta_workflow_request(session, &tokens[1..]),
+            "session" => Err(meta_command_error(
+                "metaagents cannot create, attach to, switch, or delete sessions",
+            )),
+            other => Err(meta_command_error(format!(
+                "`{other}` is not enabled for arroba.meta.run_command yet"
+            ))),
+        }
+    }
+
+    async fn meta_prompt_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: &[String],
+    ) -> Result<LocalDaemonRequest, DaemonError> {
+        if args.len() < 2 {
+            return Err(meta_command_error(
+                "usage: prompt <owned-agent-ref> <prompt text>",
+            ));
+        }
+        let target = self
+            .resolve_owned_regular_agent(session.id(), metaagent, &args[0])
+            .await?;
+        let prompt = args[1..].join(" ");
+        let attachment_id = self
+            .ensure_metaagent_command_attachment(session.id(), metaagent)
+            .await?;
+        Ok(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id,
+            target_agent_id: Some(target.id().to_string()),
+            prompt,
+            attachments: Vec::new(),
+        }))
+    }
+
+    async fn ensure_metaagent_command_attachment(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+    ) -> Result<String, DaemonError> {
+        let client_id = metaagent_command_client_id(metaagent.id());
+        {
+            let app = self.app.lock().await;
+            if let Some(attachment) = app
+                .attachments()
+                .list_client_attachments(&client_id)
+                .into_iter()
+                .find(|attachment| attachment.session_id() == session_id)
+            {
+                return Ok(attachment.id().to_string());
+            }
+        }
+        let request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.to_string(),
+            client_id,
+            capability_level: ClientCapabilityLevel::AutomationOnly,
+        });
+        let command = meta_kernel_command_without_request(metaagent, &request);
+        match self.dispatch(command, request).await? {
+            LocalDaemonResponse::SessionAttached { attachment } => Ok(attachment.id().to_string()),
+            other => Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_meta.run_command",
+                message: format!("unexpected attachment response: {other:?}"),
+            }),
+        }
+    }
+
+    async fn resolve_owned_regular_agent(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agents = {
+            let app = self.app.lock().await;
+            app.agents().get_session_agents(session_id)
+        };
+        agents
+            .into_iter()
+            .find(|agent| {
+                !agent.is_metaagent()
+                    && agent.owner_user_id() == metaagent.owner_user_id()
+                    && (agent.id() == reference
+                        || agent.agent_ref() == reference
+                        || agent.alias() == Some(reference))
+            })
+            .ok_or_else(|| {
+                meta_command_error(format!(
+                    "agent `{reference}` is not an owned regular agent in this session"
+                ))
+            })
+    }
+}
+
+fn meta_agent_request(
+    session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
+    args: &[String],
+) -> Result<LocalDaemonRequest, DaemonError> {
+    match args.first().map(String::as_str) {
+        Some("list" | "ls") => Ok(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().to_string(),
+        })),
+        Some("spawn") => {
+            let spawn_args = &args[1..];
+            if spawn_args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--meta" | "--metaagent" | "--as-metaagent"))
+            {
+                return Err(meta_command_error(
+                    "metaagents cannot spawn another metaagent through run_command",
+                ));
+            }
+            if spawn_args.iter().any(|arg| arg.starts_with("--slice")) {
+                return Err(meta_command_error(
+                    "metaagent run_command does not enable slice placement yet",
+                ));
+            }
+            if spawn_args.len() > 2 {
+                return Err(meta_command_error("usage: agent spawn [alias] [model]"));
+            }
+            Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: spawn_args.first().cloned(),
+                provider: Some(metaagent.provider().to_string()),
+                model: spawn_args
+                    .get(1)
+                    .cloned()
+                    .or_else(|| metaagent.model().map(str::to_string)),
+                effort: metaagent.effort().map(str::to_string),
+                execution_mode: metaagent.execution_mode_override(),
+                permission_level: metaagent.permission_level_override(),
+                worktree_id: metaagent.worktree_id().map(str::to_string),
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            }))
+        }
+        _ => Err(meta_command_error("usage: agent <list|spawn> ...")),
+    }
+}
+
+fn meta_workflow_request(
+    session: &crate::session::RuntimeSession,
+    args: &[String],
+) -> Result<LocalDaemonRequest, DaemonError> {
+    match args.first().map(String::as_str) {
+        Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        })),
+        Some("runs") => Ok(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: args.get(1).cloned(),
+            },
+        )),
+        _ => Err(meta_command_error(
+            "usage: workflow <list|runs> [workflow-ref]",
+        )),
+    }
+}
+
+fn tokenize_meta_command(input: &str) -> Result<Vec<String>, DaemonError> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaping = false;
+    for ch in input.trim().chars() {
+        if escaping {
+            current.push(ch);
+            escaping = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaping = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if escaping {
+        current.push('\\');
+    }
+    if quote.is_some() {
+        return Err(meta_command_error("unterminated quote"));
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
+fn meta_kernel_command(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    metaagent: &crate::agent::AgentInstance,
+    request: &LocalDaemonRequest,
+) -> KernelCommand {
+    let mut command = meta_kernel_command_without_request(metaagent, request);
+    command.provider_run_id = Some(provider_run.id().to_string());
+    command
+}
+
+fn meta_kernel_command_without_request(
+    metaagent: &crate::agent::AgentInstance,
+    request: &LocalDaemonRequest,
+) -> KernelCommand {
+    KernelCommand::from_local_request_with_caller(
+        format!(
+            "metaagent-{}-{}",
+            metaagent.id(),
+            crate::session::unix_epoch_ms()
+        ),
+        KernelCommandSource::DaemonBackground,
+        KernelCaller {
+            caller_id: format!("metaagent:{}", metaagent.id()),
+            caller_kind: KernelCallerKind::LocalClient,
+            user_id: Some(metaagent.owner_user_id().to_string()),
+            client_id: Some(metaagent_command_client_id(metaagent.id())),
+            machine_id: None,
+            realm_id: None,
+            public_key_thumbprint: None,
+        },
+        None,
+        Some(metaagent.id().to_string()),
+        request,
+    )
+}
+
+fn metaagent_command_client_id(metaagent_id: &str) -> String {
+    format!("metaagent:{metaagent_id}:commands")
+}
+
+fn meta_command_error(message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "runtime_tool_meta.run_command",
+        message: message.into(),
+    }
+}
+
+fn meta_command_failure_result(command: &str, error: DaemonError) -> RuntimeToolResult {
+    RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "command": command,
+            "error": error.to_string(),
+        }),
+    }
+}

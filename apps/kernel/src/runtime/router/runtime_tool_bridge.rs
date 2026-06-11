@@ -29,6 +29,11 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
+        {
+            return self.dispatch_meta_run_command(auth_token, arguments).await;
+        }
         self.runtime_state
             .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
             .await

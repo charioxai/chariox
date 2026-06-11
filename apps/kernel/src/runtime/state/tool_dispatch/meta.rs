@@ -125,6 +125,31 @@ const META_COMMANDS: &[MetaCommandDoc] = &[
 ];
 
 impl KernelRuntimeState {
+    pub(crate) fn metaagent_context_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Result<
+        (
+            crate::provider::RuntimeProviderRun,
+            crate::session::RuntimeSession,
+            crate::agent::AgentInstance,
+        ),
+        DaemonError,
+    > {
+        let provider_runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
+        let [provider_run] = provider_runs.as_slice() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_meta",
+                message: "metaagent runtime tools require one active provider run".to_string(),
+            });
+        };
+        let (session, agent) = self.metaagent_for_provider_run(provider_run)?;
+        Ok((provider_run.clone(), session, agent))
+    }
+
     pub(super) fn meta_runtime_tool_specs_enabled_for_auth_token(&self, auth_token: &str) -> bool {
         let provider_runs = self
             .owned

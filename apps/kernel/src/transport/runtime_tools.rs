@@ -294,6 +294,11 @@ pub struct MetaCommandDocsArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaRunCommandArgs {
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

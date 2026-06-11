@@ -27,6 +27,7 @@ mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
+mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
 mod refresh_dispatch;
