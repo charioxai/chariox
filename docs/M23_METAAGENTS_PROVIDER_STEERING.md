@@ -23,6 +23,18 @@ Local provider binaries:
 
 The same run also revalidated per-turn hidden context injection for Codex and OpenCode.
 
+Native TUI prompt-injection validation was also rerun after repairing the drill
+for the current history-outline API and provider-native hidden-context fields:
+
+```sh
+pnpm --filter @arroba/cli run native-tui:prompt-injection-drill -- --providers codex,opencode
+```
+
+Result: passed for Codex and OpenCode. The drill verifies native-origin prompts
+enter Arroba history/output, provider-hidden context is forwarded using the
+current provider-native fields, and the native TUI screen does not show Arroba
+hidden instruction markers.
+
 ## Arroba Kernel Behavior
 
 Ordinary `SubmitPrompt` does not reach provider steering while an agent has an active prompt. The prompt owner admits the second prompt as queued. Metaagent event prompts and `arroba.meta.run_command` prompt commands intentionally bypass that queue only when the target is a local running provider run with an active prompt; that path records Arroba prompt history and dispatches directly to the adapter.
@@ -47,5 +59,6 @@ If the target is remote, idle, missing a running provider run, or otherwise not 
 ## Follow-Up Drills
 
 - Run the same steering drill with Claude Code installed.
-- Repeat via native TUI paths using `pnpm --filter @arroba/cli run native-tui:prompt-injection-drill` plus a steering-specific native prompt submission once the native drill accepts `--include-midturn-steering`.
+- Add a steering-specific native prompt submission once the native prompt
+  injection drill accepts `--include-midturn-steering`.
 - Repeat while the active turn is blocked on a permission/runtime interaction.
