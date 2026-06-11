@@ -201,9 +201,19 @@ impl KernelRuntimeState {
                         &dispatch.prompt,
                         &dispatch.attachments,
                     );
+                    owned.update_metaagent_event_prompt_delivery_for_prompt(
+                        &dispatch.prompt_id,
+                        "delivered",
+                        None,
+                    );
                     Ok(true)
                 }
                 Err(error) => {
+                    owned.update_metaagent_event_prompt_delivery_for_prompt(
+                        &dispatch.prompt_id,
+                        "failed",
+                        Some(error.to_string()),
+                    );
                     let _ = owned
                         .agent_store
                         .set_remote_execution_active_worker_provider_run_id(

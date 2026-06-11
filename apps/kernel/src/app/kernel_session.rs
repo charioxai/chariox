@@ -200,6 +200,18 @@ mod tests {
             app.save_durable_state_snapshot()
                 .expect("snapshot should save recorded event");
 
+            let delivered = app
+                .metaagent_event_store()
+                .update_prompt_delivery_status(&event.event_id, "queued", None)
+                .expect("event delivery status should update");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.delivery_updated",
+                    Some(delivered.event_id.clone()),
+                    serde_json::json!({ "record": &delivered }),
+                )
+                .expect("event delivery update should persist");
+
             let read = app
                 .metaagent_event_store()
                 .read(&metaagent_id, &event.event_id)
@@ -284,6 +296,8 @@ mod tests {
             restored_events[0].injected_prompt_id.as_deref(),
             Some("prompt-meta-1")
         );
+        assert_eq!(restored_events[0].prompt_delivery_status, "queued");
+        assert!(restored_events[0].prompt_delivery_updated_at_ms.is_some());
 
         let restored_subscriptions = app
             .metaagent_event_store()

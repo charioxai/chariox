@@ -22,8 +22,17 @@ impl KernelRuntimeState {
                     .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                     .await?;
             }
-            self.enqueue_prompt_dispatch_after_liveness(dispatch, owned)
-                .await
+            let result = self
+                .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
+                .await;
+            if result.is_ok() {
+                owned.update_metaagent_event_prompt_delivery_for_prompt(
+                    &dispatch.prompt_id,
+                    "delivered",
+                    None,
+                );
+            }
+            result
         }
     }
 
@@ -151,6 +160,11 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
+            owned.update_metaagent_event_prompt_delivery_for_prompt(
+                &dispatch.prompt_id,
+                "failed",
+                Some(error.to_string()),
+            );
             let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
                 &owned.session_store.get_session(&dispatch.session_id)?,
                 &dispatch.agent_id,

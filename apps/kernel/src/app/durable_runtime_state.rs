@@ -359,7 +359,10 @@ impl DaemonApp {
                 self.slices
                     .restore_saved_state_records(self.slices.list_saved_states(), backups);
             }
-            "metaagent.event.recorded" | "metaagent.event.read" | "metaagent.event.acked" => {
+            "metaagent.event.recorded"
+            | "metaagent.event.read"
+            | "metaagent.event.acked"
+            | "metaagent.event.delivery_updated" => {
                 let record: MetaagentEventRecord = decode_durable_payload_field(
                     &event,
                     "record",

@@ -1153,6 +1153,13 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
             .is_some(),
         "event should record injected prompt id"
     );
+    assert!(
+        event
+            .get("prompt_delivery_status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| matches!(status, "submitted" | "delivered")),
+        "event should expose visible prompt delivery status: {event:?}"
+    );
 
     let read = router
         .dispatch_authenticated_runtime_tool_call(
@@ -1169,6 +1176,14 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
             .and_then(serde_json::Value::as_u64)
             .is_some(),
         true
+    );
+    assert!(
+        read.payload
+            .pointer("/event/prompt_delivery_status")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "{:?}",
+        read.payload
     );
     let acked = router
         .dispatch_authenticated_runtime_tool_call(

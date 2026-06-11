@@ -411,27 +411,11 @@ impl KernelRuntimeOwnedState {
                     detail,
                     injected_prompt_id: Some(prompt_id.clone()),
                 });
-        if let Err(error) = self.durable_state_store.append_event(
-            "metaagent.event.recorded",
-            Some(record.event_id.clone()),
-            serde_json::json!({
-                "record": &record,
-            }),
-        ) {
-            crate::logging::warn_with_fields(
-                "metaagent.event",
-                "failed to persist metaagent event record",
-                serde_json::json!({
-                    "event_id": &record.event_id,
-                    "metaagent_id": &record.metaagent_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
+        self.persist_metaagent_event_record("metaagent.event.recorded", &record);
         let assembly = crate::scheduler::prompt_injection::render_metaagent_event_prompt_assembly(
             crate::scheduler::prompt_injection::MetaagentEventPromptContext {
-                event_id: record.event_id,
-                event_kind: record.kind,
+                event_id: record.event_id.clone(),
+                event_kind: record.kind.clone(),
                 source,
                 title,
                 body: summary,
@@ -444,16 +428,18 @@ impl KernelRuntimeOwnedState {
             assembly.visible_user_prompt,
             crate::session::PromptStatus::Queued,
         );
-        self.submit_metaagent_event_prompt(session_id, prompt)
+        self.submit_metaagent_event_prompt(session_id, &record.event_id, prompt)
             .unwrap_or_default()
     }
 
     fn submit_metaagent_event_prompt(
         &self,
         session_id: &str,
+        event_id: &str,
         prompt: crate::session::PromptQueueItem,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         if let Some(dispatches) = self.steer_active_metaagent_prompt(session_id, &prompt)? {
+            self.update_metaagent_event_prompt_delivery(event_id, "steered", None);
             return Ok(dispatches);
         }
         let prepared = crate::app::KernelPreparedPromptSubmission {
@@ -465,7 +451,14 @@ impl KernelRuntimeOwnedState {
             Some(submission) => submission,
             None => match self.submit_remote_prepared_prompt(&prepared)? {
                 Some(submission) => submission,
-                None => return Ok(WorkflowPromptDispatches::default()),
+                None => {
+                    self.update_metaagent_event_prompt_delivery(
+                        event_id,
+                        "failed",
+                        Some("no local or remote prompt route available".to_string()),
+                    );
+                    return Ok(WorkflowPromptDispatches::default());
+                }
             },
         };
         let mut dispatches = WorkflowPromptDispatches::default();
@@ -482,6 +475,11 @@ impl KernelRuntimeOwnedState {
                 .with_trace_id("metaagent-event"),
             );
         }
+        let delivery_status = match &submission.outcome {
+            crate::session::PromptSubmissionOutcome::Started { .. } => "submitted",
+            crate::session::PromptSubmissionOutcome::Queued { .. } => "queued",
+        };
+        self.update_metaagent_event_prompt_delivery(event_id, delivery_status, None);
         if let Some(dispatch) = submission.dispatch.take() {
             dispatches.local.push(dispatch);
         }
@@ -502,6 +500,59 @@ impl KernelRuntimeOwnedState {
             }
         }
         Ok(dispatches)
+    }
+
+    pub(super) fn update_metaagent_event_prompt_delivery(
+        &self,
+        event_id: &str,
+        status: &str,
+        error: Option<String>,
+    ) {
+        if let Some(record) = self
+            .metaagent_events
+            .update_prompt_delivery_status(event_id, status, error)
+        {
+            self.persist_metaagent_event_record("metaagent.event.delivery_updated", &record);
+        }
+    }
+
+    pub(super) fn update_metaagent_event_prompt_delivery_for_prompt(
+        &self,
+        prompt_id: &str,
+        status: &str,
+        error: Option<String>,
+    ) {
+        if let Some(record) = self
+            .metaagent_events
+            .update_prompt_delivery_status_for_prompt(prompt_id, status, error)
+        {
+            self.persist_metaagent_event_record("metaagent.event.delivery_updated", &record);
+        }
+    }
+
+    fn persist_metaagent_event_record(
+        &self,
+        kind: &'static str,
+        record: &crate::runtime::metaagent_event::MetaagentEventRecord,
+    ) {
+        if let Err(error) = self.durable_state_store.append_event(
+            kind,
+            Some(record.event_id.clone()),
+            serde_json::json!({
+                "record": record,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.event",
+                "failed to persist metaagent event record",
+                serde_json::json!({
+                    "kind": kind,
+                    "event_id": &record.event_id,
+                    "metaagent_id": &record.metaagent_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(super) fn steer_active_metaagent_prompt(

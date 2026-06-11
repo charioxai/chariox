@@ -20,6 +20,12 @@ pub(crate) struct MetaagentEventRecord {
     pub read_at_ms: Option<u64>,
     pub ack_at_ms: Option<u64>,
     pub injected_prompt_id: Option<String>,
+    #[serde(default = "default_metaagent_event_delivery_status")]
+    pub prompt_delivery_status: String,
+    #[serde(default)]
+    pub prompt_delivery_updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub prompt_delivery_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +71,10 @@ pub(crate) struct MetaagentEventStore {
     state: Arc<Mutex<MetaagentEventState>>,
 }
 
+fn default_metaagent_event_delivery_status() -> String {
+    "recorded".to_string()
+}
+
 impl MetaagentEventStore {
     pub(crate) fn record(&self, event: NewMetaagentEvent) -> MetaagentEventRecord {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
@@ -72,6 +82,7 @@ impl MetaagentEventStore {
         let sequence = state.next_sequence;
         let event_id = format!("metaevt-{sequence}");
         let preview = event.summary.chars().take(160).collect::<String>();
+        let created_at_ms = crate::session::unix_epoch_ms();
         let record = MetaagentEventRecord {
             sequence,
             event_id: event_id.clone(),
@@ -84,10 +95,13 @@ impl MetaagentEventStore {
             summary: event.summary,
             preview,
             detail: event.detail,
-            created_at_ms: crate::session::unix_epoch_ms(),
+            created_at_ms,
             read_at_ms: None,
             ack_at_ms: None,
             injected_prompt_id: event.injected_prompt_id,
+            prompt_delivery_status: default_metaagent_event_delivery_status(),
+            prompt_delivery_updated_at_ms: Some(created_at_ms),
+            prompt_delivery_error: None,
         };
         state.records.insert(event_id, record.clone());
         record
@@ -111,6 +125,7 @@ impl MetaagentEventStore {
                 Some("unacked") => record.ack_at_ms.is_none(),
                 Some("read") => record.read_at_ms.is_some(),
                 Some("unread") => record.read_at_ms.is_none(),
+                Some(status) => record.prompt_delivery_status == status,
                 _ => true,
             })
             .cloned()
@@ -165,6 +180,7 @@ impl MetaagentEventStore {
         let mut unacked = 0_u64;
         let mut unread = 0_u64;
         let mut by_kind = BTreeMap::<String, u64>::new();
+        let mut by_prompt_delivery_status = BTreeMap::<String, u64>::new();
         for record in state.records.values() {
             if record.metaagent_id != metaagent_id {
                 continue;
@@ -177,13 +193,48 @@ impl MetaagentEventStore {
                 unread += 1;
             }
             *by_kind.entry(record.kind.clone()).or_default() += 1;
+            *by_prompt_delivery_status
+                .entry(record.prompt_delivery_status.clone())
+                .or_default() += 1;
         }
         serde_json::json!({
             "total": total,
             "unacked": unacked,
             "unread": unread,
             "by_kind": by_kind,
+            "by_prompt_delivery_status": by_prompt_delivery_status,
         })
+    }
+
+    pub(crate) fn update_prompt_delivery_status(
+        &self,
+        event_id: &str,
+        status: &str,
+        error: Option<String>,
+    ) -> Option<MetaagentEventRecord> {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let record = state.records.get_mut(event_id)?;
+        record.prompt_delivery_status = status.to_string();
+        record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
+        record.prompt_delivery_error = error;
+        Some(record.clone())
+    }
+
+    pub(crate) fn update_prompt_delivery_status_for_prompt(
+        &self,
+        prompt_id: &str,
+        status: &str,
+        error: Option<String>,
+    ) -> Option<MetaagentEventRecord> {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        let record = state
+            .records
+            .values_mut()
+            .find(|record| record.injected_prompt_id.as_deref() == Some(prompt_id))?;
+        record.prompt_delivery_status = status.to_string();
+        record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
+        record.prompt_delivery_error = error;
+        Some(record.clone())
     }
 
     pub(crate) fn subscribe(
