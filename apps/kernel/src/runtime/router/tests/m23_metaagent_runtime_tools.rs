@@ -357,3 +357,153 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         denied.payload
     );
 }
+
+#[tokio::test]
+async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry() {
+    let env = TestMetaRuntimeEnv::new("turn-event");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let _worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-1");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(worker.id().to_string()),
+        prompt: "finish this test turn".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit", None, None, &submit),
+            submit,
+        )
+        .await
+        .expect("worker prompt should submit");
+    let complete = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+        session_id: session.id().to_string(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("complete", None, None, &complete),
+            complete,
+        )
+        .await
+        .expect("worker prompt should complete and notify metaagent");
+
+    let listed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "agent.turn.completed" }),
+        )
+        .await
+        .expect("meta list_events should dispatch");
+    assert!(listed.ok);
+    let event = listed
+        .payload
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.first())
+        .expect("turn completion event should be listed");
+    let event_id = event
+        .get("event_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("event should have id")
+        .to_string();
+    assert_eq!(
+        event
+            .get("source_agent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker.id())
+    );
+    assert!(
+        event
+            .get("injected_prompt_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "event should record injected prompt id"
+    );
+
+    let read = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_READ_EVENT_TOOL,
+            serde_json::json!({ "event_id": event_id }),
+        )
+        .await
+        .expect("meta read_event should dispatch");
+    assert!(read.ok);
+    assert_eq!(
+        read.payload
+            .pointer("/event/read_at_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        true
+    );
+    let acked = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_ACK_EVENT_TOOL,
+            serde_json::json!({ "event_id": event_id }),
+        )
+        .await
+        .expect("meta ack_event should dispatch");
+    assert!(acked.ok);
+    assert_eq!(
+        acked
+            .payload
+            .get("acked")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}

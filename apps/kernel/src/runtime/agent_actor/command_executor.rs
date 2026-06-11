@@ -161,7 +161,7 @@ impl AgentRuntimeCommandExecutor {
                 next_queued_prompt.clone(),
             )
             .await?;
-        let session = self
+        let mut session = self
             .prompt_commands
             .session_snapshot(&request.session_id)
             .await?;
@@ -171,6 +171,42 @@ impl AgentRuntimeCommandExecutor {
             "agent runtime queue-front preview should match compatibility advancement"
         );
         self.agent_runtime_projection.update_session(&session);
+
+        if let Some(meta_prompt) = self.prompt_commands.metaagent_turn_completion_prompt(
+            &request.session_id,
+            &target_agent_id,
+            &completion,
+            self.prompt_id_allocator.next_prompt_id(),
+        ) {
+            let prepared = self
+                .prompt_commands
+                .submit_prepared_prompt(KernelPreparedPromptSubmission {
+                    session_id: request.session_id.clone(),
+                    prompt: meta_prompt,
+                    force_queue: false,
+                })
+                .await?;
+            session = prepared.session.clone();
+            self.session_projection.update(session.clone());
+            self.agent_runtime_projection.update_session(&session);
+            if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
+                (&prepared.outcome, prepared.dispatch.as_ref())
+            {
+                self.prompt_commands.start_active_turn_with_trace_id(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    prompt.id(),
+                    &dispatch.provider_run_id,
+                    "metaagent-event",
+                );
+            }
+            if let Some(dispatch) = prepared.dispatch {
+                self.prompt_commands.spawn_prompt_dispatch(dispatch);
+            }
+            if let Some(dispatch) = prepared.remote_dispatch {
+                self.prompt_commands.spawn_remote_prompt_dispatch(dispatch);
+            }
+        }
 
         Ok(LocalDaemonResponse::PromptCompleted { completion })
     }

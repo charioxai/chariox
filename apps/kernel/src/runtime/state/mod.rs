@@ -76,6 +76,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
@@ -318,6 +319,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),

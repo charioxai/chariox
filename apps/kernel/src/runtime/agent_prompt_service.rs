@@ -113,6 +113,21 @@ impl AgentPromptCommandService {
         self.state.agent_activity_for_session(session)
     }
 
+    pub(crate) fn metaagent_turn_completion_prompt(
+        &self,
+        session_id: &str,
+        completed_agent_id: &str,
+        completion: &PromptCompletion,
+        prompt_id: String,
+    ) -> Option<PromptQueueItem> {
+        self.state.metaagent_turn_completion_prompt(
+            session_id,
+            completed_agent_id,
+            completion,
+            prompt_id,
+        )
+    }
+
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.dispatch_context().spawn_prompt_dispatch(dispatch);
     }

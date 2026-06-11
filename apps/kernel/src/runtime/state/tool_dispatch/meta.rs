@@ -1,8 +1,9 @@
 use super::*;
 
 use crate::transport::runtime_tools::{
-    MetaCommandDocsArgs, MetaCommandSearchArgs, MetaSessionOverviewArgs, RuntimeToolResult,
-    META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    MetaAckEventArgs, MetaCommandDocsArgs, MetaCommandSearchArgs, MetaListEventsArgs,
+    MetaReadEventArgs, MetaSessionOverviewArgs, RuntimeToolResult, META_ACK_EVENT_TOOL,
+    META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
     META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
     META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
     META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
@@ -189,11 +190,73 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 Ok(meta_command_docs(args.command))
             }
-            META_RUN_COMMAND_TOOL
-            | META_LIST_EVENTS_TOOL
-            | META_READ_EVENT_TOOL
-            | META_ACK_EVENT_TOOL
-            | META_TURN_OVERVIEW_TOOL
+            META_RUN_COMMAND_TOOL => Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "arroba.meta.run_command must be dispatched through the runtime MCP router",
+                    "tool": tool_name,
+                    "agent_ref": agent.agent_ref(),
+                }),
+            }),
+            META_LIST_EVENTS_TOOL => {
+                let args = serde_json::from_value::<MetaListEventsArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "events": self.owned.metaagent_events.list(
+                            agent.id(),
+                            args.kind.as_deref(),
+                            args.status.as_deref(),
+                            args.limit.unwrap_or(50).clamp(1, 100),
+                        ),
+                    }),
+                })
+            }
+            META_READ_EVENT_TOOL => {
+                let args = serde_json::from_value::<MetaReadEventArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let Some(event) = self.owned.metaagent_events.read(agent.id(), &args.event_id)
+                else {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("metaagent event `{}` not found", args.event_id),
+                        }),
+                    });
+                };
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({ "event": event }),
+                })
+            }
+            META_ACK_EVENT_TOOL => {
+                let args = serde_json::from_value::<MetaAckEventArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let mut event_ids = args.event_ids.unwrap_or_default();
+                if let Some(event_id) = args.event_id {
+                    event_ids.push(event_id);
+                }
+                if event_ids.is_empty() && args.up_to_sequence.is_none() {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": "ack_event requires event_id, event_ids, or up_to_sequence",
+                        }),
+                    });
+                }
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "acked": self.owned.metaagent_events.ack(
+                            agent.id(),
+                            &event_ids,
+                            args.up_to_sequence,
+                        ),
+                    }),
+                })
+            }
+            META_TURN_OVERVIEW_TOOL
             | META_TURN_BLOB_TOOL
             | META_SUBSCRIBE_EVENTS_TOOL
             | META_UNSUBSCRIBE_EVENTS_TOOL
@@ -291,16 +354,91 @@ impl KernelRuntimeState {
                 },
                 "pending_interactions": pending_interactions,
                 "events": if include_events {
-                    serde_json::json!({
-                        "inbox_total": 0,
-                        "unacked_total": 0,
-                        "note": "metaagent event inbox will be populated by the event injection slice"
-                    })
+                    self.owned.metaagent_events.counts(agent.id())
                 } else {
                     serde_json::Value::Null
                 },
             }),
         })
+    }
+
+    pub(crate) fn metaagent_turn_completion_prompt(
+        &self,
+        session_id: &str,
+        completed_agent_id: &str,
+        completion: &crate::session::PromptCompletion,
+        prompt_id: String,
+    ) -> Option<crate::session::PromptQueueItem> {
+        let completed_agent = self.owned.agent_store.get_agent(completed_agent_id).ok()?;
+        if completed_agent.is_metaagent() {
+            return None;
+        }
+        let metaagent = self
+            .owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .find(|agent| {
+                agent.is_metaagent() && agent.owner_user_id() == completed_agent.owner_user_id()
+            })?;
+        let title = format!(
+            "{} completed a turn",
+            completed_agent
+                .alias()
+                .unwrap_or_else(|| completed_agent.agent_ref())
+        );
+        let prompt_preview = completion
+            .completed
+            .prompt()
+            .chars()
+            .take(240)
+            .collect::<String>();
+        let summary = format!(
+            "Agent {} completed prompt {}. User prompt preview: {}",
+            completed_agent.agent_ref(),
+            completion.completed.id(),
+            if prompt_preview.trim().is_empty() {
+                "<empty>"
+            } else {
+                prompt_preview.trim()
+            }
+        );
+        let record = self.owned.metaagent_events.record(
+            crate::runtime::metaagent_event::NewMetaagentEvent {
+                session_id: session_id.to_string(),
+                metaagent_id: metaagent.id().to_string(),
+                owner_user_id: metaagent.owner_user_id().to_string(),
+                kind: "agent.turn.completed".to_string(),
+                source_agent_id: Some(completed_agent.id().to_string()),
+                title: title.clone(),
+                summary: summary.clone(),
+                detail: serde_json::json!({
+                    "completed_prompt_id": completion.completed.id(),
+                    "source_attachment_id": completion.completed.source_attachment_id(),
+                    "completed_agent_id": completed_agent.id(),
+                    "completed_agent_ref": completed_agent.agent_ref(),
+                    "completed_agent_alias": completed_agent.alias(),
+                    "started_next_prompt_id": completion.started_next.as_ref().map(|prompt| prompt.id()),
+                }),
+                injected_prompt_id: Some(prompt_id.clone()),
+            },
+        );
+        let assembly = crate::scheduler::prompt_injection::render_metaagent_event_prompt_assembly(
+            crate::scheduler::prompt_injection::MetaagentEventPromptContext {
+                event_id: record.event_id,
+                event_kind: record.kind,
+                source: completed_agent.agent_ref().to_string(),
+                title,
+                body: summary,
+            },
+        );
+        Some(crate::session::PromptQueueItem::new(
+            prompt_id,
+            completion.completed.source_attachment_id(),
+            metaagent.id(),
+            assembly.visible_user_prompt,
+            crate::session::PromptStatus::Queued,
+        ))
     }
 }
 

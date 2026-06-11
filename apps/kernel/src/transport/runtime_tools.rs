@@ -298,6 +298,31 @@ pub struct MetaRunCommandArgs {
     pub command: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaListEventsArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaReadEventArgs {
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaAckEventArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to_sequence: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
     pub id: String,
@@ -1119,7 +1144,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "expected_host": {"type": "string", "description": "Optional expected current browser host. The paste fails before secret resolution if the browser is on a different host."},
                     "expected_url": {"type": "string", "description": "Optional expected current browser URL prefix. The paste fails before secret resolution if the browser URL does not start with this value."},
                     "selector": {"type": "string", "description": "Optional CSS selector for the intended fillable field."},
-                    "field_id": {"type": "string", "description": "Optional field id returned by slice_browser_find; equivalent to selector."}
+                    "field_id": {"type": "string", "description": "Optional opaque field id returned by slice_browser_find or slice_browser_status."}
                 },
                 "additionalProperties": false
             }),

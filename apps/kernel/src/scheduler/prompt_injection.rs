@@ -1,8 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::prompt_assembly::{
-    bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
-    bundled_workflow_turn_template, PromptManifest, PromptTemplate, PromptTemplateRegistry,
+    bundled_metaagent_event_template, bundled_workflow_run_completion_template,
+    bundled_workflow_run_intermediate_output_template, bundled_workflow_turn_template,
+    PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
 use crate::session::{WorkflowHandoffValidationPolicy, WorkflowMessage};
 use std::path::PathBuf;
@@ -30,11 +31,47 @@ pub(crate) struct WorkflowNodeTurnPromptContext {
     pub can_emit_intermediate_output: bool,
 }
 
+pub(crate) struct MetaagentEventPromptContext {
+    pub event_id: String,
+    pub event_kind: String,
+    pub source: String,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkflowTurnPromptAssembly {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,
     pub(crate) manifest: PromptManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaagentEventPromptAssembly {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) manifest: PromptManifest,
+}
+
+pub(crate) fn render_metaagent_event_prompt_assembly(
+    context: MetaagentEventPromptContext,
+) -> MetaagentEventPromptAssembly {
+    let mut manifest = PromptManifest::current();
+    let template = load_prompt_registry_template(
+        "runtime/metaagent-event",
+        bundled_metaagent_event_template(),
+    );
+    manifest.push_body(template.id.clone(), &template.body);
+    let visible_user_prompt = template
+        .body
+        .replace("{{EVENT_ID}}", context.event_id.trim())
+        .replace("{{EVENT_KIND}}", context.event_kind.trim())
+        .replace("{{SOURCE}}", context.source.trim())
+        .replace("{{TITLE}}", context.title.trim())
+        .replace("{{BODY}}", context.body.trim());
+    MetaagentEventPromptAssembly {
+        visible_user_prompt,
+        manifest,
+    }
 }
 
 pub(crate) fn render_workflow_turn_prompt_from_messages(
