@@ -153,6 +153,7 @@ impl KernelRuntimeState {
     pub(crate) async fn submit_metaagent_command_prompt(
         &self,
         session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
         source_attachment_id: &str,
         target_agent_id: &str,
         prompt_text: String,
@@ -170,6 +171,14 @@ impl KernelRuntimeState {
             .steer_active_metaagent_prompt(session_id, &prompt)?
         {
             self.spawn_workflow_prompt_dispatches(dispatches);
+            self.persist_metaagent_prompt_submission(
+                session_id,
+                metaagent,
+                target_agent_id,
+                &prompt_id,
+                "steered",
+                None,
+            );
             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
@@ -197,6 +206,22 @@ impl KernelRuntimeState {
                 "metaagent-command",
             );
         }
+        let audit_status = match &submission.outcome {
+            crate::session::PromptSubmissionOutcome::Started { .. } => "submitted",
+            crate::session::PromptSubmissionOutcome::Queued { .. } => "queued",
+        };
+        let audit_provider_run_id = submission
+            .dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.provider_run_id.as_str());
+        self.persist_metaagent_prompt_submission(
+            session_id,
+            metaagent,
+            target_agent_id,
+            &prompt_id,
+            audit_status,
+            audit_provider_run_id,
+        );
         let agent_activity = self.agent_activity_for_session(&submission.session);
         if let Some(dispatch) = submission.dispatch.take() {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
@@ -215,6 +240,43 @@ impl KernelRuntimeState {
                 },
             }),
         })
+    }
+
+    fn persist_metaagent_prompt_submission(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        target_agent_id: &str,
+        prompt_id: &str,
+        status: &str,
+        provider_run_id: Option<&str>,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            "metaagent.prompt.submitted",
+            Some(prompt_id.to_string()),
+            serde_json::json!({
+                "session_id": session_id,
+                "user_id": metaagent.owner_user_id(),
+                "metaagent_id": metaagent.id(),
+                "target_agent_id": target_agent_id,
+                "prompt_id": prompt_id,
+                "provider_run_id": provider_run_id,
+                "status": status,
+                "timestamp_ms": crate::session::unix_epoch_ms(),
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.audit",
+                "failed to persist metaagent prompt submission audit",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "metaagent_id": metaagent.id(),
+                    "target_agent_id": target_agent_id,
+                    "prompt_id": prompt_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 

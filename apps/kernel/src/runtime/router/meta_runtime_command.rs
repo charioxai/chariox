@@ -32,51 +32,123 @@ impl CommandRouter {
         })?;
         let tokens = match tokenize_meta_command(&args.command) {
             Ok(tokens) => tokens,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    Some(provider_run.id()),
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "invalid",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
         match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
                 message,
             } => {
-                return Ok(meta_command_failure_result(
+                let result =
+                    meta_command_failure_result(&args.command, meta_command_error(message));
+                self.audit_meta_run_command(
+                    Some(provider_run.id()),
+                    &session,
+                    &metaagent,
                     &args.command,
-                    meta_command_error(message),
-                ))
+                    "denied",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
             }
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::NotRouted {
                 message,
             } => {
-                return Ok(meta_command_failure_result(
+                let result =
+                    meta_command_failure_result(&args.command, meta_command_error(message));
+                self.audit_meta_run_command(
+                    Some(provider_run.id()),
+                    &session,
+                    &metaagent,
                     &args.command,
-                    meta_command_error(message),
-                ))
+                    "not_routed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
             }
         }
         if tokens.first().map(String::as_str) == Some("prompt") {
-            return self
+            let result = self
                 .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
-                .await;
+                .await?;
+            self.audit_meta_run_command(
+                Some(provider_run.id()),
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
         }
         let request = match self
             .meta_command_request(&session, &metaagent, &tokens)
             .await
         {
             Ok(request) => request,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    Some(provider_run.id()),
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "failed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
         let command = meta_kernel_command(Some(&provider_run), &metaagent, &request);
         let response = match self.dispatch(command, request).await {
             Ok(response) => response,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    Some(provider_run.id()),
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "failed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
-        Ok(RuntimeToolResult {
+        let result = RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "command": args.command,
                 "response": response,
             }),
-        })
+        };
+        self.audit_meta_run_command(
+            Some(provider_run.id()),
+            &session,
+            &metaagent,
+            &args.command,
+            "succeeded",
+            result.payload.clone(),
+        )
+        .await;
+        Ok(result)
     }
 
     pub(super) async fn dispatch_forwarded_meta_run_command(
@@ -113,51 +185,164 @@ impl CommandRouter {
         })?;
         let tokens = match tokenize_meta_command(&args.command) {
             Ok(tokens) => tokens,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    None,
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "invalid",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
         match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
                 message,
             } => {
-                return Ok(meta_command_failure_result(
+                let result =
+                    meta_command_failure_result(&args.command, meta_command_error(message));
+                self.audit_meta_run_command(
+                    None,
+                    &session,
+                    &metaagent,
                     &args.command,
-                    meta_command_error(message),
-                ))
+                    "denied",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
             }
             crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::NotRouted {
                 message,
             } => {
-                return Ok(meta_command_failure_result(
+                let result =
+                    meta_command_failure_result(&args.command, meta_command_error(message));
+                self.audit_meta_run_command(
+                    None,
+                    &session,
+                    &metaagent,
                     &args.command,
-                    meta_command_error(message),
-                ))
+                    "not_routed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
             }
         }
         if tokens.first().map(String::as_str) == Some("prompt") {
-            return self
+            let result = self
                 .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
-                .await;
+                .await?;
+            self.audit_meta_run_command(
+                None,
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
         }
         let request = match self
             .meta_command_request(&session, &metaagent, &tokens)
             .await
         {
             Ok(request) => request,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    None,
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "failed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
         let command = meta_kernel_command(None, &metaagent, &request);
         let response = match self.dispatch(command, request).await {
             Ok(response) => response,
-            Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
+            Err(error) => {
+                let result = meta_command_failure_result(&args.command, error);
+                self.audit_meta_run_command(
+                    None,
+                    &session,
+                    &metaagent,
+                    &args.command,
+                    "failed",
+                    result.payload.clone(),
+                )
+                .await;
+                return Ok(result);
+            }
         };
-        Ok(RuntimeToolResult {
+        let result = RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "command": args.command,
                 "response": response,
             }),
-        })
+        };
+        self.audit_meta_run_command(
+            None,
+            &session,
+            &metaagent,
+            &args.command,
+            "succeeded",
+            result.payload.clone(),
+        )
+        .await;
+        Ok(result)
+    }
+
+    async fn audit_meta_run_command(
+        &self,
+        provider_run_id: Option<&str>,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        command: &str,
+        status: &str,
+        result: serde_json::Value,
+    ) {
+        let durable_state = {
+            let app = self.app.lock().await;
+            app.durable_state_store()
+        };
+        if let Err(error) = durable_state.append_event(
+            "metaagent.command.executed",
+            Some(metaagent.id().to_string()),
+            serde_json::json!({
+                "session_id": session.id(),
+                "user_id": metaagent.owner_user_id(),
+                "metaagent_id": metaagent.id(),
+                "provider_run_id": provider_run_id,
+                "command": command,
+                "status": status,
+                "result": result,
+                "timestamp_ms": crate::session::unix_epoch_ms(),
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.audit",
+                "failed to persist metaagent command audit",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "metaagent_id": metaagent.id(),
+                    "command": command,
+                    "status": status,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     async fn dispatch_meta_prompt_command(
@@ -190,7 +375,13 @@ impl CommandRouter {
         };
         let mut result = self
             .runtime_state
-            .submit_metaagent_command_prompt(session.id(), &attachment_id, target.id(), prompt)
+            .submit_metaagent_command_prompt(
+                session.id(),
+                metaagent,
+                &attachment_id,
+                target.id(),
+                prompt,
+            )
             .await?;
         if let Some(payload) = result.payload.as_object_mut() {
             payload.insert(

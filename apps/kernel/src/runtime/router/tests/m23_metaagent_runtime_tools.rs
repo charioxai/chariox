@@ -479,6 +479,24 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
         .list_client_attachments(&format!("metaagent:{}:commands", metaagent.id()));
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments[0].session_id(), session.id());
+    let audit_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable audit events should load");
+    assert!(audit_events.iter().any(|event| {
+        event.kind == "metaagent.command.executed"
+            && event.payload["metaagent_id"] == metaagent.id()
+            && event.payload["command"] == "prompt worker \"please inspect the failing test\""
+            && event.payload["status"] == "succeeded"
+    }));
+    assert!(audit_events.iter().any(|event| {
+        event.kind == "metaagent.prompt.submitted"
+            && event.payload["metaagent_id"] == metaagent.id()
+            && event.payload["target_agent_id"] == worker.id()
+            && event.payload["status"] == "steered"
+    }));
 }
 
 #[tokio::test]
@@ -1785,6 +1803,20 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         .expect("interaction responder should receive resolution");
     assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
     assert_eq!(resolution.reply.as_deref(), Some("allow"));
+    let audit_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable audit events should load");
+    assert!(audit_events.iter().any(|event| {
+        event.kind == "metaagent.interaction.resolved"
+            && event.payload["session_id"] == session.id()
+            && event.payload["metaagent_id"] == metaagent.id()
+            && event.payload["target_agent_id"] == worker.id()
+            && event.payload["interaction_id"] == "interaction-worker"
+            && event.payload["choice_id"] == "allow_once"
+    }));
 
     let self_interaction = RuntimeInteraction::new(
         "interaction-meta",

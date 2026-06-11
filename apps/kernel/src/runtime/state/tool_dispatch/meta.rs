@@ -332,6 +332,50 @@ impl KernelRuntimeState {
         }
     }
 
+    fn persist_metaagent_interaction_resolution(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+        interaction: &crate::session::RuntimeInteraction,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        provider_run_id: Option<&str>,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            "metaagent.interaction.resolved",
+            Some(interaction.id().to_string()),
+            serde_json::json!({
+                "session_id": session.id(),
+                "user_id": metaagent.owner_user_id(),
+                "metaagent_id": metaagent.id(),
+                "target_agent_id": target.id(),
+                "interaction_id": interaction.id(),
+                "interaction_kind": format!("{:?}", interaction.kind()),
+                "choice_id": choice_id,
+                "input": custom_reply.map(|reply| serde_json::json!({
+                    "kind": "custom",
+                    "char_count": reply.chars().count(),
+                })),
+                "provider_run_id": provider_run_id,
+                "timestamp_ms": crate::session::unix_epoch_ms(),
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.audit",
+                "failed to persist metaagent interaction resolution audit",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "metaagent_id": metaagent.id(),
+                    "target_agent_id": target.id(),
+                    "interaction_id": interaction.id(),
+                    "choice_id": choice_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     fn metaagent_for_provider_run(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -655,23 +699,39 @@ impl KernelRuntimeState {
             .custom_choice()
             .filter(|choice| choice.id() == choice_id)
             .and_then(|_| args.input.as_deref());
+        let provider_run_id = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), target.id())
+            .map(|run| run.id().to_string());
         match self
             .resolve_runtime_interaction(session.id(), interaction.id(), &choice_id, custom_reply)
             .await
         {
-            Ok(()) => Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "interaction_id": interaction.id(),
-                    "choice_id": choice_id,
-                    "target_agent": meta_agent_ref_json(&target),
-                    "resolved_by": {
-                        "kind": "metaagent",
-                        "metaagent_id": metaagent.id(),
-                        "owner_user_id": metaagent.owner_user_id(),
-                    },
-                }),
-            }),
+            Ok(()) => {
+                self.persist_metaagent_interaction_resolution(
+                    session,
+                    metaagent,
+                    &target,
+                    &interaction,
+                    &choice_id,
+                    custom_reply,
+                    provider_run_id.as_deref(),
+                );
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "interaction_id": interaction.id(),
+                        "choice_id": choice_id,
+                        "target_agent": meta_agent_ref_json(&target),
+                        "resolved_by": {
+                            "kind": "metaagent",
+                            "metaagent_id": metaagent.id(),
+                            "owner_user_id": metaagent.owner_user_id(),
+                        },
+                    }),
+                })
+            }
             Err(error) => Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
