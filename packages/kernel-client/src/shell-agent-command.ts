@@ -108,13 +108,18 @@ export async function executeAgentCommand(
       }
     }
     case "spawn": {
-      const parsedSpawn = parsePlacementOptions(args, true)
+      const metaagent = args.includes("--meta") || args.includes("--metaagent")
+      const spawnArgs = args.filter((arg) => arg !== "--meta" && arg !== "--metaagent")
+      const parsedSpawn = parsePlacementOptions(spawnArgs, true)
       if (parsedSpawn.error) {
         return { ok: false, message: parsedSpawn.error }
       }
       const [alias, model] = parsedSpawn.options.positional
       if (parsedSpawn.options.positional.length > 2) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
+        return { ok: false, message: "usage: agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new:headless|new:headed|<slice-ref>]" }
+      }
+      if (metaagent && parsedSpawn.options.sliceRef && parsedSpawn.options.sliceRef !== "off") {
+        return { ok: false, message: "metaagents cannot be launched in a slice" }
       }
       const remotePlacementRef = parsedSpawn.options.kernelRef ?? parsedSpawn.options.machineRef
       if (remotePlacementRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
@@ -155,6 +160,7 @@ export async function executeAgentCommand(
         sliceRef ? undefined : remoteKernelRef,
         undefined,
         sliceRef,
+        metaagent,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const placement = agent.remote_execution
@@ -163,7 +169,7 @@ export async function executeAgentCommand(
           : ` on ${remoteKernelRef ?? agent.remote_execution.worker_machine_id}`
         : agent.worktree_id ? ` in ${agent.worktree_id}` : ""
       return resourceResult(
-        `spawned agent ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
+        `spawned ${agent.role === "meta" ? "metaagent" : "agent"} ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}${placement}`,
         parsed.assignment,
         agent.id,
         { agentId: agent.id },

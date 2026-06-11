@@ -674,6 +674,98 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
   assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - remote 1 agent, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
+test("executeShellCommand spawns a metaagent", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, {
+      SpawnAgent: {
+        session_id: "session-1",
+        provider: "opencode",
+        alias: "meta",
+        model: "gpt-5.2",
+        effort: "medium",
+        execution_mode: null,
+        permission_level: null,
+        worktree_id: null,
+        kernel_ref: null,
+        slice_ref: null,
+        worktree_placement: null,
+        metaagent: true,
+      },
+    })
+    return {
+      AgentSpawned: {
+        agent: makeAgent({
+          id: "agent-meta",
+          agent_ref: "agent-meta",
+          alias: "meta",
+          role: "meta",
+        }),
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn meta gpt-5.2 --meta"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /spawned metaagent agent-meta \(meta\)/)
+  assert.deepEqual(result.contextUpdates, { agentId: "agent-meta" })
+  assert.equal(fake.requests.length, 1)
+})
+
+test("executeShellCommand rejects slice placement for metaagent spawns", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+  })
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called for invalid metaagent slice placement")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn meta --meta --slice new"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /metaagents cannot be launched in a slice/)
+  assert.equal(fake.requests.length, 0)
+})
+
+test("executeShellCommand marks metaagents in agent lists", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+  })
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetSessionState: { session_id: "session-1" } })
+    return {
+      SessionState: {
+        session: makeSession({
+          agents: [
+            makeAgent({ id: "agent-1", agent_ref: "agent-1" }),
+            makeAgent({
+              id: "agent-meta",
+              agent_ref: "agent-meta",
+              alias: "meta",
+              role: "meta",
+            }),
+          ],
+        }),
+      },
+    }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent-meta \(meta\) \[meta\] \[/)
+  assert.equal(fake.requests.length, 1)
+})
+
 test("executeShellCommand submits prompt without waiting", async () => {
   const context = createDefaultShellContext({
     workspace: "/repo",
