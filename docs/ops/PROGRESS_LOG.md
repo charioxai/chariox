@@ -1513,3 +1513,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - The run used `https://arroba-cloud-staging.osc-fr1.scalingo.io` and hosted relay `wss://195.201.123.115.sslip.io`. It passed the paired second-kernel worker path and Cloud multi-user path in one run.
 - The second-kernel scenario validated hosted worker machine pairing, relay target readiness, remote agent leasing, home-owned script/MCP/connector execution from the worker runtime MCP surface, revoke removing advertisement and blocking stale calls, and prompt completion through the leased worker agent.
 - The collab extension scenario validated a collaborator-owned remote agent on the hosted second kernel, collaborator denial for grant/revoke/request of owner home extensions, owner-scoped grant authority, and successful home-executed script/MCP/connector calls after owner grant.
+
+### Remote tracked Workspace Live Sync parity
+
+- Revalidated same-host relay tracked Workspace Live Sync on 2026-06-11 against OSS main `d21212443` with `pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill`.
+- The drill passed in full tracked mode with Codex, two target worktrees on `remote-live-sync-tracked-parity-target`, bidirectional fanout, `.arrobaignore` propagation, force-excludes, ignored outside-turn changes, unchanged source and target Git heads, conflict reporting, resolver convergence, final ready sync status, and a sibling-repo write outside the synced root left writable and unsynced.
+- Verified the drill cleaned its own `apps/cli/target/live-workspace-live-sync-drill/41519-1781136489232` and `/tmp/arroba-remote-workspace-live-sync-41341-*` artifacts after success.
